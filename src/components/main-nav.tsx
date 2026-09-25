@@ -50,8 +50,8 @@ export function MainNav({
     ? navLinks.filter((link) => !isCrmRoutePath(link.to))
     : navLinks
   return (
-    <nav className={cn("border-b", className)} {...props}>
-      <div className="flex h-16 items-center px-4">
+    <nav className={cn("overflow-x-auto border-b", className)} {...props}>
+      <div className="flex h-16 min-w-max items-center whitespace-nowrap px-4">
         <Link to="/" className="mr-6 flex items-center space-x-2">
           <CheckCircle className="h-6 w-6" />
           <span className="font-bold">SimpleCRM</span>
@@ -75,7 +75,7 @@ export function MainNav({
             </Link>
           ))}
         </div>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-3 pl-6">
           <LanguageToggle className="hidden h-8 w-[7.5rem] sm:flex" />
           {onOpenCommandPalette ? (
             <button

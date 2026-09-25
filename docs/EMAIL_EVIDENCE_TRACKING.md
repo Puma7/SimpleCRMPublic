@@ -31,7 +31,7 @@ Voraussetzungen:
 - `MASTER_KEY` mit 32 Byte Schlüsselmaterial.
 - Korrekte `PUBLIC_BASE_URL`; produktiv ausschließlich HTTPS.
 - Reverse-Proxy-Routing für `/t/*` zum API-Prozess.
-- Vertrauenswürdige Proxy-Konfiguration (`TRUST_PROXY=1` im mitgelieferten Docker-Setup).
+- Vertrauenswürdige Proxy-Konfiguration (im Docker-Setup Caddys feste Proxy-Adresse; eigene Proxys über konkrete IPs/CIDRs, siehe [SETUP_SERVER.md](SETUP_SERVER.md#reverse-proxy-trust-and-upgrades)).
 - Rechtsgrundlage, HTTPS-Datenschutzhinweis und aktive Admin-Bestätigung in
   **Einstellungen -> E-Mail -> Nachverfolgung**.
 

@@ -23,15 +23,38 @@ type ResolvedCompose = Readonly<{
     environment?: Record<string, string>;
     image?: string;
     profiles?: string | readonly string[];
+    networks?: Record<string, { ipv4_address?: string }>;
+    ports?: readonly unknown[];
     volumes?: Readonly<{ source?: string; target?: string; read_only?: boolean }> | readonly Readonly<{
       source?: string;
       target?: string;
       read_only?: boolean;
     }>[];
   }>>;
+  networks?: Record<string, { ipam?: { config?: readonly { subnet?: string; ip_range?: string }[] } }>;
 }>;
 
 describe('server Compose GeoIP profile', () => {
+  test.each([
+    [{}, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', '172.31.255.2'],
+    [{ CADDY_PROXY_IP: '10.254.254.2', PROXY_SUBNET: '10.254.254.0/29', PROXY_DYNAMIC_RANGE: '10.254.254.4/30' }, '10.254.254.2', '10.254.254.0/29', '10.254.254.4/30', '10.254.254.2'],
+    [{ TRUST_PROXY: '192.0.2.10' }, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', '192.0.2.10'],
+    [{ TRUST_PROXY: 'false' }, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', 'false'],
+  ] as const)('pins bundled proxy trust and supports explicit configuration %j', (proxyEnvironment, ip, subnet, ipRange, trust) => {
+    const tempDir = createComposeFixture({ proxyEnvironment });
+    try {
+      const resolved = resolveCompose(tempDir);
+      expect(resolved.services.caddy.networks).toEqual({ proxy: { ipv4_address: ip } });
+      expect(Object.keys(resolved.services.api.networks ?? {}).sort()).toEqual(['default', 'proxy']);
+      expect(resolved.services.api.environment?.TRUST_PROXY).toBe(trust);
+      expect(resolved.services.api.ports ?? []).toHaveLength(0);
+      expect(resolved.networks?.proxy.ipam?.config).toEqual([{ subnet, ip_range: ipRange }]);
+      expect(resolved.services.postgres.networks).not.toHaveProperty('proxy');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves MaxMind credentials only into the optional updater service', () => {
     const accountId = 'geoip-updater-account-sentinel';
     const licenseKey = 'geoip-updater-license-sentinel';
@@ -128,6 +151,7 @@ describe('server Compose GeoIP profile', () => {
 function createComposeFixture(options: Readonly<{
   broadGeoIpCredentials?: boolean;
   updaterCredentials?: Readonly<{ accountId: string; licenseKey: string }>;
+  proxyEnvironment?: Readonly<Record<string, string>>;
 }> = {}): string {
   const tempDir = mkdtempSync(join(tmpdir(), 'simplecrm-geoip-compose-'));
   copyFileSync(join(dockerRoot, 'docker-compose.yml'), join(tempDir, 'docker-compose.yml'));
@@ -138,6 +162,7 @@ function createComposeFixture(options: Readonly<{
     ACCESS_TOKEN_SECRET: 'test-access-token-secret',
     PUBLIC_BASE_URL: 'https://crm.example.test',
     ...RUNTIME_SENTINELS,
+    ...options.proxyEnvironment,
     ...(options.broadGeoIpCredentials ? {
       GEOIPUPDATE_ACCOUNT_ID: 'legacy-account-sentinel',
       GEOIPUPDATE_LICENSE_KEY: 'legacy-license-sentinel',
@@ -162,6 +187,10 @@ function resolveCompose(composeRoot: string, profiles: readonly string[] = []): 
   delete env.GEOIPUPDATE_ACCOUNT_ID;
   delete env.GEOIPUPDATE_LICENSE_KEY;
   delete env.GEOIP_UPDATER_ENV_FILE;
+  delete env.TRUST_PROXY;
+  delete env.CADDY_PROXY_IP;
+  delete env.PROXY_SUBNET;
+  delete env.PROXY_DYNAMIC_RANGE;
   for (const variable of Object.keys(RUNTIME_SENTINELS)) delete env[variable];
   return JSON.parse(execFileSync(
     'docker',

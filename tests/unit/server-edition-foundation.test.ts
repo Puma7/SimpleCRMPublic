@@ -16240,6 +16240,25 @@ describe('server edition foundation', () => {
     expect(client.queries.map((query) => query.sql)).toContain('COMMIT');
   });
 
+  test.each([
+    ['1', 'fail'], ['garbage', 'fail'], ['true', 'warn'],
+    ['false', 'warn'], ['0', 'warn'], ['', 'warn'],
+    ['172.31.255.2', 'ok'], ['192.0.2.10,2001:db8::10', 'ok'],
+  ])('doctor validates proxy configuration %s', async (trustProxy, status) => {
+    const io = makeCliIo();
+    const exitCode = await runDoctorCli({
+      argv: ['--json'],
+      env: { DATABASE_URL: 'postgres://test/test', TRUST_PROXY: trustProxy },
+      stdout: io.stdout,
+      stderr: io.stderr,
+      createClient: () => makeDoctorPgClient(),
+    });
+    const output = JSON.parse(io.stdoutOutput());
+    expect(output.checks.find((check: { name: string }) => check.name === 'trust_proxy')).toMatchObject({ status });
+    expect(exitCode).toBe(status === 'fail' ? 1 : 0);
+    expect(io.stdoutOutput()).not.toContain('set to 1 behind Caddy');
+  });
+
   test('doctor CLI reports migration, queue, lock, database, and backup health without leaking credentials', async () => {
     const backupDir = mkdtempSync(join(tmpdir(), 'simplecrm-doctor-'));
     const dumpName = 'db-2026-06-03T00-00-00Z.dump';

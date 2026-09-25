@@ -5,6 +5,7 @@ import { act, render } from '@testing-library/react';
 const mockQuillInstances: Array<{
   root: HTMLDivElement;
   handlers: Record<string, (...args: unknown[]) => void>;
+  clipboard: { onCopy: () => { html: string; text: string } };
 }> = [];
 
 jest.mock('quill/dist/quill.snow.css', () => ({}));
@@ -14,6 +15,7 @@ jest.mock('quill', () => {
     root = document.createElement('div');
     handlers: Record<string, (...args: unknown[]) => void> = {};
     clipboard = {
+      onCopy: () => ({ html: this.root.innerHTML, text: this.root.textContent ?? '' }),
       dangerouslyPasteHTML: (html: string) => {
         this.root.innerHTML = html;
       },
@@ -66,11 +68,13 @@ describe('signature Quill HTML boundary', () => {
       />,
     );
     const editor = mockQuillInstances[0]!;
+    expect(editor.clipboard.onCopy().html).not.toContain('onerror');
 
     expect(editor.root.innerHTML).toContain('<p>Signatur</p>');
     expect(editor.root.innerHTML).not.toMatch(/onerror|script/i);
 
     editor.root.innerHTML = '<p onclick="alert(3)">Geändert</p><script>alert(4)</script>';
+    expect(editor.clipboard.onCopy().html).toBe('<p>Geändert</p>');
     act(() => editor.handlers['text-change']!());
     expect(onChange).toHaveBeenLastCalledWith('<p>Geändert</p>');
   });

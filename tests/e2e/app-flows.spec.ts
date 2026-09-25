@@ -24,6 +24,26 @@ test('loads dashboard and top-level navigation', async () => {
   await expect(page.getByRole('link', { name: 'Einstellungen', exact: true })).toBeVisible();
 });
 
+test('narrow windows can scroll the main navigation to settings', async () => {
+  const previousViewport = page.viewportSize();
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const navigation = page.locator('nav').first();
+    const scrolled = await navigation.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+      return element.scrollLeft;
+    });
+    expect(scrolled).toBeGreaterThan(0);
+    const settings = navigation.getByRole('link', { name: 'Einstellungen', exact: true });
+    await expect(settings).toBeInViewport();
+    await settings.click();
+    await expect(page).toHaveURL(/\/settings/);
+  } finally {
+    await page.setViewportSize(previousViewport ?? { width: 1280, height: 800 });
+    await page.locator('nav').first().evaluate((element) => { element.scrollLeft = 0; });
+  }
+});
+
 test('customers flow: opens add dialog', async () => {
   // Use exact:true + first() because the dashboard also has an "Alle Kunden anzeigen" link
   await page.getByRole('link', { name: 'Kunden', exact: true }).first().click();

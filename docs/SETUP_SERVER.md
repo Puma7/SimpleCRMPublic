@@ -147,10 +147,46 @@ needed for the served app).
 
 Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
 bearer-like tracking tokens. Keep this rule when replacing the bundled proxy. Configure
-`TRUST_PROXY` only for known proxy hops; IP-based classification and abuse limits use the
+`TRUST_PROXY` only for trusted proxy addresses; IP-based classification and abuse limits use the
 resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
 the legal basis, HTTPS privacy notice and retention choices under the e-mail settings. See
 [EMAIL_EVIDENCE_TRACKING.md](EMAIL_EVIDENCE_TRACKING.md).
+
+### Reverse proxy trust and upgrades
+
+The bundled Compose stack trusts only Caddy's fixed address
+(`CADDY_PROXY_IP=172.31.255.2`) on a dedicated proxy network
+(`PROXY_SUBNET=172.31.255.0/29`). Automatic allocation uses only
+`PROXY_DYNAMIC_RANGE=172.31.255.4/30`, leaving Caddy's address free even when the
+API starts first. Keep the API port unpublished. Caddy replaces
+untrusted incoming forwarding headers by default. Other services stay on the
+default network; the API connects to both networks.
+
+Before upgrading, remove the old `TRUST_PROXY=1` from `docker/.env`. Compose then
+uses Caddy's address automatically. Numeric hop counts are rejected at startup
+because different network paths can bypass them. Recreate the stack with
+`docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --build`
+so the new network configuration takes effect. This does not remove data volumes.
+If the default proxy subnet overlaps your LAN, VPN or existing Docker networks,
+choose a free private subnet and change `PROXY_SUBNET`, `PROXY_DYNAMIC_RANGE`
+and `CADDY_PROXY_IP` to matching values before starting. The dynamic range must
+be inside the subnet and must not contain Caddy's address. For example, use
+`10.254.254.0/29`, `10.254.254.4/30` and `10.254.254.2`. For multiple stacks, use a different subnet
+for each stack.
+
+For your own Caddy, nginx, Traefik or other reverse proxy, set `TRUST_PROXY` to
+the IPs/CIDRs from which the API actually receives proxy connections, for example
+`TRUST_PROXY=192.0.2.10,2001:db8::10` (replace these documentation addresses).
+With multiple proxy layers, configure trusted upstreams and forwarding header
+handling at each proxy. Prefer exact proxy addresses or a dedicated proxy
+subnet; do not trust a whole company LAN whose clients can reach the API.
+Restrict API access to the proxies at the network/firewall layer.
+
+For direct API access use `TRUST_PROXY=false` (also the default outside Compose;
+`0` is accepted). `true` retains compatibility but trusts every peer and should
+not be used on an API reachable by untrusted clients. After changing a proxy,
+verify that two clients have distinct addresses and that client-supplied
+`X-Forwarded-For` cannot replace their observed addresses.
 
 On first start the app runs the initial setup flow, which calls:
 

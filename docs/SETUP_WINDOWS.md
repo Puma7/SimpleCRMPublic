@@ -77,7 +77,7 @@ Enable the repository-pinned package manager and install the root workspace:
 
 ```powershell
 corepack enable
-corepack prepare pnpm@11.12.0 --activate
+corepack prepare pnpm@11.13.1 --activate
 corepack pnpm install --frozen-lockfile
 ```
 

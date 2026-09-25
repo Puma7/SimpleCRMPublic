@@ -7,6 +7,7 @@ import "@/styles/compose-quill.css"
 import { SIGNATURE_QUILL_TOOLBAR } from "@shared/signature-quill-toolbar"
 import { cn } from "@/lib/utils"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
+import { sanitizeQuillClipboard } from "@/lib/quill-clipboard"
 
 type Props = {
   value: string
@@ -43,6 +44,7 @@ export function SignatureQuillEditor({
       modules: { toolbar: SIGNATURE_QUILL_TOOLBAR },
       placeholder,
     })
+    sanitizeQuillClipboard(quill)
     quillRef.current = quill
 
     if (value) {
