@@ -48,10 +48,14 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const storedAccount = accounts.find((x) => x.id === accId)
   // The server refuses an SMTP endpoint change (host, port, TLS) without the
   // password SMTP logs in with, so the stored one never reaches a different
-  // server. With "wie IMAP" that is the IMAP password.
+  // server. With "wie IMAP" that is the IMAP password. Switching "wie IMAP"
+  // counts as such a change: it needs the password of the new login source.
   const credentialsRequired = isServerClientMode() && storedAccount != null && smtpHost.trim() !== ""
-    && mailEndpointKey(smtpHost, parseInt(smtpPort, 10) || 587, smtpTls)
-      !== mailEndpointKey(storedAccount.smtp_host ?? "", storedAccount.smtp_port ?? 587, (storedAccount.smtp_tls ?? 1) === 1)
+    && (
+      mailEndpointKey(smtpHost, parseInt(smtpPort, 10) || 587, smtpTls)
+        !== mailEndpointKey(storedAccount.smtp_host ?? "", storedAccount.smtp_port ?? 587, (storedAccount.smtp_tls ?? 1) === 1)
+      || smtpImapAuth !== ((storedAccount.smtp_use_imap_auth ?? 1) === 1)
+    )
   const requiredPasswordLabel = smtpImapAuth ? "IMAP-Passwort" : "SMTP-Passwort"
 
   const load = useCallback(async () => {
@@ -278,8 +282,8 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
             />
             {credentialsRequired ? (
               <p className="text-xs text-muted-foreground">
-                Server, Port oder TLS geändert: Das gespeicherte Passwort wird nicht an einen
-                anderen Server gesendet. Bitte erneut eingeben.
+                Server, Port, TLS oder Anmeldung geändert: Das gespeicherte Passwort wird nicht an
+                einen anderen Server gesendet. Bitte erneut eingeben.
               </p>
             ) : null}
           </div>

@@ -1624,6 +1624,7 @@ const EMAIL_ACCOUNT_ENDPOINT_FIELDS = [
   'smtpHost',
   'smtpPort',
   'smtpTls',
+  'smtpUseImapAuth',
   'pop3Host',
   'pop3Port',
   'pop3Tls',
@@ -1682,16 +1683,26 @@ function missingCredentialsForEndpointChange(
   };
   // IMAP and POP3 log in with the IMAP secret (or OAuth); SMTP with the IMAP
   // secret when it reuses the IMAP login, otherwise with its own SMTP secret.
+  // Switching that source is an endpoint change too: otherwise a caller first
+  // points SMTP at their host with their own SMTP password and then only turns
+  // on "wie IMAP", and the IMAP password (or OAuth token) follows.
+  const smtpLoginSwitched = next.smtpUseImapAuth !== current.smtpUseImapAuth;
   const checks = [
-    { protocol: 'imap', endpoint: imapEndpoint, credential: 'imapPassword' },
-    { protocol: 'pop3', endpoint: pop3Endpoint, credential: 'imapPassword' },
-    { protocol: 'smtp', endpoint: smtpEndpoint, credential: next.smtpUseImapAuth ? 'imapPassword' : 'smtpPassword' },
+    { protocol: 'imap', endpoint: imapEndpoint, credential: 'imapPassword', switched: false },
+    { protocol: 'pop3', endpoint: pop3Endpoint, credential: 'imapPassword', switched: false },
+    {
+      protocol: 'smtp',
+      endpoint: smtpEndpoint,
+      credential: next.smtpUseImapAuth ? 'imapPassword' : 'smtpPassword',
+      switched: smtpLoginSwitched,
+    },
   ] as const;
   const missing = new Map<MissingEndpointCredential['field'], MissingEndpointCredential['protocols']>();
   for (const check of checks) {
     const after = check.endpoint(next);
     // An emptied host disables the protocol; no credential goes anywhere.
-    if (!after.host || fresh[check.credential] || sameMailEndpoint(check.endpoint(current), after)) continue;
+    if (!after.host || fresh[check.credential]) continue;
+    if (!check.switched && sameMailEndpoint(check.endpoint(current), after)) continue;
     missing.set(check.credential, [...(missing.get(check.credential) ?? []), check.protocol]);
   }
   return [...missing].map(([field, protocols]) => ({

@@ -107,6 +107,14 @@ describe('email account update requires fresh credentials when an endpoint chang
     return result.rows[0];
   }
 
+  async function storedSmtpUseImapAuth(accountId: number): Promise<boolean> {
+    const result = await postgres.admin.query<{ smtp_use_imap_auth: boolean }>(
+      'SELECT smtp_use_imap_auth FROM email_accounts WHERE workspace_id = $1 AND id = $2',
+      [WORKSPACE_ID, accountId],
+    );
+    return result.rows[0]!.smtp_use_imap_auth;
+  }
+
   async function readStoredSecret(accountId: number, kind: 'imap' | 'smtp'): Promise<string | null> {
     const secret = await secrets.readSecret({
       workspaceId: WORKSPACE_ID,
@@ -240,6 +248,87 @@ describe('email account update requires fresh credentials when an endpoint chang
     expect(smtp.status).toBe(200);
     expect((await storedEndpoints(SEPARATE_SMTP_ACCOUNT)).smtp_host).toBe('smtp.new.example');
     expect(await readStoredSecret(SEPARATE_SMTP_ACCOUNT, 'smtp')).toBe('fresh-smtp-secret');
+  });
+
+  // F-A2a-01 (E2): "SMTP-Anmeldung wie IMAP" decides which stored secret SMTP
+  // presents, so flipping it alone moved the IMAP password (or an OAuth token)
+  // to an SMTP host the caller had just set up with their own SMTP password.
+  test('turning on the IMAP login for SMTP after an SMTP host change needs the IMAP password', async () => {
+    const hostChange = await patch(SEPARATE_SMTP_ACCOUNT, {
+      smtpHost: 'smtp.attacker.example',
+      smtpPassword: 'attacker-chosen',
+    });
+    expect(hostChange.status).toBe(200);
+
+    const toggle = await patch(SEPARATE_SMTP_ACCOUNT, { smtpUseImapAuth: true });
+
+    expect(toggle).toMatchObject({
+      status: 400,
+      body: {
+        error: {
+          code: 'email_account_credentials_required',
+          message: expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'),
+          details: { fields: [{ field: 'imapPassword', protocols: ['smtp'] }] },
+        },
+      },
+    });
+    expect(await storedSmtpUseImapAuth(SEPARATE_SMTP_ACCOUNT)).toBe(false);
+
+    const withSmtpPassword = await patch(SEPARATE_SMTP_ACCOUNT, { smtpUseImapAuth: true, smtpPassword: 'attacker-chosen' });
+    expect(withSmtpPassword).toMatchObject({ status: 400, body: { error: { code: 'email_account_credentials_required' } } });
+    expect(await storedSmtpUseImapAuth(SEPARATE_SMTP_ACCOUNT)).toBe(false);
+  });
+
+  test('turning on the IMAP login for SMTP is rejected on an OAuth account without a new IMAP password', async () => {
+    await postgres.admin.query(
+      'UPDATE email_accounts SET smtp_use_imap_auth = false WHERE workspace_id = $1 AND id = $2',
+      [WORKSPACE_ID, OAUTH_ACCOUNT],
+    );
+
+    const response = await patch(OAUTH_ACCOUNT, { smtpUseImapAuth: true });
+
+    expect(response).toMatchObject({
+      status: 400,
+      body: { error: { code: 'email_account_credentials_required', details: { fields: [expect.objectContaining({ field: 'imapPassword' })] } } },
+    });
+    expect(await storedSmtpUseImapAuth(OAUTH_ACCOUNT)).toBe(false);
+  });
+
+  test('turning off the IMAP login for SMTP needs the SMTP password', async () => {
+    const withoutPassword = await patch(PASSWORD_ACCOUNT, { smtpUseImapAuth: false });
+    expect(withoutPassword).toMatchObject({
+      status: 400,
+      body: { error: { code: 'email_account_credentials_required', details: { fields: [{ field: 'smtpPassword', protocols: ['smtp'] }] } } },
+    });
+
+    const withImapPassword = await patch(PASSWORD_ACCOUNT, { smtpUseImapAuth: false, imapPassword: 'fresh-imap-secret' });
+    expect(withImapPassword).toMatchObject({ status: 400, body: { error: { code: 'email_account_credentials_required' } } });
+    expect(await storedSmtpUseImapAuth(PASSWORD_ACCOUNT)).toBe(true);
+    expect(await readStoredSecret(PASSWORD_ACCOUNT, 'imap')).toBe('stored-imap-secret');
+  });
+
+  test('switching the SMTP login source with the password of the new source is accepted', async () => {
+    const on = await patch(SEPARATE_SMTP_ACCOUNT, { smtpUseImapAuth: true, imapPassword: 'fresh-imap-secret' });
+    expect(on.status).toBe(200);
+    expect(await storedSmtpUseImapAuth(SEPARATE_SMTP_ACCOUNT)).toBe(true);
+    expect(await readStoredSecret(SEPARATE_SMTP_ACCOUNT, 'imap')).toBe('fresh-imap-secret');
+
+    const off = await patch(PASSWORD_ACCOUNT, { smtpUseImapAuth: false, smtpPassword: 'fresh-smtp-secret' });
+    expect(off.status).toBe(200);
+    expect(await storedSmtpUseImapAuth(PASSWORD_ACCOUNT)).toBe(false);
+    expect(await readStoredSecret(PASSWORD_ACCOUNT, 'smtp')).toBe('fresh-smtp-secret');
+  });
+
+  test('switching the SMTP login source needs no password while SMTP has no host', async () => {
+    await postgres.admin.query(
+      'UPDATE email_accounts SET smtp_host = NULL WHERE workspace_id = $1 AND id = $2',
+      [WORKSPACE_ID, PASSWORD_ACCOUNT],
+    );
+
+    const response = await patch(PASSWORD_ACCOUNT, { smtpUseImapAuth: false });
+
+    expect(response.status).toBe(200);
+    expect(await storedSmtpUseImapAuth(PASSWORD_ACCOUNT)).toBe(false);
   });
 
   test('accepts the full unchanged endpoint set the settings forms send with every save', async () => {

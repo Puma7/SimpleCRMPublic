@@ -344,6 +344,56 @@ describe('mail settings server-client UI', () => {
     expect(body).not.toHaveProperty('smtpPassword');
   });
 
+  // F-A2a-01 (E2): switching "SMTP-Anmeldung wie IMAP" changes which stored
+  // password reaches the SMTP host; the panel saved the switch without asking.
+  test.each([
+    ['ausschalten', true, 'SMTP-Passwort', 'smtpPassword', 'imapPassword'],
+    ['einschalten', false, 'IMAP-Passwort', 'imapPassword', 'smtpPassword'],
+  ])('SMTP panel asks for the password of the new login source when "wie IMAP" is switched (%s)', async (
+    _label,
+    storedImapAuth,
+    passwordLabel,
+    sentField,
+    otherField,
+  ) => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return jsonResponse({ data: { success: true } });
+      if (String(input).endsWith('/api/v1/email/accounts')) {
+        return jsonResponse({ data: { items: [{ ...smtpAccountRecord(), smtpUseImapAuth: storedImapAuth }] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    const { container } = render(<SmtpPanel embeddedAccountId={1} />);
+    await screen.findByDisplayValue('smtp.example.com');
+    const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(passwordInput).not.toBeRequired();
+
+    fireEvent.click(screen.getByLabelText('SMTP-Anmeldung wie IMAP'));
+    expect(passwordInput).toBeRequired();
+    expect(screen.getByLabelText(new RegExp(`^${passwordLabel}`))).toBe(passwordInput);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+    });
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+
+    fireEvent.change(passwordInput, { target: { value: 'fresh-secret' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP gespeichert.'));
+    const patch = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    const body = JSON.parse(String(patch?.[1]?.body));
+    expect(body).toMatchObject({ smtpUseImapAuth: !storedImapAuth, [sentField]: 'fresh-secret' });
+    expect(body).not.toHaveProperty(otherField);
+  });
+
   // F-A4-04: the SMTP test had no catch, so a rejected request (e.g. HTTP
   // 403/500) became an unhandled rejection and the user saw nothing.
   test('SMTP panel shows a failed connection test request', async () => {
