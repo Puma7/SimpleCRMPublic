@@ -208,7 +208,9 @@ docker compose exec api node packages/server/dist/cli/doctor.js --no-color
 ```
 
 The API container already has `DATABASE_URL`; it does not mount the backup volume, so omit
-`--backup-dir` there. For a host installation after building packages, use:
+`--backup-dir` there. The same holds for the admin diagnosis in the app: it deliberately reports the
+backup check as a warning, because the API is not meant to read dumps (see
+[BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md#check-backups)). For a host installation after building packages, use:
 
 ```sh
 pnpm run build:packages

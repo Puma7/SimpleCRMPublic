@@ -439,6 +439,14 @@ Doctor checks:
 - stale conversation-lock count;
 - latest backup set and SHA-256 manifest verification.
 
+The admin diagnosis in the app (**Einstellungen → Wartung → Diagnose**, `GET /api/v1/maintenance/doctor`)
+runs the same checks inside the API, but deliberately **without** the backup check in the Compose
+deployment: the API container does not mount the `backups` volume, because it would otherwise have
+read access to complete database dumps, attachment archives and audit archives. Its `backups` line
+therefore always warns (`backup directory not configured`, or `backup directory does not exist:
+/backups` when `BACKUP_DIR` is set in `docker/.env`). That warning is expected. Check backups with
+the `doctor` profile above: a short-lived container that mounts the volume read-only.
+
 ## Restore With Compose Orchestration
 
 Use the host-side orchestration script when running the Docker stack:

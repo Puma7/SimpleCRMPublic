@@ -209,6 +209,9 @@ Schauen Sie in die Lauf-Historie: Der Gate-Schritt nennt den Grund (`auto_reply:
 | `rate_limited` | Tageslimit für diesen Absender erreicht | Gewollt; bei Bedarf Limit in den Einstellungen erhöhen |
 | `low_confidence` | Die KI war sich bei der Einordnung nicht sicher genug | Mindest-Sicherheit im Gate senken — oder die Mail bewusst manuell beantworten |
 
+**Ein Workflow zu „Aufgabe fällig“ ist fehlgeschlagen. Wird er wiederholt?**
+Nein, und das ist Absicht (Desktop-Edition). Die Auslöser **Aufgabe fällig**, **Termin beginnt** und **Kunde angelegt** starten einen Workflow je Aufgabe mit ihrem Fälligkeitsdatum, je Termin bzw. je Kunde genau einmal, auch wenn der Lauf mit einem Fehler endet oder blockiert wird. Die Schritte vor dem Fehler haben dann schon gewirkt (eine angelegte Aufgabe, ein Webhook-Aufruf, ein KI-Aufruf); ein Neustart bei jedem Prüfdurchlauf (alle zwei Minuten) würde sie vervielfachen. Den Fehler finden Sie in der **Lauf-Historie** des Workflows. Nach der Korrektur lösen Sie ihn für eine Aufgabe erneut aus, indem Sie deren Fälligkeitsdatum ändern: Jede Kombination aus Aufgabe und Fälligkeitsdatum löst einmal aus. Nur wenn gar kein Lauf zustande kam (etwa weil der Start mit einer Ausnahme abbrach), versucht es der nächste Durchlauf erneut.
+
 **Warum wartet ein Entwurf auf Freigabe, obwohl er gut aussieht?**
 Die Gegenprüfung ist absichtlich streng: Im Zweifel, bei ungewöhnlichen Antworten der Prüf-KI oder bei technischen Fehlern hält sie den Entwurf **immer** an, statt zu senden. Die Begründung steht im Banner — mit „Jetzt senden“ geben Sie ihn mit einem Klick frei.
 

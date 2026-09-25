@@ -198,6 +198,15 @@ Ein täglicher Ticker:
 - entfernt abgelaufene Resolver-Tokens,
 - entfernt den Tracking-Container erst nach Tokenablauf und wenn keine Evidenz mehr existiert.
 
+Das Löschen abgelaufener Resolver-Tokens ist Absicht (Datenschutz): Nach Ablauf soll sich kein
+Token mehr einer Mail oder einem Empfänger zuordnen lassen. Getrackte Links einer versendeten Mail
+bleiben deshalb nur so lange erreichbar, wie ihr Token gilt (**Token gültig (Tage)**, Standard 730).
+Nach dem Ablauf leiten sie bis zum nächsten Bereinigungslauf noch ohne Aufzeichnung weiter; danach
+zeigt der Link die neutrale Hinweisseite „Link nicht mehr verfügbar“ (HTTP 404) statt des Ziels.
+Eine verkürzte Token-Laufzeit gilt auch für bereits versendete Mails. Wer Links länger erreichbar
+halten muss (etwa Rechnungs- oder Zahlungslinks), wählt eine entsprechend lange Laufzeit oder
+versendet solche Mails ohne Link-Tracking.
+
 Fehler eines Workspace blockieren die Bereinigung anderer Workspaces nicht. Bei einem
 Tracking-Fehler wird die Mail ohne Instrumentierung versendet und der Benutzer erhält eine
 Warnung; der eigentliche Mailversand bleibt verfügbar.
