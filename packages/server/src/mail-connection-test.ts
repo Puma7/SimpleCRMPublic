@@ -182,12 +182,18 @@ async function resolveSmtpInput(
   if (!host) {
     return { success: false, error: SMTP_HOST_MISSING_ERROR };
   }
+  const port = useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587);
+  // The stored smtp_tls flag means "enforce TLS" like in sendSmtpMessage:
+  // implicit TLS on 465, mandatory STARTTLS on every other port. The request's
+  // `secure` flag (ad-hoc tests) keeps meaning implicit TLS.
+  const storedTls = useStored && account!.smtpTls;
   return {
     resolved: true,
     value: {
       host,
-      port: useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587),
-      tls: useStored ? account!.smtpTls : input.tls,
+      port,
+      tls: useStored ? storedTls && port === 465 : input.tls,
+      ...(storedTls && port !== 465 ? { requireStartTls: true } : {}),
       user,
       password: auth.password ?? '',
       ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
@@ -380,6 +386,7 @@ type RequiredConnectionInput = Readonly<{
   host: string;
   port: number;
   tls: boolean;
+  requireStartTls?: boolean;
   user: string;
   password: string;
   accessToken?: string;
@@ -456,7 +463,8 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
     response = await smtpEhlo(client);
     if (response.code !== 250) return { success: false, error: response.text };
 
-    if (!input.tls && smtpSupports(response, 'STARTTLS')) {
+    if (!input.tls && (input.requireStartTls || smtpSupports(response, 'STARTTLS'))) {
+      if (!smtpSupports(response, 'STARTTLS')) return { success: false, error: 'SMTP STARTTLS nicht verfuegbar' };
       response = await smtpCommand(client, 'STARTTLS');
       if (response.code !== 220) return { success: false, error: response.text };
       await upgradeClientToTls(client, input.host, input.timeoutMs);

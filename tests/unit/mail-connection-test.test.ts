@@ -16,6 +16,10 @@ import { createServerMailConnectionTestPort } from '../../packages/server/src/ma
 class FakeSmtpSocket extends EventEmitter {
   public readonly written: string[] = [];
 
+  constructor(private readonly options: { starttls?: boolean } = {}) {
+    super();
+  }
+
   setEncoding(): this {
     return this;
   }
@@ -29,7 +33,9 @@ class FakeSmtpSocket extends EventEmitter {
     this.written.push(line);
     setTimeout(() => {
       if (line.startsWith('EHLO')) {
-        this.emit('data', '250-AUTH PLAIN LOGIN\r\n250 OK\r\n');
+        this.emit('data', `${this.options.starttls ? '250-STARTTLS\r\n' : ''}250-AUTH PLAIN LOGIN\r\n250 OK\r\n`);
+      } else if (line === 'STARTTLS') {
+        this.emit('data', '454 TLS not available right now\r\n');
       } else if (line.startsWith('AUTH PLAIN')) {
         this.emit('data', '535 denied\r\n');
       } else if (line.startsWith('QUIT')) {
@@ -179,5 +185,62 @@ describe('server mail connection test stored credentials', () => {
     const decoded = Buffer.from(authLine!.slice('AUTH PLAIN '.length), 'base64').toString('utf8');
     expect(decoded).toBe('\u0000adhoc@example.com\u0000my-pass');
     expect(readSecret).not.toHaveBeenCalled();
+  });
+
+  // F-A4-03: the stored-account SMTP test treated smtp_tls as implicit TLS on
+  // every port; with the default 587/TLS it sent a TLS ClientHello to a
+  // plaintext SMTP port instead of using STARTTLS like the real send does.
+  test('stored SMTP TLS on port 587 connects in plaintext and requires STARTTLS before AUTH', async () => {
+    const socket = new FakeSmtpSocket({ starttls: true });
+    let socketInput: { host: string; port: number; tls: boolean } | null = null;
+    const port = createServerMailConnectionTestPort({
+      db: dbReturning({ ...storedAccountRow(), smtp_port: 587, smtp_tls: true }) as never,
+      secrets: { readSecret: async () => Buffer.from('stored-secret') } as never,
+      socketFactory: (async (input: { host: string; port: number; tls: boolean }) => {
+        socketInput = input;
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testSmtp({
+      workspaceId: 'workspace-a',
+      accountId: 7,
+      host: 'x',
+      port: 25,
+      tls: false,
+      user: '',
+    });
+
+    expect(socketInput).toEqual(expect.objectContaining({ host: 'smtp.saved.example', port: 587, tls: false }));
+    expect(socket.written).toContain('STARTTLS');
+    expect(socket.written.some((line) => line.startsWith('AUTH'))).toBe(false);
+    expect(result).toEqual({ success: false, error: '454 TLS not available right now' });
+  });
+
+  test('stored SMTP TLS on port 587 refuses AUTH when the server offers no STARTTLS', async () => {
+    const socket = new FakeSmtpSocket();
+    const port = createServerMailConnectionTestPort({
+      db: dbReturning({ ...storedAccountRow(), smtp_port: 587, smtp_tls: true }) as never,
+      secrets: { readSecret: async () => Buffer.from('stored-secret') } as never,
+      socketFactory: (async () => {
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testSmtp({
+      workspaceId: 'workspace-a',
+      accountId: 7,
+      host: 'x',
+      port: 25,
+      tls: false,
+      user: '',
+    });
+
+    expect(result).toEqual({ success: false, error: 'SMTP STARTTLS nicht verfuegbar' });
+    expect(socket.written.some((line) => line.startsWith('AUTH'))).toBe(false);
   });
 });
