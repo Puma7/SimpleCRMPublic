@@ -129,7 +129,8 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
   - `update.sh` übergibt die Volumes einmalig an uid 1000.
   - Wer das Relay nutzt, macht `key.pem` für uid 1000 lesbar und setzt `COMPOSE_FILE` mit dem Relay-Override. Das Skript warnt, wenn eines davon fehlt.
 - **Nutzer-Regex (E1):**
-  - Die lineare V8-Engine greift nicht bei gebundenen Wiederholungen über 16 (`(a|a){0,30}b`) und nicht bei Relay-Mustern mit Flag `u` oder `v`.
+  - Die lineare V8-Engine greift nicht bei gebundenen Wiederholungen über 16 (`(a|a){0,30}b`).
+  - Relay-Muster mit Flag `u` oder `v` (dafür greift die lineare Engine nie) werden seit dem Codex-Review auf den PR beim Speichern abgelehnt; bereits gespeicherte gelten als Literaltext (`c634d2b`).
   - Bereits gespeicherte Muster mit Lookaround oder Rückverweis laufen ungeschützt weiter; sie werden erst beim nächsten Speichern abgelehnt.
   - Vorschlag: zusätzlich `--enable-experimental-regexp-engine` und beim Speichern prüfen, ob das Muster mit dem Flag `l` kompiliert.
 - **Authentication-Results (E6, G8):**
