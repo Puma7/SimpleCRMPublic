@@ -1,6 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  interpolateWorkflowPlaceholders,
   messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
@@ -617,8 +618,7 @@ export function createAiReviewPreviewRunner(
 
       const strings = stringPayload(input.eventStrings);
       const variables = variablePayload(input.eventVariables);
-      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
-        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      const userTemplate = context.prompt?.user_template ?? input.fallbackUserTemplate ?? '';
       const output = await runTrackedChatCompletion(
         options,
         {
@@ -696,8 +696,13 @@ export function createPostgresAiReviewPort(
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      let userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
-        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      // Erst die Vorlage fuellen, dann den Antwort-Kontext anhaengen: er ist
+      // Mailtext und darf selbst nicht interpoliert werden.
+      let userPrompt = interpolateWorkflowTemplate(
+        context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '',
+        strings,
+        variables,
+      );
       if (input.replyParentMessageId !== undefined) {
         const parentBlock = await withWorkspaceTransaction(
           options.db,
@@ -705,7 +710,7 @@ export function createPostgresAiReviewPort(
           async (trx) => loadReplyParentContextBlock(trx, input.workspaceId, input.replyParentMessageId!),
           { applySession: options.applyWorkspaceSession },
         );
-        if (parentBlock) userTemplate = `${userTemplate}${parentBlock}`;
+        if (parentBlock) userPrompt = `${userPrompt}${parentBlock}`;
       }
       try {
         // Config errors (missing prompt/profile/key) must take the same fail-closed
@@ -731,7 +736,7 @@ export function createPostgresAiReviewPort(
             apiKey,
             system: input.systemPrompt
               ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
-            user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+            user: userPrompt,
           },
         );
         const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
@@ -1922,20 +1927,18 @@ function stringsFromOptionalMessage(message: ClassificationMessageRow | null): R
   };
 }
 
+// Ein Durchlauf (Core-Helfer): eingesetzte Werte werden nie erneut gescannt,
+// sonst loest ein {{…}} aus dem Mailtext interne Variablen (http.body,
+// mssql.rows …) auf. Der Callback-Ersatz wertet auch keine $-Muster aus.
 function interpolateWorkflowTemplate(
   template: string,
   strings: Record<string, string>,
   variables: JobPayload,
 ): string {
-  let output = template;
-  for (const [key, value] of Object.entries(strings)) {
-    output = output.replace(new RegExp(`\\{\\{${escapeRegex(key)}\\}\\}`, 'g'), value);
-  }
-  output = output.replace(/\{\{text\}\}/g, strings.combined_text ?? '');
-  for (const [key, value] of Object.entries(variables)) {
-    output = output.replace(new RegExp(`\\{\\{${escapeRegex(key)}\\}\\}`, 'g'), String(value ?? ''));
-  }
-  return output;
+  return interpolateWorkflowPlaceholders(template, {
+    strings,
+    variables: variables as Record<string, string | number | boolean | null | undefined>,
+  });
 }
 
 function stringPayload(value: unknown): Record<string, string> {
@@ -1986,10 +1989,6 @@ function variablePayload(value: unknown): JobPayload {
     }
   }
   return out;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function serverWorkerSourceRow() {

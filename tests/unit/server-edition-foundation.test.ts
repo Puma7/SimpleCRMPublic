@@ -5024,6 +5024,76 @@ describe('server edition foundation', () => {
     expect(rows.messages).not.toContainEqual(expect.objectContaining({ folder_kind: 'draft' }));
   });
 
+  // F-A9-02: the job layer interpolated in several passes, so a placeholder in
+  // the sender's subject expanded internal workflow variables into the draft.
+  test('postgres AI pick-canned port does not expand placeholders injected through the mail', async () => {
+    const now = new Date('2026-06-03T12:45:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 61,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 610,
+        account_id: 7,
+        subject: 'Frage {{http.body}} $` ende',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Frage',
+        body_text: 'Frage',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      accounts: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 7 }],
+      folders: [{ id: 70, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Anfrage', body: 'Ihre Anfrage: {{subject}}', sort_order: 0 },
+      ],
+    });
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion() {
+        return '1';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 61,
+      profileId: 21,
+      createDraft: true,
+      eventVariables: { 'http.body': 'GEHEIM-API-ANTWORT' },
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'http.body': 'GEHEIM-API-ANTWORT' } },
+    });
+
+    const expected = 'Ihre Anfrage: Frage {{http.body}} $` ende';
+    expect((rows.jobs[0]?.payload as any).context.eventVariables['ai.canned.text']).toBe(expected);
+    const draft = rows.messages.find((message) => message.folder_kind === 'draft');
+    expect(String(draft?.body_text)).toContain(expected);
+    expect(String(draft?.body_text)).not.toContain('GEHEIM');
+  });
+
   test('postgres AI review port resumes on OK and blocks outbound on BLOCK', async () => {
     const now = new Date('2026-06-03T12:35:00.000Z');
     const { db, rows } = makeAiReplySuggestionDb({
@@ -5137,6 +5207,90 @@ describe('server edition foundation', () => {
       outbound_block_reason: 'KI-Pruefung: Versand blockiert',
       updated_at: now,
     });
+  });
+
+  // F-A9-02: {{text}} was pre-substituted and the reply-parent block appended
+  // to the template before interpolation, so placeholders inside mail text
+  // expanded internal workflow variables into the review prompt.
+  test('postgres AI review port keeps placeholders from mail text literal in the prompt', async () => {
+    const now = new Date('2026-06-03T12:36:00.000Z');
+    const message = (id: number, body: string) => ({
+      id,
+      workspace_id: WORKSPACE_A_ID,
+      source_sqlite_id: id * 10,
+      subject: 'Review',
+      from_json: { value: [{ address: 'kunde@example.com' }] },
+      to_json: { value: [{ address: 'support@example.com' }] },
+      cc_json: null,
+      snippet: body,
+      body_text: body,
+      has_attachments: false,
+      attachments_json: null,
+      outbound_hold: false,
+      outbound_block_reason: null,
+    });
+    const { db } = makeAiReplySuggestionDb({
+      messages: [message(16, 'Entwurf {{mssql.rows}}'), message(17, "Kunde {{mssql.rows}} $' ende")],
+      prompts: [{
+        id: 22,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 22,
+        label: 'Review',
+        user_template: 'Pruefe {{text}}',
+        target: 'review',
+        profile_source_sqlite_id: null,
+        profile_id: 21,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const prompts: string[] = [];
+    const port = createPostgresAiReviewPort({
+      db,
+      secrets: { async readSecret() { return Buffer.from('sk-test'); } } as any,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        prompts.push(input.user);
+        return 'OK';
+      },
+    });
+
+    await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 16,
+      promptId: 22,
+      blockKeyword: 'BLOCK',
+      direction: 'outbound',
+      replyParentMessageId: 17,
+      eventVariables: { 'mssql.rows': 'INTERNE-ZEILEN' },
+    });
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('Entwurf {{mssql.rows}}');
+    expect(prompts[0]).toContain("Kunde {{mssql.rows}} $' ende");
+    expect(prompts[0]).not.toContain('INTERNE-ZEILEN');
   });
 
   test('postgres workflow HTTP request port validates allowlist, fetches, and resumes workflows', async () => {
