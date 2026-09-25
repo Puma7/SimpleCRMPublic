@@ -234,6 +234,10 @@ Beim Beheben gefunden (nicht Teil der 196 Kandidaten). Jeder BEHOBEN-Eintrag ist
 | N-cx-02 | BEHOBEN (`191f0f8`) | Mittel | Server | Server-Entwurfsfunktionen (PATCH compose-draft, DELETE local-draft, Bulk) prüfen nur uid < 0 und treffen auch empfangene POP3-Mails und gesendete lokale Kopien (Überschreiben mit Entwurfsrecht, Löschen am Papierkorb vorbei) |
 | N-cx-03 | BEHOBEN (`7e8c54f`) | Niedrig | Server | CRM-Ereignisse (id-reduziert) erreichen per WebSocket/Replay auch Nutzer ohne crm.read |
 | N-cx-04 | BEHOBEN (`77183bb`) | Niedrig | Desktop | Desktop: Rollen-, Aktiv- und Passwortwechsel beenden die Sitzungen des Ziels nicht (Rolle bleibt bis Logout im Session-Store) |
+| N-cx-05 | BEHOBEN (`22d080d`) | Mittel | Desktop | Desktop-Workflow-HTTP: Prüfung reservierter Adressen ließ NAT64, 6to4, Teredo, IPv4-kompatible/hex-mapped IPv6, Multicast, Klasse E, 198.18/15 und TEST-NETs durch (schwächer als der Server) |
+| N-cx-06 | BEHOBEN (`6f05799`) | Niedrig | Server | Server liest Rspamd-Antworten ohne Byte-Grenze |
+| N-cx-07 | BEHOBEN (`5f0261b`) | Niedrig | Server | Server-POP3: CAPA, UIDL und RETR ohne Gesamtfrist (nur Zeitlimit je Zeile) |
+| N-cx-08 | BEHOBEN (`2991cbb`) | Niedrig | Desktop | Desktop-POP3: CAPA vor STLS ohne Puffergrenze und Gesamtfrist |
 | N-ds-01 | BEHOBEN (`dee4460`) | Niedrig | Desktop | Spaltennamen-Injection auch in updateProduct/updateCalendarEvent (IPC) |
 | N-ds-02 | BEHOBEN (`f940265 + 7e3a795`) | Mittel | Desktop | OAuth-Client-Secrets und Webhook-Secret per IPC an jeden angemeldeten Nutzer; Set-Kanaele ohne Rollenpruefung |
 | N-dwf-01 | BEHOBEN (`486c745`) | Niedrig | Desktop | runtime.ts:297/307 Schleifen-Log verdoppelt sich je Durchlauf (RangeError ab ~15-20 Eintraegen) |

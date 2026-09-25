@@ -12,7 +12,7 @@
 | Widerlegt / By Design | 5 / 5 (F-A7-01 und F-A2b-05 sind durch die Freigaben G1 und G3 inzwischen behoben) |
 | **Behoben** (roter Regressionstest, dann Fix) | **164**, das sind alle bestätigten und plausiblen Befunde plus die zwei revidierten By-Design-Einstufungen |
 | Dokumentiert statt behoben (Info, Architektur) | 1 (F-A2c-04: zusammengesetzte Fremdschlüssel, eigenes Vorhaben) |
-| Neue Befunde aus der Fix-Phase, behoben | 25 (siehe `findings.md`, Abschnitt „Neue Befunde“; N-cx-01 bis N-cx-04 aus dem Codex-Abgleich) |
+| Neue Befunde aus der Fix-Phase, behoben | 29 (siehe `findings.md`, Abschnitt „Neue Befunde“; N-cx-01 bis N-cx-08 aus dem Codex-Abgleich) |
 | Codex-Befunde aus PR #192 (Anhang A/B/C) | 110 Einträge: 78 in diesem Durchgang behoben, 30 waren durch frühere Commits dieses PRs schon geschlossen, 2 By-Design, 0 offen (siehe Abschnitt 7) |
 | Entscheidungen Freigabeliste Teil 1 / Teil 2 / Teil 3 | 15 / 42 / 12, alle umgesetzt |
 | Commits auf dem Branch | 305 (davon 62 nach dem Merge von PR #192) |
@@ -215,7 +215,7 @@ Die wichtigsten neuen Befunde aus Codex' Liste:
 - **Server:** Nicht-Mail-Ereignisse (Automation-Keys, Workflows, Wissen, CRM) gingen per WebSocket an alle. Race zwischen Passwortwechsel und Token-Rotation. Delegations-Manager konnten fremde Bindings per POST/PATCH einengen. Retouren ohne `crm.write`. Mutationsantworten ohne Anhang- und Eltern-Projektion. Windows-Pfadtrenner in der Anhang-Ausnahme. Relay-Anzeigename wurde zu zwei Absendern. Dry-Run führte Aliase live aus.
 - **Ressourcen:** CID-Inline-Bilder (157 KB Rohmail → 136 Mio. Zeichen HTML, ab 700 KB Prozessabsturz), exponentielle Graph-Kompilierung, DOCX-DOM-Explosion trotz Byte-Budget (jetzt Worker, G7), POP3-/SMTP-Antworten ohne Gesamtfrist, Backup-Manifest ohne Grenze.
 - **Infra:** Restore und Drill liefen als Superuser, Dump-SQL konnte per `RESET ROLE` zurück (G9); die Metadatenprüfung wertete Views als Admin aus.
-- **Beim Beheben neu gefunden:** N-cx-01 (Auto-Antwort-Einstellungen gingen auf dem Desktop verloren), N-cx-02 (Server-Entwurfsfunktionen trafen empfangene POP3-Mails), N-cx-03 (CRM-Ereignisse ohne `crm.read`), N-cx-04 (Desktop-Sitzungen überlebten Rollen- und Passwortwechsel).
+- **Beim Beheben neu gefunden:** N-cx-01 (Auto-Antwort-Einstellungen gingen auf dem Desktop verloren), N-cx-02 (Server-Entwurfsfunktionen trafen empfangene POP3-Mails), N-cx-03 (CRM-Ereignisse ohne `crm.read`), N-cx-04 (Desktop-Sitzungen überlebten Rollen- und Passwortwechsel), N-cx-05 (Desktop-Workflow-HTTP ließ NAT64, 6to4, Teredo und weitere reservierte Bereiche durch), N-cx-06 bis N-cx-08 (Rspamd- und POP3-Antworten ohne Byte- bzw. Zeitgrenze).
 
 **Restpunkte aus dem Codex-Abgleich** (bewusst nicht umgesetzt oder außerhalb der Freigaben):
 - Desktop: Eine pauschale Owner/Admin-Pflicht für alle KI-Profil- und Spam-Einstellungen (C-B16) nimmt Agenten Rechte und ist nicht freigegeben. Die gefährlichen Teile (Key-Umleitung, Rspamd-Ziel) sind behoben.
@@ -224,4 +224,5 @@ Die wichtigsten neuen Befunde aus Codex' Liste:
 - Eine POP3-Zeile über 1 MiB bricht die Verbindung ab und wird beim nächsten Sync erneut versucht (RFC-Grenze 998 Zeichen).
 - `GET /auth/invitations/:token` zeigt eine alte Owner-Einladung eines inzwischen nicht mehr berechtigten Einladenden noch als gültig an; das Annehmen scheitert korrekt.
 - `crm.read`-Nutzer erhalten die id-Invalidierung (id, customerId) auch für private Aufgaben anderer (Zeilenregel, war vorher so).
+- Desktop-POP3 UIDL/RETR laufen über node-pop3 nur mit dem Leerlauf-Timeout des Sockets (keine Gesamtfrist). Die Server-Prüfung der KI-Profil-`baseUrl` beim Speichern nutzt noch die ältere Adressliste; zur Laufzeit greift die vollständige Prüfung.
 - PR #192 ist in diesem PR vollständig enthalten. Wird #193 per Merge-Commit gemergt, markiert GitHub #192 automatisch als gemergt; bei Squash muss #192 von Hand geschlossen werden.

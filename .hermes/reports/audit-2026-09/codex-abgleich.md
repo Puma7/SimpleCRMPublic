@@ -14,7 +14,7 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 |---|---|---|---|---|---|---|
 | C-A1 | Desktop viewers can schedule workflows that execute privileged code | Teilweise (Rest behoben) | A7-01, A9-13 | BEHOBEN | `aa968e7` | G1: Workflow- und Wissensbasis-Bearbeitung auf dem Desktop nur Owner/Admin; revidiert F-A7-01. Autor-Recheck beim Cron-Feuern bräuchte eine Migration (nicht umgesetzt). |
 | C-A2 | Read-only desktop mailbox delegates can schedule or retry outbound mail | Neu, bestätigt | – | BEHOBEN | `24afc01` `4959809` `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; geplanter Versand prüft vor SMTP das Schreibrecht des Planenden (G6). |
-| C-A3 | Desktop workflow HTTP redirects and DNS changes bypass the destination guard | Neu, bestätigt | – | BEHOBEN | `dde1661` |  |
+| C-A3 | Desktop workflow HTTP redirects and DNS changes bypass the destination guard | Neu, bestätigt | – | BEHOBEN | `22d080d` `dde1661` |  |
 | C-A4 | Desktop users can open or save attachments from unauthorized mailboxes | Duplikat, bereits behoben | A7b-06 | erledigt (Register) | – |  |
 | C-A5 | Ordinary desktop users can export installation-wide data | Duplikat, bereits behoben | A7b-01, A7-04 | erledigt (Register) | – |  |
 | C-A6 | Any logged-in desktop profile can delete another mailbox account | Duplikat, bereits behoben | A7-03 | erledigt (Register) | – |  |
@@ -34,7 +34,7 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A20 | Workflow editors can disable or remove active protected automation | Neu, bestätigt | – | BEHOBEN | `4ca9a7b` | G2: aktive Seiteneffekt-/Kettenstopp-Workflows nur mit workflows.manage stilllegen. |
 | C-A21 | Email HTML attachments can block automatic indexing and the application event loop | Duplikat, bereits behoben | A5-05, A13A14-01 | erledigt (Register) | – |  |
 | C-A22 | Raw relay forwarding preserves From headers that were not authorized | Duplikat, bereits behoben | A3b-02 | erledigt (Register) | – |  |
-| C-A23 | Desktop integrations buffer endpoint responses without a byte limit | Neu, bestätigt | – | BEHOBEN | `71e2d40` |  |
+| C-A23 | Desktop integrations buffer endpoint responses without a byte limit | Neu, bestätigt | – | BEHOBEN | `6f05799` `71e2d40` |  |
 | C-A24 | Testing a compiled desktop workflow performs live mail actions | Neu, bestätigt | – | BEHOBEN | `27a4755` `a5060a8` |  |
 | C-A25 | Unresolved desktop resource IDs bypass mailbox permissions | Teilweise (Rest behoben) | A7b-06, A7-03 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
 | C-A26 | Restricted desktop users can export all data and replace the application database | Duplikat, bereits behoben | A7b-01, A7-04 | erledigt (Register) | – |  |
@@ -79,7 +79,7 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A65 | Desktop mail and whole-installation backup operations bypass authorization | Teilweise (Rest behoben) | A7b-01, A7-03, A7b-06 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
 | C-A66 | SMTP connection tests lose the enabled TLS requirement | Teilweise (Rest behoben) | A7b-09, A4-03 | BEHOBEN | `f14a28f` | G10: optionales tls-Feld erzwingt STARTTLS im Ad-hoc-Test. |
 | C-A67 | Colliding legacy account IDs disclose a different mailbox identity | Neu, bestätigt | – | BEHOBEN | `b512d03` |  |
-| C-A68 | Unbounded SMTP responses can exhaust the server process | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `991cf68` |  |
+| C-A68 | Unbounded SMTP responses can exhaust the server process | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `5f0261b` `991cf68` |  |
 | C-A69 | Message-less webhook workflows skip draft-target authorization | Neu, bestätigt | – | BEHOBEN | `68f3c76` |  |
 | C-A70 | GDPR export exposes message snippets without content-read permission | Duplikat, bereits behoben | A2a-03 | erledigt (Register) | – |  |
 | C-A71 | Default CID image expansion bypasses inbound message size limits | Neu, bestätigt | – | BEHOBEN | `f62764b` |  |
@@ -91,8 +91,8 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A77 | PGP decrypt operations permit unbounded compressed message expansion | Duplikat, bereits behoben | A13A14-05 | erledigt (Register) | – |  |
 | C-A78 | Desktop mail IPC skips authorization for unresolved target objects | Teilweise (Rest behoben) | A7-03, A7b-06 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
 | C-A79 | Compose operations use a reply parent without authorizing its account | Neu, bestätigt | – | BEHOBEN | `85a9204` | G5: Elternbezug nur mit Leserecht am Elternkonto, „erledigt“ nur mit rw. |
-| C-A80 | POP3 size limits apply after an unbounded line is buffered | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `ae70574` |  |
-| C-A81 | SMTP sending and connection probes accept unbounded server responses | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `991cf68` |  |
+| C-A80 | POP3 size limits apply after an unbounded line is buffered | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `2991cbb` `ae70574` |  |
+| C-A81 | SMTP sending and connection probes accept unbounded server responses | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `2991cbb` `5f0261b` `991cf68` |  |
 | C-A82 | Small workflow graphs can exhaust synchronous API compilation | Neu, bestätigt | – | BEHOBEN | `e3ad18d` |  |
 | C-B1 | A desktop viewer can schedule executable workflows without administrator rights | Teilweise (Rest behoben) | A7-01, A9-13 | BEHOBEN | `aa968e7` | G1: Workflow- und Wissensbasis-Bearbeitung auf dem Desktop nur Owner/Admin; revidiert F-A7-01. Autor-Recheck beim Cron-Feuern bräuchte eine Migration (nicht umgesetzt). |
 | C-B2 | Desktop connection tests disclose stored mailbox credentials to a user-selected server | Neu, bestätigt | A2a-01, A4-01 | BEHOBEN | `231b747` | Verbindungstests nur Owner/Admin (Vervollständigung von E16, auch in der UI). |
