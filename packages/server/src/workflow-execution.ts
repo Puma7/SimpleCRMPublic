@@ -25,6 +25,7 @@ import {
   parseGraphDocument,
   parseSenderList,
   pickEdge,
+  stripHtmlTagsToText,
   workflowDirectionForTrigger,
   workflowNodeRuntimeType,
   workflowTriggerNeedsMessage,
@@ -7457,7 +7458,7 @@ function stringsFromOutbound(context: Record<string, unknown>): WorkflowStringCo
   const subject = String(outbound?.subject ?? '');
   const bodyText = String(outbound?.bodyText ?? '');
   const bodyHtml = typeof outbound?.bodyHtml === 'string' ? outbound.bodyHtml : '';
-  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(bodyHtml);
   const to = String(outbound?.to ?? '');
   const cc = String(outbound?.cc ?? '');
   const bcc = String(outbound?.bcc ?? '');
