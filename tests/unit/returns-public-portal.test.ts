@@ -114,6 +114,22 @@ describe('createPortalRateLimiter', () => {
     expect(limiter.check('other', t0 + 3)).toEqual({ ok: true });
   });
 
+  // F-A3a-07: the limiter map grew without bound (and scanned all keys per request once above 10k).
+  test('keeps memory bounded: keys beyond the cap share hashed overflow counters', () => {
+    const limiter = createPortalRateLimiter({ limit: 2, windowMs: 60_000, maxKeys: 3, overflowBuckets: 1 });
+    const t0 = 1_000_000;
+    for (const key of ['a', 'b', 'c']) expect(limiter.check(key, t0)).toEqual({ ok: true });
+    expect(limiter.check('d', t0 + 1)).toEqual({ ok: true });
+    expect(limiter.check('e', t0 + 2)).toEqual({ ok: true });
+    expect(limiter.check('f', t0 + 3).ok).toBe(false);
+    // Exact keys keep their own counters, and nothing is reset by the flood.
+    expect(limiter.check('a', t0 + 4)).toEqual({ ok: true });
+    expect(limiter.check('a', t0 + 5).ok).toBe(false);
+    // Once the window passes, expired keys free their slots again.
+    expect(limiter.check('g', t0 + 60_010)).toEqual({ ok: true });
+    expect(limiter.check('h', t0 + 60_011)).toEqual({ ok: true });
+  });
+
   test('frees the slot once the window has passed', () => {
     const limiter = createPortalRateLimiter({ limit: 1, windowMs: 60_000 });
     const t0 = 1_000_000;
@@ -285,6 +301,25 @@ describe('public portal dispatcher', () => {
     // A different client IP is not affected.
     const otherIp = await post('203.0.113.8');
     expect(otherIp?.status).toBe(201);
+  });
+
+  // F-A3a-07: the portal limiter counted every IPv6 address separately, so one /64 bypassed it.
+  test('POST create counts IPv6 clients per /64 and IPv4-mapped clients as IPv4', async () => {
+    const ports = makePortalPorts();
+    const post = (ip: string) => handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip, body: { items: [{ quantity: 1 }] } }),
+      ports,
+    );
+    for (let i = 1; i <= 10; i++) {
+      expect((await post(`2001:db8:1:2::${i.toString(16)}`))?.status).toBe(201);
+    }
+    expect((await post('2001:db8:1:2:ffff:ffff:ffff:fffe'))?.status).toBe(429);
+    expect((await post('2001:db8:1:3::1'))?.status).toBe(201);
+
+    for (let i = 0; i < 10; i++) {
+      expect((await post(i % 2 === 0 ? '198.51.100.20' : '::ffff:198.51.100.20'))?.status).toBe(201);
+    }
+    expect((await post('::ffff:198.51.100.20'))?.status).toBe(429);
   });
 
   test('GET lookup is rate-limited per IP (30/minute)', async () => {

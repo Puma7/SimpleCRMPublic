@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from 'node:crypto';
+
 import type {
   ApiRequest,
   ApiResponse,
@@ -19,6 +21,7 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
+import { rateLimitClientKey } from '../security/rate-limit-client-key';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -539,24 +542,61 @@ export type PortalRateLimiter = {
   check(key: string, now?: number): { ok: true } | { ok: false; retryAfterSeconds: number };
 };
 
-export function createPortalRateLimiter(options: { limit: number; windowMs: number }): PortalRateLimiter {
+export function createPortalRateLimiter(options: {
+  limit: number;
+  windowMs: number;
+  maxKeys?: number;
+  overflowBuckets?: number;
+}): PortalRateLimiter {
+  // Keys stay ordered by their latest recorded hit, so expired keys are dropped
+  // from the front in amortised O(1) instead of scanning the whole map. At most
+  // maxKeys clients get an exact counter; beyond that (a flood of rotating
+  // addresses) new keys share a fixed table of keyed-hash counters. Memory
+  // stays bounded and live counters are never evicted, so a flood can only
+  // throttle, never reset a client.
   const hits = new Map<string, number[]>();
+  const maxKeys = options.maxKeys ?? 10_000;
+  const overflow: number[][] = Array.from({ length: options.overflowBuckets ?? 1_024 }, () => []);
+  const overflowSecret = randomBytes(32);
+  let overflowLiveUntil = Number.NEGATIVE_INFINITY;
+  const overflowSeries = (key: string) => overflow[
+    createHmac('sha256', overflowSecret).update(key).digest().readUInt32BE(0) % overflow.length
+  ]!;
   return {
     check(key, nowInput) {
       const now = nowInput ?? Date.now();
       const cutoff = now - options.windowMs;
-      const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
+      for (const [staleKey, series] of hits) {
+        if ((series[series.length - 1] ?? Number.NEGATIVE_INFINITY) > cutoff) break;
+        hits.delete(staleKey);
+      }
+      let series = hits.get(key);
+      let shared: number[] | null = null;
+      if (!series) {
+        // A key already counted in a live overflow bucket keeps that window,
+        // even if exact slots have freed up in the meantime.
+        const bucket = now < overflowLiveUntil ? overflowSeries(key) : null;
+        if (hits.size >= maxKeys || bucket?.some((t) => t > cutoff)) {
+          shared = bucket ?? overflowSeries(key);
+          series = shared;
+        } else {
+          series = [];
+        }
+      }
+      const recent = series.filter((t) => t > cutoff);
       if (recent.length >= options.limit) {
-        hits.set(key, recent);
+        if (shared) shared.splice(0, shared.length, ...recent);
+        else hits.set(key, recent);
         const oldest = recent[0] ?? now;
         return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((oldest + options.windowMs - now) / 1000)) };
       }
       recent.push(now);
-      hits.set(key, recent);
-      if (hits.size > 10_000) {
-        for (const [k, v] of hits) {
-          if (v.every((t) => t <= cutoff)) hits.delete(k);
-        }
+      if (shared) {
+        shared.splice(0, shared.length, ...recent);
+        overflowLiveUntil = now + options.windowMs;
+      } else {
+        hits.delete(key);
+        hits.set(key, recent);
       }
       return { ok: true };
     },
@@ -579,7 +619,7 @@ export async function handlePublicPortalRoute(
   // Hot path matchers — same pattern as the authenticated dispatcher above.
   const createMatch = /^\/api\/v1\/portal\/returns\/([^/]+)$/.exec(req.path);
   if (createMatch && req.method === 'POST') {
-    const limited = portalCreateLimiter.check(`create:${req.ip ?? 'unknown'}`);
+    const limited = portalCreateLimiter.check(`create:${rateLimitClientKey(req.ip)}`);
     if (!limited.ok) {
       return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
         retryAfterSeconds: limited.retryAfterSeconds,
@@ -591,7 +631,7 @@ export async function handlePublicPortalRoute(
   // so the literal "config" segment can never shadow a real return.
   const configMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/config$/.exec(req.path);
   if (configMatch && req.method === 'GET') {
-    const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
+    const limited = portalLookupLimiter.check(`lookup:${rateLimitClientKey(req.ip)}`);
     if (!limited.ok) {
       return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
         retryAfterSeconds: limited.retryAfterSeconds,
@@ -601,7 +641,7 @@ export async function handlePublicPortalRoute(
   }
   const detailMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/([^/]+)$/.exec(req.path);
   if (detailMatch && req.method === 'GET') {
-    const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
+    const limited = portalLookupLimiter.check(`lookup:${rateLimitClientKey(req.ip)}`);
     if (!limited.ok) {
       return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
         retryAfterSeconds: limited.retryAfterSeconds,
