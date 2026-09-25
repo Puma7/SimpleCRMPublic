@@ -213,8 +213,13 @@ describe('mail settings server-client UI', () => {
     expect(JSON.parse(String(testCall?.[1]?.body))).toEqual(expect.objectContaining({ imapHost: 'imap.neu.example' }));
   });
 
-  test('Desktop: IMAP-Test prueft geaenderte Werte auch ohne Passwort (lokales Passwort, Formularwerte)', async () => {
-    const localInvoke = jest.fn().mockResolvedValue({ success: true });
+  // PR-Review #193: Die Desktop-IPC schickt das gespeicherte Passwort nicht mehr an einen
+  // geaenderten Host, sondern lehnt ab; das Formular zeigt die Ablehnung statt Erfolg.
+  test('Desktop: IMAP-Test mit geaendertem Host ohne Passwort zeigt die Ablehnung der IPC', async () => {
+    const localInvoke = jest.fn().mockResolvedValue({
+      success: false,
+      error: 'Host oder Zugang geändert: bitte Passwort erneut eingeben',
+    });
     (window as any).electronAPI = { invoke: localInvoke };
     configureRendererTransport(createIpcRendererTransport());
     render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
@@ -224,7 +229,8 @@ describe('mail settings server-client UI', () => {
       fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
     });
 
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('IMAP-Verbindung erfolgreich.'));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('bitte Passwort erneut eingeben'));
+    expect(screen.queryByText('IMAP-Verbindung erfolgreich.')).not.toBeInTheDocument();
     expect(localInvoke).toHaveBeenCalledWith('email:test-imap', expect.objectContaining({ imapHost: 'imap.neu.example' }));
   });
 
@@ -558,7 +564,9 @@ describe('mail settings server-client UI', () => {
       expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({ host: 'smtp.neu.example' }));
     });
 
-    test('Desktop: geaenderter Host wird auch ohne Passwort mit den Formularwerten getestet', async () => {
+    // PR-Review #193: Die Desktop-IPC schickt gespeicherte Zugangsdaten nicht mehr an einen
+    // geaenderten Host, sondern lehnt ab; das Panel zeigt die Ablehnung statt Erfolg.
+    test('Desktop: geaenderter Host ohne Passwort zeigt die Ablehnung der IPC', async () => {
       const localInvoke = jest.fn(async (channel: string) => {
         if (channel === 'email:list-accounts') {
           return [{
@@ -575,7 +583,7 @@ describe('mail settings server-client UI', () => {
             smtp_use_imap_auth: 1,
           }];
         }
-        return { success: true };
+        return { success: false, error: 'Host oder Zugang geändert: bitte Passwort erneut eingeben' };
       });
       (window as any).electronAPI = { invoke: localInvoke };
       configureRendererTransport(createIpcRendererTransport());
@@ -586,7 +594,10 @@ describe('mail settings server-client UI', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Test' }));
       });
 
-      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP-Verbindung und Versand OK'));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+        'Host oder Zugang geändert: bitte Passwort erneut eingeben',
+      ));
+      expect(toast.success).not.toHaveBeenCalled();
       expect(localInvoke).toHaveBeenCalledWith('email:test-smtp', expect.objectContaining({ host: 'smtp.neu.example' }));
     });
   });

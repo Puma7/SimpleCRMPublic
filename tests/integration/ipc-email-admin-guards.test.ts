@@ -41,12 +41,54 @@ jest.mock('../../electron/sync-info-store', () => ({
   },
 }));
 
+// Gespeicherte Konten: 7 meldet SMTP wie IMAP an, 8 mit eigenem SMTP-Passwort,
+// 9 ist ein Google-OAuth-Konto. Verbindungstests mit gespeicherten Zugangsdaten
+// duerfen nur diese Server ansprechen.
+const mockStoredAccount = {
+  id: 7,
+  keytar_account_key: 'email-7',
+  imap_host: 'imap.example.com',
+  imap_port: 993,
+  imap_tls: 1,
+  imap_username: 'support@example.com',
+  smtp_host: 'smtp.example.com',
+  smtp_port: 587,
+  smtp_tls: 1,
+  smtp_username: null as string | null,
+  smtp_use_imap_auth: 1,
+  smtp_keytar_account_key: null as string | null,
+  protocol: 'imap',
+  pop3_host: 'pop.example.com',
+  pop3_port: 995,
+  pop3_tls: 1,
+  oauth_provider: null as string | null,
+  oauth_refresh_keytar_key: null as string | null,
+};
+const mockStoredAccounts: Record<number, typeof mockStoredAccount> = {
+  7: mockStoredAccount,
+  8: {
+    ...mockStoredAccount,
+    id: 8,
+    keytar_account_key: 'email-8',
+    smtp_username: 'smtp-user',
+    smtp_use_imap_auth: 0,
+    smtp_keytar_account_key: 'email-smtp-8',
+  },
+  9: {
+    ...mockStoredAccount,
+    id: 9,
+    keytar_account_key: 'email-9',
+    oauth_provider: 'google',
+    oauth_refresh_keytar_key: 'email-oauth-9',
+  },
+};
+
 // Ohne requireActual: email-store haengt zirkulaer an email-message-features.
 jest.mock('../../electron/email/email-store', () => ({
   createEmailAccountRecord: jest.fn(() => ({ id: 7 })),
   updateEmailAccountRecord: jest.fn(),
   deleteEmailAccountRecord: jest.fn(async () => undefined),
-  getEmailAccountById: jest.fn(() => ({ id: 7, keytar_account_key: 'email-7', smtp_keytar_account_key: null })),
+  getEmailAccountById: jest.fn((id: number) => (mockStoredAccounts[id] ? { ...mockStoredAccounts[id] } : undefined)),
   saveAccountSignature: jest.fn(),
 }));
 
@@ -314,17 +356,54 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     }
   });
 
-  const storedImap = { accountId: 7, imapHost: 'evil.example', imapPort: 993, imapTls: true, imapUsername: 'x', imapPassword: '' };
-  const storedSmtp = { accountId: 7, host: 'evil.example', port: 587, secure: false, user: 'x' };
-  const storedPop3 = { accountId: 7, host: 'evil.example', port: 995, tls: true, user: 'x', password: '' };
+  // Gespeicherte Zugangsdaten gehen nur an den gespeicherten Server (siehe unten);
+  // die Rollenpruefung laeuft daher mit den gespeicherten Werten.
+  const storedImap = {
+    accountId: 7,
+    imapHost: 'imap.example.com',
+    imapPort: 993,
+    imapTls: true,
+    imapUsername: 'support@example.com',
+    imapPassword: '',
+  };
+  const storedSmtp = {
+    accountId: 7,
+    host: 'smtp.example.com',
+    port: 587,
+    secure: false,
+    tls: true,
+    user: 'support@example.com',
+    smtpUseImapAuth: true,
+  };
+  const storedPop3 = { accountId: 7, host: 'pop.example.com', port: 995, tls: true, user: 'support@example.com', password: '' };
   const connectionTests = [
     ['IMAP mit gespeichertem Passwort', IPCChannels.Email.TestImap, storedImap, testImapConnection],
-    ['SMTP mit OAuth ueber die IMAP-Anmeldung', IPCChannels.Email.TestSmtp, { ...storedSmtp, smtpUseImapAuth: true }, testSmtpConnection],
-    ['SMTP mit gespeichertem Passwort', IPCChannels.Email.TestSmtp, { ...storedSmtp, smtpUseImapAuth: false }, testSmtpConnection],
+    ['SMTP mit OAuth ueber die IMAP-Anmeldung', IPCChannels.Email.TestSmtp, storedSmtp, testSmtpConnection],
+    [
+      'SMTP mit gespeichertem Passwort',
+      IPCChannels.Email.TestSmtp,
+      { ...storedSmtp, accountId: 8, user: 'smtp-user', smtpUseImapAuth: false },
+      testSmtpConnection,
+    ],
     ['POP3 mit gespeichertem Passwort', IPCChannels.Email.TestPop3, storedPop3, testPop3Connection],
-    ['IMAP fuer ein neues Konto', IPCChannels.Email.TestImap, { ...storedImap, accountId: undefined, imapPassword: 'neu' }, testImapConnection],
-    ['SMTP fuer ein neues Konto', IPCChannels.Email.TestSmtp, { ...storedSmtp, accountId: undefined, password: 'neu' }, testSmtpConnection],
-    ['POP3 fuer ein neues Konto', IPCChannels.Email.TestPop3, { ...storedPop3, accountId: undefined, password: 'neu' }, testPop3Connection],
+    [
+      'IMAP fuer ein neues Konto',
+      IPCChannels.Email.TestImap,
+      { ...storedImap, accountId: undefined, imapHost: 'imap.neu.example', imapPassword: 'neu' },
+      testImapConnection,
+    ],
+    [
+      'SMTP fuer ein neues Konto',
+      IPCChannels.Email.TestSmtp,
+      { ...storedSmtp, accountId: undefined, host: 'smtp.neu.example', password: 'neu' },
+      testSmtpConnection,
+    ],
+    [
+      'POP3 fuer ein neues Konto',
+      IPCChannels.Email.TestPop3,
+      { ...storedPop3, accountId: undefined, host: 'pop.neu.example', password: 'neu' },
+      testPop3Connection,
+    ],
   ] as const;
 
   // C-A12, C-B2: Die Verbindungstests liefen ohne Rolle und schickten gespeicherte Passwoerter oder OAuth-Tokens an den eingegebenen Host.
@@ -344,6 +423,137 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
       await expect(invoke(channel, eventFor(role), payload)).resolves.toEqual({ success: true });
     }
     expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  describe('gespeicherte Zugangsdaten nur fuer den gespeicherten Server (PR-Review #193, useStored)', () => {
+    const rejected = { success: false, error: 'Host oder Zugang geändert: bitte Passwort erneut eingeben' };
+
+    beforeEach(() => {
+      jest.mocked(getEmailPassword).mockClear();
+      jest.mocked(resolveImapAuth).mockClear();
+      jest.mocked(testImapConnection).mockClear();
+      jest.mocked(testPop3Connection).mockClear();
+      jest.mocked(testSmtpConnection).mockClear();
+    });
+
+    // PR-Review #193: Mit accountId und leerem Passwort schickte der IMAP-Test das gespeicherte Passwort an jeden eingegebenen Host.
+    test.each([
+      ['fremdem Host', { imapHost: 'evil.example' }],
+      ['anderem Port', { imapPort: 143 }],
+      ['ohne TLS', { imapTls: false }],
+      ['anderem Benutzer', { imapUsername: 'opfer@example.com' }],
+    ])('IMAP-Test mit gespeichertem Passwort und %s wird ohne Verbindung abgelehnt', async (_label, change) => {
+      await expect(invoke(IPCChannels.Email.TestImap, eventFor('owner'), { ...storedImap, ...change }))
+        .resolves.toEqual(rejected);
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(testImapConnection).not.toHaveBeenCalled();
+    });
+
+    test('IMAP-Test mit gespeichertem Passwort und gespeichertem Server laeuft', async () => {
+      await expect(invoke(IPCChannels.Email.TestImap, eventFor('owner'), { ...storedImap, imapHost: ' IMAP.example.com ' }))
+        .resolves.toEqual({ success: true });
+      expect(getEmailPassword).toHaveBeenCalledWith('email-7');
+      expect(testImapConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ imap_host: 'IMAP.example.com', imap_port: 993, imap_tls: 1 }),
+        'gespeichert',
+      );
+    });
+
+    test('IMAP-Test mit neuem Passwort darf einen anderen Server pruefen', async () => {
+      await expect(invoke(IPCChannels.Email.TestImap, eventFor('owner'), {
+        ...storedImap,
+        imapHost: 'imap.neu.example',
+        imapPassword: 'neu',
+      })).resolves.toEqual({ success: true });
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(testImapConnection).toHaveBeenCalledWith(expect.objectContaining({ imap_host: 'imap.neu.example' }), 'neu');
+    });
+
+    // PR-Review #193: Der POP3-Test schickte das gespeicherte Passwort ebenso an jeden eingegebenen Host.
+    test.each([
+      ['fremdem Host', { host: 'evil.example' }],
+      ['anderem Port', { port: 110 }],
+      ['ohne TLS', { tls: false }],
+      ['anderem Benutzer', { user: 'opfer@example.com' }],
+    ])('POP3-Test mit gespeichertem Passwort und %s wird ohne Verbindung abgelehnt', async (_label, change) => {
+      await expect(invoke(IPCChannels.Email.TestPop3, eventFor('owner'), { ...storedPop3, ...change }))
+        .resolves.toEqual(rejected);
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(testPop3Connection).not.toHaveBeenCalled();
+    });
+
+    test('POP3-Test: gespeicherter Server laeuft, neues Passwort darf einen anderen Server pruefen', async () => {
+      await expect(invoke(IPCChannels.Email.TestPop3, eventFor('owner'), storedPop3)).resolves.toEqual({ success: true });
+      expect(testPop3Connection).toHaveBeenLastCalledWith(expect.objectContaining({ pop3_host: 'pop.example.com' }), 'gespeichert');
+
+      jest.mocked(getEmailPassword).mockClear();
+      await expect(invoke(IPCChannels.Email.TestPop3, eventFor('owner'), {
+        ...storedPop3,
+        host: 'pop.neu.example',
+        password: 'neu',
+      })).resolves.toEqual({ success: true });
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(testPop3Connection).toHaveBeenLastCalledWith(expect.objectContaining({ pop3_host: 'pop.neu.example' }), 'neu');
+    });
+
+    // PR-Review #193: Der SMTP-Test schickte gespeichertes SMTP-/IMAP-Passwort oder OAuth-Token an jeden eingegebenen Host.
+    test.each([
+      ['fremdem Host (Anmeldung wie IMAP)', { host: 'evil.example' }],
+      ['fremdem Host (eigenes SMTP-Passwort)', { accountId: 8, user: 'smtp-user', smtpUseImapAuth: false, host: 'evil.example' }],
+      ['anderem Port', { port: 2525 }],
+      ['ohne TLS', { tls: false }],
+      ['implizitem TLS statt STARTTLS', { secure: true }],
+      ['anderem Benutzer', { user: 'opfer@example.com' }],
+      ['umgeschalteter Anmeldung (nicht mehr wie IMAP)', { smtpUseImapAuth: false }],
+      ['umgeschalteter Anmeldung (jetzt wie IMAP)', { accountId: 8, user: 'support@example.com', smtpUseImapAuth: true }],
+      ['OAuth-Token trotz mitgeschicktem Passwort', { accountId: 9, host: 'evil.example', password: 'egal' }],
+    ])('SMTP-Test mit gespeicherten Zugangsdaten und %s wird ohne Verbindung abgelehnt', async (_label, change) => {
+      await expect(invoke(IPCChannels.Email.TestSmtp, eventFor('owner'), { ...storedSmtp, ...change }))
+        .resolves.toEqual(rejected);
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(resolveImapAuth).not.toHaveBeenCalled();
+      expect(testSmtpConnection).not.toHaveBeenCalled();
+    });
+
+    test('SMTP-Test mit gespeicherten Zugangsdaten und gespeichertem Server laeuft', async () => {
+      await expect(invoke(IPCChannels.Email.TestSmtp, eventFor('owner'), {
+        ...storedSmtp,
+        accountId: 8,
+        user: 'smtp-user',
+        smtpUseImapAuth: false,
+      })).resolves.toEqual({ success: true });
+      expect(getEmailPassword).toHaveBeenCalledWith('email-smtp-8');
+      expect(testSmtpConnection).toHaveBeenLastCalledWith(expect.objectContaining({
+        host: 'smtp.example.com',
+        user: 'smtp-user',
+        pass: 'gespeichert',
+      }));
+
+      await expect(invoke(IPCChannels.Email.TestSmtp, eventFor('owner'), { ...storedSmtp, accountId: 9, password: 'egal' }))
+        .resolves.toEqual({ success: true });
+      expect(testSmtpConnection).toHaveBeenLastCalledWith(expect.objectContaining({
+        host: 'smtp.example.com',
+        accessToken: 'oauth-token',
+      }));
+    });
+
+    test('SMTP-Test mit neuem Passwort darf einen anderen Server pruefen', async () => {
+      await expect(invoke(IPCChannels.Email.TestSmtp, eventFor('owner'), {
+        ...storedSmtp,
+        accountId: 8,
+        host: 'smtp.neu.example',
+        user: 'neu@example.com',
+        smtpUseImapAuth: false,
+        password: 'neu',
+      })).resolves.toEqual({ success: true });
+      expect(getEmailPassword).not.toHaveBeenCalled();
+      expect(testSmtpConnection).toHaveBeenCalledWith(expect.objectContaining({
+        host: 'smtp.neu.example',
+        user: 'neu@example.com',
+        pass: 'neu',
+        accessToken: undefined,
+      }));
+    });
   });
 });
 

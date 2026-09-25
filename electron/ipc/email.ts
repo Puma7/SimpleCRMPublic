@@ -287,6 +287,55 @@ import {
   clearInboundWorkflowAppliedForMessage,
 } from '../email/email-workflow-store';
 
+// Gespeicherte Zugangsdaten (Keytar-Passwort, OAuth-Token) haengen nur an der
+// Konto-ID, nicht am Server. Ein Verbindungstest, der sie nutzt, darf daher nur
+// den gespeicherten Server mit der gespeicherten Anmeldung ansprechen; sonst
+// schickt ein Skript im Renderer jedes gespeicherte Passwort an einen fremden
+// Host. Paritaet: useStored in packages/server/src/mail-connection-test.ts.
+const STORED_LOGIN_CHANGED_ERROR = 'Host oder Zugang geändert: bitte Passwort erneut eingeben';
+
+type MailLogin = { host: string; port: number; tls: boolean | string; user: string };
+
+function sameMailLogin(stored: MailLogin, requested: MailLogin): boolean {
+  return stored.host.trim().toLowerCase() === requested.host.trim().toLowerCase()
+    && stored.port === requested.port
+    && stored.tls === requested.tls
+    && stored.user.trim() === requested.user.trim();
+}
+
+function imapLogin(acc: EmailAccountRow): MailLogin {
+  return { host: acc.imap_host, port: acc.imap_port, tls: Boolean(acc.imap_tls), user: acc.imap_username };
+}
+
+// Wie testPop3Connection und der POP3-Abruf: POP3-Host faellt auf den IMAP-Host zurueck.
+function pop3Login(acc: EmailAccountRow): MailLogin {
+  return {
+    host: acc.pop3_host || acc.imap_host,
+    port: acc.pop3_port ?? 995,
+    tls: (acc.pop3_tls ?? 1) === 1,
+    user: acc.imap_username,
+  };
+}
+
+// Transportschutz als ein Wert, damit Test (secure + tls) und Versand
+// (smtp_tls + Port) vergleichbar sind.
+function smtpTransportSecurity(secure: boolean, requireTls: boolean): string {
+  if (secure) return 'implicit';
+  return requireTls ? 'starttls' : 'none';
+}
+
+// Wie sendSmtpForAccount: smtp_tls heisst implizites TLS auf 465, sonst Pflicht-STARTTLS.
+function smtpLogin(acc: EmailAccountRow): MailLogin {
+  const port = acc.smtp_port ?? 587;
+  const tls = Boolean(acc.smtp_tls);
+  return {
+    host: acc.smtp_host ?? '',
+    port,
+    tls: smtpTransportSecurity(tls && port === 465, tls && port !== 465),
+    user: acc.smtp_use_imap_auth ? acc.imap_username : acc.smtp_username?.trim() || acc.imap_username,
+  };
+}
+
 interface EmailHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   isDevelopment: boolean;
@@ -471,6 +520,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imap_username: payload.imapUsername.trim(),
           };
           if (!password) {
+            if (!sameMailLogin(imapLogin(acc), imapLogin(row))) {
+              return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+            }
             password = (await getEmailPassword(acc.keytar_account_key)) ?? '';
           }
         } else {
@@ -518,8 +570,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         return { success: false as const, error: result.error };
       },
       // Verbindungstests gehoeren zur Kontoverwaltung (E16): mit accountId nutzen
-      // sie die gespeicherten Zugangsdaten gegen den eingegebenen Host, ohne
-      // accountId dienen sie dem Anlegen. Beides nur Owner/Admin.
+      // sie die gespeicherten Zugangsdaten, dann nur gegen den gespeicherten
+      // Server; ohne accountId dienen sie dem Anlegen. Beides nur Owner/Admin.
       { logger, requireRole: ['owner', 'admin'] },
     ),
   );
@@ -1455,6 +1507,23 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           const acc = getEmailAccountById(payload.accountId);
           if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
           const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
+          // Mit "wie IMAP" nimmt resolveImapAuth bei OAuth-Konten immer das Token,
+          // auch wenn ein Passwort mitkommt.
+          const oauthToken = useImap
+            && (acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft')
+            && Boolean(acc.oauth_refresh_keytar_key);
+          if (
+            (!pass || oauthToken)
+            && (useImap !== Boolean(acc.smtp_use_imap_auth)
+              || !sameMailLogin(smtpLogin(acc), {
+                host: payload.host,
+                port: payload.port,
+                tls: smtpTransportSecurity(payload.secure, !payload.secure && (payload.tls ?? true)),
+                user: payload.user,
+              }))
+          ) {
+            return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+          }
           if (useImap) {
             const { resolveImapAuth } = await import('../email/email-imap-auth.js');
             const auth = await resolveImapAuth(acc);
@@ -2872,6 +2941,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imap_tls: payload.tls ? 1 : 0,
             imap_username: user || acc.imap_username,
           };
+          if (payload.password.trim().length === 0 && !sameMailLogin(pop3Login(acc), pop3Login(testAcc))) {
+            return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+          }
           const pw =
             payload.password.trim().length > 0
               ? payload.password
