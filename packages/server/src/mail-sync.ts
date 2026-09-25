@@ -2286,6 +2286,13 @@ const POP3_CAPA_MAX_LINES = 1_000;
 // maximum-size message (plus a reserve) that nobody has read yet.
 const POP3_MAX_LINE_CHARS = 1024 * 1024;
 const POP3_MAX_BUFFERED_CHARS = MAX_INBOUND_RFC822_BYTES + POP3_MAX_LINE_CHARS;
+// The line timeout alone let a server stretch one answer indefinitely, each
+// line just in time. Whole answers get a deadline, as in the other line
+// clients: CAPA twice the line timeout; UIDL/RETR enough for a maximum-size
+// message at a slow but steady 32 KiB/s (about 43 min), so large mails still load.
+const POP3_CAPA_DEADLINE_FACTOR = 2;
+const POP3_MIN_BYTES_PER_SECOND = 32 * 1024;
+const POP3_MULTILINE_DEADLINE_MS = Math.ceil(MAX_INBOUND_RFC822_BYTES / POP3_MIN_BYTES_PER_SECOND) * 1000;
 
 export function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
   return new LineProtocolPop3Client(input);
@@ -2332,11 +2339,12 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   }
 
   private async offersStls(): Promise<boolean> {
+    const deadlineAt = Date.now() + POP3_CAPA_DEADLINE_FACTOR * this.input.timeoutMs;
     // CAPA is optional (RFC 2449); a server without it answers -ERR.
     if (!/^\+OK\b/i.test(await this.command('CAPA'))) return false;
     let stls = false;
     for (let count = 0; count < POP3_CAPA_MAX_LINES; count += 1) {
-      const line = await this.readLine();
+      const line = await this.readLine(deadlineAt);
       if (line === '.') return stls;
       if (/^STLS\b/i.test(line)) stls = true;
     }
@@ -2371,9 +2379,10 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   }
 
   async uidl(): Promise<readonly [number, string][]> {
+    const deadlineAt = this.multilineDeadline();
     await this.writeLine('UIDL');
-    assertPop3Ok(await this.readLine());
-    const lines = await this.readMultiline();
+    assertPop3Ok(await this.readLine(deadlineAt));
+    const lines = await this.readMultiline(deadlineAt);
     return lines.map((line) => {
       const match = /^(\d+)\s+(.+)$/.exec(line);
       return match ? [Number(match[1]), match[2].trim()] as [number, string] : null;
@@ -2381,9 +2390,10 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   }
 
   async retr(messageNumber: number): Promise<Buffer> {
+    const deadlineAt = this.multilineDeadline();
     await this.writeLine(`RETR ${messageNumber}`);
-    assertPop3Ok(await this.readLine());
-    const lines = await this.readMultiline();
+    assertPop3Ok(await this.readLine(deadlineAt));
+    const lines = await this.readMultiline(deadlineAt);
     return Buffer.from(lines.join('\r\n'), 'latin1');
   }
 
@@ -2405,12 +2415,17 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     this.socket.write(`${command}\r\n`, 'latin1');
   }
 
-  private async readMultiline(): Promise<string[]> {
+  /** End of a whole UIDL/RETR answer started now; never earlier than one line timeout. */
+  private multilineDeadline(): number {
+    return Date.now() + Math.max(POP3_MULTILINE_DEADLINE_MS, this.input.timeoutMs);
+  }
+
+  private async readMultiline(deadlineAt: number): Promise<string[]> {
     const lines: string[] = [];
     let totalBytes = 0;
     let oversize = false;
     for (;;) {
-      const line = await this.readLine();
+      const line = await this.readLine(deadlineAt);
       if (line === '.') {
         if (oversize) throw new InboundMessageTooLargeError(totalBytes, MAX_INBOUND_RFC822_BYTES);
         return lines;
@@ -2434,15 +2449,17 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     }
   }
 
-  private async readLine(): Promise<string> {
+  private async readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
     if (this.closedError) throw this.closedError;
     const existing = this.shiftLine();
     if (existing !== null) return existing;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw this.failResponseDeadline();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Connection timed out'));
-      }, this.input.timeoutMs);
+        reject(remainingMs < this.input.timeoutMs ? this.failResponseDeadline() : new Error('Connection timed out'));
+      }, Math.min(this.input.timeoutMs, remainingMs));
       const cleanup = (): void => {
         clearTimeout(timer);
         const resolveIndex = this.waiters.indexOf(onLine);
@@ -2510,6 +2527,13 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     this.waiters = [];
     this.errorWaiters = [];
     waiters.forEach((waiter) => waiter(error));
+  }
+
+  private failResponseDeadline(): Error {
+    const error = new Error('Zeitlimit der Server-Antwort ueberschritten');
+    this.rejectAll(error);
+    this.socket?.destroy();
+    return error;
   }
 
   private close(): void {

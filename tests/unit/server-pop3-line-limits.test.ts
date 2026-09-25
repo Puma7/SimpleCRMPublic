@@ -1,6 +1,7 @@
 /**
  * @jest-environment node
  */
+import { EventEmitter } from 'node:events';
 import net from 'net';
 
 import { MAX_INBOUND_RFC822_BYTES } from '../../packages/core/src/email/inbound-message-size';
@@ -143,4 +144,142 @@ describe('server POP3 sync client bounds what it buffers', () => {
       await client.quit();
     }
   }, 30_000);
+});
+
+type Pop3Reply = string | { first: string; line: string; everyMs: number };
+
+/**
+ * In-memory POP3 server socket for fake-timer tests, handed to the client via
+ * net.connect: `respond` answers each command with a reply or with a first line
+ * followed by a trickle of lines that never ends.
+ */
+class TricklingPop3Socket extends EventEmitter {
+  destroyed = false;
+  private trickle: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly respond: (command: string) => Pop3Reply) {
+    super();
+    setTimeout(() => this.emit('connect'), 0);
+    setTimeout(() => this.emit('data', '+OK ready\r\n'), 1);
+  }
+
+  setEncoding(): this {
+    return this;
+  }
+
+  setTimeout(): this {
+    return this;
+  }
+
+  end(): void {}
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    if (this.trickle) clearInterval(this.trickle);
+  }
+
+  write(chunk: string | Buffer): boolean {
+    const reply = this.respond(String(chunk).replace(/\r\n$/, ''));
+    setTimeout(() => {
+      if (this.destroyed) return;
+      if (typeof reply === 'string') {
+        this.emit('data', reply);
+        return;
+      }
+      this.emit('data', reply.first);
+      this.trickle = setInterval(() => this.emit('data', reply.line), reply.everyMs);
+    }, 0);
+    return true;
+  }
+}
+
+// N-cx-07: CAPA, UIDL and RETR of the POP3 sync client were bounded only per
+// line (90 s); a server sending one line just in time kept a sync job busy
+// indefinitely (C-A68/C-A81 gave the other line clients a response deadline).
+describe('server POP3 sync client response deadline', () => {
+  const timeoutMs = 10_000;
+  const trickleEveryMs = timeoutMs - 1_000;
+  const MINUTE = 60_000;
+
+  let socket: TricklingPop3Socket | null = null;
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    socket?.destroy();
+    socket = null;
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  function trickleClient(respond: (command: string) => Pop3Reply) {
+    jest.spyOn(net, 'connect').mockImplementation((() => {
+      socket = new TricklingPop3Socket(respond);
+      return socket;
+    }) as never);
+    return createDefaultPop3Client({
+      host: 'pop.example.test',
+      port: 110,
+      tls: false,
+      user: 'kunde@example.test',
+      password: 'geheim',
+      timeoutMs,
+    });
+  }
+
+  /** Runs `promise` for `stillRunningAfterMs`, then until `doneByMs`; returns how it settled. */
+  async function settleBetween(promise: Promise<unknown>, stillRunningAfterMs: number, doneByMs: number) {
+    const outcome: { settled: boolean; error?: unknown } = { settled: false };
+    promise.then(
+      () => { outcome.settled = true; },
+      (error: unknown) => { outcome.settled = true; outcome.error = error; },
+    );
+    await jest.advanceTimersByTimeAsync(stillRunningAfterMs);
+    expect(outcome.settled).toBe(false);
+    await jest.advanceTimersByTimeAsync(doneByMs - stillRunningAfterMs);
+    expect(outcome.settled).toBe(true);
+    return outcome.error;
+  }
+
+  test('gives up on a CAPA list that never ends after twice the line timeout', async () => {
+    const client = trickleClient((command) => (command === 'CAPA'
+      ? { first: '+OK capability list\r\n', line: 'X-FILLER\r\n', everyMs: trickleEveryMs }
+      : '+OK\r\n'));
+
+    const error = await settleBetween(client.connect(), 2 * timeoutMs - 1_000, 2 * timeoutMs + 1_000);
+
+    expect(error).toEqual(new Error('Zeitlimit der Server-Antwort ueberschritten'));
+    expect(socket?.destroyed).toBe(true);
+  });
+
+  test.each([
+    ['UIDL', (client: ReturnType<typeof createDefaultPop3Client>) => client.uidl(), '1 uid-1\r\n'],
+    ['RETR 1', (client: ReturnType<typeof createDefaultPop3Client>) => client.retr(1), 'Zeile\r\n'],
+  ])('gives up on a %s answer that never ends, but only after a generous deadline', async (command, run, line) => {
+    const client = trickleClient((received) => (received === command
+      ? { first: '+OK\r\n', line, everyMs: trickleEveryMs }
+      : received === 'CAPA' ? '-ERR unknown command\r\n' : '+OK\r\n'));
+    const connected = client.connect();
+    await jest.advanceTimersByTimeAsync(10);
+    await connected;
+
+    // A slow but steady answer (a large message) keeps loading far beyond the
+    // line timeout; only a trickle that outlasts the whole deadline is cut off.
+    const error = await settleBetween(run(client), 40 * MINUTE, 45 * MINUTE);
+
+    expect(error).toEqual(new Error('Zeitlimit der Server-Antwort ueberschritten'));
+    expect(socket?.destroyed).toBe(true);
+  });
+
+  test('keeps the per-line timeout for a server that stops answering', async () => {
+    const client = trickleClient((command) => (command === 'CAPA'
+      ? '-ERR unknown command\r\n'
+      : command === 'RETR 1' ? '+OK\r\nZeile\r\n' : '+OK\r\n'));
+    const connected = client.connect();
+    await jest.advanceTimersByTimeAsync(10);
+    await connected;
+
+    const error = await settleBetween(client.retr(1), timeoutMs - 1_000, timeoutMs + 1_000);
+
+    expect(error).toEqual(new Error('Connection timed out'));
+  });
 });
