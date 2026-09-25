@@ -1,6 +1,6 @@
 import dns from 'node:dns';
 
-import { isCorruptRawHeaders } from '@simplecrm/core';
+import { isCorruptRawHeaders, selectTrustedAuthenticationResults } from '@simplecrm/core';
 import type { AuthStatus, DKIMVerifyResult } from 'mailauth';
 
 export type AuthResultLabel =
@@ -48,6 +48,11 @@ export type StoredMailSecurityCheckInput = {
   mailauthEnabled: boolean;
   mailauthTimeoutMs?: number;
   mailauthAuthenticate?: typeof import('mailauth').authenticate;
+  /**
+   * authserv-id whose Authentication-Results may stand in for a failed live
+   * check (RFC 8601 §5); null/undefined disables that fallback.
+   */
+  trustedAuthservId?: string | null;
   rspamdEnabled: boolean;
   rspamdUrl: string;
   rspamdTimeoutMs: number;
@@ -129,6 +134,7 @@ export async function verifyMailAuthentication(input: {
   bodyHtml: string | null;
   mailauthTimeoutMs?: number;
   mailauthAuthenticate?: typeof import('mailauth').authenticate;
+  trustedAuthservId?: string | null;
 }): Promise<MailAuthVerification> {
   const message = buildRfc822FromStored(input);
   if (!message) {
@@ -142,7 +148,8 @@ export async function verifyMailAuthentication(input: {
     };
   }
 
-  const headerText = resolveHeaderTextForMailAuth(input);
+  const trustedAuthservId = input.trustedAuthservId ?? null;
+  const headerText = resolveHeaderTextForMailAuth(input, trustedAuthservId);
   try {
     ensureDnsPrefersIpv4();
     const authenticate = input.mailauthAuthenticate ?? (await import('mailauth')).authenticate;
@@ -161,7 +168,7 @@ export async function verifyMailAuthentication(input: {
       dmarc: result.dmarc && typeof result.dmarc === 'object' ? statusLabel(result.dmarc.status) : 'none',
       arc: result.arc && typeof result.arc === 'object' ? statusLabel(result.arc.status) : 'none',
       dkimDomains: dkimAgg.domains,
-    }, headerText);
+    }, headerText, trustedAuthservId);
   } catch (error) {
     return applyHeaderAuthFallback({
       spf: 'unknown',
@@ -170,7 +177,7 @@ export async function verifyMailAuthentication(input: {
       arc: 'unknown',
       dkimDomains: [],
       error: error instanceof Error ? error.message : String(error),
-    }, headerText);
+    }, headerText, trustedAuthservId);
   }
 }
 
@@ -382,16 +389,19 @@ function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
   return { label: results[0] ?? 'unknown', domains };
 }
 
-function resolveHeaderTextForMailAuth(input: {
-  rawRfc822B64?: string | null;
-  rawHeaders: string | null;
-}): string | null {
+function resolveHeaderTextForMailAuth(
+  input: {
+    rawRfc822B64?: string | null;
+    rawHeaders: string | null;
+  },
+  trustedAuthservId: string | null,
+): string | null {
   const fromStored = input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)
     ? input.rawHeaders
     : null;
-  if (fromStored && parseAuthenticationResultsLabels(fromStored)) return fromStored;
+  if (fromStored && parseAuthenticationResultsLabels(fromStored, trustedAuthservId)) return fromStored;
   const fromRfc822 = extractHeaderSectionFromStored(input);
-  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822)) return fromRfc822;
+  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822, trustedAuthservId)) return fromRfc822;
   return fromRfc822 ?? fromStored;
 }
 
@@ -411,27 +421,15 @@ function extractHeaderSectionFromStored(input: {
   return input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders) ? input.rawHeaders : null;
 }
 
-function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> | null {
-  if (!rawHeaders?.trim()) return null;
-  const lines = rawHeaders.replace(/\r\n/g, '\n').split('\n');
-  const blocks: string[] = [];
-  let current: string | null = null;
-  for (const line of lines) {
-    if (/^Authentication-Results:/i.test(line)) {
-      if (current) blocks.push(current.trim());
-      current = line.replace(/^Authentication-Results:\s*/i, '');
-    } else if (current !== null && /^[ \t]/.test(line)) {
-      current += ` ${line.trim()}`;
-    } else {
-      if (current) blocks.push(current.trim());
-      current = null;
-    }
-  }
-  if (current) blocks.push(current.trim());
-  // RFC 8601 §5: only the topmost field was prepended by the receiving MTA.
-  // Lower fields and ARC-Authentication-Results (no ARC chain validation here)
-  // can be injected by the sender, so they must never supply or fill in keys.
-  const block = blocks[0];
+function parseAuthenticationResultsLabels(
+  rawHeaders: string | null,
+  trustedAuthservId: string | null,
+): Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> | null {
+  // RFC 8601 §5: any sender can add Authentication-Results, so only the topmost
+  // field carrying the account's trusted authserv-id counts. Other fields and
+  // ARC-Authentication-Results (no ARC chain validation here) never supply or
+  // fill in keys.
+  const block = selectTrustedAuthenticationResults(rawHeaders, trustedAuthservId);
   if (!block) return null;
 
   const parsed: Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> = {};
@@ -446,8 +444,9 @@ function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Re
 function applyHeaderAuthFallback(
   live: MailAuthVerification,
   headerText: string | null,
+  trustedAuthservId: string | null,
 ): MailAuthVerification {
-  const header = parseAuthenticationResultsLabels(headerText);
+  const header = parseAuthenticationResultsLabels(headerText, trustedAuthservId);
   if (!header) return live;
 
   const merged: MailAuthVerification = { ...live, dkimDomains: [...live.dkimDomains] };

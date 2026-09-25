@@ -2899,6 +2899,7 @@ describe('renderer transport', () => {
             vacationSubject: 'Away',
             vacationBodyText: 'Back later',
             requestReadReceipt: true,
+            trustedAuthservId: 'mx.example.com',
             updatedAt: '2026-06-03T10:00:00.000Z',
           },
         ],
@@ -2912,6 +2913,7 @@ describe('renderer transport', () => {
     await expect(transport.invoke(IPCChannels.Email.ListAccounts)).resolves.toEqual([
       expect.objectContaining({
         id: 1,
+        trusted_authserv_id: 'mx.example.com',
         source_sqlite_id: 1,
         display_name: 'Shop 1',
         email_address: 'shop1@example.com',

@@ -94,11 +94,13 @@ describe('mail-auth-verify', () => {
     expect(isAuthFailure('pass')).toBe(false);
   });
 
+  // Seit F-A5-12 (E6) zaehlen nur Header mit vertrauenswuerdiger authserv-id; die
+  // folgenden Tests nennen deshalb die des Gmail-Empfangsservers ausdruecklich.
   test('parseAuthenticationResultsAdvisory', () => {
     const hdr =
       'Authentication-Results: mx.google.com;\r\n spf=pass dkim=pass dmarc=pass';
-    expect(parseAuthenticationResultsAdvisory(hdr)).toContain('SPF=pass');
-    expect(parseAuthenticationResultsAdvisory('From: a@b.de')).toBeNull();
+    expect(parseAuthenticationResultsAdvisory(hdr, 'mx.google.com')).toContain('SPF=pass');
+    expect(parseAuthenticationResultsAdvisory('From: a@b.de', 'mx.google.com')).toBeNull();
   });
 
   test('falls back to Authentication-Results when live DNS returns temperror', async () => {
@@ -115,6 +117,7 @@ describe('mail-auth-verify', () => {
       rawHeaders: hdr,
       bodyText: 'hi',
       bodyHtml: null,
+      trustedAuthservId: 'google.com',
     });
     expect(r.spf).toBe('pass');
     expect(r.dkim).toBe('pass');
@@ -126,7 +129,7 @@ describe('mail-auth-verify', () => {
   test('parseAuthenticationResultsLabels', () => {
     const hdr =
       'Authentication-Results: mx.google.com;\r\n spf=pass dkim=pass dmarc=pass';
-    expect(parseAuthenticationResultsLabels(hdr)).toMatchObject({
+    expect(parseAuthenticationResultsLabels(hdr, 'mx.google.com')).toMatchObject({
       spf: 'pass',
       dkim: 'pass',
       dmarc: 'pass',
@@ -144,7 +147,7 @@ describe('mail-auth-verify', () => {
       resolveHeaderTextForMailAuth({
         rawHeaders: 'From: sender@gmail.com\r\nSubject: Test',
         rawRfc822B64,
-      }),
+      }, 'mx.google.com'),
     ).toContain('spf=pass');
 
     (authenticate as jest.Mock).mockResolvedValue({
@@ -158,11 +161,53 @@ describe('mail-auth-verify', () => {
       rawHeaders: 'From: sender@gmail.com\r\nSubject: Test',
       bodyText: 'Body',
       bodyHtml: null,
+      trustedAuthservId: 'mx.google.com',
     });
     expect(r.spf).toBe('pass');
     expect(r.dkim).toBe('pass');
     expect(r.dmarc).toBe('pass');
     expect(r.arc).toBe('none');
     expect(r.error).toMatch(/Authentication-Results des empfangenden Servers/);
+  });
+
+  // F-A5-12 (E6): Der Desktop uebernahm SPF/DKIM/DMARC aus jedem (ARC-)Authentication-Results-Header, auch aus einem vom Absender eingeschleusten.
+  describe('authserv-id (RFC 8601 section 5)', () => {
+    const liveUnavailable = () =>
+      (authenticate as jest.Mock).mockRejectedValue(new Error('DNS nicht erreichbar'));
+
+    test('ignores a sender-injected field when the trusted server added none', async () => {
+      liveUnavailable();
+      const r = await verifyMailAuthentication({
+        rawHeaders:
+          'Authentication-Results: evil.example; spf=pass; dkim=pass; dmarc=pass\r\nFrom: chef@kunde.de',
+        bodyText: 'x',
+        bodyHtml: null,
+        trustedAuthservId: 'provider.example',
+      });
+      expect(r).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' });
+    });
+
+    test('ignores ARC-Authentication-Results and lower fields, keeps the topmost trusted one', async () => {
+      liveUnavailable();
+      const r = await verifyMailAuthentication({
+        rawHeaders: [
+          'ARC-Authentication-Results: i=1; mx.provider.example; spf=pass; dkim=pass; dmarc=pass',
+          'Authentication-Results: mx.provider.example; spf=fail smtp.mailfrom=kunde.de',
+          'Authentication-Results: provider.example; spf=pass; dkim=pass; dmarc=pass',
+          'From: chef@kunde.de',
+        ].join('\r\n'),
+        bodyText: 'x',
+        bodyHtml: null,
+        trustedAuthservId: 'provider.example',
+      });
+      expect(r).toMatchObject({ spf: 'fail', dkim: 'unknown', dmarc: 'unknown' });
+    });
+
+    test('uses no header without a trusted authserv-id', () => {
+      const hdr = 'Authentication-Results: mx.google.com;\r\n spf=pass dkim=pass dmarc=pass';
+      expect(parseAuthenticationResultsLabels(hdr)).toBeNull();
+      expect(parseAuthenticationResultsLabels(hdr, 'provider.example')).toBeNull();
+      expect(parseAuthenticationResultsAdvisory(hdr, 'provider.example')).toBeNull();
+    });
   });
 });

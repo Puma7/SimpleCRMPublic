@@ -8,8 +8,10 @@ const mockMailauth = jest.fn();
 const mockRspamdOn = jest.fn();
 const mockPreWorkflow = jest.fn();
 
+const mockGetAccount = jest.fn();
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...a: unknown[]) => mockGetMessage(...a),
+  getEmailAccountById: (...a: unknown[]) => mockGetAccount(...a),
 }));
 jest.mock('../../electron/email/mail-auth-verify', () => ({
   verifyMailAuthentication: (...a: unknown[]) => mockVerify(...a),
@@ -51,6 +53,24 @@ describe('runMailSecurityPipeline', () => {
       body_text: 't',
       body_html: null,
     });
+  });
+
+  // F-A5-12 (E6): the header fallback trusts only the account's incoming server domain.
+  test('passes the trusted authserv-id of the message account to mailauth', async () => {
+    mockGetMessage.mockReturnValue({
+      id: 3,
+      account_id: 7,
+      raw_rfc822_b64: 'x',
+      raw_headers: 'h',
+      body_text: 't',
+      body_html: null,
+    });
+    mockGetAccount.mockReturnValue({ id: 7, protocol: 'imap', imap_host: 'imap.provider.example', pop3_host: null });
+
+    await runMailSecurityPipeline(3);
+
+    expect(mockGetAccount).toHaveBeenCalledWith(7);
+    expect(mockVerify).toHaveBeenCalledWith(expect.objectContaining({ trustedAuthservId: 'provider.example' }));
   });
 
   test('returns empty result when message missing', async () => {

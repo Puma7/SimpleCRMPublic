@@ -1,5 +1,6 @@
 import dns from 'dns';
 import { authenticate, type AuthStatus, type DKIMVerifyResult } from 'mailauth';
+import { selectTrustedAuthenticationResults } from '@simplecrm/core';
 import { isCorruptRawHeaders } from './email-parse-utils';
 import { buildRfc822FromStored, extractEnvelopeSender } from './mail-rfc822-build';
 
@@ -62,26 +63,6 @@ function statusLabel(st: AuthStatus | undefined): AuthResultLabel {
   return normalizeResult(st?.result);
 }
 
-/** Best-effort parse of the receiving MTA's Authentication-Results (advisory only). */
-function extractAuthenticationResultsBlocks(rawHeaders: string): string[] {
-  const lines = rawHeaders.replace(/\r\n/g, '\n').split('\n');
-  const blocks: string[] = [];
-  let current: string | null = null;
-  for (const line of lines) {
-    if (/^(?:ARC-)?Authentication-Results:/i.test(line)) {
-      if (current) blocks.push(current.trim());
-      current = line.replace(/^(?:ARC-)?Authentication-Results:\s*/i, '');
-    } else if (current != null && /^[ \t]/.test(line)) {
-      current += ` ${line.trim()}`;
-    } else {
-      if (current) blocks.push(current.trim());
-      current = null;
-    }
-  }
-  if (current) blocks.push(current.trim());
-  return blocks;
-}
-
 /** Header block from stored RFC822 (preferred when raw_headers omit Authentication-Results). */
 export function extractHeaderSectionFromStored(input: {
   rawRfc822B64?: string | null;
@@ -102,20 +83,23 @@ export function extractHeaderSectionFromStored(input: {
   return null;
 }
 
-/** Use whichever stored header source contains parseable Authentication-Results. */
-export function resolveHeaderTextForMailAuth(input: {
-  rawRfc822B64?: string | null;
-  rawHeaders: string | null;
-}): string | null {
+/** Use whichever stored header source contains parseable, trusted Authentication-Results. */
+export function resolveHeaderTextForMailAuth(
+  input: {
+    rawRfc822B64?: string | null;
+    rawHeaders: string | null;
+  },
+  trustedAuthservId: string | null = null,
+): string | null {
   const fromStored =
     input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)
       ? input.rawHeaders
       : null;
-  if (fromStored && parseAuthenticationResultsLabels(fromStored)) {
+  if (fromStored && parseAuthenticationResultsLabels(fromStored, trustedAuthservId)) {
     return fromStored;
   }
   const fromRfc822 = extractHeaderSectionFromStored(input);
-  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822)) {
+  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822, trustedAuthservId)) {
     return fromRfc822;
   }
   return fromRfc822 ?? fromStored;
@@ -129,24 +113,24 @@ function liveCheckUnreliable(label: AuthResultLabel): boolean {
   return label === 'temperror' || label === 'unknown';
 }
 
-/** Parse receiving MTA Authentication-Results into SPF/DKIM/DMARC/ARC labels. */
+/**
+ * Parse the receiving MTA's Authentication-Results into SPF/DKIM/DMARC/ARC labels.
+ * RFC 8601 §5: any sender can add such fields, so only the topmost field whose
+ * authserv-id is trusted for the account counts (default: domain of the
+ * incoming server, see @simplecrm/core authentication-results). Lower fields and
+ * ARC-Authentication-Results (no ARC chain validation) never supply keys.
+ */
 export function parseAuthenticationResultsLabels(
   rawHeaders: string | null,
+  trustedAuthservId: string | null = null,
 ): ParsedAuthenticationResults | null {
-  if (!rawHeaders?.trim()) return null;
-  const blocks = extractAuthenticationResultsBlocks(rawHeaders);
-  if (!blocks.length) return null;
+  const body = selectTrustedAuthenticationResults(rawHeaders, trustedAuthservId);
+  if (!body) return null;
   const out: ParsedAuthenticationResults = {};
-  for (const body of blocks) {
-    for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
-      const m = body.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
-      if (!m?.[1]) continue;
-      const label = normalizeResult(m[1]);
-      const prev = out[key];
-      if (!prev || (liveCheckUnreliable(prev) && !liveCheckUnreliable(label))) {
-        out[key] = label;
-      }
-    }
+  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+    const m = body.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
+    if (!m?.[1]) continue;
+    out[key] = normalizeResult(m[1]);
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -154,10 +138,11 @@ export function parseAuthenticationResultsLabels(
 function buildTemperrorHint(
   labels: AuthResultLabel[],
   headerText: string | null,
+  trustedAuthservId: string | null,
 ): string | undefined {
   const temperrors = labels.filter((l) => liveCheckUnreliable(l)).length;
   if (temperrors < 2) return undefined;
-  const advisory = parseAuthenticationResultsAdvisory(headerText);
+  const advisory = parseAuthenticationResultsAdvisory(headerText, trustedAuthservId);
   const base =
     'Live-DNS-Prüfung (mailauth) vorübergehend fehlgeschlagen (temperror). ' +
     'Internet, VPN/Firewall und DNS prüfen (z. B. Pi-hole, Firmen-DNS).';
@@ -167,8 +152,11 @@ function buildTemperrorHint(
   return base;
 }
 
-export function parseAuthenticationResultsAdvisory(rawHeaders: string | null): string | null {
-  const parsed = parseAuthenticationResultsLabels(rawHeaders);
+export function parseAuthenticationResultsAdvisory(
+  rawHeaders: string | null,
+  trustedAuthservId: string | null = null,
+): string | null {
+  const parsed = parseAuthenticationResultsLabels(rawHeaders, trustedAuthservId);
   if (!parsed) return null;
   const parts: string[] = [];
   for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
@@ -181,12 +169,13 @@ export function parseAuthenticationResultsAdvisory(rawHeaders: string | null): s
 function applyHeaderAuthFallback(
   live: MailAuthVerification,
   headerText: string | null,
+  trustedAuthservId: string | null,
 ): MailAuthVerification {
-  const header = parseAuthenticationResultsLabels(headerText);
+  const header = parseAuthenticationResultsLabels(headerText, trustedAuthservId);
   if (!header) {
     const temperrors = [live.spf, live.dkim, live.dmarc].filter(liveCheckUnreliable).length;
     if (temperrors >= 2) {
-      const hint = buildTemperrorHint([live.spf, live.dkim, live.dmarc], headerText);
+      const hint = buildTemperrorHint([live.spf, live.dkim, live.dmarc], headerText, trustedAuthservId);
       return {
         ...live,
         error:
@@ -228,13 +217,13 @@ function applyHeaderAuthFallback(
   }
 
   if (usedFallback) {
-    const advisory = parseAuthenticationResultsAdvisory(headerText);
+    const advisory = parseAuthenticationResultsAdvisory(headerText, trustedAuthservId);
     merged.error =
       'Live-DNS-Prüfung nicht verfügbar — Werte aus Authentication-Results des empfangenden Servers' +
       (advisory ? ` (${advisory}).` : '.') +
       ' Für vollständige Live-Prüfung DNS/VPN prüfen.';
   } else {
-    const hint = buildTemperrorHint([merged.spf, merged.dkim, merged.dmarc], headerText);
+    const hint = buildTemperrorHint([merged.spf, merged.dkim, merged.dmarc], headerText, trustedAuthservId);
     if (hint) merged.error = live.error ?? hint;
   }
 
@@ -266,6 +255,8 @@ export async function verifyMailAuthentication(input: {
   bodyText: string | null;
   bodyHtml: string | null;
   timeoutMs?: number;
+  /** authserv-id whose Authentication-Results may stand in for a failed live check; null disables it. */
+  trustedAuthservId?: string | null;
 }): Promise<MailAuthVerification> {
   const message = buildRfc822FromStored(input);
   if (!message) {
@@ -279,7 +270,8 @@ export async function verifyMailAuthentication(input: {
     };
   }
 
-  const headerText = resolveHeaderTextForMailAuth(input);
+  const trustedAuthservId = input.trustedAuthservId ?? null;
+  const headerText = resolveHeaderTextForMailAuth(input, trustedAuthservId);
 
   try {
     ensureDnsPrefersIpv4();
@@ -310,6 +302,7 @@ export async function verifyMailAuthentication(input: {
         dkimDomains: dkimAgg.domains,
       },
       headerText,
+      trustedAuthservId,
     );
   } catch (e) {
     return applyHeaderAuthFallback(
@@ -322,6 +315,7 @@ export async function verifyMailAuthentication(input: {
         error: e instanceof Error ? e.message : String(e),
       },
       headerText,
+      trustedAuthservId,
     );
   }
 }

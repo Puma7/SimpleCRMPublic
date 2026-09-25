@@ -25,6 +25,8 @@ import {
   buildLikeSearchSnippet,
   SEARCH_MARK_END,
   SEARCH_MARK_START,
+  incomingMailHost,
+  resolveTrustedAuthservId,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -174,6 +176,7 @@ const emailAccountSelectColumns = [
   'imap_delete_opt_in',
   'default_remote_content_policy',
   'respond_to_read_receipts',
+  'trusted_authserv_id',
   'updated_at',
 ] as const;
 
@@ -598,6 +601,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
               default_remote_content_policy: 'blocked',
               respond_to_read_receipts: 'never',
               read_receipt_trusted_domains: null,
+              trusted_authserv_id: input.values.trustedAuthservId ?? null,
               source_row: serverApiSourceRow(),
               imported_in_run_id: null,
               created_at: now,
@@ -2228,6 +2232,32 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
   };
 }
 
+// RFC 8601 §5: the Authentication-Results fallback only trusts fields from the
+// account's own receiving side (configured authserv-id or the incoming server's
+// domain). A message without an account trusts none.
+async function loadTrustedAuthservId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+): Promise<string | null> {
+  if (accountId === null) return null;
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['protocol', 'imap_host', 'pop3_host', 'trusted_authserv_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', Number(accountId))
+    .executeTakeFirst();
+  if (!account) return null;
+  return resolveTrustedAuthservId({
+    configured: account.trusted_authserv_id,
+    incomingHost: incomingMailHost({
+      protocol: account.protocol,
+      imapHost: account.imap_host,
+      pop3Host: account.pop3_host,
+    }),
+  });
+}
+
 async function runPostgresMailSecurityCheck(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -2250,6 +2280,7 @@ async function runPostgresMailSecurityCheck(
     bodyText: current.body_text,
     bodyHtml: current.body_html,
     mailauthEnabled: settings.mailauthEnabled,
+    trustedAuthservId: await loadTrustedAuthservId(trx, workspaceId, current.account_id),
     rspamdEnabled: settings.rspamdEnabled,
     rspamdUrl: settings.rspamdUrl,
     rspamdTimeoutMs: settings.rspamdTimeoutMs,
@@ -5395,6 +5426,7 @@ function mutationToEmailAccountPatch(
     ...(values.vacationBodyText === undefined ? {} : { vacation_body_text: values.vacationBodyText }),
     ...(values.requestReadReceipt === undefined ? {} : { request_read_receipt: values.requestReadReceipt }),
     ...(values.imapDeleteOptIn === undefined ? {} : { imap_delete_opt_in: values.imapDeleteOptIn }),
+    ...(values.trustedAuthservId === undefined ? {} : { trusted_authserv_id: values.trustedAuthservId }),
   };
 }
 
@@ -5512,6 +5544,7 @@ function redactParentOnlyAccountRow(row: Pick<EmailAccountRow, typeof emailAccou
     imapDeleteOptIn: false,
     defaultRemoteContentPolicy: 'blocked',
     respondToReadReceipts: 'never',
+    trustedAuthservId: null,
     // secret-presence flags — never reveal what is configured
     imapPasswordConfigured: false,
     smtpPasswordConfigured: false,
@@ -5554,6 +5587,7 @@ function mapEmailAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelect
     imapDeleteOptIn: row.imap_delete_opt_in,
     defaultRemoteContentPolicy: row.default_remote_content_policy,
     respondToReadReceipts: row.respond_to_read_receipts,
+    trustedAuthservId: row.trusted_authserv_id,
     imapPasswordConfigured: Boolean(row.imap_password_secret_id ?? row.keytar_account_key),
     smtpPasswordConfigured: Boolean(row.smtp_password_secret_id ?? row.smtp_keytar_account_key),
     oauthRefreshConfigured: Boolean(row.oauth_refresh_secret_id ?? row.oauth_refresh_keytar_key),

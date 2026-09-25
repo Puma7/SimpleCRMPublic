@@ -321,6 +321,7 @@ type EmailAccountRecord = {
   vacationBodyText?: string | null
   requestReadReceipt?: boolean | number | null
   imapDeleteOptIn?: boolean | number | null
+  trustedAuthservId?: string | null
   updatedAt?: string | null
 }
 
@@ -5510,6 +5511,7 @@ function mapEmailAccountRecord(record: EmailAccountRecord) {
     vacation_body_text: record.vacationBodyText ?? null,
     request_read_receipt: record.requestReadReceipt ? 1 : 0,
     imap_delete_opt_in: record.imapDeleteOptIn ? 1 : 0,
+    trusted_authserv_id: record.trustedAuthservId ?? null,
     created_at: record.updatedAt ?? "",
     updated_at: record.updatedAt ?? "",
   }
@@ -5546,6 +5548,7 @@ function mapEmailAccountMutationPayload(value: Record<string, any>): Record<stri
     vacationBodyText: value.vacationBodyText === undefined ? undefined : nullableTrimmedText(value.vacationBodyText, "vacation body", 10000),
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "read receipt request flag"),
     imapDeleteOptIn: optionalBoolean(value.imapDeleteOptIn, "imap delete opt-in flag"),
+    trustedAuthservId: value.trustedAuthservId === undefined ? undefined : nullableTrimmedText(value.trustedAuthservId, "trusted authserv id", 253),
   })
 }
 

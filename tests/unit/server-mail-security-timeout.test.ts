@@ -45,6 +45,7 @@ describe('server mail auth header fallback', () => {
       bodyHtml: null,
       mailauthTimeoutMs: 5,
       mailauthAuthenticate: neverSettles as any,
+      trustedAuthservId: 'provider.example',
     });
 
     expect(result.spf).toBe('none');
@@ -72,6 +73,8 @@ describe('server mail auth header fallback', () => {
     expect(result.dmarc).not.toBe('pass');
   });
 
+  // The fallback now requires a trusted authserv-id (F-A5-12, E6); the header
+  // below is the receiving server's own one, so it is configured as trusted.
   test('still uses the topmost Authentication-Results of the receiving server', async () => {
     const rawHeaders = [
       'Authentication-Results: mx.google.com;',
@@ -85,9 +88,70 @@ describe('server mail auth header fallback', () => {
       bodyHtml: null,
       mailauthTimeoutMs: 5,
       mailauthAuthenticate: neverSettles as any,
+      trustedAuthservId: 'mx.google.com',
     });
 
     expect(result).toMatchObject({ spf: 'pass', dkim: 'pass', dmarc: 'pass' });
     expect(result.error).toMatch(/Authentication-Results/);
+  });
+
+  // F-A5-12 (E6): Ohne eigenen A-R-Header des empfangenden MTA zaehlte der vom Absender eingeschleuste oberste Header, egal welche authserv-id er trug.
+  describe('authserv-id (RFC 8601 section 5)', () => {
+    const injectedOnly = [
+      'Authentication-Results: evil.example; spf=pass; dkim=pass; dmarc=pass',
+      'Received: from attacker.example (attacker.example [192.0.2.1]) by mail.kunde.de',
+      'From: chef@kunde.de',
+      'Subject: Neue Bankverbindung',
+    ].join('\r\n');
+
+    test('ignores a topmost field whose authserv-id is not the trusted one', async () => {
+      const result = await verifyMailAuthentication({
+        rawHeaders: injectedOnly,
+        bodyText: 'x',
+        bodyHtml: null,
+        mailauthTimeoutMs: 5,
+        mailauthAuthenticate: neverSettles as any,
+        trustedAuthservId: 'kunde.de',
+      });
+
+      expect(result).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', error: 'Mailauth Timeout' });
+    });
+
+    test('uses no header at all without a trusted authserv-id', async () => {
+      const result = await verifyMailAuthentication({
+        rawHeaders: injectedOnly,
+        bodyText: 'x',
+        bodyHtml: null,
+        mailauthTimeoutMs: 5,
+        mailauthAuthenticate: neverSettles as any,
+      });
+
+      expect(result).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' });
+    });
+
+    test('uses the topmost trusted field, also below a local filter field and for subdomains', async () => {
+      const rawHeaders = [
+        'Authentication-Results: spamfilter.local; dkim=none',
+        'Authentication-Results: mx01.kunde.de 1;',
+        ' spf=fail smtp.mailfrom=attacker.example; dkim=fail; dmarc=fail',
+        'Authentication-Results: kunde.de; spf=pass; dkim=pass; dmarc=pass',
+        'From: chef@kunde.de',
+      ].join('\r\n');
+
+      const result = await runStoredMailSecurityChecks({
+        rawHeaders,
+        bodyText: 'x',
+        bodyHtml: null,
+        mailauthEnabled: true,
+        mailauthTimeoutMs: 5,
+        mailauthAuthenticate: neverSettles as any,
+        trustedAuthservId: 'kunde.de',
+        rspamdEnabled: false,
+        rspamdUrl: 'http://127.0.0.1:11333',
+        rspamdTimeoutMs: 1000,
+      });
+
+      expect(result.auth).toMatchObject({ spf: 'fail', dkim: 'fail', dmarc: 'fail' });
+    });
   });
 });

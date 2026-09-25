@@ -280,6 +280,51 @@ describe('mail settings server-client UI', () => {
     });
   });
 
+  // F-A5-12 (E6): the Authentication-Results fallback trusts one authserv-id per
+  // account; the server edition lets the admin set it under "Erweitert".
+  test('account form edits the trusted authserv-id under "Erweitert" in server mode', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      jsonResponse({ data: { success: true } })
+    ));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<AccountForm onCreated={jest.fn()} editAccount={{ ...imapAccount(), trusted_authserv_id: 'mx.google.com' }} />);
+
+    fireEvent.click(await screen.findByText('Erweitert'));
+    const input = screen.getByLabelText(/Vertrauenswürdige authserv-id/) as HTMLInputElement;
+    expect(input.value).toBe('mx.google.com');
+    expect(input.placeholder).toContain('example.com');
+
+    fireEvent.change(input, { target: { value: ' MX.Example.NET ' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+    const patch = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({ trustedAuthservId: 'MX.Example.NET' });
+
+    fireEvent.change(input, { target: { value: '' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+    });
+    const patches = fetchImpl.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patches[1]?.[1]?.body))).toMatchObject({ trustedAuthservId: null });
+  });
+
+  test('Desktop: account form has no authserv-id field', async () => {
+    (window as any).electronAPI = { invoke: jest.fn(async () => ({ success: true })) };
+    configureRendererTransport(createIpcRendererTransport());
+
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    await screen.findByLabelText(/Anzeigename/i);
+    expect(screen.queryByText('Erweitert')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/authserv-id/)).not.toBeInTheDocument();
+  });
+
   test('account form shows the server rejection for a missing credential', async () => {
     const fetchImpl = jest.fn(async () => jsonResponse({
       error: {

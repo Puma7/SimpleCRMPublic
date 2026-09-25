@@ -44,6 +44,8 @@ export type EmailAccount = {
   vacation_body_text?: string | null
   request_read_receipt?: number
   imap_delete_opt_in?: number | null
+  /** Server edition: RFC 8601 authserv-id for the Authentication-Results fallback (null = default). */
+  trusted_authserv_id?: string | null
   created_at: string
   updated_at: string
 }

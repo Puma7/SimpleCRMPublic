@@ -52,7 +52,7 @@ import {
 import { MailAccessDeniedError } from '../mail-access/service';
 import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 import type { MailAccessActor } from '../mail-access/types';
-import { emailAddressForDelivery } from '@simplecrm/core';
+import { emailAddressForDelivery, normalizeTrustedAuthservIdSetting } from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { mailSyncJobTypeForProtocol } from '../jobs/mail-sync-scheduler';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
@@ -3297,6 +3297,7 @@ function sanitizeEmailAccount(account: EmailAccountRecord): EmailAccountRecord {
     imapDeleteOptIn: account.imapDeleteOptIn,
     defaultRemoteContentPolicy: account.defaultRemoteContentPolicy,
     respondToReadReceipts: account.respondToReadReceipts,
+    trustedAuthservId: account.trustedAuthservId,
     imapPasswordConfigured: account.imapPasswordConfigured,
     smtpPasswordConfigured: account.smtpPasswordConfigured,
     oauthRefreshConfigured: account.oauthRefreshConfigured,
@@ -4620,6 +4621,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
     'vacationBodyText',
     'requestReadReceipt',
     'imapDeleteOptIn',
+    'trustedAuthservId',
   ]);
 
   for (const key of Object.keys(body)) {
@@ -4655,6 +4657,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
   assignParsed(values, errors, body, 'vacationBodyText', (value) => normalizeNullableBodyText(value, 'vacationBodyText', 10000));
   assignParsed(values, errors, body, 'requestReadReceipt', (value) => normalizeBooleanBody(value, 'requestReadReceipt'));
   assignParsed(values, errors, body, 'imapDeleteOptIn', (value) => normalizeBooleanBody(value, 'imapDeleteOptIn'));
+  assignParsed(values, errors, body, 'trustedAuthservId', normalizeTrustedAuthservIdBody);
 
   if (errors.length > 0) {
     return {
@@ -5369,6 +5372,16 @@ function normalizeNullableBodyText(
   if (!value) return { ok: true, value: null };
   if (value.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
   return { ok: true, value };
+}
+
+function normalizeTrustedAuthservIdBody(
+  rawValue: unknown,
+): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (rawValue !== null && typeof rawValue !== 'string') {
+    return { ok: false, message: 'trustedAuthservId muss ein String oder null sein' };
+  }
+  const result = normalizeTrustedAuthservIdSetting(rawValue);
+  return result.ok ? result : { ok: false, message: `trustedAuthservId: ${result.message}` };
 }
 
 function normalizePasswordBody(rawValue: unknown): { ok: true; value: string } | { ok: false; message: string } {

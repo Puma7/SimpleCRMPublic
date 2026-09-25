@@ -646,6 +646,8 @@ export type EmailAccountsTable = {
   default_remote_content_policy: string;
   respond_to_read_receipts: string;
   read_receipt_trusted_domains: string | null;
+  /** RFC 8601 authserv-id fuer den Authentication-Results-Fallback; NULL = Standard (0054). */
+  trusted_authserv_id: string | null;
   /** Anstoss des letzten Syncs — Grundlage fuer Scheduler und Abkuehlzeit (0051). */
   last_sync_started_at: TimestampColumn | null;
   /**

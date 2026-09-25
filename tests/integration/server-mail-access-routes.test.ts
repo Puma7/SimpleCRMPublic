@@ -732,6 +732,10 @@ describe('server mailbox ACL migration', () => {
     const draftApprovalMigration = serverMigrations.find((candidate) => candidate.id === '0046_email_draft_approval_fields');
     expect(draftApprovalMigration).toBeDefined();
     await applyStatements(draftApprovalMigration!.upSql);
+    // The account API selects trusted_authserv_id (0054, F-A5-12) with every row.
+    const authservIdMigration = serverMigrations.find((candidate) => candidate.id === '0054_email_account_trusted_authserv_id');
+    expect(authservIdMigration).toBeDefined();
+    await applyStatements(authservIdMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');

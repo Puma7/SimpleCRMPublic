@@ -1886,6 +1886,8 @@ export type EmailAccountRecord = {
   imapDeleteOptIn: boolean;
   defaultRemoteContentPolicy: string;
   respondToReadReceipts: string;
+  /** Configured RFC 8601 authserv-id; null = default (domain of the incoming server). */
+  trustedAuthservId: string | null;
   imapPasswordConfigured: boolean;
   smtpPasswordConfigured: boolean;
   oauthRefreshConfigured: boolean;
@@ -1955,6 +1957,7 @@ export type EmailAccountMutationInput = {
   vacationBodyText?: string | null;
   requestReadReceipt?: boolean;
   imapDeleteOptIn?: boolean;
+  trustedAuthservId?: string | null;
 };
 
 export type EmailAccountMutationPortResult =

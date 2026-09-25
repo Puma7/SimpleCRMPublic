@@ -11,6 +11,10 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { hasLocalIpc, mailEndpointKey, type EmailAccount } from "../types"
+import {
+  defaultTrustedAuthservId,
+  incomingMailHost,
+} from "../../../../packages/core/src/email/authentication-results"
 
 type Props = {
   onCreated: () => void
@@ -39,6 +43,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
   const [vacationSubject, setVacationSubject] = useState("")
   const [vacationBodyText, setVacationBodyText] = useState("")
   const [requestReadReceipt, setRequestReadReceipt] = useState(false)
+  const [trustedAuthservId, setTrustedAuthservId] = useState("")
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [testingVacation, setTestingVacation] = useState(false)
@@ -90,7 +95,15 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
     setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
+    setTrustedAuthservId(editAccount.trusted_authserv_id ?? "")
   }, [editAccount?.id])
+
+  // Server edition only (no column on the desktop): which Authentication-Results
+  // header may stand in when the live SPF/DKIM/DMARC check fails.
+  const authservIdPayload = serverClientMode
+    ? { trustedAuthservId: trustedAuthservId.trim() || null }
+    : {}
+  const defaultAuthservId = defaultTrustedAuthservId(incomingMailHost({ protocol, imapHost, pop3Host }))
 
   const handleTestImap = async () => {
     if (!imapHost.trim() || !imapUsername.trim()) {
@@ -258,6 +271,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           vacationSubject: vacationSubject.trim() || null,
           vacationBodyText: vacationBodyText.trim() || null,
           requestReadReceipt,
+          ...authservIdPayload,
         })
         toast.success("Konto aktualisiert.")
         setImapPassword("")
@@ -284,6 +298,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
           imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
+          ...authservIdPayload,
         }) as { id?: number }
         if (res.id != null) {
           toast.success("Konto gespeichert.")
@@ -561,6 +576,27 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
             </>
           ) : null}
         </div>
+      ) : null}
+
+      {serverClientMode ? (
+        <details className="rounded-md border bg-muted/20 p-3">
+          <summary className="cursor-pointer text-sm font-medium">Erweitert</summary>
+          <div className="mt-3 space-y-1.5">
+            <Label htmlFor="acc-authserv-id">Vertrauenswürdige authserv-id</Label>
+            <Input
+              id="acc-authserv-id"
+              value={trustedAuthservId}
+              onChange={(e) => setTrustedAuthservId(e.target.value)}
+              placeholder={defaultAuthservId ? `Standard: ${defaultAuthservId}` : "z. B. mx.example.com"}
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Fällt die Live-Prüfung von SPF/DKIM/DMARC aus, übernimmt SimpleCRM die Ergebnisse
+              nur aus einem „Authentication-Results“-Header dieses Servers (gleiche authserv-id
+              oder eine Subdomain davon). Leer = Domain des Eingangsservers.
+            </p>
+          </div>
+        </details>
       ) : null}
 
       <div className="flex flex-wrap gap-2 pt-1">
