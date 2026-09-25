@@ -43,6 +43,14 @@ const TRACKING_LINK_HASH_CONTEXT = 'simplecrm/email-tracking/link-hash/v1';
 const AES_GCM_NONCE_BYTES = 12;
 const MAX_SEALED_JSON_BYTES = 64 * 1024;
 const MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE = 10_000;
+// Oeffentliche Abrufe schreiben ihre Evidenz weiter, wenn die HTTP-Antwort
+// laengst raus ist (Klick: sofortiger Redirect, Pixel: nach 1,5 s). Ohne Grenze
+// staute eine Flut beliebig viele solcher Laeufe vor dem Pool (F-A3a-05): Es
+// laufen hoechstens vier gleichzeitig, weitere warten in einer begrenzten
+// Schlange, der Rest wird verworfen. Wartende Laeufe halten keine Verbindung.
+const MAX_ACTIVE_PUBLIC_INTERACTIONS = 4;
+const MAX_QUEUED_PUBLIC_INTERACTIONS = 64;
+const PUBLIC_INTERACTION_DROP_WARN_INTERVAL_MS = 60_000;
 const MAX_TRACKED_HTML_BYTES = 5 * 1024 * 1024;
 const MAX_PRIVACY_NOTICE_URL_LENGTH = 2_048;
 const EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE = 500;
@@ -448,6 +456,8 @@ export function createPostgresEmailTrackingService(
   const publicBaseUrl = normalizeTrackingBaseUrl(options.publicBaseUrl);
   const crypto = options.emailTrackingCrypto ?? (options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null);
 
+  const runPublicInteraction = createPublicInteractionLimiter();
+
   const service: EmailTrackingService = {
     async getPolicy(input) {
       const row = await loadPolicyRow(options.db, input.workspaceId);
@@ -672,7 +682,7 @@ export function createPostgresEmailTrackingService(
       if (!crypto) return;
       const resolver = await resolvePublicToken(options.db, crypto, input.token, 'open', now());
       if (!resolver?.recordable) return;
-      const stored = await recordPublicInteraction({
+      const stored = await runPublicInteraction(() => recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
@@ -680,7 +690,7 @@ export function createPostgresEmailTrackingService(
         interaction: 'open',
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
-      });
+      }));
       if (!stored) return;
       await publishTrackingChanged(
         options.events,
@@ -720,7 +730,7 @@ export function createPostgresEmailTrackingService(
         return null;
       }
       if (!resolver.recordable) return { targetUrl };
-      void recordPublicInteraction({
+      void runPublicInteraction(() => recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
@@ -728,7 +738,7 @@ export function createPostgresEmailTrackingService(
         interaction: 'click',
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
-      }).then((stored) => (stored ? publishTrackingChanged(
+      })).then((stored) => (stored ? publishTrackingChanged(
         options.events,
         resolver.workspaceId,
         resolver.messageId,
@@ -1226,6 +1236,56 @@ function loadPolicyRowInTransaction(
 
 async function lockTrackingPolicy(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
+}
+
+/**
+ * Oeffentliche Abrufe lesen die Policy nur. Untereinander duerfen sie
+ * gleichzeitig laufen (die Evidenz einer Nachricht schuetzt lockTrackingMessage);
+ * setPolicy, prepareOutbound und die Neuklassifizierung schliessen sie mit dem
+ * exklusiven Lock weiterhin aus.
+ */
+async function lockTrackingPolicyShared(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
+}
+
+/**
+ * Laeuft `task`, sobald einer von MAX_ACTIVE_PUBLIC_INTERACTIONS Plaetzen frei
+ * ist; ist auch die Warteschlange voll, wird der Abruf verworfen (false).
+ */
+function createPublicInteractionLimiter(): (task: () => Promise<boolean>) => Promise<boolean> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  let dropped = 0;
+  let lastDropWarningAt = 0;
+  return (task) => {
+    let slot: Promise<void> | null = null;
+    if (active < MAX_ACTIVE_PUBLIC_INTERACTIONS) {
+      active += 1;
+    } else if (queue.length < MAX_QUEUED_PUBLIC_INTERACTIONS) {
+      slot = new Promise<void>((resolve) => queue.push(resolve));
+    } else {
+      dropped += 1;
+      const nowMs = Date.now();
+      if (nowMs - lastDropWarningAt >= PUBLIC_INTERACTION_DROP_WARN_INTERVAL_MS) {
+        console.warn(`[email-tracking] ${dropped} oeffentliche Abrufe verworfen: zu viele gleichzeitig`);
+        lastDropWarningAt = nowMs;
+        dropped = 0;
+      }
+      return Promise.resolve(false);
+    }
+    return (async () => {
+      if (slot) await slot;
+      try {
+        return await task();
+      } finally {
+        // Den Platz direkt an den naechsten Wartenden uebergeben, damit kein
+        // neuer Aufruf dazwischen die Grenze ueberschreitet.
+        const next = queue.shift();
+        if (next) next();
+        else active -= 1;
+      }
+    })();
+  };
 }
 
 async function lockTrackingMessage(trx: WorkspaceTransaction, trackingMessageId: string): Promise<void> {
@@ -1767,7 +1827,10 @@ async function recordPublicInteraction(input: {
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
-      await lockTrackingPolicy(trx, input.resolver.workspaceId);
+      // Evidenz ist kein Muss: lieber verwerfen, als eine Pool-Verbindung auf
+      // einen belegten Lock warten zu lassen (F-A3a-05).
+      await sql`SET LOCAL lock_timeout = '1s'`.execute(trx);
+      await lockTrackingPolicyShared(trx, input.resolver.workspaceId);
       await lockTrackingMessage(trx, input.resolver.trackingMessageId);
       const policy = await trx
         .selectFrom('email_tracking_policies')

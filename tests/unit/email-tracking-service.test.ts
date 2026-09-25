@@ -618,6 +618,59 @@ describe('email tracking service security helpers', () => {
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
+  // F-A3a-05: Jeder Klick startete per `void` eigene Hintergrundarbeit; bei einer Flut stauten sich beliebig viele Laeufe vor dem Pool.
+  test('bounds the background work of public clicks to four at a time plus a bounded queue (E12)', async () => {
+    const key = Buffer.alloc(32, 7);
+    const crypto = createEmailTrackingCrypto(key);
+    const token = 'C'.repeat(43);
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const linkId = '77777777-7777-4777-8777-777777777777';
+    const sealed = crypto.sealJson(
+      { url: 'https://customer.example/invoice/7' },
+      emailTrackingLinkAssociatedData(workspaceId, trackingMessageId, linkId),
+    );
+    const { db } = publicInteractionDatabase(crypto.tokenHash(token), { click: { linkId, sealed } });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    // The provider lookup runs inside the background work and outside any
+    // transaction: blocking it keeps a click "in flight".
+    const lookup = jest.fn(async () => {
+      await released;
+      return ipInsight({});
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-15T12:00:30.000Z'),
+    });
+    try {
+      const redirects = await Promise.all(Array.from({ length: 100 }, (_, index) => service.resolvePublicClick({
+        token,
+        ip: `203.0.113.${index + 1}`,
+        userAgent: 'MailClient/1.0',
+        headers: {},
+      })));
+      // Every visitor is redirected at once, whatever happens to the evidence.
+      expect(redirects.every((result) => result?.targetUrl === 'https://customer.example/invoice/7')).toBe(true);
+      await flushBackgroundWork();
+      expect(lookup).toHaveBeenCalledTimes(4);
+
+      release();
+      await flushBackgroundWork(() => lookup.mock.calls.length >= 68);
+      await flushBackgroundWork();
+      // 4 running + 64 queued; the other 32 clicks were dropped, not queued.
+      expect(lookup).toHaveBeenCalledTimes(68);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('verworfen'));
+    } finally {
+      release();
+      warn.mockRestore();
+    }
+  });
+
   test('looks up provider context outside transactions and persists only the V2 projection', async () => {
     const token = 'B'.repeat(43);
     const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);

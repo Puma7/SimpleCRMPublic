@@ -91,6 +91,9 @@ sichtbar macht; ohne oder mit einem anderen Hash bleibt der Resolver vollständi
   Pino-Stdout und Diagnose-Log, da der Pfad ein bearer-artiges Token enthält.
 - Öffentliche Endpunkte haben IP- und Token-Limits, 1,5 Sekunden Anwendungs-Timeout,
   persistente Minuten-Deduplizierung und maximal 10.000 öffentliche Ereignisse pro Nachricht.
+- Pro API-Prozess schreiben höchstens vier öffentliche Abrufe gleichzeitig Evidenz, 64 weitere
+  warten; was darüber hinausgeht, wird verworfen (Redirect und Pixel kommen trotzdem). Der
+  Workspace-Policy-Lock wird dabei nur geteilt genommen und höchstens eine Sekunde abgewartet.
 - Ungültige Pixel-Tokens liefern dasselbe nicht cachebare GIF wie gültige Tokens.
 - Klickziele werden nur als `http` oder `https` weitergeleitet; CR/LF und überlange Ziele
   werden verworfen.
