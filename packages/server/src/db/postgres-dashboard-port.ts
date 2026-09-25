@@ -50,7 +50,9 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
               .selectFrom('customers')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
-              .where('updated_at', '>=', oneMonthAgo)
+              // date_added like the desktop dateAdded: every JTL sync refreshes
+              // updated_at, which would make all synced customers look new.
+              .where('date_added', '>=', oneMonthAgo)
               .executeTakeFirstOrThrow(),
             trx
               .selectFrom('deals')
@@ -80,8 +82,8 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
             trx
               .selectFrom('deals')
               .select((eb) => [
-                eb.fn.count<number>('id').filterWhere('stage', '=', 'Closed Won').as('won'),
-                eb.fn.count<number>('id').filterWhere('stage', 'in', ['Closed Won', 'Closed Lost']).as('total'),
+                eb.fn.count<number>('id').filterWhere('stage', 'in', WON_DEAL_STAGES).as('won'),
+                eb.fn.count<number>('id').filterWhere('stage', 'in', CLOSED_DEAL_STAGES).as('total'),
               ])
               .where('workspace_id', '=', input.workspaceId)
               .executeTakeFirstOrThrow(),
@@ -172,6 +174,7 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
   };
 }
 
+const WON_DEAL_STAGES = ['Gewonnen', 'Closed Won'] as const;
 const CLOSED_DEAL_STAGES = ['Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost'] as const;
 
 function normalizeLimit(limit: number): number {
