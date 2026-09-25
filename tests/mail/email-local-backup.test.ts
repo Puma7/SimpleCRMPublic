@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { PassThrough } from 'stream';
 import yauzl from 'yauzl';
+import zlib from 'zlib';
 
 const tmpUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'crm-backup-'));
 
@@ -23,6 +25,7 @@ jest.mock('../../electron/email/email-message-attachments-store', () => ({
 const {
   exportLocalMailBackup,
   inspectZipBackup,
+  readZipEntryText,
 } = require('../../electron/email/email-local-backup') as typeof import('../../electron/email/email-local-backup');
 const { exportLocalMailBackupToPath } = require('../../electron/email/email-local-backup-export') as typeof import('../../electron/email/email-local-backup-export');
 
@@ -46,6 +49,48 @@ function extractZipEntry(zipPath: string, entryName: string, target: string): Pr
       zip.readEntry();
     });
   });
+}
+
+const BACKUP_MANIFEST = JSON.stringify({ type: 'simplecrm-mail-local-backup', exportedAt: '2026-09-25T00:00:00.000Z' });
+
+/** Writes a ZIP with node:zlib (DEFLATE, empty entries stored); unlike JSZip it keeps duplicate names and stays fast for 10k entries. */
+function writeCraftedZip(name: string, entries: [string, string][]): string {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [entryName, content] of entries) {
+    const fileName = Buffer.from(entryName);
+    const raw = Buffer.from(content);
+    const data = raw.length > 0 ? zlib.deflateRawSync(raw) : raw;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(raw.length > 0 ? 8 : 0, 8);
+    local.writeUInt16LE(0x21, 12);
+    local.writeUInt32LE(zlib.crc32(raw), 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(raw.length, 22);
+    local.writeUInt16LE(fileName.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    local.copy(central, 10, 8, 30);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, fileName, data);
+    centrals.push(central, fileName);
+    offset += local.length + fileName.length + data.length;
+  }
+  const centralDir = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralDir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  const zipPath = path.join(tmpUserData, name);
+  fs.writeFileSync(zipPath, Buffer.concat([...locals, centralDir, end]));
+  return zipPath;
 }
 
 describe('email-local-backup', () => {
@@ -134,5 +179,69 @@ describe('email-local-backup', () => {
     fs.writeFileSync(bad, 'not zip');
     const v = await inspectZipBackup(bad);
     expect(v.ok).toBe(false);
+  });
+
+  // C-A8: inspectZipBackup puffert ein beliebig grosses manifest.json im Main-Prozess, noch vor Typpruefung und Restore-Limits.
+  test('inspectZipBackup rejects an oversized manifest without buffering it', async () => {
+    const zipPath = writeCraftedZip('big-manifest.zip', [
+      ['database.sqlite', 'x'],
+      ['manifest.json', JSON.stringify({ type: 'simplecrm-mail-local-backup', pad: 'a'.repeat(2 * 1024 * 1024) })],
+    ]);
+    expect(fs.statSync(zipPath).size).toBeLessThan(64 * 1024);
+
+    const v = await inspectZipBackup(zipPath);
+
+    expect(v).toEqual({ ok: false, error: 'manifest.json ist zu groß.' });
+    fs.unlinkSync(zipPath);
+  });
+
+  // C-A8: Jedes weitere manifest.json wurde erneut gelesen und ersetzte das vorige.
+  test('inspectZipBackup rejects a second manifest.json', async () => {
+    const zipPath = writeCraftedZip('two-manifests.zip', [
+      ['database.sqlite', 'x'],
+      ['manifest.json', BACKUP_MANIFEST],
+      ['manifest.json', BACKUP_MANIFEST],
+    ]);
+
+    const v = await inspectZipBackup(zipPath);
+
+    expect(v).toEqual({ ok: false, error: 'ZIP enthält mehr als eine manifest.json.' });
+    fs.unlinkSync(zipPath);
+  });
+
+  // C-A8: Die Inspektion ging jede Eintragszahl durch; die Restore-Grenze (10.000) griff erst danach.
+  test('inspectZipBackup rejects more entries than a restore accepts', async () => {
+    const entries: [string, string][] = [
+      ['database.sqlite', 'x'],
+      ['manifest.json', BACKUP_MANIFEST],
+    ];
+    for (let i = entries.length; i <= 10_000; i += 1) entries.push([`email-attachments/${i}`, '']);
+    const zipPath = writeCraftedZip('many-entries.zip', entries);
+
+    const v = await inspectZipBackup(zipPath);
+
+    expect(v).toEqual({ ok: false, error: 'ZIP enthält zu viele Einträge.' });
+    fs.unlinkSync(zipPath);
+  });
+
+  // C-A8: Auch ein Eintrag, der mehr liefert als deklariert, wird beim Lesen an der Grenze abgebrochen.
+  test('readZipEntryText stops reading at the byte limit', async () => {
+    const stream = new PassThrough();
+    const destroy = jest.spyOn(stream, 'destroy');
+    const zip = { openReadStream: (_entry: unknown, cb: (err: null, s: PassThrough) => void) => cb(null, stream) };
+
+    const read = readZipEntryText(zip as never, { fileName: 'manifest.json', uncompressedSize: 10 } as never, 64 * 1024);
+    stream.write(Buffer.alloc(40 * 1024, 0x20));
+    stream.write(Buffer.alloc(40 * 1024, 0x20));
+
+    await expect(read).rejects.toThrow('manifest.json ist zu groß.');
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  test('readZipEntryText rejects a declared size above the limit without opening the entry', async () => {
+    const zip = { openReadStream: jest.fn() };
+    await expect(readZipEntryText(zip as never, { fileName: 'manifest.json', uncompressedSize: 64 * 1024 + 1 } as never, 64 * 1024))
+      .rejects.toThrow('manifest.json ist zu groß.');
+    expect(zip.openReadStream).not.toHaveBeenCalled();
   });
 });

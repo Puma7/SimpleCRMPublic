@@ -3,6 +3,10 @@ import path from 'path';
 import yauzl from 'yauzl';
 import { app, dialog, type OpenDialogReturnValue, type SaveDialogReturnValue } from 'electron';
 import { exportLocalMailBackupToPath } from './email-local-backup-export';
+import { RESTORE_ZIP_MAX_ENTRIES } from './email-local-backup-limits';
+
+/** The export writes a manifest of a few hundred bytes. */
+const BACKUP_MANIFEST_MAX_BYTES = 64 * 1024;
 
 type BackupManifest = {
   type?: string;
@@ -20,7 +24,12 @@ function openZip(filePath: string): Promise<yauzl.ZipFile> {
   });
 }
 
-function readZipEntryText(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<string> {
+/** @internal Exported for tests. */
+export function readZipEntryText(zip: yauzl.ZipFile, entry: yauzl.Entry, maxBytes: number): Promise<string> {
+  // Checked before inflating and again while reading: a few KB of ZIP can
+  // declare and deliver hundreds of MB (C-A8).
+  const tooLarge = () => new Error(`${entry.fileName} ist zu groß.`);
+  if (entry.uncompressedSize > maxBytes) return Promise.reject(tooLarge());
   return new Promise((resolve, reject) => {
     zip.openReadStream(entry, (err, stream) => {
       if (err || !stream) {
@@ -28,7 +37,16 @@ function readZipEntryText(zip: yauzl.ZipFile, entry: yauzl.Entry): Promise<strin
         return;
       }
       const chunks: Buffer[] = [];
-      stream.on('data', (c: Buffer) => chunks.push(c));
+      let bytes = 0;
+      stream.on('data', (c: Buffer) => {
+        bytes += c.length;
+        if (bytes > maxBytes) {
+          stream.destroy();
+          reject(tooLarge());
+          return;
+        }
+        chunks.push(c);
+      });
       stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
       stream.on('error', reject);
     });
@@ -51,9 +69,13 @@ export async function inspectZipBackup(filePath: string): Promise<
   let zip: yauzl.ZipFile | null = null;
   try {
     zip = await openZip(filePath);
+    if (zip.entryCount > RESTORE_ZIP_MAX_ENTRIES) {
+      return { ok: false, error: 'ZIP enthält zu viele Einträge.' };
+    }
     let hasDatabase = false;
     let hasAttachments = false;
     let manifest: BackupManifest | null = null;
+    let manifestSeen = false;
 
     await new Promise<void>((resolve, reject) => {
       const nextEntry = () => {
@@ -73,7 +95,12 @@ export async function inspectZipBackup(filePath: string): Promise<
           return;
         }
         if (name === 'manifest.json') {
-          void readZipEntryText(zip!, entry)
+          if (manifestSeen) {
+            reject(new Error('ZIP enthält mehr als eine manifest.json.'));
+            return;
+          }
+          manifestSeen = true;
+          void readZipEntryText(zip!, entry, BACKUP_MANIFEST_MAX_BYTES)
             .then((raw) => {
               try {
                 manifest = JSON.parse(raw) as BackupManifest;
