@@ -11,6 +11,7 @@ import {
 } from "@shared/email-workflow-graph-compile"
 import {
   findInboundDelaysHoldingChain,
+  findLoopBodyDeferringNodes,
   findOutboundGraphTraps,
   findWorkflowConfigRisks,
   formatOutboundGraphTraps,
@@ -480,6 +481,19 @@ export function WorkflowShell() {
             { duration: 12000 },
           )
         }
+      }
+      // Hinweis, kein Riegel: Ein asynchroner Knoten im Je-Eintrag-Zweig einer
+      // Schleife lässt den Lauf zur Laufzeit mit Fehler enden (F-A9-04).
+      const loopBodyAsync = findLoopBodyDeferringNodes(graphDoc, {
+        edition: serverClientMode ? "server" : "desktop",
+      })
+      if (loopBodyAsync.length > 0) {
+        toast.warning(
+          `Asynchrone Knoten im Je-Eintrag-Zweig einer Schleife (${loopBodyAsync
+            .map((id) => `„${id}“`)
+            .join(", ")}) beenden den Lauf mit Fehler. Bitte hinter den Fertig-Ausgang der Schleife verschieben.`,
+          { duration: 12000 },
+        )
       }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {

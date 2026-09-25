@@ -458,6 +458,84 @@ export function findInboundDelaysHoldingChain(
     .map((node) => node.id);
 }
 
+const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'logic.delay',
+  'ai.agent',
+  'ai.pick_canned',
+  'ai.draft_reply',
+  'ai.review_draft',
+]);
+const SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'ai.classify',
+  'ai.review',
+  'ai_review',
+  'ai.outbound_review',
+  'ai.transform_text',
+  'http.request',
+  'email.forward_copy',
+  'forward_copy',
+  'email.ingest_dmarc_report',
+]);
+const DESKTOP_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set(['logic.delay']);
+
+export type WorkflowRuntimeEdition = 'server' | 'desktop';
+
+/** Setzt dieser Knoten den Lauf asynchron fort? Siehe core workflowNodeDefersRun. */
+export function workflowNodeDefersRun(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  edition: WorkflowRuntimeEdition,
+): boolean {
+  const type = runtimeType(node);
+  if (edition === 'desktop') return DESKTOP_ALWAYS_DEFERRING_NODE_TYPES.has(type);
+  if (SERVER_ALWAYS_DEFERRING_NODE_TYPES.has(type)) return true;
+  if (!SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES.has(type) || !Array.isArray(doc?.edges)) return false;
+  const outs = doc.edges.filter((edge) => edge.source === node.id);
+  if (type === 'http.request') return outs.length > 0;
+  // Wie resolveResumeNodeAfter: OK- oder Standardkante.
+  return outs.some((edge) => loopEdgeLabel(edge) === 'ok' || edgeIsDefaultLabel(edge));
+}
+
+function loopEdgeLabel(edge: { label?: string | null }): string {
+  return (edge.label ?? '').toLowerCase();
+}
+
+/**
+ * Knoten im Je-Eintrag-Zweig einer Schleife, die den Lauf deferieren wuerden
+ * (F-A9-04). Mirror von core findLoopBodyDeferringNodes; Kantenwahl wie pickEdge.
+ */
+export function findLoopBodyDeferringNodes(
+  doc: WorkflowGraphDocument,
+  opts: { edition: WorkflowRuntimeEdition },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const found: string[] = [];
+  for (const loopNode of doc.nodes) {
+    if (runtimeType(loopNode) !== 'logic.loop') continue;
+    const loopEdges = doc.edges
+      .filter((edge) => edge.source === loopNode.id)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const isDone = (edge: { label?: string | null }) => ['done', 'fertig', 'end'].includes(loopEdgeLabel(edge));
+    const eachEdge = loopEdges.find((edge) => ['each', 'je', 'loop'].includes(loopEdgeLabel(edge)))
+      ?? loopEdges.find((edge) => !isDone(edge));
+    if (!eachEdge) continue;
+    const doneTarget = loopEdges.find(isDone)?.target;
+    const seen = new Set<string>([loopNode.id, ...(doneTarget ? [doneTarget] : [])]);
+    const queue = [eachEdge.target];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const node = byId.get(id);
+      if (!node) continue;
+      if (workflowNodeDefersRun(doc, node, opts.edition) && !found.includes(id)) found.push(id);
+      queue.push(...doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target));
+    }
+  }
+  return found;
+}
+
 /**
  * Platzhalter, deren Inhalt aus der eingegangenen Mail stammt — und damit von
  * dem, der sie geschickt hat. Der Server fuellt sie in stringsFromMessage.

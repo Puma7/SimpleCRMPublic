@@ -1,6 +1,6 @@
 import { isTrashMailboxName } from '../email/imap-mailbox-names';
 import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
-import { edgeIsDefault } from './graph-walk-utils';
+import { edgeIsDefault, outgoing, pickEdge, resolveResumeNodeAfter } from './graph-walk-utils';
 import { chainStopFlagEnabled, NODE_CHAIN_STOP_CONFIG_KEY } from './node-chain-stop';
 
 function registryType(node: WorkflowGraphNode): string {
@@ -301,6 +301,88 @@ export function findInboundDelaysHoldingChain(
     .filter((node) => workflowNodeRuntimeType(node) === 'logic.delay')
     .filter((node) => inboundChainStopReachableAfter(doc, node.id))
     .map((node) => node.id);
+}
+
+/**
+ * Server: Knoten, die den Lauf immer asynchron fortsetzen (Kindjob bzw.
+ * Verzoegerung), auch ohne Folgeknoten.
+ */
+const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'logic.delay',
+  'ai.agent',
+  'ai.pick_canned',
+  'ai.draft_reply',
+  'ai.review_draft',
+]);
+/**
+ * Server: Knoten, die deferieren, sobald sie einen Folgeknoten haben (OK- bzw.
+ * Standardkante wie resolveResumeNodeAfter; HTTP auch ueber die Fehlerkante).
+ */
+const SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'ai.classify',
+  'ai.review',
+  'ai_review',
+  'ai.outbound_review',
+  'ai.transform_text',
+  'http.request',
+  'email.forward_copy',
+  'forward_copy',
+  'email.ingest_dmarc_report',
+]);
+/** Desktop: nur die Verzoegerung laeuft spaeter weiter; KI und HTTP laufen synchron. */
+const DESKTOP_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set(['logic.delay']);
+
+export type WorkflowRuntimeEdition = 'server' | 'desktop';
+
+/**
+ * Setzt dieser Knoten den Lauf asynchron fort (Fortsetzung als eigener Job)?
+ * Im Je-Eintrag-Zweig einer Schleife ginge dabei der Schleifenzustand
+ * verloren; beide Runtimes lehnen solche Knoten dort ab (F-A9-04).
+ */
+export function workflowNodeDefersRun(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  edition: WorkflowRuntimeEdition,
+): boolean {
+  const type = workflowNodeRuntimeType(node);
+  if (edition === 'desktop') return DESKTOP_ALWAYS_DEFERRING_NODE_TYPES.has(type);
+  if (SERVER_ALWAYS_DEFERRING_NODE_TYPES.has(type)) return true;
+  if (!SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES.has(type) || !Array.isArray(doc?.edges)) return false;
+  if (type === 'http.request') return doc.edges.some((edge) => edge.source === node.id);
+  return resolveResumeNodeAfter(doc, node.id) !== null;
+}
+
+/**
+ * Knoten im Je-Eintrag-Zweig einer Schleife, die den Lauf deferieren wuerden.
+ * Die Runtime bricht dort mit Fehler ab; der Editor warnt beim Speichern.
+ * Der Zweig endet wie zur Laufzeit am Schleifenknoten und am Fertig-Ziel.
+ */
+export function findLoopBodyDeferringNodes(
+  doc: WorkflowGraphDocument,
+  opts: { edition: WorkflowRuntimeEdition },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const found: string[] = [];
+  for (const loopNode of doc.nodes) {
+    if (workflowNodeRuntimeType(loopNode) !== 'logic.loop') continue;
+    const loopEdges = outgoing(doc.edges, loopNode.id);
+    const eachEdge = pickEdge(loopEdges, 'each');
+    if (!eachEdge) continue;
+    const doneTarget = pickEdge(loopEdges, 'done')?.target;
+    const seen = new Set<string>([loopNode.id, ...(doneTarget ? [doneTarget] : [])]);
+    const queue = [eachEdge.target];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const node = byId.get(id);
+      if (!node) continue;
+      if (workflowNodeDefersRun(doc, node, opts.edition) && !found.includes(id)) found.push(id);
+      queue.push(...doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target));
+    }
+  }
+  return found;
 }
 
 /**

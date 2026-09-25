@@ -31,6 +31,7 @@ import {
   workflowNodeRuntimeType,
   workflowTriggerNeedsMessage,
   inboundChainStopReachableAfter,
+  workflowNodeDefersRun,
   type WorkflowDirection,
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
@@ -114,8 +115,23 @@ const MAX_WORKFLOW_LOOP_ITEMS = 500;
 const MAX_SUBFLOW_DEPTH = 8;
 /** Reserved variable carrying the current subflow chain depth across child runs. */
 const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
+/**
+ * Global cap on continuations (resumed runs) per workflow lineage. MAX_GRAPH_STEPS
+ * only bounds a single job; a cycle through an async node (HTTP/AI/delay back to
+ * an earlier node) otherwise re-queues itself forever. Each resume counts one hop.
+ * 100 leaves room for real graphs (a path rarely has more than a dozen async
+ * nodes; a delay-based reminder cycle still gets 100 rounds) while a runaway
+ * chain stops after 100 external calls instead of never.
+ */
+const MAX_WORKFLOW_CONTINUATION_HOPS = 100;
+/** Reserved variable counting the continuations of this lineage (rides in eventVariables). */
+const CONTINUATION_HOPS_VARIABLE = '__continuation_hops';
 /** Variables only the executor may set; nodes can neither write nor overwrite them. */
-const RESERVED_WORKFLOW_VARIABLES = [SUBFLOW_DEPTH_VARIABLE, READ_RECEIPT_REVIEW_ROUND_VARIABLE];
+const RESERVED_WORKFLOW_VARIABLES = [
+  SUBFLOW_DEPTH_VARIABLE,
+  READ_RECEIPT_REVIEW_ROUND_VARIABLE,
+  CONTINUATION_HOPS_VARIABLE,
+];
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -1537,6 +1553,19 @@ async function runServerWorkflowGraph(
     if (!doc.nodes.some((node) => node.id === input.startNodeId)) {
       return blockedResult(`resume_node_missing:${input.startNodeId}`);
     }
+    const rawHops = input.context.variables[CONTINUATION_HOPS_VARIABLE];
+    const hops = (typeof rawHops === 'number' && Number.isInteger(rawHops) && rawHops >= 0 ? rawHops : 0) + 1;
+    input.context.variables[CONTINUATION_HOPS_VARIABLE] = hops;
+    if (hops > MAX_WORKFLOW_CONTINUATION_HOPS) {
+      const message = `Fortsetzungs-Limit ${MAX_WORKFLOW_CONTINUATION_HOPS} ueberschritten (moeglicher Kreis ueber einen asynchronen Knoten) — Lauf abgebrochen`;
+      return {
+        status: 'error',
+        blocked: false,
+        deferred: false,
+        blockReason: message,
+        log: [`graph_resume:${input.startNodeId}`, `error:continuation_hop_limit:${MAX_WORKFLOW_CONTINUATION_HOPS}`],
+      };
+    }
     return walkGraph(trx, {
       doc,
       context: input.context,
@@ -1631,6 +1660,8 @@ async function walkGraph(
     inboundGate?: ServerInboundBranchGate;
     /** Step counter of this walk; the block-port branch keeps counting (desktop parity). */
     steps?: { count: number };
+    /** Walk of a loop's each branch: deferring nodes are rejected there (F-A9-04). */
+    insideLoopBody?: boolean;
   },
 ): Promise<GraphRunResult> {
   const nodesById = new Map(input.doc.nodes.map((node) => [node.id, node]));
@@ -1724,6 +1755,7 @@ async function walkGraph(
             allowRevisit: true,
             stopBeforeNodeIds,
             inboundGate: input.inboundGate,
+            insideLoopBody: true,
           });
           if (branchResult.status !== 'ok' || branchResult.blocked || branchResult.deferred) {
             return branchResult;
@@ -1736,16 +1768,32 @@ async function walkGraph(
     }
 
     const started = Date.now();
-    const result = withNodeChainStop(node, await executeServerNode(
-      trx,
-      input.doc,
-      input.context,
-      node,
-      input.log,
-      input.now,
-      input.ports,
-      input.dryRun,
-    ));
+    // Eine Fortsetzung kennt den Schleifenzustand nicht: die uebrigen Eintraege
+    // gingen verloren, eine Rueckkante startete die Schleife endlos neu. Deshalb
+    // vor dem Einreihen abbrechen statt still nur den ersten Eintrag zu bearbeiten.
+    // Die Ausgangs-Vorschau fuehrt KI-Pruefungen synchron aus; dort deferieren sie nicht.
+    const previewRunsReviewSynchronously = input.dryRun
+      && input.context.previewOutbound
+      && ['ai.outbound_review', 'ai.review', 'ai_review'].includes(nodeRuntimeType(node));
+    const loopBodyDeferral = input.insideLoopBody === true
+      && !previewRunsReviewSynchronously
+      && workflowNodeDefersRun(input.doc, node, 'server');
+    const result = withNodeChainStop(node, loopBodyDeferral
+      ? {
+        status: 'error',
+        port: 'error',
+        message: `„${node.id}“ läuft asynchron weiter und ist im Je-Eintrag-Zweig einer Schleife nicht erlaubt — Knoten hinter den Fertig-Ausgang der Schleife verschieben`,
+      }
+      : await executeServerNode(
+        trx,
+        input.doc,
+        input.context,
+        node,
+        input.log,
+        input.now,
+        input.ports,
+        input.dryRun,
+      ));
     const durationMs = Math.max(0, Date.now() - started);
     if (!input.dryRun) {
       await insertRunStep(trx, input.context, node, {

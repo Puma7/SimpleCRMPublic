@@ -19,6 +19,7 @@ import {
   NODE_CHAIN_STOP_MESSAGE,
   nodeRequestsChainStop,
 } from '../../packages/core/src/workflow/node-chain-stop';
+import { workflowNodeDefersRun } from '../../packages/core/src/workflow/graph-validate';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -178,6 +179,8 @@ type WalkOptions = {
   stopBeforeNodeIds?: ReadonlySet<string>;
   /** Schrittzähler des Durchlaufs; der Block-Port-Zweig zählt weiter statt neu. */
   steps?: { count: number };
+  /** Je-Eintrag-Zweig einer Schleife: deferierende Knoten sind dort verboten (F-A9-04). */
+  insideLoopBody?: boolean;
 };
 
 type InboundBranchGate = {
@@ -304,7 +307,7 @@ async function walkGraph(
           eachEdge.target,
           branchLog,
           new Set<string>(),
-          { allowRevisit: true, stopBeforeNodeIds },
+          { allowRevisit: true, stopBeforeNodeIds, insideLoopBody: true },
           gate,
         );
         for (const line of r.log.slice(logLengthBefore)) log.push(line);
@@ -322,14 +325,24 @@ async function walkGraph(
 
     const t0 = Date.now();
     let result: NodeExecuteResult;
-    try {
-      result = await executeNode(ctx, node, log);
-    } catch (e) {
-      result = {
-        status: 'error',
-        message: e instanceof Error ? e.message : String(e),
-        port: 'error',
-      };
+    // Wie der Server: Eine Fortsetzung kennt den Schleifenzustand nicht, die
+    // übrigen Einträge gingen still verloren. Vor dem Einplanen abbrechen.
+    if (options?.insideLoopBody && workflowNodeDefersRun(doc, node, 'desktop')) {
+      const message =
+        `„${node.id}“ läuft verzögert weiter und ist im Je-Eintrag-Zweig einer Schleife nicht erlaubt ` +
+        '— Knoten hinter den Fertig-Ausgang der Schleife verschieben';
+      log.push(`error:${node.id}:${message}`);
+      result = { status: 'error', port: 'error', message };
+    } else {
+      try {
+        result = await executeNode(ctx, node, log);
+      } catch (e) {
+        result = {
+          status: 'error',
+          message: e instanceof Error ? e.message : String(e),
+          port: 'error',
+        };
+      }
     }
     result = withNodeChainStop(node, regType, result);
     const durationMs = Date.now() - t0;

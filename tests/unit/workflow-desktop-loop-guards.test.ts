@@ -190,6 +190,45 @@ describe('desktop logic.loop guards', () => {
     }
     expect(result.log.length).toBeLessThan(100);
   });
+
+  // F-A9-04: Eine Verzögerung im Je-Eintrag-Zweig deferierte beim ersten Eintrag;
+  // die Schleife gab auf, die übrigen Einträge gingen still verloren.
+  test('fails a delay inside the each branch before it schedules anything', async () => {
+    const calls = new Map<string, number>();
+    const delayDef: RegisteredWorkflowNode = {
+      type: 'logic.delay',
+      label: 'Verzögerung',
+      category: 'logic',
+      canvasType: 'registry',
+      execute: async (_ctx, _config, nodeId): Promise<NodeExecuteResult> => {
+        calls.set(nodeId, (calls.get(nodeId) ?? 0) + 1);
+        return { status: 'ok', stop: true, deferred: true, message: 'delayed_until:later' };
+      },
+    };
+    jest.mocked(getWorkflowNode).mockImplementation((type: string) =>
+      type === 'logic.delay' ? delayDef : undefined,
+    );
+
+    const result = await run(
+      [
+        trigger,
+        loop,
+        { id: 'wait', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } },
+        countNode('body'),
+      ],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'wait', label: 'each' },
+        { id: 'e3', source: 'wait', target: 'body' },
+      ],
+      'a,b,c',
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.deferred).not.toBe(true);
+    expect(calls.get('wait')).toBeUndefined();
+    expect(result.log.some((line) => line.includes('Schleife'))).toBe(true);
+  });
 });
 
 describe('desktop trigger branches', () => {
