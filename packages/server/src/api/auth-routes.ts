@@ -228,7 +228,10 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     });
     const penalty = calculateLoginPenalty(failedAttempts);
     if (user) {
-      await ports.audit?.record({
+      // Not awaited: only existing accounts get this audit row, and waiting for
+      // its transaction made their failed logins measurably slower than those of
+      // unknown e-mail addresses (account enumeration by response time).
+      void Promise.resolve(ports.audit?.record({
         workspaceId: user.workspaceId,
         actorUserId: user.id,
         action: 'auth.login_failed',
@@ -240,6 +243,10 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
           failedAttempts,
           penaltyKind: penalty.kind,
         },
+      })).catch((auditError: unknown) => {
+        console.warn(
+          `[auth] auth.login_failed audit write failed for user ${user.id}: ${auditError instanceof Error ? auditError.message : String(auditError)}`,
+        );
       });
     }
     const locked = penalty.kind === 'permanent';
