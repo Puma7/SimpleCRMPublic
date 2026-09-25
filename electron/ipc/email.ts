@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BrowserWindow, IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
 import fs from 'fs';
-import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
@@ -210,35 +209,8 @@ import { exchangeMicrosoftAuthCode } from '../email/email-oauth-microsoft';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { listAttachmentsForMessage, getAttachmentById } from '../email/email-message-attachments-store';
 import { syncSeenFlagToServer } from '../email/email-imap-flags';
+import { isPotentiallyDangerousAttachment } from './attachment-open-risk';
 
-const DANGEROUS_ATTACHMENT_EXT = new Set([
-  '.exe',
-  '.bat',
-  '.cmd',
-  '.com',
-  '.scr',
-  '.pif',
-  '.msi',
-  '.dll',
-  '.js',
-  '.jse',
-  '.vbs',
-  '.vbe',
-  '.wsf',
-  '.wsh',
-  '.ps1',
-  '.msc',
-  '.hta',
-  '.sh',
-  '.app',
-  '.deb',
-  '.rpm',
-]);
-
-function isPotentiallyDangerousAttachment(filename: string): boolean {
-  const ext = path.extname(filename).toLowerCase();
-  return ext !== '' && DANGEROUS_ATTACHMENT_EXT.has(ext);
-}
 import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
