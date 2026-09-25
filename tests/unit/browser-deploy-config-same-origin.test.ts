@@ -45,6 +45,33 @@ describe('getBrowserDeployConfig same-origin server default', () => {
     expect(result.config.server?.baseUrl).toBe('https://other.example.com');
   });
 
+  // F-A11b-04: Ein Link mit fremder ?serverUrl= stellte den vom Server ausgelieferten Web-Client dauerhaft auf diese URL um.
+  test('a foreign ?serverUrl= in the server-served build is not persisted', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fevil.example');
+
+    getBrowserDeployConfig();
+    window.history.replaceState({}, '', '/');
+    const result = getBrowserDeployConfig();
+
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBeNull();
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe(window.location.origin);
+  });
+
+  test('without the web-only flag, a ?serverUrl= bootstrap is still persisted (dev/test)', () => {
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fcrm.example.com');
+
+    getBrowserDeployConfig();
+
+    expect(JSON.parse(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY) ?? '{}')).toMatchObject({
+      server: { baseUrl: 'https://crm.example.com' },
+    });
+  });
+
   test('the same-origin default is not persisted to storage', () => {
     (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
     window.localStorage.clear();

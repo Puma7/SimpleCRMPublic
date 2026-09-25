@@ -54,7 +54,13 @@ export function getBrowserDeployConfig(): DeployConfigResult {
 
   const queryConfig = deployConfigFromUrl(window.location.href)
   if (queryConfig.status === "ok") {
-    persistBrowserDeployConfig(queryConfig.config)
+    // In the server-served web build a foreign ?serverUrl= only applies to this
+    // page load: a link must not repoint the browser permanently away from the
+    // server it was loaded from (there is no browser-side reset).
+    const forced = typeof __SIMPLECRM_FORCE_SAME_ORIGIN__ !== "undefined" && __SIMPLECRM_FORCE_SAME_ORIGIN__
+    const baseUrl = queryConfig.config.server?.baseUrl
+    const foreignOrigin = baseUrl != null && new URL(baseUrl).origin !== window.location.origin
+    if (!(forced && foreignOrigin)) persistBrowserDeployConfig(queryConfig.config)
     return queryConfig
   }
   if (queryConfig.status === "invalid") return queryConfig
