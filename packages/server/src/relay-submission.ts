@@ -25,6 +25,7 @@
 import { createHash } from 'node:crypto';
 
 import { sql as kyselySql, type Kysely } from 'kysely';
+import addressparser from 'nodemailer/lib/addressparser';
 
 import {
   buildComposeRfc822,
@@ -275,6 +276,16 @@ export function createRelaySubmissionPipeline(
         // every address) is what actually goes out on the wire/pass-through
         // would let a spoofed second sender ride along disguised behind a
         // legitimate one.
+        //    The parser keeps only the LAST of several From headers and drops
+        //    group entries, while the pass-through ships the original header
+        //    lines — so the raw header block is checked as well.
+        const rawFrom = readTopLevelHeaderValues(input.rfc822, 'from');
+        if (rawFrom.length > 1) {
+          return failure('from_mismatch', 'Header-From darf nur einmal vorkommen', false);
+        }
+        if (rawFrom.length === 1 && addressparser(rawFrom[0]!).some((entry) => 'group' in entry)) {
+          return failure('from_mismatch', 'Header-From darf keine Gruppenadresse enthalten', false);
+        }
         const fromAddresses = parsedAddressEntries(parsed.fromJson);
         if (fromAddresses.length !== 1) {
           return failure(
@@ -784,6 +795,29 @@ function readTopLevelHeaderValue(rfc822: Buffer, lowerCaseName: string): string 
     return value.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
   return null;
+}
+
+/**
+ * Every top-level occurrence of a header (unfolded), including the obsolete
+ * `Name :` form with whitespace before the colon that receivers still honour.
+ */
+function readTopLevelHeaderValues(rfc822: Buffer, lowerCaseName: string): string[] {
+  const { headerLines } = splitRfc822HeaderBlock(rfc822.toString('latin1'));
+  const values: string[] = [];
+  for (let index = 0; index < headerLines.length; index += 1) {
+    const match = /^([^:\s]+)[ \t]*:/.exec(headerLines[index]!);
+    if (!match || match[1]!.toLowerCase() !== lowerCaseName) continue;
+    let value = headerLines[index]!.slice(match[0].length);
+    for (
+      let next = index + 1;
+      next < headerLines.length && /^[ \t]/.test(headerLines[next]!);
+      next += 1
+    ) {
+      value += ` ${headerLines[next]!}`;
+    }
+    values.push(value.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim());
+  }
+  return values;
 }
 
 // ---------------------------------------------------------------------------

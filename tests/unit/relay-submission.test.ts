@@ -688,6 +688,44 @@ describe('submitRelay header-From spoofing check', () => {
     expect(store.persistMessage).not.toHaveBeenCalled();
   });
 
+  // F-A3b-02: a duplicate From header or group syntax passed the "exactly one From" check (the parser keeps
+  // only the last From and drops group entries) while the pass-through sent the original header lines.
+  test.each([
+    ['a duplicate From header with the spoofed one first', erpMessage({
+      from: 'CEO <ceo@bank.example>',
+      extraHeaders: ['From: Buchhaltung <sales@acme.test>'],
+    })],
+    ['a duplicate From header written with whitespace before the colon', Buffer.concat([
+      Buffer.from('From : CEO <ceo@bank.example>\r\n', 'utf8'),
+      erpMessage(),
+    ])],
+    ['a group entry next to the allowed mailbox', erpMessage({
+      from: 'Buchhaltung <sales@acme.test>, Grp: evil@example.test;',
+    })],
+  ])('rejects %s', async (_label, rfc822) => {
+    const { pipeline, smtpSend, store } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(rfc822));
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'from_mismatch',
+      message: expect.any(String),
+      retryable: false,
+    });
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(store.persistMessage).not.toHaveBeenCalled();
+  });
+
+  test('accepts one allowed From mailbox with a quoted or encoded display name', async () => {
+    for (const from of ['"Buchhaltung, Acme" <sales@acme.test>', '=?utf-8?Q?B=C3=BCro?= <sales@acme.test>']) {
+      const { pipeline, smtpSend } = makePipeline();
+      const result = await pipeline.submitRelay(submitInput(erpMessage({ from })));
+      expect([from, result.ok]).toEqual([from, true]);
+      expect(smtpSend).toHaveBeenCalledTimes(1);
+    }
+  });
+
   test('rejects a header From that resolves to a different account than the envelope From', async () => {
     const relayPort = makeRelayPort({
       accounts: [
