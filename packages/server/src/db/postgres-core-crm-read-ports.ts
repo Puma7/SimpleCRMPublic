@@ -1649,7 +1649,7 @@ function mutationToTaskPatch(
  * global, assigned to them, or assigned to a group they belong to. Owners,
  * admins, and the system (no viewer) see everything.
  */
-function taskVisibilityExpression(
+export function taskVisibilityExpression(
   eb: ExpressionBuilder<ServerDatabase, 'tasks'>,
   workspaceId: string,
   viewer: TaskViewer | undefined,

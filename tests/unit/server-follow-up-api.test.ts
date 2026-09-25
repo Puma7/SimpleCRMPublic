@@ -33,6 +33,7 @@ describe('server follow-up API', () => {
     });
     expect(followUp.getQueueCounts).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
+      viewer: { userId: 'user-1', role: 'owner' },
     });
   });
 
@@ -76,6 +77,7 @@ describe('server follow-up API', () => {
       },
       limit: 20,
       offset: 5,
+      viewer: { userId: 'user-1', role: 'owner' },
     });
     expect(invalidLimit.status).toBe(400);
     expect((invalidLimit.body as any).error.code).toBe('invalid_limit');

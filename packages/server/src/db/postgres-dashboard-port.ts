@@ -7,6 +7,7 @@ import type {
   DashboardUpcomingTaskRecord,
 } from '../api/types';
 import type { ServerDatabase } from './schema';
+import { taskVisibilityExpression } from './postgres-core-crm-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -64,12 +65,14 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
               .selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .executeTakeFirstOrThrow(),
             trx
               .selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('due_date', '>=', todayStart)
               .where('due_date', '<', tomorrowStart)
@@ -134,6 +137,7 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
         async (trx) => {
           const rows = await trx
             .selectFrom('tasks')
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .leftJoin('customers', (join) => join
               .onRef('customers.id', '=', 'tasks.customer_id')
               .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))

@@ -26,6 +26,7 @@ export async function handleDashboardRoute(
   if (req.path === '/api/v1/dashboard/stats') {
     return data(200, await ports.dashboard.getStats({
       workspaceId: principal.workspaceId,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 
@@ -44,6 +45,7 @@ export async function handleDashboardRoute(
     return data(200, await ports.dashboard.getUpcomingTasks({
       workspaceId: principal.workspaceId,
       limit,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 

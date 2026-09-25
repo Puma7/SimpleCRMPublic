@@ -1013,6 +1013,7 @@ export type DashboardApiPort = {
   getStats(input: {
     workspaceId: string;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<DashboardStatsRecord>;
   getRecentCustomers(input: {
     workspaceId: string;
@@ -1021,6 +1022,7 @@ export type DashboardApiPort = {
   getUpcomingTasks(input: {
     workspaceId: string;
     limit: number;
+    viewer?: TaskViewer;
   }): Promise<readonly DashboardUpcomingTaskRecord[]>;
 };
 
@@ -1057,6 +1059,7 @@ export type FollowUpApiPort = {
   getQueueCounts(input: {
     workspaceId: string;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<FollowUpQueueCountsRecord>;
   getItems(input: {
     workspaceId: string;
@@ -1068,6 +1071,7 @@ export type FollowUpApiPort = {
     limit: number;
     offset: number;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<readonly FollowUpItemRecord[]>;
   snoozeTask(input: {
     workspaceId: string;
