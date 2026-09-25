@@ -215,7 +215,12 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       },
       '/email/accounts/test-imap': { post: { summary: 'Test IMAP connection' } },
       '/email/accounts/test-pop3': { post: { summary: 'Test POP3 connection' } },
-      '/email/accounts/test-smtp': { post: { summary: 'Test SMTP connection' } },
+      '/email/accounts/test-smtp': {
+        post: {
+          summary: 'Test SMTP connection',
+          description: 'Optional boolean `tls` (TLS switch, ad-hoc test with password): true requires STARTTLS before AUTH unless `secure` or port 465. Omitted: STARTTLS only when offered.',
+        },
+      },
       '/email/accounts/{id}/sync': { post: { summary: 'Queue account sync' } },
       '/email/accounts/{id}/sync-lock': { delete: { summary: 'Release stale account sync job locks (legacy job queue only; with Graphile: 503, orphaned locks are released by the worker)' } },
       '/email/accounts/{id}/vacation-test': { post: { summary: 'Test vacation responder' } },

@@ -369,6 +369,88 @@ describe('server mail connection test stored credentials', () => {
     expect(socket.written.some((line) => line.startsWith('AUTH'))).toBe(false);
   });
 
+  // C-A66: Der Ad-hoc-Test mit eingegebenem Passwort ignorierte den TLS-Schalter; ohne STARTTLS-Angebot ging AUTH PLAIN im Klartext raus.
+  test('explicit password with the TLS switch on port 587 refuses AUTH without STARTTLS (G10)', async () => {
+    const socket = new FakeSmtpSocket();
+    let socketInput: { host: string; port: number; tls: boolean } | null = null;
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async (input: { host: string; port: number; tls: boolean }) => {
+        socketInput = input;
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testSmtp({
+      workspaceId: 'workspace-a',
+      host: 'smtp.example.com',
+      port: 587,
+      tls: false,
+      requireTls: true,
+      user: 'adhoc@example.com',
+      password: 'my-pass',
+    });
+
+    expect(socketInput).toEqual(expect.objectContaining({ port: 587, tls: false }));
+    expect(result).toEqual({ success: false, error: 'SMTP STARTTLS nicht verfuegbar' });
+    expect(socket.written.some((line) => line.startsWith('AUTH'))).toBe(false);
+  });
+
+  test('explicit password without the TLS switch keeps the opportunistic STARTTLS of before', async () => {
+    const socket = new FakeSmtpSocket();
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async () => {
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    for (const requireTls of [undefined, false]) {
+      socket.written.length = 0;
+      const result = await port.testSmtp({
+        workspaceId: 'workspace-a',
+        host: 'smtp.example.com',
+        port: 587,
+        tls: false,
+        ...(requireTls === undefined ? {} : { requireTls }),
+        user: 'adhoc@example.com',
+        password: 'my-pass',
+      });
+
+      expect(result).toEqual({ success: false, error: '535 denied' });
+      expect(socket.written.some((line) => line.startsWith('AUTH PLAIN '))).toBe(true);
+    }
+  });
+
+  test('the TLS switch does not demand STARTTLS on top of implicit TLS', async () => {
+    const socket = new FakeSmtpSocket();
+    let socketInput: { host: string; port: number; tls: boolean } | null = null;
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async (input: { host: string; port: number; tls: boolean }) => {
+        socketInput = input;
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testSmtp({
+      workspaceId: 'workspace-a',
+      host: 'smtp.example.com',
+      port: 465,
+      tls: true,
+      requireTls: true,
+      user: 'adhoc@example.com',
+      password: 'my-pass',
+    });
+
+    expect(socketInput).toEqual(expect.objectContaining({ port: 465, tls: true }));
+    expect(result).toEqual({ success: false, error: '535 denied' });
+    expect(socket.written).not.toContain('STARTTLS');
+  });
+
   // F-A4-04: a failing connect (DNS, refused, TLS certificate, timeout) was
   // awaited outside the try block, so the route answered HTTP 500 instead of
   // returning the connection error to the settings UI.

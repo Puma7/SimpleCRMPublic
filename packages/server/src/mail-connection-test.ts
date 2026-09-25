@@ -193,15 +193,20 @@ async function resolveSmtpInput(
   const port = useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587);
   // The stored smtp_tls flag means "enforce TLS" like in sendSmtpMessage:
   // implicit TLS on 465, mandatory STARTTLS on every other port. The request's
-  // `secure` flag (ad-hoc tests) keeps meaning implicit TLS.
+  // `secure` flag (ad-hoc tests) keeps meaning implicit TLS; its TLS switch
+  // (`requireTls`) enforces STARTTLS by the same rule, otherwise STARTTLS is
+  // only used when offered, as before.
   const storedTls = useStored && account!.smtpTls;
+  const requireStartTls = useStored
+    ? storedTls && port !== 465
+    : input.requireTls === true && !input.tls && port !== 465;
   return {
     resolved: true,
     value: {
       host,
       port,
       tls: useStored ? storedTls && port === 465 : input.tls,
-      ...(storedTls && port !== 465 ? { requireStartTls: true } : {}),
+      ...(requireStartTls ? { requireStartTls: true } : {}),
       user,
       password: auth.password ?? '',
       ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),

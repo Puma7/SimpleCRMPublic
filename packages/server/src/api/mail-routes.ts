@@ -5279,7 +5279,7 @@ function parseMailConnectionTestBody(
     ? new Set(['accountId', 'imapHost', 'imapPort', 'imapTls', 'imapUsername', 'imapPassword'])
     : protocol === 'pop3'
       ? new Set(['accountId', 'host', 'port', 'tls', 'user', 'password'])
-      : new Set(['accountId', 'host', 'port', 'secure', 'user', 'password', 'smtpUseImapAuth']);
+      : new Set(['accountId', 'host', 'port', 'secure', 'tls', 'user', 'password', 'smtpUseImapAuth']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
@@ -5321,6 +5321,14 @@ function parseMailConnectionTestBody(
     const smtpUseImapAuth = normalizeBooleanBody(body.smtpUseImapAuth, 'smtpUseImapAuth');
     if (smtpUseImapAuth.ok) values.smtpUseImapAuth = smtpUseImapAuth.value;
     else errors.push({ field: 'smtpUseImapAuth', message: smtpUseImapAuth.message });
+  }
+
+  // SMTP: `secure` is implicit TLS, the optional `tls` is the form's TLS switch
+  // (enforce STARTTLS off port 465). Older clients omit it.
+  if (protocol === 'smtp' && body.tls !== undefined) {
+    const requireTls = normalizeBooleanBody(body.tls, 'tls');
+    if (requireTls.ok) values.requireTls = requireTls.value;
+    else errors.push({ field: 'tls', message: requireTls.message });
   }
 
   if (errors.length > 0) {

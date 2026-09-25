@@ -3259,6 +3259,44 @@ describe('renderer transport', () => {
     );
   });
 
+  // C-A66: TestSmtp verwarf den TLS-Schalter des Formulars, der Server testete ad hoc ohne erzwungenes STARTTLS.
+  test('forwards the SMTP TLS switch to the connection test (G10)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.TestSmtp, {
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: true,
+      user: 'user@example.com',
+      password: 'secret',
+      smtpUseImapAuth: false,
+    })).resolves.toEqual({ success: true });
+    await expect(transport.invoke(IPCChannels.Email.TestSmtp, {
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: 'yes',
+      user: 'user@example.com',
+      password: 'secret',
+    })).rejects.toThrow('Invalid smtp tls flag');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1].body))).toEqual({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: true,
+      user: 'user@example.com',
+      password: 'secret',
+      smtpUseImapAuth: false,
+    });
+  });
+
   test('maps server-created email account records to positive database IDs', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {

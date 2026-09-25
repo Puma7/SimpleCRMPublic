@@ -1976,6 +1976,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         host: stringPayloadField(input.host, "smtp host"),
         port: positiveId(input.port, "smtp port"),
         secure: requiredBoolean(input.secure, "smtp secure flag"),
+        tls: optionalBoolean(input.tls, "smtp tls flag"),
         user: stringPayloadField(input.user, "smtp user"),
         password: input.password === undefined || input.password === null ? "" : String(input.password),
         smtpUseImapAuth: optionalBoolean(input.smtpUseImapAuth, "smtp imap auth flag"),

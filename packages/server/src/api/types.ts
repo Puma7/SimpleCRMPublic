@@ -2096,6 +2096,8 @@ export type MailConnectionTestInput = {
   host: string;
   port: number;
   tls: boolean;
+  /** SMTP ad-hoc test: the form's TLS switch (request field `tls`); `tls` above is implicit TLS (`secure`). */
+  requireTls?: boolean;
   user: string;
   password?: string;
   accessToken?: string;
