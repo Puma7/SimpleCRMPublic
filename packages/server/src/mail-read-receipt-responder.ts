@@ -446,8 +446,32 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
             .select(['id', 'source_sqlite_id'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
+            // Serializes concurrent clicks so the pending check below cannot
+            // race into a second round of review runs.
+            .forUpdate()
             .executeTakeFirst();
           if (!message) return { allowed: false, error: 'Nachricht nicht gefunden' };
+
+          // A review for this message is still pending: report it again instead
+          // of queueing another round of runs and jobs per click. How a finished
+          // review releases the MDN is deliberately left unchanged here.
+          const pendingRun = await trx
+            .selectFrom('email_workflow_runs')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('message_id', '=', input.messageId)
+            .where('direction', '=', 'outbound')
+            .where('status', 'in', ['queued', 'running'])
+            .orderBy('id', 'asc')
+            .limit(1)
+            .executeTakeFirst();
+          if (pendingRun) {
+            return {
+              allowed: false,
+              error: READ_RECEIPT_OUTBOUND_REVIEW_REASON,
+              workflowRunId: Number(pendingRun.id),
+            };
+          }
 
           let firstRunId: number | null = null;
           for (const workflow of workflows) {
