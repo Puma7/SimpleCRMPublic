@@ -1598,7 +1598,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/calendar-events",
     query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<CalendarEventRecord>(body).map(mapCalendarEventRecord),
+    // The calendar shows every event like the desktop edition, so follow the
+    // cursor past the server's 100-row page instead of keeping the lowest ids.
+    transform: async (body, context) => {
+      const items = await collectPagedListItems<CalendarEventRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/calendar-events",
+        query: { limit: DEFAULT_LIST_LIMIT },
+      })
+      return items.map(mapCalendarEventRecord)
+    },
   })],
   [IPCChannels.Calendar.AddCalendarEvent, ([eventData]) => {
     const input = objectPayload(eventData, "calendar entry payload")

@@ -1034,6 +1034,38 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-A10-04: the calendar read only the first server page (the 100 lowest
+  // ids) and dropped nextCursor, so newer appointments never showed up.
+  test('collects every calendar event page instead of the first 100', async () => {
+    const event = (id: number) => ({
+      id,
+      title: `Termin ${id}`,
+      startDate: '2026-07-01T09:00:00.000Z',
+      endDate: '2026-07-01T10:00:00.000Z',
+      allDay: false,
+    });
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: Array.from({ length: 100 }, (_, index) => event(index + 1)), nextCursor: 100 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [event(101)], nextCursor: null } }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const events = await transport.invoke(IPCChannels.Calendar.GetCalendarEvents) as Array<{ id: number; title: string }>;
+
+    expect(events).toHaveLength(101);
+    expect(events[100]).toEqual(expect.objectContaining({ id: 101, title: 'Termin 101' }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/calendar-events?limit=100&cursor=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('collects product search payloads above the server page limit', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
