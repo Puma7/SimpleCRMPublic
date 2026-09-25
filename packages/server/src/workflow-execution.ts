@@ -46,6 +46,7 @@ import {
   type InboundWorkflowChainContext,
 } from './workflow-inbound-chain-context';
 import {
+  DELAYED_JOB_CHAIN_SETTLED_FIELD,
   cancelPendingWorkflowDelayedJobsForMessage,
   completeInboundDeferredJoinSibling,
   inboundJoinAllowsAdvance,
@@ -685,7 +686,12 @@ export function createPostgresWorkflowExecutionJobPort(
             });
             // Storniertes Delay-Geschwister: siehe unten — die Join-Barriere
             // zaehlt es weiterhin als pending und bliebe sonst fuer immer offen.
-            if (trigger === 'inbound' && message) {
+            // Ausnahme: ein manueller Abbruch hat Barriere und Kette bereits
+            // selbst abgeschlossen (settleInboundChainForCancelledDelayedJob);
+            // eine vorher schon gesperrte Fortsetzung darf das nicht wiederholen.
+            const settledByCancel = delayedJob.status === 'cancelled'
+              && Boolean(objectRecord(delayedJob.context_json)?.[DELAYED_JOB_CHAIN_SETTLED_FIELD]);
+            if (trigger === 'inbound' && message && !settledByCancel) {
               await completeInboundDeferredJoinSibling(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),

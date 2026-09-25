@@ -56,6 +56,10 @@ import {
 } from './resolve-email-account-reference';
 import type { MailSqlScope } from '../mail-access/types';
 import { mailScopePredicate } from '../mail-access/sql-scope';
+import {
+  DELAYED_JOB_CHAIN_SETTLED_FIELD,
+  settleInboundChainForCancelledDelayedJob,
+} from '../workflow-inbound-chain-advance';
 
 export type PostgresWorkflowRuntimeReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -1082,7 +1086,27 @@ export function createPostgresWorkflowDelayedJobReadPort(
           }
           // Cancelling only the delayed-job row leaves the queued workflow.execute
           // continuation runnable; drop unlocked queue rows for this delayedJobId.
+          // That continuation was also what advances the inbound priority chain,
+          // so settle the chain here and mark the row for a continuation that was
+          // already locked and still runs.
           if (values.status === 'cancelled') {
+            const now = new Date();
+            await settleInboundChainForCancelledDelayedJob(trx, {
+              workspaceId: input.workspaceId,
+              workflowId: row.workflow_id,
+              messageId: row.message_id,
+              context: row.context_json,
+              now,
+            });
+            await trx
+              .updateTable('workflow_delayed_jobs')
+              .set({
+                context_json: kyselySql`coalesce(context_json, '{}'::jsonb) || jsonb_build_object(${DELAYED_JOB_CHAIN_SETTLED_FIELD}::text, true)`,
+                updated_at: now,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .execute();
             await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
           }
           return { ok: true, job: mapWorkflowDelayedJobRow(row, true) };
@@ -1109,8 +1133,19 @@ export function createPostgresWorkflowDelayedJobReadPort(
             'workflow_delayed_jobs.message_id',
           );
           if (visibility) query = query.where(visibility);
-          const row = await query.returning(workflowDelayedJobSummaryColumns).executeTakeFirst();
+          const row = await query.returning([...workflowDelayedJobSummaryColumns, 'context_json']).executeTakeFirst();
           if (!row) return null;
+          // A pending delay still holds its join slot and the chain; the removed
+          // continuation can no longer release them (see update above).
+          if (row.status === 'pending') {
+            await settleInboundChainForCancelledDelayedJob(trx, {
+              workspaceId: input.workspaceId,
+              workflowId: row.workflow_id,
+              messageId: row.message_id,
+              context: row.context_json,
+              now: new Date(),
+            });
+          }
           await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
           return mapWorkflowDelayedJobRow(row, false);
         },

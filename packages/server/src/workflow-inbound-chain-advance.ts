@@ -713,6 +713,47 @@ export async function advanceInboundChainAfterTerminalChild(
 }
 
 /**
+ * Marker in workflow_delayed_jobs.context_json: a manual cancel/delete already
+ * released this delay's join slot and advanced the inbound chain. A
+ * continuation that was locked before the cancel and runs afterwards must not
+ * do either a second time.
+ */
+export const DELAYED_JOB_CHAIN_SETTLED_FIELD = 'inboundChainSettledByCancel';
+
+/**
+ * Manual cancel or delete of a pending logic.delay job (diagnostics view).
+ *
+ * The queued continuation is the only thing that would release the deferred
+ * join and advance the inbound priority chain once the delay is over. Dropping
+ * it left every lower-priority inbound workflow for the message hanging, so
+ * the cancel settles the chain itself: this workflow counts as failed (not
+ * applied), the next priority workflow is queued. Chain-less and non-inbound
+ * delays have nothing to advance.
+ */
+export async function settleInboundChainForCancelledDelayedJob(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    workflowId: number | string | null;
+    messageId: number | string | null;
+    context: unknown;
+    now: Date;
+  },
+): Promise<void> {
+  const workflowId = positiveInt(input.workflowId);
+  const messageId = positiveInt(input.messageId);
+  const context = objectRecord(input.context);
+  if (workflowId == null || messageId == null || !context) return;
+  await advanceInboundChainAfterTerminalChild(trx, {
+    workspaceId: input.workspaceId,
+    workflowId,
+    messageId,
+    triggerName: 'inbound',
+    context,
+  }, { error: true, now: input.now });
+}
+
+/**
  * Insert the next priority inbound workflow.execute after a terminal child failure.
  *
  * `error: true` NUR fuer echte endgueltige Fehlschlaege setzen (Job endgueltig
