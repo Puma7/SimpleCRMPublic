@@ -2281,6 +2281,11 @@ function createDefaultImapClient(input: Parameters<ServerMailSyncImapClientFacto
 }
 
 const POP3_CAPA_MAX_LINES = 1_000;
+// RFC 5322 allows 998 characters per line; anything near 1 MiB without a line
+// end is a hostile or broken server. The whole buffer holds at most one
+// maximum-size message (plus a reserve) that nobody has read yet.
+const POP3_MAX_LINE_CHARS = 1024 * 1024;
+const POP3_MAX_BUFFERED_CHARS = MAX_INBOUND_RFC822_BYTES + POP3_MAX_LINE_CHARS;
 
 export function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
   return new LineProtocolPop3Client(input);
@@ -2289,6 +2294,10 @@ export function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3Clie
 class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   private socket: net.Socket | null = null;
   private buffer = '';
+  /** Characters after the last line feed in `buffer` (all of it without one). */
+  private partialLineChars = 0;
+  /** No CRLF starts before this offset in `buffer` (an earlier search found none). */
+  private crlfSearchFrom = 0;
   private waiters: Array<(line: string) => void> = [];
   private errorWaiters: Array<(error: Error) => void> = [];
   private closedError: Error | null = null;
@@ -2341,7 +2350,7 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     raw.off('end', this.onEnd);
     // Anything read before the switch was sent in plaintext and must not be
     // taken as a TLS-protected response (RFC 2595 section 4).
-    this.buffer = '';
+    this.clearBuffer();
     const secure = await new Promise<tls.TLSSocket>((resolve, reject) => {
       const socket = tls.connect({ socket: raw, servername: this.input.host });
       const timer = setTimeout(() => fail(new Error('Connection timed out')), this.input.timeoutMs);
@@ -2456,26 +2465,43 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
 
   private pushData(chunk: string): void {
     this.buffer += chunk;
-    for (;;) {
+    // Only the new chunk is searched: scanning the whole buffer on every chunk
+    // made an endless line (or a flood nobody reads) cost quadratic CPU.
+    const lastLf = chunk.lastIndexOf('\n');
+    this.partialLineChars = lastLf >= 0 ? chunk.length - lastLf - 1 : this.partialLineChars + chunk.length;
+    if (this.partialLineChars > POP3_MAX_LINE_CHARS || this.buffer.length > POP3_MAX_BUFFERED_CHARS) {
+      this.clearBuffer();
+      this.rejectAll(new Error('POP3-Serverantwort zu gross'));
+      this.socket?.destroy();
+      return;
+    }
+    // Split lines only for a waiting reader and only once a line end arrived;
+    // everything else stays queued for the next readLine.
+    while (this.waiters.length > 0 && this.partialLineChars < this.buffer.length) {
       const line = this.shiftLine();
       if (line === null) return;
-      const waiter = this.waiters.shift();
-      if (!waiter) {
-        this.buffer = `${line}\r\n${this.buffer}`;
-        return;
-      }
-      waiter(line);
+      this.waiters.shift()!(line);
     }
   }
 
   private shiftLine(): string | null {
-    const crlf = this.buffer.indexOf('\r\n');
     const lf = this.buffer.indexOf('\n');
+    if (lf < 0) return null;
+    // The first CRLF cannot start before the first LF; resuming where the last
+    // search stopped keeps bare-LF lines from rescanning the whole buffer.
+    const crlf = this.buffer.indexOf('\r\n', Math.max(lf - 1, this.crlfSearchFrom));
     const index = crlf >= 0 ? crlf : lf;
-    if (index < 0) return null;
+    const consumed = index + (crlf >= 0 ? 2 : 1);
+    this.crlfSearchFrom = crlf >= 0 ? 0 : Math.max(0, this.buffer.length - 1 - consumed);
     const line = this.buffer.slice(0, index).replace(/\r$/, '');
-    this.buffer = this.buffer.slice(index + (crlf >= 0 ? 2 : 1));
+    this.buffer = this.buffer.slice(consumed);
     return line;
+  }
+
+  private clearBuffer(): void {
+    this.buffer = '';
+    this.partialLineChars = 0;
+    this.crlfSearchFrom = 0;
   }
 
   private rejectAll(error: Error): void {
