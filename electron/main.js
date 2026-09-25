@@ -23,6 +23,7 @@ const {
 const {
   registerWindowDevToolsShortcuts,
 } = require('../dist-electron/electron/security/devtools-shortcuts');
+const { resolveIsDevelopment } = require('../dist-electron/electron/security/runtime-mode');
 
 // Configure electron-log
 log.transports.file.resolvePath = () => path.join(app.getPath('userData'), 'logs/main.log');
@@ -54,7 +55,10 @@ log.transports.console.writeFn = (...args) => {
 };
 Object.assign(console, log.functions); // Override console functions
 
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = resolveIsDevelopment({
+  isPackaged: app.isPackaged,
+  nodeEnv: process.env.NODE_ENV,
+});
 
 const clearProductionRendererCache = async (windowInstance) => {
   if (isDevelopment) {

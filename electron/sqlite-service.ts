@@ -105,6 +105,7 @@ import {
 } from './database-schema';
 import { Product, DealProduct } from './types';
 import type { TaskScheduleInput } from '@simplecrm/core';
+import { resolveIsDevelopment } from './security/runtime-mode';
 
 function getDatabasePath(): string {
   try {
@@ -119,7 +120,10 @@ function getDatabasePath(): string {
   return path.join(base, 'database.sqlite');
 }
 let db: Database.Database | undefined;
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = resolveIsDevelopment({
+  isPackaged: app?.isPackaged,
+  nodeEnv: process.env.NODE_ENV,
+});
 
 const sqliteVerboseLogger = (...args: unknown[]) => {
     if (isDevelopment) {
