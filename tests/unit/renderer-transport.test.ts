@@ -1066,6 +1066,62 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-A11b-03: the deal overview asks for up to 10000 deals, but the mapping
+  // capped the request at one server page (100, lowest ids) and dropped
+  // nextCursor; the customer/deal detail lists had the same one-page cut.
+  test('collects deal and detail list pages beyond the first 100', async () => {
+    const deal = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, name: `Deal ${id}`, value: '10', stage: 'Angebot' });
+    const task = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, title: `Aufgabe ${id}`, priority: 'Medium', completed: false });
+    const twoPages = (make: (id: number) => object) => [
+      jsonResponse({ data: { items: Array.from({ length: 100 }, (_, index) => make(index + 1)), nextCursor: 100 } }),
+      jsonResponse({ data: { items: [make(101)], nextCursor: null } }),
+    ];
+    const fetchImpl = jest.fn();
+    for (const response of [...twoPages(deal), ...twoPages(deal), ...twoPages(task), ...twoPages(task)]) {
+      fetchImpl.mockResolvedValueOnce(response);
+    }
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const allDeals = await transport.invoke(IPCChannels.Deals.GetAll, { limit: 10000, offset: 0, filter: {} }) as Array<{ id: number }>;
+    const customerDeals = await transport.invoke(IPCChannels.Db.GetDealsForCustomer, 2) as Array<{ id: number }>;
+    const customerTasks = await transport.invoke(IPCChannels.Db.GetTasksForCustomer, 2) as Array<{ id: number }>;
+    const dealTasks = await transport.invoke(IPCChannels.Deals.GetTasks, 7) as Array<{ id: number }>;
+
+    for (const list of [allDeals, customerDeals, customerTasks, dealTasks]) {
+      expect(list).toHaveLength(101);
+      expect(list[100]).toEqual(expect.objectContaining({ id: 101 }));
+    }
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://crm.example.com/api/v1/deals?limit=100',
+      'https://crm.example.com/api/v1/deals?limit=100&cursor=100',
+      'https://crm.example.com/api/v1/deals?limit=100&customerId=2',
+      'https://crm.example.com/api/v1/deals?limit=100&customerId=2&cursor=100',
+      'https://crm.example.com/api/v1/tasks?limit=100&customerId=2',
+      'https://crm.example.com/api/v1/tasks?limit=100&customerId=2&cursor=100',
+      'https://crm.example.com/api/v1/deals/7/tasks?limit=100',
+      'https://crm.example.com/api/v1/deals/7/tasks?limit=100&cursor=100',
+    ]);
+  });
+
+  test('keeps a small deal list request to the requested number of deals', async () => {
+    const deal = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, name: `Deal ${id}`, value: '10', stage: 'Angebot' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { items: [deal(1), deal(2)], nextCursor: 2 },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const deals = await transport.invoke(IPCChannels.Deals.GetAll, { limit: 2 }) as Array<{ id: number }>;
+
+    expect(deals.map((entry) => entry.id)).toEqual([1, 2]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('collects product search payloads above the server page limit', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

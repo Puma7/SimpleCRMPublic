@@ -1215,18 +1215,30 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/customers/${positiveId(id, "customer id")}`,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Db.GetTasksForCustomer, ([customerId]) => ({
-    method: "GET",
-    path: "/api/v1/tasks",
-    query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
-    transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
-  })],
-  [IPCChannels.Db.GetDealsForCustomer, ([customerId]) => ({
-    method: "GET",
-    path: "/api/v1/deals",
-    query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
-    transform: (body) => listItems<DealRecord>(body).map(mapDealRecord),
-  })],
+  [IPCChannels.Db.GetTasksForCustomer, ([customerId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: "/api/v1/tasks",
+      query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<TaskRecord>(body, context, request)).map(mapTaskRecord),
+    }
+  }],
+  [IPCChannels.Db.GetDealsForCustomer, ([customerId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: "/api/v1/deals",
+      query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<DealRecord>(body, context, request)).map(mapDealRecord),
+    }
+  }],
 
   [IPCChannels.Products.GetAll, () => ({
     method: "GET",
@@ -1295,7 +1307,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Deals.GetAll, ([params]) => {
     const input = objectPayload(params ?? {}, "deal list params")
     const filter = objectPayload(input.filter ?? {}, "deal filter")
-    return {
+    const request: HttpRequestSpec = {
       method: "GET",
       path: "/api/v1/deals",
       query: {
@@ -1304,7 +1316,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         stage: filter.stage,
         customerId: filter.customerId ?? filter.customer_id,
       },
-      transform: (body) => listItems<DealRecord>(body).map(mapDealRecord),
+    }
+    // The deal overview asks for all deals (limit 10000) and pages on the
+    // client; the server caps a page at 100, so follow the cursor up to the
+    // requested number instead of stopping after the first page.
+    const requestedLimit = Number(input.limit)
+    const maxItems = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : DEFAULT_LIST_LIMIT
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<DealRecord>(body, context, request, maxItems)).map(mapDealRecord),
     }
   }],
   [IPCChannels.Deals.GetById, ([id]) => ({
@@ -1344,12 +1365,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/deals/${positiveId(id, "deal id")}`,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Deals.GetTasks, ([dealId]) => ({
-    method: "GET",
-    path: `/api/v1/deals/${positiveId(dealId, "deal id")}/tasks`,
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
-  })],
+  [IPCChannels.Deals.GetTasks, ([dealId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/deals/${positiveId(dealId, "deal id")}/tasks`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<TaskRecord>(body, context, request)).map(mapTaskRecord),
+    }
+  }],
   [IPCChannels.Deals.GetProducts, ([dealId]) => ({
     method: "GET",
     path: `/api/v1/deals/${positiveId(dealId, "deal id")}/products`,
