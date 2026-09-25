@@ -119,4 +119,54 @@ describe('workflow-trigger-dispatch dedup', () => {
       '1',
     );
   });
+
+  // F-A9-09: Ein fehlgeschlagener oder blockierter Lauf gab den Claim frei; task.due
+  // feuerte dieselbe Aufgabe dann bei jedem Cron-Tick (alle 2 Minuten) samt Seiteneffekten.
+  test.each(['error', 'blocked'] as const)(
+    'task.due does not re-fire on every tick after a %s run',
+    async (status) => {
+      const { executeWorkflowForTrigger } = await import(
+        '../../electron/workflow/workflow-executor'
+      );
+      (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({
+        status,
+        log: [],
+        blocked: status === 'blocked',
+        blockReason: null,
+      });
+      const event = {
+        trigger: 'task.due' as const,
+        taskId: 11,
+        customerId: null,
+        title: 'X',
+        dueDate: '2026-05-24',
+      };
+
+      await dispatchCrmWorkflowEvent(event);
+      await dispatchCrmWorkflowEvent(event);
+      await dispatchCrmWorkflowEvent(event);
+
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(1);
+      expect(store.get('workflow_trigger_fired:task.due:11:2026-05-24')).toBe('1');
+    },
+  );
+
+  test('task.due releases the claim when the run throws before finishing', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockRejectedValue(new Error('db locked'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await dispatchCrmWorkflowEvent({
+      trigger: 'task.due',
+      taskId: 12,
+      customerId: null,
+      title: 'Y',
+      dueDate: '2026-05-24',
+    });
+
+    expect(store.has('workflow_trigger_fired:task.due:12:2026-05-24')).toBe(false);
+    warn.mockRestore();
+  });
 });

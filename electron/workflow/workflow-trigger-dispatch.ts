@@ -213,6 +213,7 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
   }
 
   let firedOk = false;
+  let ran = false;
   for (const wf of workflows) {
     try {
       const r = await executeWorkflowForTrigger({
@@ -224,12 +225,19 @@ export async function dispatchCrmWorkflowEvent(event: CrmWorkflowEvent): Promise
         eventStrings: strings,
         eventVariables: variables,
       });
+      ran = true;
       if (r.status === 'ok') firedOk = true;
     } catch (e) {
       console.warn(`[workflow] CRM trigger ${event.trigger} wf ${wf.id}`, e);
     }
   }
-  if (firedOk) {
+  // Einmal-Trigger (task.due, Termin, Neukunde): Auch ein Lauf mit 'error'
+  // oder 'blocked' hatte schon Wirkung (Aufgabe, Webhook, KI-Aufruf). Den
+  // Claim freizugeben hieße, task.due bei jedem Cron-Tick erneut zu feuern;
+  // der Fehler steht in der Lauf-Historie. Deal-Stufen behalten ihre
+  // Zeitstempel-Entprellung.
+  const fireOnce = event.trigger !== 'crm.deal_stage_changed';
+  if (firedOk || (ran && fireOnce)) {
     markWorkflowTriggerFired(event);
   } else {
     releaseWorkflowTriggerClaim(event);
