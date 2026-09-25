@@ -50,6 +50,9 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.relay.yml u
 In `.env` mindestens setzen: `SMTP_RELAY_ENABLED=true`, `SMTP_RELAY_HOSTNAME`,
 und `SMTP_RELAY_TLS_DIR` auf ein Host-Verzeichnis mit `cert.pem`+`key.pem` (Default
 `./relay-tls`; z. B. die Let's-Encrypt-Dateien für `SMTP_RELAY_HOSTNAME`).
+Der `api`-Container läuft als unprivilegierter Nutzer `node` (uid 1000): `key.pem`
+muss für diese uid lesbar sein (z. B. `chown 1000 relay-tls/key.pem`), sonst meldet
+die API `[smtp-relay] TLS key/cert could not be read` und startet das Relay nicht.
 
 Tracking setzt zusätzlich die bestehende Tracking-Infrastruktur voraus
 (`PUBLIC_BASE_URL` + `SIMPLECRM_MASTER_KEY` und eine aktivierte

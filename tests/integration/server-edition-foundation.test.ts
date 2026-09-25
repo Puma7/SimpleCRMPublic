@@ -202,7 +202,7 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('image: louislam/uptime-kuma:1');
     expect(compose).toContain('profiles: ["monitor"]');
     expect(compose).toContain('"${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"');
-    expect(compose).toContain('image: dpage/pgadmin4:latest');
+    expect(compose).toContain('image: dpage/pgadmin4:9');
     expect(compose).toContain('profiles: ["pgadmin"]');
     expect(compose).toContain('"${PGADMIN_BIND:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"');
     expect(compose).toContain('PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"');

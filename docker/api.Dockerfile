@@ -25,5 +25,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
+# Run as the unprivileged `node` user (uid 1000) of the base image; the code
+# stays root-owned and read-only to it. The data directories are created and
+# handed to node here, so fresh named volumes mounted on top inherit that owner.
+# Volumes written by older root-run images are converted by update.sh.
+RUN mkdir -p /app/data/attachments /app/data/audit-archive /app/data/logs \
+  && chown -R node:node /app/data
+USER node
 EXPOSE 3000
 CMD ["node", "packages/server/dist/server.js"]

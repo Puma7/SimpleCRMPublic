@@ -24,6 +24,12 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     restart: unless-stopped
+    # Least privilege: the image runs as the unprivileged node user and needs no
+    # Linux capabilities (docs/SETUP_SERVER.md, "Upgrade / Restart").
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       SIMPLECRM_MASTER_KEY: ${MASTER_KEY}
@@ -138,6 +144,12 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     command: ["node", "packages/server/dist/cli/migrate.js"]
+    # Least privilege: the image runs as the unprivileged node user and needs no
+    # Linux capabilities (docs/SETUP_SERVER.md, "Upgrade / Restart").
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
     depends_on:
@@ -346,7 +358,8 @@ services:
       - uptime_kuma_data:/app/data
 
   pgadmin:
-    image: dpage/pgadmin4:latest
+    # Release line instead of :latest, so a pull cannot jump a major version.
+    image: dpage/pgadmin4:9
     profiles: ["pgadmin"]
     restart: unless-stopped
     environment:

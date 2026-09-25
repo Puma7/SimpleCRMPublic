@@ -22,6 +22,8 @@ type ResolvedCompose = Readonly<{
   services: Record<string, Readonly<{
     environment?: Record<string, string>;
     image?: string;
+    cap_drop?: readonly string[];
+    security_opt?: readonly string[];
     profiles?: string | readonly string[];
     volumes?: Readonly<{ source?: string; target?: string; read_only?: boolean }> | readonly Readonly<{
       source?: string;
@@ -147,6 +149,54 @@ describe('server Compose backup volume', () => {
           target: '/backups',
           readOnly: true,
         });
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('server Compose API least privilege', () => {
+  // F-A12-07: Der API-Container (auch migrate) lief als root mit vollem Capability-Set, pgadmin zog ungepinnt :latest.
+  test('runs the API image as the unprivileged node user without capabilities', () => {
+    const dockerfile = readFileSync(join(dockerRoot, 'api.Dockerfile'), 'utf8');
+    const finalStage = dockerfile.slice(dockerfile.lastIndexOf('\nFROM '));
+    expect(finalStage).toMatch(/^USER node$/m);
+    // Leere Named Volumes uebernehmen Besitzer und Rechte aus dem Image.
+    expect(finalStage).toMatch(
+      /mkdir -p \/app\/data\/attachments \/app\/data\/audit-archive \/app\/data\/logs[\s\S]*chown -R node:node \/app\/data/,
+    );
+    expect(finalStage.indexOf('chown -R node:node /app/data')).toBeLessThan(finalStage.indexOf('USER node'));
+
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir);
+      for (const serviceName of ['api', 'migrate']) {
+        const service = resolved.services[serviceName];
+        expect(service.security_opt).toEqual(expect.arrayContaining(['no-new-privileges:true']));
+        expect(service.cap_drop).toEqual(['ALL']);
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('pins third-party images to a release line instead of latest', () => {
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir, [
+        'geoip', 'backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill', 'minio', 'monitor', 'pgadmin',
+      ]);
+      expect(resolved.services.pgadmin.image).toBe('dpage/pgadmin4:9');
+      for (const [serviceName, service] of Object.entries(resolved.services)) {
+        const image = service.image ?? '';
+        if (image.startsWith('simplecrm/')) continue;
+        // minio/minio wird auf Docker Hub nicht mehr veroeffentlicht (Stand
+        // 2026-09-25); es gibt keine pruefbare Version, auf die sich pinnen
+        // liesse. Die Entscheidung ueber das Profil steht aus.
+        if (serviceName === 'minio') continue;
+        const tag = /^[^:@]+:([^:@]+)(@sha256:[0-9a-f]{64})?$/.exec(image)?.[1];
+        expect({ serviceName, tag }).toEqual({ serviceName, tag: expect.stringMatching(/^(?!latest$)\S+$/) });
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

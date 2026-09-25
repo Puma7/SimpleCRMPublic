@@ -49,6 +49,16 @@ compose() {
   docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"
 }
 
+# The API image runs as the unprivileged node user (uid 1000). Hand it the
+# writable volumes: attachments and audit archives unpacked by the restore
+# service run as root, and files from older root-run images, would otherwise
+# stay root-owned and the API could not write there. Only entries with another
+# owner are touched. Same step as in update.sh.
+fix_api_volume_ownership() {
+  compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c \
+    'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
+}
+
 wait_for_api_health() {
   deadline=$(( $(date +%s) + RESTORE_API_HEALTH_TIMEOUT_SECONDS ))
   while [ "$(date +%s)" -le "$deadline" ]; do
@@ -104,6 +114,7 @@ compose up -d postgres
 
 echo "running restore service"
 compose --profile restore run --rm restore
+fix_api_volume_ownership
 
 echo "running migrations after restore"
 compose run --rm migrate

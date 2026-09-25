@@ -187,3 +187,30 @@ describe('operator CLI compose-project consistency', () => {
     }
   }));
 });
+
+describe('API volume ownership after the switch to a non-root image', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+  const ownershipFix = /run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c find \/app\/data\/attachments \/app\/data\/audit-archive \/app\/data\/logs .* -exec chown -h node:node/;
+
+  // F-A12-07: Das API-Image laeuft jetzt als node; Volumes aelterer root-Versionen (und frisch restaurierte Anhaenge) gehoerten root, die API konnte dort nicht schreiben.
+  test('update hands the writable volumes to node after building and before restarting the API', ranOrSkipped(() => {
+    const update = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup']);
+    expect(update.status).toBe(0);
+    const lines = update.log.split('\n');
+    const fix = lines.findIndex((line) => ownershipFix.test(line));
+    expect(fix).toBeGreaterThan(lines.findIndex((line) => line.endsWith(' build')));
+    expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+  }));
+
+  test('restore hands restored attachments to node before restarting the API', ranOrSkipped(() => {
+    const restore = runWithFakeDocker(['docker/simplecrm', 'restore']);
+    expect(restore.status).toBe(0);
+    const lines = restore.log.split('\n');
+    const fix = lines.findIndex((line) => ownershipFix.test(line));
+    expect(fix).toBeGreaterThan(lines.findIndex((line) => line.includes('--profile restore run --rm restore')));
+    expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+  }));
+});

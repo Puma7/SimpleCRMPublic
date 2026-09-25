@@ -43,6 +43,15 @@ export COMPOSE_PROJECT_NAME
 compose() { docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"; }
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
+# The API image runs as the unprivileged node user (uid 1000). Hand it the
+# writable volumes: files written by older root-run images would otherwise
+# stay root-owned and the API could not write there. Only entries with another
+# owner are touched, so after the first run this is a cheap no-op.
+fix_api_volume_ownership() {
+  compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c \
+    'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
+}
+
 # True when Compose knows a (running or stopped) project named "$1".
 project_has_stack() {
   docker compose ls -a 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$1"
@@ -139,6 +148,7 @@ say "[5/6] Draining old workers and restarting api + web"
 # Graphile Worker migrations may change lock ownership semantics. Scale the old
 # API/worker generation to zero before a newly built API migrates its schema.
 compose stop api
+fix_api_volume_ownership
 compose up -d api caddy
 
 say "[6/6] Verifying"

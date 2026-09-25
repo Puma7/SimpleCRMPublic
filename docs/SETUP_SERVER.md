@@ -265,8 +265,36 @@ If you prefer to drive it yourself (rebuild `caddy` too — it contains the web 
 cd docker
 docker compose build api migrate caddy
 docker compose run --rm migrate          # apply pending migrations first
+docker compose stop api
+# one-time after the switch to the non-root API image, see below; a no-op later
+docker compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --entrypoint sh api -c 'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
 docker compose up -d
 ```
+
+### Non-root API container
+
+The `api` image (also used by `migrate`) runs as the unprivileged `node` user (uid 1000) of the
+Node base image, with `no-new-privileges` and all Linux capabilities dropped. Its writable volumes
+(`attachments`, `audit_archives`, `server_logs`) must therefore belong to uid 1000. Fresh volumes
+get that owner from the image. Volumes of an existing installation were written by the earlier
+root-run image: `docker/update.sh` hands them over right after stopping the old API (only entries
+with another owner are changed, so later runs are a cheap no-op), and `restore-compose.sh` does the
+same after unpacking a backup, because the restore service extracts archives as root. If you update
+with the manual steps above, run the `chown` step once before starting the new API — otherwise the
+API cannot write attachments or its log file.
+
+The SMTP relay (`docker-compose.relay.yml`) now reads its TLS key as uid 1000 too: make
+`relay-tls/key.pem` readable for that user (for example `chown 1000 relay-tls/key.pem`), otherwise
+the API logs `[smtp-relay] TLS key/cert could not be read` and does not start the relay. Binding
+587/465 without capabilities relies on `net.ipv4.ip_unprivileged_port_start=0`, which the relay
+override sets.
+
+Image tags: the stack follows fixed release lines instead of `latest` — `postgres:18-alpine`,
+`caddy:2` and `node:24`/`node:24-alpine` (image builds), `louislam/uptime-kuma:1` (`monitor`) and
+`dpage/pgadmin4:9` (`pgadmin`); `geoip-updater` is pinned by digest. The `minio` profile still
+references `minio/minio:latest`, which is no longer published on Docker Hub, so that profile cannot
+be pulled at the moment.
 
 ### "Checksum mismatch for server migration ..."
 

@@ -21,3 +21,9 @@ services:
       - "${SMTP_RELAY_PORT_SMTPS:-465}:${SMTP_RELAY_PORT_SMTPS:-465}"
     volumes:
       - "${SMTP_RELAY_TLS_DIR:-./relay-tls}:/app/data/relay-tls:ro"
+    # The API runs as the unprivileged node user without capabilities, so the
+    # relay may bind 587/465 only because ports below 1024 are unprivileged in
+    # the container's network namespace. Docker sets this by default since
+    # 20.10; stating it keeps the relay working where that default differs.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
