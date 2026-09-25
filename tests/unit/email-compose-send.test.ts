@@ -219,7 +219,7 @@ describe('sendComposeDraft', () => {
 
     beforeEach(() => {
       mockGetMessage.mockImplementation((id: number) =>
-        id === 5 ? { id: 5, ticket_code: 'T-1', thread_id: 'th-1', message_id: '<p@x>', references_header: null } : draftRow,
+        id === 5 ? { id: 5, account_id: 1, ticket_code: 'T-1', thread_id: 'th-1', message_id: '<p@x>', references_header: null } : draftRow,
       );
       mockPreparePgp.mockResolvedValue({ bodyText: '-----BEGIN PGP MESSAGE-----ARMOR' });
     });

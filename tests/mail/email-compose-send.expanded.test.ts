@@ -104,7 +104,7 @@ describe('email-compose-send expanded', () => {
     mockPersistLocalComposeAttachments.mockReturnValue(undefined);
     mockGetMessage.mockImplementation((id: number) =>
       id === 99
-        ? { id: 99, ticket_code: 'T-P', thread_id: 'th', message_id: '<p@x>', references_header: '<p@x>' }
+        ? { id: 99, account_id: 1, ticket_code: 'T-P', thread_id: 'th', message_id: '<p@x>', references_header: '<p@x>' }
         : draft(),
     );
   });

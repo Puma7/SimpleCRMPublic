@@ -63,6 +63,19 @@ function canAccessEmailAccount(
   });
 }
 
+/**
+ * C-A79 (G5): Ein Elternbezug wird nur gespeichert, wenn der Aufrufer das Konto
+ * der Eltern-Mail lesen darf; sonst bleibt das Feld unveraendert (kein Fehler).
+ */
+function replyParentMessageIdForCaller(
+  event: IpcMainInvokeEvent,
+  replyParentMessageId: number | null | undefined,
+): number | null | undefined {
+  if (replyParentMessageId == null) return replyParentMessageId;
+  const parent = getEmailMessageById(replyParentMessageId);
+  return parent && canAccessEmailAccount(event, parent.account_id, 'ro') ? replyParentMessageId : undefined;
+}
+
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
 import {
   listEmailAccounts,
@@ -754,7 +767,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           ccJson,
           bccJson,
           draftAttachmentPaths: payload.draftAttachmentPaths,
-          replyParentMessageId: payload.replyParentMessageId,
+          replyParentMessageId: replyParentMessageIdForCaller(event, payload.replyParentMessageId),
         });
         if (payload.markReplyParentDone !== undefined) {
           const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
@@ -1361,6 +1374,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const r = await sendComposeDraft({
           ...payload,
           pgpUserId: session.userId,
+          actor: { userId: session.userId, role: session.role },
         });
         if (r.ok) {
           if (r.warning) {

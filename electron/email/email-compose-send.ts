@@ -30,6 +30,8 @@ import {
 import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import type { EmailAccountRow } from './email-store';
+import { canAccessLocalAccount } from '../auth/auth-store';
+import type { SessionRole } from '../auth/session-store';
 
 function resolveRequestReadReceipt(
   acc: EmailAccountRow,
@@ -311,6 +313,30 @@ async function finalizeCommittedSmtpDraft(
   return { ok: true, recoveredSentAppend: true };
 }
 
+/** Wer den Versand ausloest: SendCompose die Sitzung, der geplante Versand den gespeicherten Planer. */
+export type ComposeSendActor = { userId: string; role: SessionRole };
+
+/**
+ * C-A79 (G5): Die Eltern-Mail liefert Threading-Header, Ticket und den KI-Kontext
+ * nur, wenn der Handelnde ihr Konto lesen darf; „erledigt" setzen braucht
+ * Schreibrecht. Ohne Akteur zaehlt nur eine Eltern-Mail aus dem Konto des
+ * Entwurfs. Sonst wird der Bezug stillschweigend verworfen.
+ */
+function replyParentAccess(
+  inReplyToMessageId: number | null | undefined,
+  draftAccountId: number,
+  actor: ComposeSendActor | null | undefined,
+): { usable: boolean; canMarkDone: boolean } {
+  const parent = inReplyToMessageId ? getEmailMessageById(inReplyToMessageId) : undefined;
+  if (!parent) return { usable: false, canMarkDone: false };
+  const may = (access: 'ro' | 'rw') =>
+    actor
+      ? canAccessLocalAccount({ userId: actor.userId, accountId: parent.account_id, access, role: actor.role })
+      : parent.account_id === draftAccountId;
+  const usable = may('ro');
+  return { usable, canMarkDone: usable && may('rw') };
+}
+
 function maybeMarkReplyParentDone(
   inReplyToMessageId: number | null | undefined,
   draftMessageId: number,
@@ -345,6 +371,8 @@ export async function sendComposeDraft(input: {
   pgpSign?: boolean;
   pgpPassphrase?: string;
   pgpUserId?: string;
+  /** Prueft die Eltern-Mail (C-A79); fehlt er, zaehlt nur eine Eltern-Mail aus demselben Konto. */
+  actor?: ComposeSendActor | null;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
   | { ok: false; error: string; workflowRunId?: number | null; deliveryAmbiguous?: true }
@@ -392,8 +420,9 @@ export async function sendComposeDraft(input: {
       const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
       clearOutboundHoldForResend(input.draftMessageId);
       const recovered = await finalizeCommittedSmtpDraft(input, draft);
+      const recoveredParent = replyParentAccess(input.inReplyToMessageId, input.accountId, input.actor);
       maybeMarkReplyParentDone(
-        input.inReplyToMessageId,
+        recoveredParent.canMarkDone ? input.inReplyToMessageId : null,
         input.draftMessageId,
         input.markReplyParentDone,
       );
@@ -454,6 +483,7 @@ export async function sendComposeDraft(input: {
     const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
     clearOutboundHoldForResend(input.draftMessageId);
 
+    const parentAccess = replyParentAccess(input.inReplyToMessageId, input.accountId, input.actor);
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
       accountId: input.accountId,
@@ -463,7 +493,7 @@ export async function sendComposeDraft(input: {
       to: input.to,
       cc: input.cc,
       bcc: input.bcc,
-      inReplyToMessageId: input.inReplyToMessageId,
+      inReplyToMessageId: parentAccess.usable ? input.inReplyToMessageId : null,
       attachmentCount: input.attachmentPaths?.length ?? 0,
       attachmentPaths: input.attachmentPaths,
     });
@@ -478,7 +508,7 @@ export async function sendComposeDraft(input: {
     let ticketCode: string | null = null;
     let threadId: string | null = null;
     let parentForThreading: ReturnType<typeof getEmailMessageById> | null = null;
-    if (input.inReplyToMessageId) {
+    if (input.inReplyToMessageId && parentAccess.usable) {
       parentForThreading = getEmailMessageById(input.inReplyToMessageId);
       if (parentForThreading?.ticket_code) {
         ticketCode = parentForThreading.ticket_code;
@@ -642,7 +672,7 @@ export async function sendComposeDraft(input: {
     });
 
     maybeMarkReplyParentDone(
-      input.inReplyToMessageId,
+      parentAccess.canMarkDone ? input.inReplyToMessageId : null,
       input.draftMessageId,
       input.markReplyParentDone,
     );
