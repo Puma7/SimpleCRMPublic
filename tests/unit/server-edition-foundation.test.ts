@@ -3454,6 +3454,72 @@ describe('server edition foundation', () => {
     expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([]);
   });
 
+  // F-A5-08: Der IMAP-Sync sammelte alle neuen Nachrichten eines Ordners (je bis 80 MiB) im Speicher, bevor die erste geparst wurde.
+  test('server mail sync imports each IMAP message before fetching the next one', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5, uidvalidity: 22 })],
+    ]);
+    const syncInfo = new Map<string, string>();
+    const store = makeServerMailSyncStore({
+      account, folders, upserts, folderUpdates, syncInfo, messageIds: [601, 602, 603, 604],
+    });
+    const events: string[] = [];
+    let bufferedSources = 0;
+    let maxBufferedSources = 0;
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        return query.uid === '6:*' ? [6, 7, 8, 9] : [];
+      },
+      async fetchOne(uid: string) {
+        if (uid === '8') throw new Error('connection reset');
+        events.push(`fetch:${uid}`);
+        bufferedSources += 1;
+        maxBufferedSources = Math.max(maxBufferedSources, bufferedSources);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => {
+        const seed = source.toString('utf8');
+        events.push(`parse:${seed.slice('Subject: '.length, seed.indexOf('\r'))}`);
+        bufferedSources -= 1;
+        return makeParsedServerMailSyncMessage(seed);
+      },
+      imapClientFactory: () => client as any,
+    });
+
+    await expect(port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    })).resolves.toEqual({ inboundMessageIds: [601, 602, 603] });
+
+    expect(events).toEqual([
+      'fetch:6', 'parse:6', 'fetch:7', 'parse:7', 'fetch:9', 'parse:9',
+    ]);
+    expect(maxBufferedSources).toBe(1);
+    expect(upserts.map((item) => item.uid)).toEqual([6, 7, 9]);
+    // Cursor and retry list behave as before: the failed UID 8 is retried via the pending list.
+    expect(folderUpdates.at(-1)).toMatchObject({ folderId: 71, lastUid: 9 });
+    expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([8]);
+  });
+
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
     const now = new Date('2026-07-06T10:00:00.000Z');
     const account = makeServerMailSyncAccount({ protocol: 'imap' });

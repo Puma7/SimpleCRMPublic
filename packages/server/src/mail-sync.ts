@@ -484,7 +484,6 @@ async function syncImapFolder(input: {
   let sortedSet = new Set<number>();
   let imapUidToId = new Map<number, number>();
   let toProcess: number[] = [];
-  const fetchedMessages: FetchedImapMessage[] = [];
   const skippedUids = new Set<number>();
   const pendingUidKey = `email_imap_pending_uids:${input.account.id}:${folder.id}`;
   // Messages over the hard RFC822 cap can never import; retrying them would
@@ -494,6 +493,12 @@ async function syncImapFolder(input: {
   let pendingUids = new Set<number>();
   let oversizedUids = new Set<number>();
   let chainEnd = lastUid;
+  const context: ServerMailSyncUpsertContext = {
+    imapUidToId,
+    reconcileSeenFromServer: true,
+  };
+  const newMessageIds: number[] = [];
+  const automatedEvidenceMessageIds: number[] = [];
 
   const lock = await input.client.getMailboxLock(input.spec.path);
   try {
@@ -575,6 +580,7 @@ async function syncImapFolder(input: {
       folderId: folder.id,
       uids: sorted,
     }));
+    context.imapUidToId = imapUidToId;
     // Known-oversized UIDs are never fetched again; marking them skipped lets
     // the sync cursor advance past them so the search range shrinks.
     for (const uid of sorted) {
@@ -585,6 +591,7 @@ async function syncImapFolder(input: {
     chainEnd = lastUid;
 
     for (const uid of toProcess) {
+      let item: FetchedImapMessage;
       try {
         const fetched = await input.client.fetchOne(
           String(uid),
@@ -594,12 +601,12 @@ async function syncImapFolder(input: {
         if (!fetched || !fetched.source) throw new Error(`empty source for UID ${uid}`);
         const source = sourceToBuffer(fetched.source);
         assertInboundRfc822Size(source.length);
-        fetchedMessages.push({
+        item = {
           uid,
           source,
           flags: fetched.flags,
           threadId: fetched.threadId == null ? null : String(fetched.threadId),
-        });
+        };
       } catch (error) {
         skippedUids.add(uid);
         if (error instanceof InboundMessageTooLargeError) {
@@ -610,20 +617,18 @@ async function syncImapFolder(input: {
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
+        continue;
       }
+      // Import each message before fetching the next: collecting every new
+      // source of the folder first (up to 80 MiB each, unbounded count) let a
+      // flooded mailbox or a long backlog exhaust the process.
+      await importFetchedMessage(item);
     }
   } finally {
     lock.release();
   }
 
-  const context: ServerMailSyncUpsertContext = {
-    imapUidToId,
-    reconcileSeenFromServer: true,
-  };
-  const newMessageIds: number[] = [];
-  const automatedEvidenceMessageIds: number[] = [];
-
-  for (const item of fetchedMessages) {
+  async function importFetchedMessage(item: FetchedImapMessage): Promise<void> {
     try {
       const parsed = await input.parser(item.source);
       const upserted = await input.store.upsertMessage({
