@@ -259,10 +259,15 @@ function renameForBackup(targetPath: string, suffix: string): string | null {
 
 function rollbackRenamedBackup(targetPath: string, backupPath: string | null): void {
   if (!backupPath || !fs.existsSync(backupPath)) return;
-  if (fs.existsSync(targetPath)) {
-    fs.rmSync(targetPath, { recursive: true, force: true });
+  try {
+    if (fs.existsSync(targetPath)) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    }
+    fs.renameSync(backupPath, targetPath);
+  } catch (rollbackErr) {
+    // Keep going so a failed attachments rollback cannot block the database one.
+    console.error(`[restore] rollback of ${targetPath} failed; data remains at ${backupPath}`, rollbackErr);
   }
-  fs.renameSync(backupPath, targetPath);
 }
 
 export { findDatabaseSqliteInTree } from './email-zip-path-safety';
@@ -373,9 +378,13 @@ export async function restoreLocalMailBackup(input: {
         throw closeErr;
       }
 
-      const dbBackupPath = renameForBackup(dbPath, stamp);
-      const attBackupPath = renameForBackup(attRoot, stamp);
+      // Both renames sit inside the rollback scope: if the attachments folder is
+      // locked (EPERM/EBUSY on Windows) the already moved database must come back.
+      let dbBackupPath: string | null = null;
+      let attBackupPath: string | null = null;
       try {
+        dbBackupPath = renameForBackup(dbPath, stamp);
+        attBackupPath = renameForBackup(attRoot, stamp);
         fs.copyFileSync(extractedDb, dbPath);
         if (extractedAtt) {
           fs.cpSync(extractedAtt, attRoot, { recursive: true });
