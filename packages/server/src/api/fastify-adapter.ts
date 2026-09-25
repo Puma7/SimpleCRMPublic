@@ -23,6 +23,7 @@ import type {
   ServerApiPorts,
 } from './types';
 import { filterMailEventForPrincipal } from '../mail-access/async-policy-enforcer';
+import { isPublicApiRoute } from './public-routes';
 
 export type FastifyPrincipalResolver = (
   request: FastifyRequest,
@@ -86,6 +87,12 @@ const SERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 // validation (bodyText and bodyHtml up to 2M chars each) and PGP encrypt/sign
 // (2M-char plaintext plus attachments).
 const SERVER_UPLOAD_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+// Anmeldung, Retouren-Portal und eingehende Webhooks: die oeffentlichen unter
+// ihnen parsen JSON vor jeder Anmeldung. Kein legitimer Body kommt in die Naehe
+// (Login/Setup/MFA: Felder bis 120 Zeichen; Portal: Notiz bis 10.000 Zeichen und
+// Positionen mit 200-Zeichen-Feldern; Webhook: gespeichert werden ohnehin nur
+// 64 KB, siehe WEBHOOK_BODY_JSON_MAX in workflow-routes).
+const SERVER_SMALL_BODY_LIMIT_BYTES = 64 * 1024;
 // Outside /api/v1/ only GET-only public resources are served (health probes,
 // the OpenAPI document, the tracking pixel and redirect). None of them reads a
 // body, and none of them is behind the per-IP rate limiter.
@@ -134,12 +141,14 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
         ? resolvePrincipalFromHeaders
         : () => undefined
   );
-  // The upload routes resolve the principal from the headers before Fastify
-  // reads their body, so an anonymous caller is refused before up to 40 MiB of
-  // JSON is parsed. The dispatcher reuses that principal instead of resolving
-  // (and hitting the database) a second time.
+  // Every /api/v1 route except the public ones (PUBLIC_API_ROUTES) resolves the
+  // principal from the headers before Fastify reads the body, so an anonymous
+  // caller is refused before any JSON is parsed (up to 40 MiB on the upload
+  // routes). The dispatcher reuses that principal instead of resolving (and
+  // hitting the database) a second time.
   const principalsResolvedBeforeBody = new WeakMap<FastifyRequest, AuthenticatedPrincipal>();
   const requirePrincipalBeforeBody = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (isPublicApiRoute(request.method, requestPathname(request))) return;
     let principal: AuthenticatedPrincipal | undefined;
     try {
       principal = await resolvePrincipal(request);
@@ -231,6 +240,7 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   // Fastify reads first. Keep the upload list in step with the large field
   // limits in mail-routes.ts and pgp-routes.ts.
   const uploadRoute = { bodyLimit: SERVER_UPLOAD_BODY_LIMIT_BYTES, onRequest: requirePrincipalBeforeBody, handler };
+  const smallBodyRoute = { bodyLimit: SERVER_SMALL_BODY_LIMIT_BYTES, onRequest: requirePrincipalBeforeBody, handler };
   app.route({ method: 'POST', url: '/api/v1/email/messages/:messageId/compose-attachments', ...uploadRoute });
   app.route({ method: 'POST', url: '/api/v1/email/compose-drafts', ...uploadRoute });
   app.route({ method: 'PATCH', url: '/api/v1/email/messages/:messageId/compose-draft', ...uploadRoute });
@@ -238,7 +248,11 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   app.route({ method: 'POST', url: '/api/v1/email/compose/validate-outbound', ...uploadRoute });
   app.route({ method: 'POST', url: '/api/v1/pgp/messages/encrypt', ...uploadRoute });
   app.route({ method: 'POST', url: '/api/v1/pgp/messages/sign', ...uploadRoute });
-  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/*', handler });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/auth/*', ...smallBodyRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/portal/*', ...smallBodyRoute });
+  app.route({ method: 'POST', url: '/api/v1/workflows/webhook/incoming', ...smallBodyRoute });
+  app.route({ method: 'POST', url: '/api/v1/webhooks/incoming', ...smallBodyRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/*', onRequest: requirePrincipalBeforeBody, handler });
   app.route({ method: [...SUPPORTED_METHODS], url: '/*', bodyLimit: PUBLIC_RESOURCE_BODY_LIMIT_BYTES, handler });
   app.options('/*', (request, reply) => {
     if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {

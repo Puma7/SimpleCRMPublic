@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import type { HttpMethod, ServerApiPorts } from '../../packages/server/src/api/types';
+import { PUBLIC_API_ROUTES } from '../../packages/server/src/api/public-routes';
 import { WEBSOCKET_ROUTES } from '../setup/websocket-routes';
 
 const API_DIR = join(__dirname, '..', '..', 'packages', 'server', 'src', 'api');
@@ -24,11 +25,14 @@ const METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
  * funktioniert. Genau diese Klasse Fehler faengt dieser Test.
  *
  * Gemessen wird nicht "gibt 401 zurueck", sondern die staerkere Aussage: die
- * MENGE der ohne Principal erreichbaren Endpunkte ist genau die unten
- * aufgezaehlte. Damit schlaegt der Test in beide Richtungen an — eine Route,
- * die versehentlich oeffentlich wird, und eine bewusst oeffentliche, die
- * jemand hinzufuegt, ohne sie hier einzutragen. Das Eintragen ist die
- * eigentliche Absicht: es macht die Entscheidung sichtbar.
+ * MENGE der ohne Principal erreichbaren Endpunkte ist genau die in
+ * PUBLIC_API_ROUTES aufgezaehlte (packages/server/src/api/public-routes.ts).
+ * Damit schlaegt der Test in beide Richtungen an — eine Route, die
+ * versehentlich oeffentlich wird, und eine bewusst oeffentliche, die jemand
+ * hinzufuegt, ohne sie dort einzutragen. Das Eintragen ist die eigentliche
+ * Absicht: es macht die Entscheidung sichtbar. Dieselbe Liste entscheidet im
+ * Fastify-Adapter, welche Routen ihren Body ohne Anmeldung lesen duerfen
+ * (F-A13A14-02) — eine zweite, abweichende Liste gibt es nicht.
  *
  * Nachgewiesen, dass er anschlaegt: nimmt man requirePrincipal aus
  * user-group-routes heraus, meldet er acht neu offene Endpunkte. Bei den
@@ -37,40 +41,7 @@ const METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
  * Der Wert dieses Tests liegt deshalb bei allem, was NICHT unter dieser
  * zweiten Schranke liegt: Mail, Workflows, Einstellungen, Auth-Verwaltung.
  */
-const PUBLIC_SURFACE: readonly string[] = [
-  // Betriebsproben. Liefern Status und einen Datenbank-Ping, sonst nichts.
-  'GET /health',
-  'GET /health/ready',
-  'GET /api/v1/health',
-  'GET /api/v1/health/ready',
-  // Anmeldung selbst. Ohne diese Endpunkte kaeme niemand je an ein Token.
-  'POST /api/v1/auth/login',
-  'POST /api/v1/auth/logout',
-  'GET /api/v1/auth/login-config',
-  'GET /api/v1/auth/setup-state',
-  'POST /api/v1/auth/initial-setup',
-  'POST /api/v1/auth/captcha-verify',
-  'POST /api/v1/auth/mfa/verify',
-  // Einladungen: der Token IST der Nachweis, ein Principal existiert noch nicht.
-  'GET /api/v1/auth/invitations/:token',
-  'POST /api/v1/auth/invitations/:token/accept',
-  // Oeffentliches Retouren-Portal. Eigene Ratenbegrenzung, CAPTCHA-Pflicht und
-  // Token-Pruefung; siehe returns-routes.
-  'POST /api/v1/portal/returns/:token',
-  'GET /api/v1/portal/returns/:token/:returnNumber',
-  // Liefert nur { captchaRequired, siteKey } fuer den Workspace des Tokens
-  // (F-A3a-03); gleiche Ratenbegrenzung und Token-Pruefung wie die Abfrage.
-  'GET /api/v1/portal/returns/:token/config',
-  // Zaehlpixel. Muss aus fremden Mail-Clients erreichbar sein und antwortet
-  // immer gleich, damit sich daraus nichts ablesen laesst.
-  //
-  // Der Klick-Endpunkt /t/c/:token gehoert derselben oeffentlichen Klasse an,
-  // erscheint hier aber nicht: mit einem ungueltigen Token antwortet er 404 und
-  // ist damit von einer nicht existierenden Route nicht zu unterscheiden. Das
-  // ist die Grenze dieser Probe — sie sieht, wer OHNE Anmeldung Daten liefert,
-  // nicht jeden Pfad, den es gibt.
-  'GET /t/o/:token.gif',
-];
+const PUBLIC_SURFACE: readonly string[] = PUBLIC_API_ROUTES;
 
 /**
  * WebSocket-Routen laufen NICHT durch den Dispatcher.
@@ -362,6 +333,12 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
       // deckt ihre Pfade ab; dass die Upload-Routen ohne Principal schon vor dem
       // Body abweisen, prueft tests/integration/server-fastify-body-limit.test.ts.
       'route /api/v1/*',
+      // Auth, Portal und eingehende Webhooks (hier und unten): derselbe
+      // Dispatcher-Handler mit 64 KiB bodyLimit (F-A13A14-02, E4). Ob sie ohne
+      // Anmeldung den Body lesen, entscheidet PUBLIC_API_ROUTES; geprueft in
+      // tests/integration/server-fastify-body-limit.test.ts.
+      'route /api/v1/auth/*',
+      // Upload-Routen mit 40 MiB.
       'route /api/v1/email/compose-drafts',
       'route /api/v1/email/compose/send',
       'route /api/v1/email/compose/validate-outbound',
@@ -369,6 +346,10 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
       'route /api/v1/email/messages/:messageId/compose-draft',
       'route /api/v1/pgp/messages/encrypt',
       'route /api/v1/pgp/messages/sign',
+      // Wieder 64 KiB, siehe oben.
+      'route /api/v1/portal/*',
+      'route /api/v1/webhooks/incoming',
+      'route /api/v1/workflows/webhook/incoming',
     ]);
   });
 
@@ -410,9 +391,14 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
             headers: {},
             ip: '203.0.113.9',
           });
-          // 401 = verlangt Anmeldung. 404/405 = diese Route/Methode gibt es
-          // nicht; beides ist kein Zugriff.
-          openToAnyone = res.status !== 401 && res.status !== 404 && res.status !== 405;
+          // 401 von requirePrincipal (Code `unauthorized`) = verlangt Anmeldung.
+          // Ein anderes 401 kommt von einer eigenen Pruefung ohne Principal
+          // (Refresh-Cookie) — der Endpunkt ist oeffentlich erreichbar und
+          // muss in PUBLIC_API_ROUTES stehen, sonst weist ihn der Adapter vor
+          // dem Body ab. 404/405 = diese Route/Methode gibt es nicht; beides
+          // ist kein Zugriff.
+          const code = (res.body as { error?: { code?: unknown } } | undefined)?.error?.code;
+          openToAnyone = !(res.status === 401 && code === 'unauthorized') && res.status !== 404 && res.status !== 405;
         } catch (err) {
           // Ein Datenzugriff ohne Principal zaehlt als offen — auch dann, wenn
           // der Handler danach einen Fehler geliefert haette.

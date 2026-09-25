@@ -229,4 +229,110 @@ describe('F-A13A14-02 Body-Limits vor der Anmeldung', () => {
       await app.close();
     }
   });
+
+  // F-A13A14-02: Anonyme JSON-Bodies bis 1 MiB wurden auf allen /api/v1-Routen vor der Anmeldung geparst (rund 110 ms je MiB).
+  test('nicht oeffentliche /api/v1-Routen verlangen die Anmeldung, bevor sie den Body lesen (E4)', async () => {
+    const app = createFastifyServer({ ports: makePorts() });
+    try {
+      for (const [method, url] of [
+        ['POST', '/api/v1/customers'],
+        ['PATCH', '/api/v1/workflows/5'],
+        ['POST', '/api/v1/auth/users'],
+        ['POST', '/api/v1/workflows/webhook/incoming'],
+        ['POST', '/api/v1/webhooks/incoming'],
+        ['POST', '/api/v1/gibt-es-nicht'],
+        // Oeffentlicher Pfad, aber nicht mit dieser Methode.
+        ['POST', '/api/v1/health'],
+      ] as const) {
+        for (const payload of [brokenJson(10), brokenJson(MiB - 1024)]) {
+          const response = await app.inject({ method, url, headers: jsonHeaders(), payload });
+          expect([method, url, response.statusCode, response.json()]).toEqual([
+            method,
+            url,
+            401,
+            { error: { code: 'unauthorized', message: 'Authentifizierung erforderlich' } },
+          ]);
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('die oeffentlichen Routen bleiben ohne Anmeldung erreichbar und lesen hoechstens 64 KiB (E4)', async () => {
+    const app = createFastifyServer({ ports: makePorts() });
+    try {
+      for (const [method, url] of [
+        ['POST', '/api/v1/auth/login'],
+        ['POST', '/api/v1/auth/refresh'],
+        ['POST', '/api/v1/auth/logout'],
+        ['POST', '/api/v1/auth/initial-setup'],
+        ['POST', '/api/v1/auth/captcha-verify'],
+        ['POST', '/api/v1/auth/mfa/verify'],
+        ['POST', '/api/v1/auth/invitations/tok123/accept'],
+        ['POST', '/api/v1/portal/returns/tok123'],
+      ] as const) {
+        // Ungueltiges JSON erreicht den Parser (400) — der Body wird also gelesen.
+        const parsed = await app.inject({ method, url, headers: jsonHeaders(), payload: brokenJson(10) });
+        expect([method, url, parsed.statusCode]).toEqual([method, url, 400]);
+
+        const tooLarge = await app.inject({ method, url, headers: jsonHeaders(), payload: objectArrayJson(64 * 1024 + 16) });
+        expect([method, url, tooLarge.statusCode, tooLarge.json().code]).toEqual([method, url, 413, 'FST_ERR_CTP_BODY_TOO_LARGE']);
+      }
+
+      // Unter der Grenze kommt der Body beim Dispatcher an.
+      const refresh = await app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/refresh',
+        headers: jsonHeaders(),
+        payload: JSON.stringify({ padding: 'x'.repeat(60 * 1024) }),
+      });
+      expect([refresh.statusCode, refresh.json().error.code]).toEqual([401, 'refresh_cookie_required']);
+
+      for (const url of ['/api/v1/auth/login-config', '/api/v1/auth/setup-state', '/api/v1/health']) {
+        const response = await app.inject({ method: 'GET', url });
+        expect([url, response.json().error?.code]).not.toEqual([url, 'unauthorized']);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('angemeldete Auth-, Portal- und Webhook-Routen lesen hoechstens 64 KiB (E4)', async () => {
+    const resolvePrincipal = jest.fn(() => OWNER);
+    const app = createFastifyServer({ ports: makePorts(), resolvePrincipal });
+    try {
+      for (const [method, url] of [
+        ['POST', '/api/v1/auth/users'],
+        ['PATCH', '/api/v1/auth/security-settings'],
+        ['POST', '/api/v1/workflows/webhook/incoming'],
+        ['POST', '/api/v1/webhooks/incoming'],
+      ] as const) {
+        const tooLarge = await app.inject({ method, url, headers: jsonHeaders(), payload: objectArrayJson(64 * 1024 + 16) });
+        expect([method, url, tooLarge.statusCode]).toEqual([method, url, 413]);
+
+        const fits = await app.inject({
+          method,
+          url,
+          headers: jsonHeaders(),
+          payload: JSON.stringify({ body: { padding: 'x'.repeat(60 * 1024) } }),
+        });
+        expect([method, url, fits.statusCode === 413]).toEqual([method, url, false]);
+      }
+
+      // Gewoehnliche Routen behalten 1 MiB, und der vorgezogene Principal wird
+      // wiederverwendet statt ein zweites Mal aufgeloest.
+      resolvePrincipal.mockClear();
+      const ordinary = await app.inject({
+        method: 'POST',
+        url: '/api/v1/customers',
+        headers: jsonHeaders(),
+        payload: JSON.stringify({ name: 'x'.repeat(512 * 1024) }),
+      });
+      expect(ordinary.statusCode).not.toBe(413);
+      expect(resolvePrincipal).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
 });
