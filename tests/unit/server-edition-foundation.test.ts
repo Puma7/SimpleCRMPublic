@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import net from 'net';
 import { tmpdir } from 'os';
@@ -3838,6 +3838,20 @@ describe('server edition foundation', () => {
         };
       },
       selectFrom(table: string) {
+        if (table === 'email_message_attachments') {
+          // Previous attachment rows read before the replacement (none here).
+          return {
+            select() {
+              return this;
+            },
+            where() {
+              return this;
+            },
+            async execute() {
+              return [];
+            },
+          };
+        }
         if (table !== 'email_messages') throw new Error(`unexpected select table ${table}`);
         return {
           select() {
@@ -3896,6 +3910,100 @@ describe('server edition foundation', () => {
       const storagePath = String(insertedRows[0].storage_path);
       expect(storagePath).toContain('/mail-sync/901/');
       expect(existsSync(join(root, storagePath))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // F-A5-07: Beim Ersetzen der Anhaenge wurden nur die DB-Zeilen geloescht, die alten Dateien blieben verwaist auf der Platte liegen.
+  test('postgres mail sync attachment replacement removes the replaced attachment files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mail-sync-attachment-replace-'));
+    let attachmentRows: Array<Record<string, unknown>> = [];
+    const foreignPath = `${WORKSPACE_A_ID}/mail-sync/902/keep-me.pdf`;
+    const db = {
+      transaction() {
+        return {
+          execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db),
+        };
+      },
+      selectFrom(table: string) {
+        if (table === 'email_messages') {
+          return {
+            select() { return this; },
+            where() { return this; },
+            async executeTakeFirst() { return { id: 901, source_sqlite_id: 9901 }; },
+          };
+        }
+        if (table === 'email_message_attachments') {
+          return {
+            select() { return this; },
+            where() { return this; },
+            async execute() {
+              return attachmentRows.map((row) => ({ storage_path: row.storage_path }));
+            },
+          };
+        }
+        throw new Error(`unexpected select table ${table}`);
+      },
+      deleteFrom(table: string) {
+        if (table !== 'email_message_attachments') throw new Error(`unexpected delete table ${table}`);
+        return {
+          where() { return this; },
+          async execute() {
+            attachmentRows = [];
+            return undefined;
+          },
+        };
+      },
+      insertInto(table: string) {
+        if (table !== 'email_message_attachments') throw new Error(`unexpected insert table ${table}`);
+        let pending: Array<Record<string, unknown>> = [];
+        return {
+          values(value: Record<string, unknown> | Array<Record<string, unknown>>) {
+            pending = Array.isArray(value) ? value : [value];
+            return this;
+          },
+          async execute() {
+            attachmentRows.push(...pending);
+            return undefined;
+          },
+        };
+      },
+    } as unknown as Kysely<any>;
+    const replace = () => replacePostgresMailSyncAttachments({
+      db,
+      attachmentsRoot: root,
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 901,
+      applyWorkspaceSession: async () => undefined,
+      attachments: [{
+        filename: 'invoice.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 7,
+        contentSha256: 'hash-1',
+        content: Buffer.from('payload'),
+      }],
+    });
+
+    try {
+      await replace();
+      const firstPath = String(attachmentRows[0].storage_path);
+      expect(existsSync(join(root, firstPath))).toBe(true);
+      // A row pointing outside this message's mail-sync directory is never
+      // touched on disk, even if it was attached to the message.
+      mkdirSync(join(root, WORKSPACE_A_ID, 'mail-sync', '902'), { recursive: true });
+      writeFileSync(join(root, foreignPath), 'other');
+      attachmentRows.push({ storage_path: foreignPath });
+
+      await replace();
+
+      expect(attachmentRows).toHaveLength(1);
+      const secondPath = String(attachmentRows[0].storage_path);
+      expect(secondPath).not.toBe(firstPath);
+      expect(existsSync(join(root, secondPath))).toBe(true);
+      expect(existsSync(join(root, firstPath))).toBe(false);
+      expect(readdirSync(join(root, WORKSPACE_A_ID, 'mail-sync', '901'))).toHaveLength(1);
+      expect(existsSync(join(root, foreignPath))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

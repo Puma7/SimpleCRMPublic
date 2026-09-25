@@ -2050,11 +2050,19 @@ export async function replacePostgresMailSyncAttachments(input: {
     });
   }
 
+  let replacedStoragePaths: string[] = [];
   try {
     await withWorkspaceTransaction(
       input.db,
       { workspaceId: input.workspaceId, role: 'system' },
       async (trx) => {
+        const previous = await trx
+          .selectFrom('email_message_attachments')
+          .select('storage_path')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('message_id', '=', input.messageId)
+          .execute();
+        replacedStoragePaths = previous.map((row) => row.storage_path);
         await trx
           .deleteFrom('email_message_attachments')
           .where('workspace_id', '=', input.workspaceId)
@@ -2070,6 +2078,17 @@ export async function replacePostgresMailSyncAttachments(input: {
     await Promise.allSettled(writtenPaths.map((filePath) => rm(filePath, { force: true })));
     throw error;
   }
+
+  // Without this the replaced files stay on disk (and in every backup) with no
+  // DB row referencing them. Only files this sync wrote for this message are
+  // removed; anything outside <ws>/mail-sync/<messageId>/ is left alone.
+  await removeReplacedMailSyncAttachmentFiles({
+    attachmentsRoot: input.attachmentsRoot,
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    storagePaths: replacedStoragePaths,
+    keepPaths: new Set(writtenPaths),
+  });
 
   if (rows.length > 0) {
     // Best-effort Textextraktion fuer die Suche (pdf/docx/txt/html) — non-fatal,
@@ -2087,6 +2106,28 @@ export async function replacePostgresMailSyncAttachments(input: {
       ))
       .catch(() => undefined);
   }
+}
+
+async function removeReplacedMailSyncAttachmentFiles(input: {
+  attachmentsRoot: string;
+  workspaceId: string;
+  messageId: number;
+  storagePaths: readonly string[];
+  keepPaths: ReadonlySet<string>;
+}): Promise<void> {
+  const messageDir = resolveAttachmentStoragePath(
+    input.attachmentsRoot,
+    [input.workspaceId, 'mail-sync', String(input.messageId)].join('/'),
+  );
+  if (!messageDir) return;
+  const removable: string[] = [];
+  for (const storagePath of input.storagePaths) {
+    const resolved = resolveAttachmentStoragePath(input.attachmentsRoot, storagePath);
+    if (!resolved || input.keepPaths.has(resolved)) continue;
+    if (!resolveAttachmentStoragePath(messageDir, resolved)) continue;
+    removable.push(resolved);
+  }
+  await Promise.allSettled(removable.map((filePath) => rm(filePath, { force: true })));
 }
 
 function resolveImapSyncFolders(
