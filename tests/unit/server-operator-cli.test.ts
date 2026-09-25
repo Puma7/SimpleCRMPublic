@@ -205,6 +205,32 @@ describe('API volume ownership after the switch to a non-root image', () => {
     expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
   }));
 
+  // F-A12-07 (Nachtrag): Seit dem Wechsel auf node liest das Relay seinen TLS-Schluessel als uid 1000; ein root-only key.pem schaltete das Relay nach dem Update still ab.
+  test('update warns when the relay TLS key is not readable for the node user', ranOrSkipped(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'simplecrm-relay-tls-'));
+    try {
+      const key = join(dir, 'key.pem');
+      writeFileSync(key, 'not a real key\n');
+      chmodSync(key, 0o600);
+      const warned = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+        { env: { SMTP_RELAY_TLS_DIR: dir } },
+      );
+      expect(warned.status).toBe(0);
+      expect(warned.stderr).toContain(`${key} is not readable for uid 1000`);
+
+      chmodSync(key, 0o644);
+      const readable = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+        { env: { SMTP_RELAY_TLS_DIR: dir } },
+      );
+      expect(readable.status).toBe(0);
+      expect(readable.stderr).not.toContain('is not readable for uid 1000');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }));
+
   test('restore hands restored attachments to node before restarting the API', ranOrSkipped(() => {
     const restore = runWithFakeDocker(['docker/simplecrm', 'restore']);
     expect(restore.status).toBe(0);

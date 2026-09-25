@@ -52,6 +52,22 @@ fix_api_volume_ownership() {
     'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
 }
 
+# The SMTP relay (docker-compose.relay.yml) reads its TLS key as uid 1000 too.
+# A key only root can read would silently switch the relay off after this
+# update, so say so. Only a warning: the relay is optional and the key is the
+# operator's file.
+warn_unreadable_relay_tls_key() {
+  tls_dir="${SMTP_RELAY_TLS_DIR:-./relay-tls}"
+  case "$tls_dir" in /*) ;; *) tls_dir="$COMPOSE_DIR/$tls_dir" ;; esac
+  key="$tls_dir/key.pem"
+  [ -f "$key" ] || return 0
+  owner="$(stat -c %u "$key" 2>/dev/null)" || return 0
+  mode="$(stat -c %a "$key" 2>/dev/null)" || return 0
+  if [ "$owner" != 1000 ] && [ $(( 0$mode & 4 )) -eq 0 ]; then
+    printf 'WARNING: %s is not readable for uid 1000 (the API now runs as node); the SMTP relay will not start. Fix: chown 1000 %s\n' "$key" "$key" >&2
+  fi
+}
+
 # True when Compose knows a (running or stopped) project named "$1".
 project_has_stack() {
   docker compose ls -a 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$1"
@@ -149,6 +165,7 @@ say "[5/6] Draining old workers and restarting api + web"
 # API/worker generation to zero before a newly built API migrates its schema.
 compose stop api
 fix_api_volume_ownership
+warn_unreadable_relay_tls_key
 compose up -d api caddy
 
 say "[6/6] Verifying"
