@@ -83,6 +83,10 @@ jest.mock('../../electron/email/email-gdpr-export', () => ({
   exportEmailGdprPackage: jest.fn(async () => ({ ok: true, path: '/tmp/export.zip' })),
 }));
 
+jest.mock('../../electron/email/email-webhook', () => ({
+  fireWebhookWorkflows: jest.fn(async () => ({ fired: 1 })),
+}));
+
 import { IPCChannels } from '../../shared/ipc/channels';
 import { exportLocalMailBackup, verifyLocalMailBackup } from '../../electron/email/email-local-backup';
 import {
@@ -91,6 +95,7 @@ import {
   restoreLocalMailBackup,
 } from '../../electron/email/email-local-restore';
 import { exportEmailGdprPackage } from '../../electron/email/email-gdpr-export';
+import { fireWebhookWorkflows } from '../../electron/email/email-webhook';
 import {
   createEmailAccountRecord,
   deleteEmailAccountRecord,
@@ -182,6 +187,23 @@ describe('OAuth-App- und Webhook-Secrets (E15)', () => {
     expect(mockSyncInfo).toEqual(before);
 
     await expect(invoke(channel, eventFor('admin'), payload)).resolves.toEqual({ success: true });
+  });
+
+  // C-A53: email:fire-webhook-workflow lief ohne Rolle; wer das Secret kannte, loeste als Agent/Viewer alle Webhook-Workflows aus.
+  test('FireWebhookWorkflow verlangt Owner oder Admin', async () => {
+    jest.mocked(fireWebhookWorkflows).mockClear();
+    const payload = { secret: 'webhook-geheim', body: { test: true } };
+    for (const role of ['agent', 'viewer'] as const) {
+      await expect(invoke(IPCChannels.Email.FireWebhookWorkflow, eventFor(role), payload))
+        .rejects.toThrow('Keine Berechtigung');
+    }
+    expect(fireWebhookWorkflows).not.toHaveBeenCalled();
+
+    for (const role of ['owner', 'admin'] as const) {
+      await expect(invoke(IPCChannels.Email.FireWebhookWorkflow, eventFor(role), payload))
+        .resolves.toEqual({ success: true, fired: 1 });
+    }
+    expect(fireWebhookWorkflows).toHaveBeenCalledTimes(2);
   });
 
   test('ein leeres OAuth-Secret-Feld behaelt das gespeicherte Secret, ein leeres Webhook-Secret schaltet den Webhook ab', async () => {

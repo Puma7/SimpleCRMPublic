@@ -1083,7 +1083,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.error) return { success: false as const, error: r.error, fired: 0 };
         return { success: true as const, fired: r.fired };
       },
-      { logger },
+      // Wie ExecuteWorkflowNow: das Secret allein berechtigt nicht zum Ausloesen von Workflows.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
