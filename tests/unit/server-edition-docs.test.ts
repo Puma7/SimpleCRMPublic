@@ -94,6 +94,20 @@ describe('server edition AP-12 operator docs', () => {
     expect(gitignore).toEqual(expect.stringContaining('!docker/.env.example'));
   });
 
+  // F-A2c-03: Dass die Laufzeitrolle Eigentuemerin aller Objekte ist und FORCE RLS damit nur Selbstbeschraenkung, stand nirgends als Restrisiko.
+  test('documents the schema-owning runtime role as a residual risk with its planned split', () => {
+    const threatModel = readRepoFile('docs/THREAT_MODEL.md');
+    const residualRisks = threatModel.slice(
+      threatModel.indexOf('## Known Residual Risks'),
+      threatModel.indexOf('## Workflows Driven By Untrusted Mail'),
+    );
+
+    expect(residualRisks).toEqual(expect.stringContaining('`simplecrm_app`'));
+    expect(residualRisks).toEqual(expect.stringContaining('FORCE ROW LEVEL SECURITY'));
+    expect(residualRisks).toEqual(expect.stringContaining('NO FORCE ROW LEVEL SECURITY'));
+    expect(residualRisks).toEqual(expect.stringContaining('REASSIGN OWNED BY simplecrm_app'));
+  });
+
   test('keeps AP-12 server documentation files trackable despite the markdown ignore rule', () => {
     const gitignore = readRepoFile('.gitignore');
 
