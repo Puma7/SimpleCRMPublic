@@ -421,6 +421,29 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     expect(await listAiLearningCandidates({ db }, WS_A)).toHaveLength(1);
   });
 
+  test('Aufräumen: Einträge eines offenen Vorschlags spätestens nach 90 Tagen, Vorschlag bleibt übernehmbar', async () => {
+    await seedCandidates(1);
+    await postgres.admin.query(`
+      INSERT INTO ai_learning_candidates (workspace_id, kind, note_text, created_at)
+      VALUES ($1, 'note', 'uralt 1', now() - interval '91 days'), ($1, 'note', 'uralt 2', now() - interval '120 days')
+    `, [WS_A]);
+    const created = await runAiLearningsDigest({
+      db,
+      chat: async () => JSON.stringify({ operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] }),
+    }, { workspaceId: WS_A, period: 'since_last', minCandidates: 1, trigger: 'manual', actorUserId: USER_A });
+    expect(created).toMatchObject({ status: 'created', candidateCount: 3 });
+    const digestId = Number(created.digestId);
+
+    expect(await pruneAiLearningCandidates({ db }, WS_A)).toBe(2);
+    const left = await postgres.admin.query('SELECT count(*)::int AS n FROM ai_learning_candidates WHERE digest_id = $1', [digestId]);
+    expect(left.rows[0]).toEqual({ n: 1 });
+    const digest = await getAiLearningDigest({ db }, WS_A, digestId);
+    expect(digest).toMatchObject({ status: 'pending', candidateCount: 3 });
+    await expect(acceptAiLearningDigest({ db }, {
+      workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: digest!.proposedContent,
+    })).resolves.toMatchObject({ ok: true, deletedCandidates: 1 });
+  });
+
   test('Dokument atomar speichern fasst mehrere Chunks zusammen', async () => {
     await postgres.admin.query(`
       INSERT INTO workflow_knowledge_chunks (workspace_id, source_sqlite_id, knowledge_base_source_sqlite_id, knowledge_base_id, title, content)

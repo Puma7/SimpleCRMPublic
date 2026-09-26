@@ -278,7 +278,7 @@ Unter **Einstellungen → Learnings** schalten Sie **„Learnings sammeln“** e
 
 - Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt personenbezogene Daten durch Platzhalter: Namen (Absender, Empfänger, CRM-Kunde, Ihr Team) → `[Name]`, E-Mail-Adressen → `[E-Mail]`, Telefonnummern → `[Telefon]`, IBAN/BIC → `[IBAN]`/`[BIC]`, Links → `[Link]`, Straßen und PLZ/Ort → `[Adresse]`, Bestell-, Kunden-, Rechnungs- und Ticketnummern → `[Nummer]`. Datumsangaben, Preise und Mengen bleiben stehen.
 - Gespeichert wird nur der bereinigte Text. Die KI bekommt die Anweisung, nur allgemeine Regeln ohne Personenbezug zu formulieren; ihre Ausgabe läuft noch einmal durch denselben Filter (Kontaktdaten, die schon in der Wissensbasis stehen, z. B. Ihre Hotline, bleiben erhalten).
-- Die gesammelten Einträge werden gelöscht, sobald über den Vorschlag entschieden ist, spätestens nach **90 Tagen**. Einzelne Einträge können Sie in der Übersicht selbst löschen.
+- Die gesammelten Einträge werden gelöscht, sobald über den Vorschlag entschieden ist, spätestens nach **90 Tagen** — auch wenn der Vorschlag dann noch offen ist (er bleibt vollständig und kann weiter übernommen oder verworfen werden). Einzelne Einträge können Sie in der Übersicht selbst löschen.
 
 ### Auswerten
 

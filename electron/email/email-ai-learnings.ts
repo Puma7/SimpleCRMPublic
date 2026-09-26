@@ -795,15 +795,18 @@ export function resetAiLearningsRuntimeState(): void {
 // --- Aufbewahrung ---------------------------------------------------------------
 
 /**
- * Löscht unverarbeitete Kandidaten älter als 90 Tage und verwaiste verarbeitete
- * (Vorschlag gelöscht oder schon entschieden). Läuft im Hintergrund-Tick.
+ * Löscht Kandidaten älter als 90 Tage — unabhängig davon, ob sie schon in
+ * einem (noch offenen) Vorschlag stecken; der Vorschlag bleibt mit seinem
+ * gespeicherten Basis- und Vorschlagstext vollständig — sowie verwaiste
+ * verarbeitete (Vorschlag gelöscht oder schon entschieden). Läuft im
+ * Hintergrund-Tick.
  */
 export function pruneAiLearningCandidates(now: Date = new Date()): number {
   const cutoff = nowIso(learningsRetentionCutoff(now));
   return getDb()
     .prepare(
       `DELETE FROM ${AI_LEARNING_CANDIDATES_TABLE}
-       WHERE (processed_at IS NULL AND created_at < ?)
+       WHERE created_at < ?
           OR (processed_at IS NOT NULL AND digest_id IS NULL)
           OR digest_id IN (SELECT id FROM ${AI_LEARNING_DIGESTS_TABLE} WHERE status IN ('accepted', 'rejected'))`,
     )

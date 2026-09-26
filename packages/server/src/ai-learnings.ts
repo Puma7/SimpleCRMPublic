@@ -1242,8 +1242,11 @@ export function createPostgresAiLearningsDigestPort(deps: AiLearningsDigestDeps)
 // --- Aufbewahrung -----------------------------------------------------------------
 
 /**
- * Löscht unverarbeitete Kandidaten älter als 90 Tage und verwaiste verarbeitete
- * (Vorschlag gelöscht oder schon entschieden). Läuft im audit.retention-Takt.
+ * Löscht Kandidaten älter als 90 Tage — unabhängig davon, ob sie schon in
+ * einem (noch offenen) Vorschlag stecken; der Vorschlag bleibt mit seinem
+ * gespeicherten Basis- und Vorschlagstext vollständig — sowie verwaiste
+ * verarbeitete (Vorschlag gelöscht oder schon entschieden). Läuft im
+ * audit.retention-Takt.
  */
 export async function pruneAiLearningCandidates(
   deps: AiLearningsDeps,
@@ -1259,7 +1262,7 @@ export async function pruneAiLearningCandidates(
         .deleteFrom('ai_learning_candidates')
         .where('workspace_id', '=', workspaceId)
         .where((eb) => eb.or([
-          eb.and([eb('processed_at', 'is', null), eb('created_at', '<', cutoff)]),
+          eb('created_at', '<', cutoff),
           eb.and([eb('processed_at', 'is not', null), eb('digest_id', 'is', null)]),
           eb('digest_id', 'in', eb
             .selectFrom('ai_learning_digests')

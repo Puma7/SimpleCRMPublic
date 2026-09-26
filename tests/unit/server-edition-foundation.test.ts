@@ -16437,7 +16437,7 @@ describe('server edition foundation', () => {
           ['id', 'in', [7, 8]],
         ],
       },
-      // TA-P5: Learnings-Rohdaten (unverarbeitet > 90 Tage, entschiedene Vorschläge).
+      // TA-P5: Learnings-Rohdaten (älter als 90 Tage, entschiedene Vorschläge).
       {
         kind: 'delete',
         table: 'ai_learning_candidates',

@@ -412,6 +412,24 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(listAiLearningCandidates().map((c) => c.createdAt)).toEqual(['2026-09-26T12:00:00.000Z']);
   });
 
+  test('Aufräumen: Einträge eines offenen Vorschlags spätestens nach 90 Tagen, Vorschlag bleibt übernehmbar', async () => {
+    const now = new Date();
+    seedCandidates(1, now);
+    seedCandidates(2, new Date(now.getTime() - 91 * 24 * 60 * 60 * 1000));
+    mockRunChatCompletion.mockResolvedValueOnce(JSON.stringify({ operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] }));
+    const created = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1, actorUserId: USER });
+    expect(created).toMatchObject({ status: 'created', candidateCount: 3 });
+    const digestId = Number(created.digestId);
+
+    expect(pruneAiLearningCandidates(now)).toBe(2);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM ai_learning_candidates WHERE digest_id = ?').get(digestId)).toEqual({ n: 1 });
+    const digest = await getAiLearningDigest(digestId);
+    expect(digest).toMatchObject({ status: 'pending', candidateCount: 3 });
+    await expect(acceptAiLearningDigest({ id: digestId, content: digest!.proposedContent, actorUserId: USER }))
+      .resolves.toMatchObject({ success: true });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM ai_learning_candidates').get()).toEqual({ n: 0 });
+  });
+
   test('Knoten ai.learnings_digest: überspringt Mail-Workflows, Probelauf, echter Lauf', async () => {
     let node: RegisteredWorkflowNode | undefined;
     registerLearningsDigestNode((def) => { node = def; });
