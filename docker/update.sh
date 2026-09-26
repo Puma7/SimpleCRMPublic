@@ -252,19 +252,20 @@ else
       echo "VERSION must be a release tag like v1.1.0 (or 'latest'), got: $VERSION" >&2
       exit 2
     fi
-    UPDATE_STAGE=source
     say "[1/6] Updating source to release $VERSION (previous: $PREV_REV)"
     # A release tag names one tested commit. Fetch exactly that tag; if a local
     # tag of the same name points elsewhere, git refuses instead of guessing.
     git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$VERSION:refs/tags/$VERSION"
+    # From here on the checkout changes: a failure prints the way back.
+    UPDATE_STAGE=source
     git -C "$REPO_DIR" checkout --force --detach "refs/tags/$VERSION"
   else
-    UPDATE_STAGE=source
     say "[1/6] Updating source to origin/$BRANCH (previous: $PREV_REV)"
     # Reset to FETCH_HEAD (the exact commit we just fetched) rather than the
     # remote-tracking ref origin/$BRANCH, which a plain branch fetch may leave
     # stale — otherwise we could rebuild the previous commit and report success.
     git -C "$REPO_DIR" fetch origin "$BRANCH"
+    UPDATE_STAGE=source
     git -C "$REPO_DIR" checkout -B "$BRANCH" FETCH_HEAD
     git -C "$REPO_DIR" reset --hard FETCH_HEAD
   fi

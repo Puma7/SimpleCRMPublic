@@ -367,6 +367,8 @@ describe('update: fixed release, health check and the way back', () => {
       const unknown = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v9.9.9', '--no-backup'], { cwd: checkout });
       expect(unknown.status).not.toBe(0);
       expect(unknown.log).not.toContain(' build');
+      // Nichts wurde verändert: kein Hinweis auf einen Weg zurück.
+      expect(unknown.stderr).not.toContain('Update stopped during');
       expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
 
       const malformed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'main;rm', '--no-backup'], { cwd: checkout });
