@@ -57,6 +57,7 @@ import {
   emailAddressForDelivery,
   normalizeTrustedAuthservIdSetting,
   OUTBOUND_REVIEW_SKIP_FORBIDDEN_MESSAGE,
+  OUTBOUND_REVIEW_SKIP_CHANGED_MESSAGE,
   OUTBOUND_REVIEW_SKIP_NOT_HELD_MESSAGE,
   outboundReviewSkipAllowedForRole,
 } from '@simplecrm/core';
@@ -1159,6 +1160,10 @@ async function handleSendDraftSkipOutboundReview(
   if (!prepared.ok) {
     if (prepared.reason === 'not_held') {
       return error(409, 'email_draft_not_held', OUTBOUND_REVIEW_SKIP_NOT_HELD_MESSAGE);
+    }
+    if (prepared.reason === 'changed_since_hold') {
+      // Nur der unveränderte, angehaltene Inhalt darf ohne Prüfung raus.
+      return error(409, 'email_draft_changed_since_hold', OUTBOUND_REVIEW_SKIP_CHANGED_MESSAGE);
     }
     return error(404, 'email_draft_not_found', 'Entwurf nicht gefunden');
   }

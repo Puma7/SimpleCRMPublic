@@ -104,6 +104,7 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
 import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
@@ -2945,7 +2946,10 @@ async function deleteLocalDraftRows(
     .where('id', 'in', draftIds)
     .returning('id')
     .execute();
-  return { ok: true, count: rows.length, deletedIds: rows.map((row: { id: unknown }) => Number(row.id)) };
+  const deletedIds = rows.map((row: { id: unknown }) => Number(row.id));
+  // TA-P2: Fingerprint eines angehaltenen Entwurfs mit aufräumen.
+  await clearOutboundHoldFingerprints(trx, { workspaceId: input.workspaceId, messageIds: deletedIds });
+  return { ok: true, count: rows.length, deletedIds };
 }
 
 async function bulkSetSpamStatusRows(

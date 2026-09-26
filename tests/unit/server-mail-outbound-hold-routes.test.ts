@@ -294,6 +294,20 @@ describe('POST /api/v1/email/messages/:id/send-skip-outbound-review (TA-P2)', ()
     expect(audit).not.toHaveBeenCalled();
   });
 
+  test('Review B3: nach dem Anhalten geändert (oder Altbestand) ⇒ 409 mit Meldung, ohne Versand und Protokoll', async () => {
+    const { api, send, audit } = setup({ prepared: { ok: false, reason: 'changed_since_hold' } });
+
+    const response = await api.handle(request());
+
+    expect(response.status).toBe(409);
+    expect((response.body as { error: { code: string; message: string } }).error).toEqual(expect.objectContaining({
+      code: 'email_draft_changed_since_hold',
+      message: 'Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.',
+    }));
+    expect(send).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   test('Versandfehler wird wie bei compose/send gemeldet', async () => {
     const { api } = setup({ sendResult: { ok: false, error: 'SMTP down' } });
 

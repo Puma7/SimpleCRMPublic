@@ -60,7 +60,11 @@ import {
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
-import { OUTBOUND_REVIEW_PENDING_REASON, persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import {
+  clearOutboundHoldFingerprints,
+  OUTBOUND_REVIEW_PENDING_REASON,
+  persistOutboundBlockOnDraft,
+} from './mail-outbound-hold';
 import { recordSentProvenance, type ComposeSentByActor } from './mail-sent-provenance';
 
 export {
@@ -1491,6 +1495,11 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('key', '=', outboundReviewApprovedKey(input.messageId))
             .execute();
+          // Ebenso der Fingerprint eines früheren Anhaltens (TA-P2).
+          await clearOutboundHoldFingerprints(trx, {
+            workspaceId: input.workspaceId,
+            messageIds: [input.messageId],
+          });
 
           if (feedback) {
             try {

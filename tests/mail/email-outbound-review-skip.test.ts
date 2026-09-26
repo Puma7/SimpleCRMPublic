@@ -38,7 +38,7 @@ import {
   createEmailMessagesTable,
   createSyncInfoTable,
 } from '../../electron/database-schema';
-import { getEmailMessageById } from '../../electron/email/email-store';
+import { getEmailMessageById, updateComposeDraft } from '../../electron/email/email-store';
 import { returnOutboundDraftToInbox } from '../../electron/email/email-outbound-review';
 import { sendDraftSkippingOutboundReview } from '../../electron/email/email-outbound-review-skip';
 import { tryOutboundApprovalBypass } from '../../electron/email/outbound-approval';
@@ -208,5 +208,62 @@ describe('Desktop: Ohne Ausgangsprüfung senden', () => {
       `SELECT sent_by_kind, sent_by_user_id, sent_outbound_review_skipped FROM email_messages WHERE id = 66`,
     ).get()).toEqual({ sent_by_kind: 'ai_approved', sent_by_user_id: 'user-1', sent_outbound_review_skipped: 1 });
     expect(db.prepare(`SELECT 1 FROM sync_info WHERE key = 'outbound_review_skipped:66'`).get()).toBeUndefined();
+  });
+});
+
+describe('Desktop: Überspringen nur für den unveränderten, angehaltenen Inhalt (Review B3/B4)', () => {
+  const CHANGED =
+    'Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.';
+  // Wie das Entwurfsfenster nach dem Öffnen speichert: Hinweis-Block als Absatz,
+  // Text aus dem HTML ohne Umbrüche.
+  const banner = `<p><strong>${OUTBOUND_WARNING_MARKER}</strong><br>Preisangabe fehlt<br><em>Bitte E-Mail prüfen, korrigieren und erneut senden.</em></p>`;
+  function saveLikeComposeWindow(id: number, body: string, href?: string): void {
+    updateComposeDraft(id, {
+      subject: 'Re: Frage',
+      bodyText: `${OUTBOUND_WARNING_MARKER} Preisangabe fehlt Bitte E-Mail prüfen, korrigieren und erneut senden. ${body}`,
+      bodyHtml: `${banner}<p>${href ? `<a href="${href}">${body}</a>` : body}</p>`,
+      toJson: JSON.stringify({ value: [{ address: 'kunde@example.com' }] }),
+    });
+  }
+
+  test('unverändert — auch nach dem Speichern im Entwurfsfenster — wird gesendet, ohne Hinweis im Text', async () => {
+    insertHeldDraft(71);
+    expect(db.prepare(`SELECT value FROM sync_info WHERE key = 'outbound_hold_fingerprint:71'`).get())
+      .toEqual({ value: expect.stringMatching(/^[a-f0-9]{32}$/) });
+    saveLikeComposeWindow(71, 'Antwort an den Kunden');
+
+    expect(await sendDraftSkippingOutboundReview(71, user)).toEqual({ success: true });
+
+    const sendInput = mockSendComposeDraft.mock.calls[0]![0] as { bodyText: string; bodyHtml: string | null };
+    expect(sendInput.bodyText).not.toContain('AUSGANGSPR');
+    expect(sendInput.bodyText).not.toContain('erneut senden');
+    expect(sendInput.bodyText).toContain('Antwort an den Kunden');
+    expect(String(sendInput.bodyHtml)).not.toContain('AUSGANGSPR');
+    // Die Freigabe räumt den Fingerprint auf.
+    expect(db.prepare(`SELECT 1 FROM sync_info WHERE key = 'outbound_hold_fingerprint:71'`).get()).toBeUndefined();
+  });
+
+  test('nach dem Anhalten bearbeitet (Text oder nur ein Link-Ziel) ⇒ Fehler, kein Versand, bleibt angehalten', async () => {
+    insertHeldDraft(72);
+    saveLikeComposeWindow(72, 'Antwort an den Kunden, 10 % Rabatt');
+    expect(await sendDraftSkippingOutboundReview(72, user)).toEqual({ success: false, error: CHANGED });
+    expect(getEmailMessageById(72)!.outbound_hold).toBe(1);
+
+    insertHeldDraft(73);
+    saveLikeComposeWindow(73, 'Antwort an den Kunden', 'https://phish.example.test/');
+    expect(await sendDraftSkippingOutboundReview(73, user)).toEqual({ success: false, error: CHANGED });
+
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+    expect(db.prepare(`SELECT COUNT(*) AS n FROM auth_audit_log`).get()).toEqual({ n: 0 });
+  });
+
+  test('Altbestand: angehalten ohne Fingerprint ⇒ Fehler wie nach einer Änderung', async () => {
+    db.prepare(
+      `INSERT INTO email_messages
+         (id, account_id, folder_id, uid, subject, folder_kind, body_text, to_json, outbound_hold, outbound_block_reason, date_received)
+       VALUES (74, 1, 10, -74, 'Alt', 'draft', 'Alter Text', ?, 1, 'Preisangabe fehlt', '2026-09-26T07:00:00Z')`,
+    ).run(JSON.stringify({ value: [{ address: 'kunde@example.com' }] }));
+    expect(await sendDraftSkippingOutboundReview(74, owner)).toEqual({ success: false, error: CHANGED });
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
   });
 });

@@ -45,6 +45,7 @@ Hält ein ausgehender Workflow eine Mail an, liegt der Entwurf im **Posteingang*
 
 - **Korrigieren und senden:** Entwurf öffnen, anpassen, **Senden** — die Ausgangs-Workflows prüfen erneut.
 - **Ohne Ausgangsprüfung senden:** Im Hinweis „Versand blockiert“ und im Entwurfsfenster eines angehaltenen Entwurfs. Nach der Rückfrage geht die Mail ohne erneuten Durchlauf der Ausgangs-Workflows raus. Jeder solche Versand wird protokolliert (Server: Audit-Log, Desktop: Protokoll).
+- **Nur für den unveränderten, angehaltenen Inhalt:** Haben Sie (oder jemand anderes) den Entwurf nach dem Anhalten geändert, erscheint „Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.“ — dann einfach **Senden**, die Ausgangs-Workflows prüfen die neue Fassung. Im Entwurfsfenster verschwindet der Knopf, sobald Sie etwas ändern. Öffnen und Speichern ohne Änderung zählt nicht.
 - **Wer das darf:** **Einstellungen → Automatisierung → „Ausgangsprüfung überspringen erlauben“**: *Alle, die senden dürfen* (Standard), *Nur Owner und Admin* oder *Niemand*. Ändern können die Einstellung nur Owner und Admin.
 
 ### Wer hat gesendet? („Gesendet (KI)“)

@@ -2628,7 +2628,7 @@ export type EmailComposeSendResult =
 /** „Ohne Ausgangsprüfung senden“ (TA-P2): Freigabe für den aktuellen Inhalt vorbereiten. */
 export type EmailOutboundReviewSkipPrepareResult =
   | { ok: true; values: EmailComposeSendInput }
-  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'not_held' };
+  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'not_held' | 'changed_since_hold' };
 
 export type EmailOutboundReviewSkipApiPort = {
   /** Einstellung `outbound_review_skip_policy` (Standard „all“). */

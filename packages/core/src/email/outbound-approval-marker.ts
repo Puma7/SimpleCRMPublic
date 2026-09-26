@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { normalizeOutboundHoldContent, type OutboundHoldContentInput } from './outbound-review-skip';
+
 /** Stable content fingerprint for outbound drafts, used by the approval marker
  *  (`outbound_review_approved:<draftId>`) to detect edits between approval and
  *  the actual SMTP send. If the user edits the draft after the workflow
@@ -69,4 +71,13 @@ export function parseOutboundApprovalMarker(raw: string | null | undefined): Out
     approvedAt: approvedAt && Number.isFinite(approvedAt.getTime()) ? approvedAt : null,
     fingerprint: hashPart && hashPart.length > 0 ? hashPart : null,
   };
+}
+
+/**
+ * Fingerprint des endgültig angehaltenen Inhalts (sync_info
+ * `outbound_hold_fingerprint:<id>`): outboundDraftFingerprint über die
+ * normalisierten Felder, Hinweis „Versand blockiert“ herausgerechnet.
+ */
+export function outboundHoldFingerprint(input: OutboundHoldContentInput): string {
+  return outboundDraftFingerprint(normalizeOutboundHoldContent(input));
 }

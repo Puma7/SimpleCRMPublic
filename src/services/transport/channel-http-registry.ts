@@ -2653,7 +2653,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     return {
       method: "POST",
       path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/send-skip-outbound-review`,
-      // Antwort wie compose/send; 403/409 (Rolle, nicht angehalten) wirft der Transport.
+      // Antwort wie compose/send; 403/409 (Rolle, nicht angehalten, nach dem Anhalten
+      // geändert) wirft der Transport mit der Meldung des Servers.
       transform: (body) => dataBody<{
         success: boolean
         error?: string

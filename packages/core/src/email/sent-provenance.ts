@@ -212,6 +212,10 @@ function collapseWhitespace(value: string): string {
 }
 
 /** Adressen aus gespeichertem Empfänger-JSON ({ value: [...] }, Array) oder einer Adressliste. */
+export function draftRecipientAddresses(value: unknown): string[] {
+  return recipientAddresses(value);
+}
+
 function recipientAddresses(value: unknown): string[] {
   const addresses: string[] = [];
   const visit = (node: unknown): void => {

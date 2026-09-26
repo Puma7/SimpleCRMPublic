@@ -33,6 +33,7 @@ import type { EmailAccountRow } from './email-store';
 import { canAccessLocalAccount } from '../auth/auth-store';
 import type { SessionRole } from '../auth/session-store';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
+import { clearOutboundHoldFingerprints } from './outbound-hold-fingerprint';
 import { recordSentProvenance, type DesktopSentByActor } from './email-sent-provenance';
 import type { SentProvenance } from '../../packages/core/src/email/sent-provenance';
 
@@ -171,6 +172,8 @@ async function finalizeSentDraft(input: {
     { sentByKind: provenance?.kind ?? null },
   );
   markDraftAsSent(input.draftMessageId);
+  // TA-P2: Fingerprint eines früheren Anhaltens aufräumen (wie der Freigabe-Marker).
+  clearOutboundHoldFingerprints(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
   clearScheduledSendActor(input.draftMessageId);
 

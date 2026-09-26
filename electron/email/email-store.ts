@@ -34,6 +34,7 @@ import {
 } from '../../shared/signature-template';
 import { escapeHtmlText } from '../../shared/compose-body';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
+import { clearOutboundHoldFingerprints } from './outbound-hold-fingerprint';
 
 export type EmailAccountRow = {
   id: number;
@@ -1722,6 +1723,7 @@ export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
     .prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${draftIds.map(() => '?').join(',')})`)
     .run(...draftIds);
   clearScheduledSendActor(...draftIds);
+  clearOutboundHoldFingerprints(...draftIds);
   return r.changes;
 }
 
@@ -1996,6 +1998,7 @@ export function deleteLocalComposeDraft(messageId: number): void {
   }
   getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
   clearScheduledSendActor(messageId);
+  clearOutboundHoldFingerprints(messageId);
 }
 
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {

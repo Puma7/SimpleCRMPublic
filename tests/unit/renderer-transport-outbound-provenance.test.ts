@@ -155,6 +155,18 @@ describe('renderer transport: Ohne Ausgangsprüfung senden (TA-P2)', () => {
     );
   });
 
+  test('Review B3: 409 „nach dem Anhalten geändert“ kommt als Fehler mit der Meldung des Servers an', async () => {
+    const message =
+      'Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.';
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      error: { code: 'email_draft_changed_since_hold', message },
+    }, 409));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await expect(transport.invoke(IPCChannels.Email.SendDraftSkipOutboundReview, { draftId: 41 }))
+      .rejects.toThrow(message);
+  });
+
   test('Automatisierungs-Einstellung: Richtlinie lesen und schreiben', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

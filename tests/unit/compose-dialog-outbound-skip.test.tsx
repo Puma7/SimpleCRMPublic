@@ -237,6 +237,37 @@ describe('ComposeDialog: Ohne Ausgangsprüfung senden', () => {
     expect(mockInvoke).not.toHaveBeenCalledWith('workflow:get-automation-settings');
   });
 
+  test('Review B3: nach einer Änderung im Fenster kein Knopf mehr, nur der Hinweis auf normales Senden', async () => {
+    await renderDraft();
+    expect(await screen.findByRole('button', { name: 'Ohne Ausgangsprüfung senden' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Nachricht'), { target: { value: '<p>Antwort mit 10 % Rabatt</p>' } });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Ohne Ausgangsprüfung senden' })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Nach dem Anhalten geändert/)).toBeInTheDocument();
+
+    // Zurück zum angehaltenen Inhalt (nur anders formatiert): Knopf wieder da.
+    fireEvent.change(screen.getByLabelText('Nachricht'), { target: { value: '<p>Antwort </p>' } });
+    expect(await screen.findByRole('button', { name: 'Ohne Ausgangsprüfung senden' })).toBeInTheDocument();
+  });
+
+  test('Review B3: Antwort 409 „nach dem Anhalten geändert“ wird verständlich angezeigt', async () => {
+    const changed =
+      'Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.';
+    mockInvoke.mockImplementation((channel: string) => (
+      channel === 'email:send-draft-skip-outbound-review' ? Promise.reject(new Error(changed)) : invoke(channel)
+    ));
+    const onSent = await renderDraft();
+    fireEvent.click(await screen.findByRole('button', { name: 'Ohne Ausgangsprüfung senden' }));
+    const confirm = screen.getAllByRole('button', { name: 'Senden' }).find((button) => button.closest('[role="alertdialog"]'));
+    fireEvent.click(confirm!);
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith(changed));
+    expect(onSent).not.toHaveBeenCalled();
+  });
+
   test('Einstellung „niemand“ blendet den Knopf aus', async () => {
     policy = 'none';
     await renderDraft();

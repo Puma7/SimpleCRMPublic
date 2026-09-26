@@ -1,8 +1,11 @@
 import {
   composeOutboundHeldDraftBody,
   extractDraftBodyForOutboundBlock,
+  outboundHoldFingerprint,
+  outboundHoldFingerprintKey,
   outboundHoldReasonOrFallback,
 } from '@simplecrm/core';
+import { sql } from 'kysely';
 
 import type { WorkspaceTransaction } from './db/workspace-context';
 
@@ -28,6 +31,10 @@ export const OUTBOUND_REVIEW_PENDING_REASON =
  * Nur lokale Entwürfe (uid < 0, folder_kind 'draft') bekommen Banner und
  * Planungs-Reset; andere Nachrichten (z. B. Prüfrunde einer Lesebestätigung
  * auf der eingegangenen Mail) nur Sperre und Grund wie bisher.
+ *
+ * Für lokale Entwürfe wird außerdem der Fingerprint des angehaltenen Inhalts
+ * gespeichert (sync_info `outbound_hold_fingerprint:<id>`): „Ohne
+ * Ausgangsprüfung senden“ gilt nur, solange der Inhalt unverändert ist.
  */
 export async function persistOutboundBlockOnDraft(
   trx: WorkspaceTransaction,
@@ -41,7 +48,10 @@ export async function persistOutboundBlockOnDraft(
   const reason = outboundHoldReasonOrFallback(input.reason);
   const row = await trx
     .selectFrom('email_messages')
-    .select(['uid', 'folder_kind', 'body_text', 'body_html'])
+    .select([
+      'uid', 'folder_kind', 'body_text', 'body_html',
+      'subject', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json',
+    ])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .executeTakeFirst();
@@ -83,7 +93,94 @@ export async function persistOutboundBlockOnDraft(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .execute();
+  await storeOutboundHoldFingerprint(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    fingerprint: outboundHoldFingerprint({
+      subject: row.subject,
+      bodyText: body.bodyText,
+      bodyHtml: body.bodyHtml,
+      to: row.to_json,
+      cc: row.cc_json,
+      bcc: row.bcc_json,
+      attachments: row.draft_attachment_paths_json,
+    }),
+    now: input.now,
+  });
   return reason;
+}
+
+/** Fingerprint des aktuell gespeicherten Entwurfsinhalts (Vergleich beim Überspringen). */
+export async function currentOutboundHoldFingerprint(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; messageId: number },
+): Promise<string | null> {
+  const row = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!row) return null;
+  return outboundHoldFingerprint({
+    subject: row.subject,
+    bodyText: row.body_text,
+    bodyHtml: row.body_html,
+    to: row.to_json,
+    cc: row.cc_json,
+    bcc: row.bcc_json,
+    attachments: row.draft_attachment_paths_json,
+  });
+}
+
+/** Gespeicherter Fingerprint des angehaltenen Inhalts; null = keiner (Altbestand). */
+export async function readOutboundHoldFingerprint(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; messageId: number },
+): Promise<string | null> {
+  const row = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('key', '=', outboundHoldFingerprintKey(input.messageId))
+    .executeTakeFirst();
+  return row?.value?.trim() ? row.value : null;
+}
+
+/** Aufräumen wie beim Freigabe-Marker: Versand, Freigabe, Löschen. */
+export async function clearOutboundHoldFingerprints(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; messageIds: readonly number[] },
+): Promise<void> {
+  if (input.messageIds.length === 0) return;
+  await trx
+    .deleteFrom('sync_info')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('key', 'in', input.messageIds.map((id) => outboundHoldFingerprintKey(id)))
+    .execute();
+}
+
+async function storeOutboundHoldFingerprint(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; messageId: number; fingerprint: string; now: Date },
+): Promise<void> {
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: outboundHoldFingerprintKey(input.messageId),
+      value: input.fingerprint,
+      last_updated: input.now,
+      source_row: sql`'{"origin":"server_api"}'::jsonb`,
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: input.fingerprint,
+      last_updated: input.now,
+      updated_at: input.now,
+    }))
+    .execute();
 }
 
 function snippetFromPlain(text: string): string | null {

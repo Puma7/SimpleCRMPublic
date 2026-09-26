@@ -15,6 +15,11 @@ import {
   type WorkspaceSessionApplier,
 } from './db/workspace-context';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
+import {
+  clearOutboundHoldFingerprints,
+  currentOutboundHoldFingerprint,
+  readOutboundHoldFingerprint,
+} from './mail-outbound-hold';
 import { parseDraftAttachmentPaths, recipientFieldFromJson } from './mail-scheduled-send';
 
 /**
@@ -79,6 +84,19 @@ export function createPostgresOutboundReviewSkipPort(options: {
             return { ok: false as const, reason: 'not_local_draft' as const };
           }
           if (draft.outbound_hold !== true) return { ok: false as const, reason: 'not_held' as const };
+          // Nur der unveränderte, angehaltene Inhalt (Zeile ist FOR UPDATE gesperrt):
+          // nach dem Anhalten bearbeitet oder Altbestand ohne Fingerprint ⇒ normal senden.
+          const heldFingerprint = await readOutboundHoldFingerprint(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+          });
+          const currentFingerprint = await currentOutboundHoldFingerprint(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+          });
+          if (!heldFingerprint || heldFingerprint !== currentFingerprint) {
+            return { ok: false as const, reason: 'changed_since_hold' as const };
+          }
 
           const to = recipientFieldFromJson(draft.to_json);
           const cc = recipientFieldFromJson(draft.cc_json);
@@ -98,6 +116,11 @@ export function createPostgresOutboundReviewSkipPort(options: {
             attachmentPaths,
             draftSnapshot: draft,
             now: at,
+          });
+          // Die Sperre ist aufgehoben (Freigabe): Fingerprint aufräumen.
+          await clearOutboundHoldFingerprints(trx, {
+            workspaceId: input.workspaceId,
+            messageIds: [input.messageId],
           });
           // Kein zusätzlicher Hintergrundversand: gesendet wird gleich synchron.
           await trx

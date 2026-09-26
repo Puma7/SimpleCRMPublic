@@ -64,7 +64,7 @@ Nebenbei wird ein bestehender Fehler behoben: Mit aktivem Sync des Gesendet-Ordn
 ### 3.3 Ausgangsprüfung überspringen
 
 - Hält der Ausgangs-Workflow eine Mail an, zeigt der Hinweis „Versand blockiert“ die Begründung. Ein Entscheidungsmodell liefert keine; dann steht dort: **„Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen.“** (mit der Ja-Wahrscheinlichkeit).
-- Neuer Knopf **„Ohne Ausgangsprüfung senden“** im Hinweis und im Entwurfsfenster eines angehaltenen Entwurfs, mit Rückfrage. Die Mail geht dann ohne erneuten Durchlauf der Ausgangs-Workflows raus.
+- Neuer Knopf **„Ohne Ausgangsprüfung senden“** im Hinweis und im Entwurfsfenster eines angehaltenen Entwurfs, mit Rückfrage. Die Mail geht dann ohne erneuten Durchlauf der Ausgangs-Workflows raus — **nur für den unveränderten, angehaltenen Inhalt**: Beim endgültigen Anhalten wird ein Fingerprint des Inhalts gespeichert (Betreff, Text- und HTML-Teil ohne den Hinweis, Link-Ziele, Empfänger, Anhänge). Wurde der Entwurf danach geändert (oder fehlt der Fingerprint bei älteren Entwürfen), lehnt der Server bzw. der Desktop mit „Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.“ ab (HTTP 409); das Entwurfsfenster zeigt den Knopf nach einer Änderung nicht mehr.
 - Jeder solche Versand wird protokolliert (Server: Audit-Log, Desktop: Protokoll) und an der Mail als „Ausgangsprüfung übersprungen“ gekennzeichnet.
 - Einstellung unter **Einstellungen → Automatisierung**: „Ausgangsprüfung überspringen erlauben: alle, die senden dürfen (Standard) / nur Owner und Admin / niemand“.
 
