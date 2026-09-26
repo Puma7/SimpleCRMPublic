@@ -389,6 +389,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0052_jtl_key_uniqueness',
   '0053_task_assignment_scope_orphan_backfill',
   '0054_email_account_trusted_authserv_id',
+  '0056_email_workflow_schedule_state',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -688,11 +689,14 @@ describe('server edition foundation', () => {
 
   // F-A9-01 (E30): Die Server-Vorlagenliste bot Vorlagen mit Desktop-Triggern an
   // (etwa crm-deal-won-task); auf dem Server liefen sie nie.
+  // TA-P4: Seit dem Server-Taktgeber loest der Server auch Zeitplaene aus —
+  // die Zeitplan-Vorlage gehoert jetzt dazu.
   test('server template list omits templates whose trigger the server never fires', () => {
     const templates = listServerWorkflowTemplates();
     expect(templates.map((template) => template.id)).not.toContain('crm-deal-won-task');
+    expect(templates.map((template) => template.id)).toContain('schedule-inbox-sync');
     for (const template of templates) {
-      expect(['inbound', 'outbound', 'manual', 'relay', 'webhook.incoming']).toContain(template.trigger);
+      expect(['inbound', 'outbound', 'manual', 'relay', 'webhook.incoming', 'schedule']).toContain(template.trigger);
     }
   });
 
@@ -2016,6 +2020,7 @@ describe('server edition foundation', () => {
       'lock.cleanup',
       'audit.retention',
       'mail.sync.schedule',
+      'workflow.schedule.tick',
     ]);
     expect(assertValidJobType('mail.sync')).toBe('mail.sync');
     expect(assertServerJobType('mail.sync.imap')).toBe('mail.sync.imap');
@@ -32145,10 +32150,13 @@ describe('server edition foundation', () => {
 
   // F-A9-01 (E30): Die API speicherte jeden triggerName; Workflows mit Zeitplan
   // oder CRM-Ereignis waren aktiv, liefen auf dem Server aber nie.
+  // TA-P4: Zeitplaene loest der Server inzwischen selbst aus (eigener Test in
+  // server-workflow-schedule.test.ts); abgelehnt bleiben die uebrigen
+  // Desktop-Trigger, hier stellvertretend „Aufgabe faellig".
   test('workflow API rejects triggers the server never fires but keeps such workflows readable', async () => {
     const createCalls: unknown[] = [];
     const updateCalls: unknown[] = [];
-    const stored = { ...makeWorkflowRecord(41), triggerName: 'schedule', cronExpr: '0 8 * * *', enabled: false };
+    const stored = { ...makeWorkflowRecord(41), triggerName: 'task.due', enabled: false };
     const api = createServerApi(makeServerApiPorts({
       workflows: {
         async list() { return { items: [stored], nextCursor: null }; },
@@ -32168,7 +32176,7 @@ describe('server edition foundation', () => {
     const created = await api.handle({
       method: 'POST',
       path: '/api/v1/workflows',
-      body: { name: 'Taeglich', triggerName: 'schedule', cronExpr: '0 8 * * *', definition: { version: 1, rules: [] } },
+      body: { name: 'Faellig', triggerName: 'task.due', definition: { version: 1, rules: [] } },
       principal: admin,
     });
     expect(created.status).toBe(400);
@@ -32194,7 +32202,7 @@ describe('server edition foundation', () => {
     // Lesen, Umbenennen und Deaktivieren eines Bestands-Workflows bleiben moeglich.
     const read = await api.handle({ method: 'GET', path: '/api/v1/workflows/41', principal: admin });
     expect(read.status).toBe(200);
-    expect((read.body as any).data.triggerName).toBe('schedule');
+    expect((read.body as any).data.triggerName).toBe('task.due');
     const renamed = await api.handle({
       method: 'PATCH',
       path: '/api/v1/workflows/41',
@@ -34412,6 +34420,8 @@ describe('server edition foundation', () => {
       spamScoreThreshold: '82',
       autoReplyEnabled: true,
       autoReplyMaxPerSenderPerDay: 3,
+      // TA-P4: Zeitzone der Zeitplan-Workflows, ohne gespeicherten Wert der Standard.
+      scheduleTimezone: 'Europe/Berlin',
     });
 
     // Der GET verlangt seit der Ausnahme vom Mail-Gate settings.view im Handler

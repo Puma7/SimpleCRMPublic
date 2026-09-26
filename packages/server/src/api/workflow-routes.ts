@@ -5,6 +5,7 @@ import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   isServerWorkflowTrigger,
+  validateWorkflowScheduleCron,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
@@ -52,6 +53,7 @@ import { rejectUnlessWorkflowMessageReadable } from '../mail-access/workflow-mes
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
 import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from '../jobs/policy';
+import { buildScheduleWorkflowContext } from '../jobs/workflow-schedule-tick';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -549,6 +551,16 @@ async function handleWorkflowExecute(
   }
 
   const dryRun = parsed.values.dryRun !== false;
+  // „Jetzt ausfuehren" eines Zeitplan-Workflows laeuft als Zeitplan: derselbe
+  // Ausloeser-Knoten und dieselben Variablen (schedule.*, email.account_id)
+  // wie beim Taktgeber (jobs/workflow-schedule-tick). Mit Test-Nachricht
+  // bleibt es beim manuellen Lauf auf dieser Nachricht. Rechte unveraendert.
+  const scheduleRun = workflow.triggerName === 'schedule' && messageId === undefined;
+  const firedAt = new Date();
+  const runTriggerName = scheduleRun ? 'schedule' : 'manual';
+  const runContext = scheduleRun
+    ? buildScheduleWorkflowContext({ firedAt, slot: firedAt, scheduleAccountId: workflow.scheduleAccountId })
+    : {};
 
   // Interim escalation guard: server workflow runs execute under a system role
   // with no per-node ACL, so a live run whose graph contains a writing node
@@ -573,9 +585,9 @@ async function handleWorkflowExecute(
       workspaceId: principal.workspaceId,
       workflowId: workflow.id,
       ...(messageId === undefined ? {} : { messageId }),
-      triggerName: 'manual',
+      triggerName: runTriggerName,
       actorUserId: principal.userId,
-      context: {},
+      context: runContext,
     });
     return data(result.success ? 200 : 409, {
       ...result,
@@ -591,9 +603,9 @@ async function handleWorkflowExecute(
       workspaceId: principal.workspaceId,
       workflowId: workflow.id,
       ...(messageId === undefined ? {} : { messageId }),
-      triggerName: 'manual',
+      triggerName: runTriggerName,
       actorUserId: principal.userId,
-      context: {},
+      context: runContext,
       // Mark this manual live execution (the only workflow.execute producer that
       // required owner/admin at enqueue) so the worker re-verifies current owner/admin
       // for its side-effecting graph — catching a demotion between here and execution.
@@ -1069,10 +1081,10 @@ function rejectUnlessOverrideKeyManage(
 }
 
 /**
- * Der Server reiht Workflows nur fuer inbound, outbound, manual, relay und
- * webhook.incoming ein. Desktop-Trigger (Zeitplan, Entwurf, CRM-Ereignisse)
- * liessen sich speichern und aktivieren, liefen aber nie — deshalb 400 statt
- * stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
+ * Der Server reiht Workflows fuer inbound, outbound, manual, relay,
+ * webhook.incoming und schedule ein. Desktop-Trigger (Entwurf,
+ * CRM-Ereignisse) liessen sich speichern und aktivieren, liefen aber nie —
+ * deshalb 400 statt stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
  */
 function unsupportedTriggerError(triggerName: string): ApiResponse {
   return error(
@@ -1080,6 +1092,35 @@ function unsupportedTriggerError(triggerName: string): ApiResponse {
     'unsupported_trigger',
     `Ausloeser "${triggerName}" gibt es nur in der Desktop-Edition; der Server loest ihn nie aus`,
   );
+}
+
+/**
+ * Ein AKTIVER Zeitplan-Workflow braucht einen Ausdruck, den der Server-
+ * Taktgeber auch ausfuehrt: genau 5 Felder, Mindestabstand 15 Minuten,
+ * mindestens ein moeglicher Termin (validateWorkflowScheduleCron, dieselbe
+ * Pruefung wie im Editor). Ohne diese Schranke liesse sich ein Zeitplan
+ * aktivieren, der nie laeuft oder minuetlich feuert.
+ *
+ * Deaktivierte Zeitplaene bleiben frei: ein vom Desktop importierter Workflow
+ * (Sekundenfeld) muss sich erst speichern lassen, um ihn danach zu
+ * korrigieren. Geprueft wird beim Aktivieren.
+ */
+function scheduleWorkflowError(input: Readonly<{
+  triggerName: string | undefined;
+  enabled: boolean | undefined;
+  cronExpr: string | null | undefined;
+}>): ApiResponse | null {
+  if (input.triggerName !== 'schedule' || input.enabled === false) return null;
+  const cronExpr = typeof input.cronExpr === 'string' ? input.cronExpr.trim() : '';
+  if (!cronExpr) {
+    return error(
+      400,
+      'invalid_schedule',
+      'Aktive Zeitplan-Workflows brauchen einen Cron-Ausdruck (z. B. „0 6 * * 1“)',
+    );
+  }
+  const problem = validateWorkflowScheduleCron(cronExpr);
+  return problem ? error(400, 'invalid_schedule', `Ungültiger Zeitplan: ${problem}`) : null;
 }
 
 async function handleCreateWorkflow(
@@ -1100,6 +1141,12 @@ async function handleCreateWorkflow(
   if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
     return unsupportedTriggerError(parsed.values.triggerName);
   }
+  const scheduleError = scheduleWorkflowError({
+    triggerName: parsed.values.triggerName,
+    enabled: parsed.values.enabled ?? true,
+    cronExpr: parsed.values.cronExpr,
+  });
+  if (scheduleError) return scheduleError;
 
   // New workflows default to enabled=true (postgres-workflow-read-ports), so an
   // outbound workflow is live immediately — validate its effective state.
@@ -1198,6 +1245,7 @@ async function handleUpdateWorkflow(
     executionMode?: string | null;
     overrideKey?: string | null;
     priority?: number;
+    cronExpr?: string | null;
   } | undefined;
   if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
@@ -1245,6 +1293,27 @@ async function handleUpdateWorkflow(
         && !isServerWorkflowTrigger(existing.triggerName)
       ) {
         return unsupportedTriggerError(existing.triggerName);
+      }
+      // Zeitplan im EFFEKTIVEN Zustand pruefen: Aktivieren eines gespeicherten
+      // Zeitplans, Umstellen auf schedule und ein neuer Ausdruck laufen alle
+      // hier durch.
+      const effectiveTriggerName = parsed.values.triggerName ?? existing?.triggerName;
+      const effectiveEnabled = parsed.values.enabled ?? existing?.enabled;
+      const scheduleError = scheduleWorkflowError({
+        triggerName: effectiveTriggerName,
+        enabled: effectiveEnabled,
+        cronExpr: parsed.values.cronExpr !== undefined ? parsed.values.cronExpr : existing?.cronExpr ?? null,
+      });
+      if (scheduleError) return scheduleError;
+      // Geprueft wurde dann der GESPEICHERTE Ausdruck — er muss beim Write noch
+      // derselbe sein, sonst waere ein parallel gesetzter Ausdruck ungeprueft aktiv.
+      if (
+        existing
+        && parsed.values.cronExpr === undefined
+        && effectiveTriggerName === 'schedule'
+        && effectiveEnabled !== false
+      ) {
+        expectedState = { ...(expectedState ?? {}), cronExpr: existing.cronExpr ?? null };
       }
       const trap = outboundWorkflowGuardError({
         graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,

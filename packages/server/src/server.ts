@@ -455,10 +455,19 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       // Workspace einen Job ein, dessen Handler die faelligen Konten sucht —
       // die Auswahl gehoert nicht in den Serverprozess (Begruendung in
       // jobs/mail-sync-scheduler).
+      //
+      // workflow.schedule.tick ist der Zeitplan-Ausloeser: je Minute und
+      // Workspace ein Pruef-Job, der faellige Zeitplan-Workflows genau einmal
+      // einreiht (jobs/workflow-schedule-tick).
       if (apiJobQueue) {
         const maintenanceQueue = apiJobQueue;
         const maintenanceLog = createJobWorkerLogger(serverLogStore);
-        for (const jobType of ['lock.cleanup', 'audit.retention', 'mail.sync.schedule'] as const) {
+        for (const jobType of [
+          'lock.cleanup',
+          'audit.retention',
+          'mail.sync.schedule',
+          'workflow.schedule.tick',
+        ] as const) {
           maintenanceTickers.push(startMaintenanceJobTicker({
             db,
             queue: maintenanceQueue,

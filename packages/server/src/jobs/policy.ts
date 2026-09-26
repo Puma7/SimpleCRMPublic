@@ -48,6 +48,7 @@ export const SERVER_JOB_TYPES = [
   'lock.cleanup',
   'audit.retention',
   'mail.sync.schedule',
+  'workflow.schedule.tick',
 ] as const;
 
 export type ServerJobType = typeof SERVER_JOB_TYPES[number];
@@ -255,6 +256,17 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   // Pruefung, die nichts prueft.
   {
     type: 'mail.sync.schedule',
+    kind: 'non_mail',
+    actorMode: 'service',
+    classification: 'system_maintenance',
+  },
+  // Der Taktgeber der Zeitplan-Workflows (jobs/workflow-schedule-tick.ts).
+  // Er liest nur, welche Zeitplaene faellig sind, und reiht deren
+  // workflow.execute-Laeufe ein — die tragen ihre eigene Policy und werden
+  // dort geprueft. Wie beim Sync-Taktgeber gibt es keine Nachricht und kein
+  // Konto, auf das sich eine Mail-Berechtigung beziehen liesse.
+  {
+    type: 'workflow.schedule.tick',
     kind: 'non_mail',
     actorMode: 'service',
     classification: 'system_maintenance',

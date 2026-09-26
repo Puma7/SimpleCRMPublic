@@ -1192,6 +1192,12 @@ export type EmailWorkflowsTable = SourceImportedTable & {
   cron_expr: string | null;
   schedule_account_source_sqlite_id: number | null;
   schedule_account_id: number | null;
+  /**
+   * Zuletzt ausgeloester (oder beim Speichern als erledigt markierter)
+   * Zeitplan-Zeitpunkt; Anspruch des Server-Taktgebers per bedingtem UPDATE
+   * (Migration 0056, jobs/workflow-schedule-tick.ts).
+   */
+  schedule_last_slot_at: TimestampColumn | null;
   account_source_sqlite_id: number | null;
   account_id: number | null;
   override_key: string | null;

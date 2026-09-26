@@ -4160,6 +4160,10 @@ export type WorkflowApiPort = {
        *  aendert — aendert ein Admin sie zwischenzeitlich, muss der Write
        *  scheitern statt sie stillschweigend zurueckzusetzen. */
       priority?: number;
+      /** Gesetzt, wenn die Route einen aktiven Zeitplan gegen den GESPEICHERTEN
+       *  Cron-Ausdruck geprueft hat (Patch ohne cronExpr): ein zwischenzeitlich
+       *  geaenderter Ausdruck waere ungeprueft aktiv. */
+      cronExpr?: string | null;
     };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {

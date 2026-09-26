@@ -829,6 +829,14 @@ export function graphileJobKeyForJob(
     const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && delayedJobId) return `${type}:${workspaceKey}:delayed:${delayedJobId}`;
     if (workspaceKey && workflowId && runId) return `${type}:${workspaceKey}:run:${runId}`;
+    // Zeitplan-Lauf des Server-Taktgebers: Workflow + Zeitpunkt. Der Anspruch
+    // in der Datenbank (schedule_last_slot_at) verhindert doppeltes Ausloesen;
+    // der Key faengt zusaetzlich eine doppelte Einreihung ab, solange der Lauf
+    // noch wartet. Nur ohne Nachricht — „Jetzt ausfuehren" traegt keinen Slot.
+    const scheduleSlot = graphileKeyScalar(payload.scheduleSlot);
+    if (workspaceKey && workflowId && !messageId && payload.triggerName === 'schedule' && scheduleSlot) {
+      return `${type}:${workspaceKey}:${workflowId}:schedule:${scheduleSlot}`;
+    }
     if (workspaceKey && workflowId && messageId && terminalNodeId) {
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`;
     }
@@ -872,7 +880,12 @@ export function graphileJobKeyForJob(
   // mail.sync.schedule waere das je Instanz ein voller Durchlauf durch alle
   // faelligen Konten.
   if (
-    (type === 'lock.cleanup' || type === 'audit.retention' || type === 'mail.sync.schedule')
+    (
+      type === 'lock.cleanup'
+      || type === 'audit.retention'
+      || type === 'mail.sync.schedule'
+      || type === 'workflow.schedule.tick'
+    )
     && workspaceKey
   ) {
     return `${type}:${workspaceKey}`;

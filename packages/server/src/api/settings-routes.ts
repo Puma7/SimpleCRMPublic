@@ -11,7 +11,11 @@ import type {
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
-import type { MailPermission } from '@simplecrm/core';
+import {
+  normalizeWorkflowScheduleTimeZone,
+  resolveWorkflowScheduleTimeZone,
+  type MailPermission,
+} from '@simplecrm/core';
 import { MailAccessDeniedError } from '../mail-access/service';
 import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import {
@@ -35,6 +39,9 @@ const WORKFLOW_AUTOMATION_KEYS = [
   //
   'auto_reply_enabled',
   'auto_reply_max_per_sender_per_day',
+  // Zeitzone der Zeitplan-Workflows (nur Server; der Desktop nutzt die
+  // Zeitzone des Rechners). Gelesen vom Taktgeber jobs/workflow-schedule-tick.
+  'workflow_schedule_timezone',
 ] as const;
 
 const EMAIL_MISC_KEYS = [
@@ -288,6 +295,9 @@ async function handleWorkflowAutomationSettings(
         1,
         50,
       ),
+      // Immer eine gueltige Zone: ungueltige oder fehlende Werte fallen wie im
+      // Taktgeber auf Europe/Berlin zurueck.
+      scheduleTimezone: resolveWorkflowScheduleTimeZone(loaded.values.get('workflow_schedule_timezone')),
     });
   }
 
@@ -860,6 +870,7 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     'spamScoreThreshold',
     'autoReplyEnabled',
     'autoReplyMaxPerSenderPerDay',
+    'scheduleTimezone',
   ]);
   const errors = unknownFieldErrors(payload.value, allowed);
   const values: Record<string, string | null> = {};
@@ -898,6 +909,19 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     const normalized = normalizedBoundedNumberText(payload.value.spamScoreThreshold, 1, 100, true);
     if (normalized === null) errors.push({ field: 'spamScoreThreshold', message: 'spamScoreThreshold muss eine Zahl zwischen 1 und 100 sein' });
     else values.workflow_spam_score_threshold = normalized;
+  }
+  if ('scheduleTimezone' in payload.value) {
+    // Kanonische IANA-Schreibweise speichern (Intl); feste Versaetze wie
+    // „+01:00" kennen keine Sommerzeit und sind ausgeschlossen.
+    const timeZone = normalizeWorkflowScheduleTimeZone(payload.value.scheduleTimezone);
+    if (timeZone === null) {
+      errors.push({
+        field: 'scheduleTimezone',
+        message: 'scheduleTimezone muss eine IANA-Zeitzone sein (z. B. Europe/Berlin)',
+      });
+    } else {
+      values.workflow_schedule_timezone = timeZone;
+    }
   }
 
   return settingsParseResult(values, errors, 'Workflow automation settings payload braucht mindestens ein Feld');

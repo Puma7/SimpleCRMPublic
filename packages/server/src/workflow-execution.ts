@@ -703,6 +703,19 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          // Ein Zeitplan-Lauf wurde fuer den damals gespeicherten Ausloeser
+          // eingereiht (jobs/workflow-schedule-tick). Wurde der Workflow bis zum
+          // Start auf einen anderen Ausloeser umgestellt, ist er fuer den
+          // Zeitplan nicht mehr zustaendig — wie deaktiviert behandeln.
+          if (trigger === 'schedule' && !resumeNodeId && workflow.trigger_name !== 'schedule') {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:workflow_scope_changed'],
+              now,
+            });
+            return;
+          }
+
           // Die Kette wurde beim Eingang der Mail mit den damals zustaendigen
           // Workflows festgelegt. Wurde dieser Workflow seitdem auf ein anderes
           // Postfach umgehaengt oder vom Inbound-Trigger genommen, ist er fuer

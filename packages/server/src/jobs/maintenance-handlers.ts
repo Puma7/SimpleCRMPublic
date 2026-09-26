@@ -10,6 +10,7 @@ import {
 } from '../db';
 import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
+import { runWorkflowScheduleTick } from './workflow-schedule-tick';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -173,6 +174,33 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           `[mail-sync-schedule] could not enqueue ${result.failed.length} due account(s) `
           + `in workspace ${job.workspaceId}: ${accountIds}. They stay due and are retried `
           + 'on the next tick.',
+        );
+      }
+    },
+
+    // Taktgeber der Zeitplan-Workflows: sucht die faelligen Zeitpunkte und
+    // reiht deren workflow.execute-Laeufe ein (workflow-schedule-tick.ts).
+    // Ohne Queue gilt dasselbe wie beim Sync-Taktgeber: lieber scheitern als
+    // still nie ausloesen.
+    'workflow.schedule.tick': async (job) => {
+      if (!options.requeue) throw new Error('workflow schedule tick requires a job queue');
+      const result = await runWorkflowScheduleTick({
+        db: options.db,
+        queue: options.requeue,
+        workspaceId: job.workspaceId,
+        now: now(),
+        ...(options.applyWorkspaceSession
+          ? { applyWorkspaceSession: options.applyWorkspaceSession }
+          : {}),
+      });
+      // Wie beim Sync: der Takt selbst scheitert nicht an einem einzelnen
+      // Workflow — der Anspruch ist zurueckgenommen, der naechste Takt
+      // versucht es erneut, solange der Zeitpunkt im Nachholfenster liegt.
+      if (result.failed.length > 0) {
+        const workflowIds = result.failed.map((entry) => entry.workflowId).join(', ');
+        console.warn(
+          `[workflow-schedule] could not enqueue ${result.failed.length} scheduled run(s) `
+          + `in workspace ${job.workspaceId}: ${workflowIds}. They are retried on the next tick.`,
         );
       }
     },
