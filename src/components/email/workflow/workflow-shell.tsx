@@ -81,7 +81,7 @@ import {
 import { NodePalette } from "./node-palette"
 import { NodePropertiesPanel } from "./node-properties-panel"
 import { JsonDevDrawer } from "./json-dev-drawer"
-import { WorkflowTemplatesDialog } from "./workflow-templates-dialog"
+import { WorkflowTemplatesDialog, type WorkflowTemplatePickInfo } from "./workflow-templates-dialog"
 import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
@@ -1342,7 +1342,7 @@ export function WorkflowShell() {
         <WorkflowTemplatesDialog
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}
-          onPick={(t: WorkflowTemplateDto) => {
+          onPick={(t: WorkflowTemplateDto, info?: WorkflowTemplatePickInfo) => {
             if (!canManageWorkflows) return
             // Eine Vorlage ERSETZT den aktuellen Canvas — nie ohne Rückfrage
             // über bestehende Arbeit bügeln (mehr als nur der Trigger-Knoten).
@@ -1367,6 +1367,7 @@ export function WorkflowShell() {
             const applied = [
               edits.priority ? `Priorität ${edits.priority}` : null,
               edits.cronExpr ? `Zeitplan ${edits.cronExpr}` : null,
+              info?.decisionProfileLabel ? `Entscheidungsmodell „${info.decisionProfileLabel}“` : null,
             ].filter(Boolean)
             toast.success(
               `Vorlage „${t.name}" geladen${applied.length > 0 ? ` (${applied.join(", ")})` : ""} — bitte speichern.`,

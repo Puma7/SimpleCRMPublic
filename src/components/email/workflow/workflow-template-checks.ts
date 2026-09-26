@@ -17,10 +17,15 @@ export type TemplateCheckId =
   | "learningsCollect"
   | "scheduleTrigger"
 
+/** Ein KI-Profil vom Typ Entscheidungsmodell, das „Vorlage laden“ eintragen kann. */
+export type DecisionModelProfileRef = { id: number; label: string }
+
 /** Live-Werte; null = unbekannt (Laden fehlgeschlagen oder keine Berechtigung). */
 export type TemplateLiveChecks = {
   chatProfileReady: boolean | null
   decideProfileReady: boolean | null
+  /** Erstes Entscheidungsmodell mit API-Schlüssel; null = keins (oder unbekannt). */
+  decisionModelProfile: DecisionModelProfileRef | null
   cannedReady: boolean | null
   autoReplyEnabled: boolean | null
   knowledgeBaseReady: boolean | null
@@ -30,6 +35,7 @@ export type TemplateLiveChecks = {
 export const UNKNOWN_TEMPLATE_LIVE_CHECKS: TemplateLiveChecks = {
   chatProfileReady: null,
   decideProfileReady: null,
+  decisionModelProfile: null,
   cannedReady: null,
   autoReplyEnabled: null,
   knowledgeBaseReady: null,
@@ -69,21 +75,58 @@ export function requiredTemplateChecks(
   return checks
 }
 
-type AiProfileRowLike = { provider?: unknown; hasApiKey?: unknown }
+type AiProfileRowLike = { id?: unknown; label?: unknown; provider?: unknown; hasApiKey?: unknown }
+
+function isDecisionModelRow(p: AiProfileRowLike): boolean {
+  return isAiDecisionsPresetId(typeof p.provider === "string" ? p.provider : "")
+}
 
 /**
  * KI-Profile aus ListAiProfiles (Desktop-IPC und Server-Transport liefern
- * provider und hasApiKey). Ein Profil ohne Schlüssel zählt nicht; fehlt das
- * Feld (ältere Antwort), gilt das Profil als eingerichtet.
+ * id, label, provider und hasApiKey). Ein Profil ohne Schlüssel zählt nicht;
+ * fehlt das Feld (ältere Antwort), gilt das Profil als eingerichtet.
  */
-export function aiProfileReadiness(rows: unknown): Pick<TemplateLiveChecks, "chatProfileReady" | "decideProfileReady"> {
+export function aiProfileReadiness(
+  rows: unknown,
+): Pick<TemplateLiveChecks, "chatProfileReady" | "decideProfileReady" | "decisionModelProfile"> {
   const profiles = Array.isArray(rows) ? (rows as AiProfileRowLike[]) : []
   const usable = profiles.filter((p) => p && typeof p === "object" && p.hasApiKey !== false)
+  // Reihenfolge der Liste (= Reihenfolge in Einstellungen → KI): das erste
+  // Entscheidungsmodell mit Schlüssel. Eines ohne Schlüssel würde im Lauf
+  // scheitern; leer (Standard-Profil) funktioniert dagegen.
+  const decision = usable.find((p) => isDecisionModelRow(p) && Number.isInteger(p.id) && Number(p.id) > 0)
   return {
-    chatProfileReady: usable.some((p) => !isAiDecisionsPresetId(typeof p.provider === "string" ? p.provider : "")),
+    chatProfileReady: usable.some((p) => !isDecisionModelRow(p)),
     // Entscheidungsmodell oder Chat-Modell — beide beantworten „KI-Entscheidung“.
     decideProfileReady: usable.length > 0,
+    decisionModelProfile: decision
+      ? { id: Number(decision.id), label: typeof decision.label === "string" ? decision.label : "" }
+      : null,
   }
+}
+
+/**
+ * „Vorlage laden“: trägt in jeden Baustein „KI-Entscheidung“ ohne gewähltes
+ * KI-Profil das Entscheidungsmodell ein. Nur beim Laden einer Vorlage —
+ * gespeicherte Workflows bleiben unberührt. Ohne Profil bleibt alles leer
+ * (Standard-Profil). Das Original wird nicht verändert.
+ */
+export function withDecisionModelProfile<T extends Pick<WorkflowTemplateDto, "graph">>(
+  template: T,
+  profile: DecisionModelProfileRef | null,
+): { template: T; nodeIds: string[] } {
+  if (!profile) return { template, nodeIds: [] }
+  const nodeIds: string[] = []
+  const nodes = template.graph.nodes.map((node) => {
+    const data = node.data as { nodeType?: unknown; config?: Record<string, unknown> } | undefined
+    if (data?.nodeType !== "ai.decide") return node
+    const current = data.config?.profileId
+    if (current !== null && current !== undefined && current !== "" && current !== 0) return node
+    nodeIds.push(node.id)
+    return { ...node, data: { ...data, config: { ...(data.config ?? {}), profileId: profile.id } } }
+  })
+  if (nodeIds.length === 0) return { template, nodeIds }
+  return { template: { ...template, graph: { ...template.graph, nodes } }, nodeIds }
 }
 
 /** Learnings-Übersicht (GetLearningsOverview) → Schalter „Learnings sammeln“. */
@@ -111,7 +154,11 @@ export function templateCheckRows(
           id,
           ok: live.decideProfileReady,
           label: "KI-Profil vom Typ Entscheidungsmodell (oder Chat-Modell)",
-          hint: "(Einstellungen → E-Mail → KI; im Baustein „KI-Entscheidung“ auswählen — leer = Standard-Profil)",
+          hint: live.decisionModelProfile
+            ? `(„${live.decisionModelProfile.label || `Profil ${live.decisionModelProfile.id}`}“ wird beim Laden im Baustein „KI-Entscheidung“ eingetragen)`
+            : live.decideProfileReady === true
+              ? "(kein Entscheidungsmodell angelegt — der Baustein „KI-Entscheidung“ nutzt das Standard-Profil; Einstellungen → E-Mail → KI)"
+              : "(Einstellungen → E-Mail → KI)",
         }
       case "canned":
         return {

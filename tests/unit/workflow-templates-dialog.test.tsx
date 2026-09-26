@@ -48,7 +48,7 @@ describe('Vorlagen-Dialog: Teilautomatisierung', () => {
           return TEMPLATES;
         case IPCChannels.Email.ListAiProfiles:
           // Nur ein Entscheidungsmodell: reicht für „KI-Entscheidung“, nicht für Entwurf/Gegenprüfung.
-          return [{ id: 1, provider: 'openrouter_decisions', hasApiKey: true }];
+          return [{ id: 1, label: 'Jev', provider: 'openrouter_decisions', hasApiKey: true }];
         case IPCChannels.Email.ListKnowledgeBases:
           return [{ id: 3, name: 'FAQ' }];
         case IPCChannels.Email.GetLearningsOverview:
@@ -90,9 +90,26 @@ describe('Vorlagen-Dialog: Teilautomatisierung', () => {
     expect(within(card(IDS.learningsWeekly)).getByText('Beim Laden eingetragen: Zeitplan 0 6 * * 1')).toBeInTheDocument();
     expect(within(card(IDS.learningsWeekly)).getByText('(Desktop: läuft, solange SimpleCRM geöffnet ist)')).toBeInTheDocument();
 
+    expect(
+      spamCard.getByText('(„Jev“ wird beim Laden im Baustein „KI-Entscheidung“ eingetragen)'),
+    ).toBeInTheDocument();
+
     fireEvent.click(within(card(IDS.learningsWeekly)).getByRole('button', { name: 'Vorlage laden' }));
-    expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ id: IDS.learningsWeekly, cronExpr: '0 6 * * 1' }));
+    expect(onPick).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: IDS.learningsWeekly, cronExpr: '0 6 * * 1' }),
+      { decisionProfileLabel: null },
+    );
     expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    // „Vorlage laden“ trägt das Entscheidungsmodell in „KI-Entscheidung“ ein —
+    // nur in die übergebene Kopie, die mitgelieferte Vorlage bleibt leer.
+    fireEvent.click(spamCard.getByRole('button', { name: 'Vorlage laden' }));
+    const [picked, info] = onPick.mock.calls.at(-1)!;
+    expect(info).toEqual({ decisionProfileLabel: 'Jev' });
+    const decide = picked.graph.nodes.find((n: { id: string }) => n.id === 'decide');
+    expect(decide.data.config).toMatchObject({ profileId: 1, question: 'Ist diese E-Mail Spam, Phishing oder unerwünschte Werbung?' });
+    const shipped = TEMPLATES.find((t) => t.id === IDS.spamDecision)!;
+    expect((shipped.graph.nodes.find((n) => n.id === 'decide')!.data as any).config.profileId).toBeNull();
   });
 
   test('Server: Checkliste über HTTP, Zeitplan-Hinweis „einmal speichern“', async () => {
@@ -102,6 +119,7 @@ describe('Vorlagen-Dialog: Teilautomatisierung', () => {
       if (url.includes('/api/v1/ai/profiles')) {
         return jsonResponse({ data: { items: [{ id: 5, label: 'Chat', provider: 'openai', apiKeyConfigured: true }], nextCursor: null } });
       }
+      if (url.includes('/api/v1/workflow/node-catalog')) return jsonResponse({ data: [] });
       if (url.includes('/api/v1/workflow-knowledge-bases')) return jsonResponse({ data: { items: [], nextCursor: null } });
       if (url.includes('/api/v1/ai-learnings/overview')) {
         return jsonResponse({ data: { settings: { collectEnabled: true, targetKnowledgeBaseId: null, profileId: null } } });
@@ -113,7 +131,8 @@ describe('Vorlagen-Dialog: Teilautomatisierung', () => {
       fetchImpl: fetchImpl as typeof fetch,
     }));
 
-    render(<WorkflowTemplatesDialog open onOpenChange={jest.fn()} onPick={jest.fn()} />);
+    const onPick = jest.fn();
+    render(<WorkflowTemplatesDialog open onOpenChange={jest.fn()} onPick={onPick} />);
 
     await screen.findByText('Learnings wöchentlich auswerten');
     await waitFor(() => expect(checkStates(IDS.learningsWeekly).learningsCollect).toBe('ok'));
@@ -133,5 +152,54 @@ describe('Vorlagen-Dialog: Teilautomatisierung', () => {
     ).toBeInTheDocument();
     const paths = fetchImpl.mock.calls.map(([input]) => new URL(String(input)).pathname);
     expect(paths).toEqual(expect.arrayContaining(['/api/v1/workflow-knowledge-bases', '/api/v1/ai-learnings/overview']));
+    // Nur ein Chat-Modell: „KI-Entscheidung“ bleibt beim Laden leer (Standard-Profil), die Checkliste sagt es.
+    expect(
+      within(card(IDS.outboundDecision)).getByText(
+        '(kein Entscheidungsmodell angelegt — der Baustein „KI-Entscheidung“ nutzt das Standard-Profil; Einstellungen → E-Mail → KI)',
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(within(card(IDS.outboundDecision)).getByRole('button', { name: 'Vorlage laden' }));
+    const [picked, info] = onPick.mock.calls.at(-1)!;
+    expect(info).toEqual({ decisionProfileLabel: null });
+    expect(picked.graph.nodes.find((n: { id: string }) => n.id === 'decide').data.config.profileId).toBeNull();
+  });
+
+  test('Server: Entscheidungsmodell aus der HTTP-Profilliste wird beim Laden eingetragen', async () => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/workflow/templates')) return jsonResponse({ data: TEMPLATES });
+      if (url.includes('/api/v1/ai/profiles')) {
+        return jsonResponse({
+          data: {
+            items: [
+              { id: 5, label: 'Chat', provider: 'openai', apiKeyConfigured: true },
+              { id: 8, label: 'Jev', provider: 'openrouter_decisions', apiKeyConfigured: true },
+            ],
+            nextCursor: null,
+          },
+        });
+      }
+      return jsonResponse({ error: { code: 'not_found' } }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+    const onPick = jest.fn();
+
+    render(<WorkflowTemplatesDialog open onOpenChange={jest.fn()} onPick={onPick} />);
+
+    await screen.findByText('Eingehend: Mensch oder KI? → KI-Antwort mit Gegenprüfung');
+    await within(card(IDS.humanOrAiReply)).findByText('(„Jev“ wird beim Laden im Baustein „KI-Entscheidung“ eingetragen)');
+    fireEvent.click(within(card(IDS.humanOrAiReply)).getByRole('button', { name: 'Vorlage laden' }));
+    const [picked, info] = onPick.mock.calls.at(-1)!;
+    expect(info).toEqual({ decisionProfileLabel: 'Jev' });
+    const configs = Object.fromEntries(
+      picked.graph.nodes.map((n: { id: string; data: { config?: Record<string, unknown> } }) => [n.id, n.data.config]),
+    );
+    expect(configs.decide).toMatchObject({ profileId: 8 });
+    // Entwurf und Gegenprüfung behalten das Standard-Profil (Chat-Modell).
+    expect(configs.review).toEqual({ draftIdVariable: 'draft.id', reviewPrompt: '' });
+    expect(configs.draft.profileId).toBeUndefined();
   });
 });

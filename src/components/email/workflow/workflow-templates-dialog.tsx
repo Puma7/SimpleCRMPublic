@@ -22,13 +22,20 @@ import {
   templateCheckRows,
   templatePickEdits,
   UNKNOWN_TEMPLATE_LIVE_CHECKS,
+  withDecisionModelProfile,
   type TemplateLiveChecks,
 } from "./workflow-template-checks"
+
+/** Was der Dialog beim Laden an der Vorlage ergänzt hat (für die Rückmeldung). */
+export type WorkflowTemplatePickInfo = {
+  /** Eingetragenes Entscheidungsmodell in „KI-Entscheidung“, sonst null. */
+  decisionProfileLabel: string | null
+}
 
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onPick: (template: WorkflowTemplateDto) => void
+  onPick: (template: WorkflowTemplateDto, info: WorkflowTemplatePickInfo) => void
 }
 
 const TEMPLATE_PORT_NOTES: Record<string, string> = {
@@ -97,7 +104,9 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
     // Live-Checks für die Voraussetzungs-Anzeige (best effort).
     void invokeRenderer(IPCChannels.Email.ListAiProfiles)
       .then((rows) => setChecks((c) => ({ ...c, ...aiProfileReadiness(rows) })))
-      .catch(() => setChecks((c) => ({ ...c, chatProfileReady: null, decideProfileReady: null })))
+      .catch(() =>
+        setChecks((c) => ({ ...c, chatProfileReady: null, decideProfileReady: null, decisionModelProfile: null })),
+      )
     void invokeRenderer(IPCChannels.Email.ListKnowledgeBases)
       .then((rows) => setChecks((c) => ({ ...c, knowledgeBaseReady: Array.isArray(rows) && rows.length > 0 })))
       .catch(() => setChecks((c) => ({ ...c, knowledgeBaseReady: null })))
@@ -186,7 +195,14 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
                     size="sm"
                     className="mt-2"
                     onClick={() => {
-                      onPick(t)
+                      // Nur beim Laden: „KI-Entscheidung“ ohne Profil bekommt
+                      // das Entscheidungsmodell (falls angelegt).
+                      const profile = checks.decisionModelProfile
+                      const prepared = withDecisionModelProfile(t, profile)
+                      onPick(prepared.template, {
+                        decisionProfileLabel:
+                          prepared.nodeIds.length > 0 && profile ? profile.label || `Profil ${profile.id}` : null,
+                      })
                       onOpenChange(false)
                     }}
                   >

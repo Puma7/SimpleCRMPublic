@@ -13,6 +13,7 @@ import {
   templateCheckRows,
   templatePickEdits,
   UNKNOWN_TEMPLATE_LIVE_CHECKS,
+  withDecisionModelProfile,
 } from '../../src/components/email/workflow/workflow-template-checks';
 import type { WorkflowTemplateDto } from '../../shared/workflow-types';
 
@@ -22,8 +23,8 @@ function template(id: string): WorkflowTemplateDto {
   return found as unknown as WorkflowTemplateDto;
 }
 
-const chat = { provider: 'openai', hasApiKey: true };
-const decisions = { provider: 'openrouter_decisions', hasApiKey: true };
+const chat = { id: 1, label: 'Chat', provider: 'openai', hasApiKey: true };
+const decisions = { id: 2, label: 'Jev', provider: 'openrouter_decisions', hasApiKey: true };
 
 describe('requiredTemplateChecks', () => {
   test('Vorlagen der Teilautomatisierung', () => {
@@ -55,23 +56,68 @@ describe('requiredTemplateChecks', () => {
 });
 
 describe('aiProfileReadiness', () => {
-  test('Entscheidungsmodell zählt nur für „KI-Entscheidung“', () => {
-    expect(aiProfileReadiness([decisions])).toEqual({ chatProfileReady: false, decideProfileReady: true });
+  test('Entscheidungsmodell zählt nur für „KI-Entscheidung“ und wird zum Eintragen gemerkt', () => {
+    expect(aiProfileReadiness([decisions])).toEqual({
+      chatProfileReady: false,
+      decideProfileReady: true,
+      decisionModelProfile: { id: 2, label: 'Jev' },
+    });
   });
 
-  test('Chat-Modell genügt für beides', () => {
-    expect(aiProfileReadiness([chat])).toEqual({ chatProfileReady: true, decideProfileReady: true });
-    expect(aiProfileReadiness([decisions, chat])).toEqual({ chatProfileReady: true, decideProfileReady: true });
+  test('Chat-Modell genügt für beides; das erste Entscheidungsmodell mit Schlüssel gewinnt', () => {
+    expect(aiProfileReadiness([chat])).toEqual({
+      chatProfileReady: true,
+      decideProfileReady: true,
+      decisionModelProfile: null,
+    });
+    const spanWithoutKey = { id: 3, label: 'Span', provider: 'openrouter_decisions', hasApiKey: false };
+    const spanSecond = { id: 4, label: 'Span 2', provider: 'OpenRouter_Decisions', hasApiKey: true };
+    expect(aiProfileReadiness([chat, spanWithoutKey, decisions, spanSecond])).toEqual({
+      chatProfileReady: true,
+      decideProfileReady: true,
+      decisionModelProfile: { id: 2, label: 'Jev' },
+    });
   });
 
   test('Profile ohne API-Schlüssel zählen nicht; ältere Antworten ohne Feld schon', () => {
     expect(aiProfileReadiness([{ provider: 'openai', hasApiKey: false }])).toEqual({
       chatProfileReady: false,
       decideProfileReady: false,
+      decisionModelProfile: null,
     });
-    expect(aiProfileReadiness([{ provider: 'openai' }])).toEqual({ chatProfileReady: true, decideProfileReady: true });
-    expect(aiProfileReadiness([])).toEqual({ chatProfileReady: false, decideProfileReady: false });
-    expect(aiProfileReadiness(null)).toEqual({ chatProfileReady: false, decideProfileReady: false });
+    expect(aiProfileReadiness([{ id: 9, provider: 'openai' }])).toMatchObject({ chatProfileReady: true, decideProfileReady: true });
+    expect(aiProfileReadiness([])).toEqual({ chatProfileReady: false, decideProfileReady: false, decisionModelProfile: null });
+    expect(aiProfileReadiness(null)).toEqual({ chatProfileReady: false, decideProfileReady: false, decisionModelProfile: null });
+  });
+});
+
+describe('withDecisionModelProfile („Vorlage laden“)', () => {
+  const decideConfig = (t: WorkflowTemplateDto, id = 'decide') =>
+    (t.graph.nodes.find((n) => n.id === id)!.data as { config: Record<string, unknown> }).config;
+
+  test('trägt das Entscheidungsmodell in „KI-Entscheidung“ ohne Profil ein, ohne das Original zu ändern', () => {
+    for (const id of [IDS.spamDecision, IDS.humanOrAiReply, IDS.outboundDecision]) {
+      const original = template(id);
+      const before = JSON.stringify(original.graph);
+      const result = withDecisionModelProfile(original, { id: 2, label: 'Jev' });
+      expect(result.nodeIds).toEqual(['decide']);
+      expect(decideConfig(result.template)).toMatchObject({ profileId: 2 });
+      // Alle übrigen Einstellungen und Knoten bleiben, wie sie waren.
+      expect({ ...decideConfig(result.template), profileId: null }).toEqual(decideConfig(original));
+      expect(result.template.graph.nodes.filter((n) => n.id !== 'decide')).toEqual(
+        original.graph.nodes.filter((n) => n.id !== 'decide'),
+      );
+      expect(JSON.stringify(original.graph)).toBe(before);
+    }
+  });
+
+  test('ohne Entscheidungsmodell, mit gewähltem Profil oder ohne ai.decide bleibt alles unverändert', () => {
+    const spam = template(IDS.spamDecision);
+    expect(withDecisionModelProfile(spam, null)).toEqual({ template: spam, nodeIds: [] });
+    const chosen = withDecisionModelProfile(spam, { id: 7, label: 'Eigenes' }).template;
+    expect(withDecisionModelProfile(chosen, { id: 2, label: 'Jev' })).toEqual({ template: chosen, nodeIds: [] });
+    const twoStage = template('inbound-ai-two-stage-reply');
+    expect(withDecisionModelProfile(twoStage, { id: 2, label: 'Jev' })).toEqual({ template: twoStage, nodeIds: [] });
   });
 });
 
@@ -86,6 +132,7 @@ describe('templateCheckRows', () => {
   const live = {
     chatProfileReady: true,
     decideProfileReady: true,
+    decisionModelProfile: null,
     cannedReady: false,
     autoReplyEnabled: false,
     knowledgeBaseReady: false,
@@ -99,7 +146,8 @@ describe('templateCheckRows', () => {
         id: 'decideProfile',
         ok: true,
         label: 'KI-Profil vom Typ Entscheidungsmodell (oder Chat-Modell)',
-        hint: '(Einstellungen → E-Mail → KI; im Baustein „KI-Entscheidung“ auswählen — leer = Standard-Profil)',
+        hint:
+          '(kein Entscheidungsmodell angelegt — der Baustein „KI-Entscheidung“ nutzt das Standard-Profil; Einstellungen → E-Mail → KI)',
       },
       {
         id: 'autoReply',
@@ -114,6 +162,24 @@ describe('templateCheckRows', () => {
         hint: '(Einstellungen → Wissensbasis — Grundlage für die KI-Antworten)',
       },
     ]);
+  });
+
+  test('Hinweis nennt das Entscheidungsmodell, das beim Laden eingetragen wird', () => {
+    const rows = templateCheckRows(
+      template(IDS.spamDecision),
+      { ...live, decisionModelProfile: { id: 2, label: 'Jev' } },
+      { serverClientMode: true },
+    );
+    expect(rows).toEqual([
+      {
+        id: 'decideProfile',
+        ok: true,
+        label: 'KI-Profil vom Typ Entscheidungsmodell (oder Chat-Modell)',
+        hint: '(„Jev“ wird beim Laden im Baustein „KI-Entscheidung“ eingetragen)',
+      },
+    ]);
+    const unknown = templateCheckRows(template(IDS.spamDecision), UNKNOWN_TEMPLATE_LIVE_CHECKS, { serverClientMode: false });
+    expect(unknown[0]).toMatchObject({ ok: null, hint: '(Einstellungen → E-Mail → KI)' });
   });
 
   test('d: Learnings sammeln und Zeitplan in beiden Editionen', () => {

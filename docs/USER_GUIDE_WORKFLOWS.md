@@ -174,7 +174,7 @@ Der schnellste Einstieg: Klicken Sie oben auf **„Vorlagen“**. Jede Vorlage z
 - die **Kette der Bausteine** als Vorschau,
 - eine **Checkliste der Voraussetzungen** mit Live-Ampel: grüner Haken = eingerichtet, rotes Kreuz = fehlt noch, graues Dreieck = konnte nicht geprüft werden. Geprüft werden z. B. „KI-Profil mit API-Schlüssel“ (ein Chat-Modell mit hinterlegtem Schlüssel), „KI-Profil vom Typ Entscheidungsmodell (oder Chat-Modell)“, „Mindestens ein Textbaustein“, „Auto-Antwort-Schalter aktiviert“, „Wissensbasis vorhanden“, „Learnings sammeln aktiviert“ und „Auslöser Zeitplan verfügbar“ — jeweils mit dem Ort in den Einstellungen, wo Sie es nachholen.
 
-**„Vorlage laden“** ersetzt den aktuellen Inhalt der Zeichenfläche — falls dort schon etwas gebaut ist, fragt SimpleCRM vorher nach. Bringt eine Vorlage eine empfohlene **Priorität** oder einen **Zeitplan** mit, trägt „Vorlage laden“ beides gleich mit ein (die Vorlage zeigt es unter „Beim Laden eingetragen“). Danach können Sie alles anpassen und müssen nur noch **speichern** (und sicherstellen, dass der Workflow auf **Aktiv** steht).
+**„Vorlage laden“** ersetzt den aktuellen Inhalt der Zeichenfläche — falls dort schon etwas gebaut ist, fragt SimpleCRM vorher nach. Bringt eine Vorlage eine empfohlene **Priorität** oder einen **Zeitplan** mit, trägt „Vorlage laden“ beides gleich mit ein (die Vorlage zeigt es unter „Beim Laden eingetragen“). Enthält sie den Baustein **„KI-Entscheidung“** ohne gewähltes KI-Profil, trägt „Vorlage laden“ dort das erste Profil vom Typ Entscheidungsmodell (mit API-Schlüssel) ein; gibt es keins, bleibt das Feld leer und der Baustein nutzt das Standard-Profil — die Checkliste sagt, was passiert. Gespeicherte Workflows ändert das nie. Danach können Sie alles anpassen und müssen nur noch **speichern** (und sicherstellen, dass der Workflow auf **Aktiv** steht).
 
 Eine kleine Auswahl der mitgelieferten Vorlagen:
 
@@ -344,7 +344,7 @@ Was sich ohne KI entscheiden lässt, gehört vor die KI — das ist schneller, k
 ### 5. Vorlage „Eingehend: Spam-Entscheidung (Entscheidungsmodell)“ (Priorität 5)
 
 1. **Neu** → **Vorlagen** → „Eingehend: Spam-Entscheidung (Entscheidungsmodell)“ → **Vorlage laden**. Die Priorität 5 wird eingetragen.
-2. Den Baustein **„KI-Entscheidung“** anklicken und unter **KI-Profil** das Entscheidungsmodell wählen (leer = Standard-Profil). Frage und Kriterien („Wann Ja?“ / „Wann Nein?“) können Sie an Ihr Geschäft anpassen, die Mindest-Sicherheit steht auf 80 %.
+2. „Vorlage laden“ hat im Baustein **„KI-Entscheidung“** bereits Ihr Entscheidungsmodell eingetragen (ohne Entscheidungsmodell bleibt das Feld leer = Standard-Profil); unter **KI-Profil** lässt es sich ändern. Frage und Kriterien („Wann Ja?“ / „Wann Nein?“) können Sie an Ihr Geschäft anpassen, die Mindest-Sicherheit steht auf 80 %.
 3. **Speichern**, **Aktiv** prüfen.
 
 | Antwort | Ergebnis |
@@ -359,7 +359,7 @@ Was sich ohne KI entscheiden lässt, gehört vor die KI — das ist schneller, k
 ### 6. Vorlage „Eingehend: Mensch oder KI? → KI-Antwort mit Gegenprüfung“ (Priorität 50)
 
 1. **Neu** → **Vorlagen** → „Eingehend: Mensch oder KI? → KI-Antwort mit Gegenprüfung“ → **Vorlage laden** (Priorität 50). Die Checkliste sollte grün sein: Chat-Modell, Entscheidungsmodell (oder Chat-Modell), Auto-Antwort-Schalter, Wissensbasis.
-2. Im Baustein **„KI-Entscheidung“** das Entscheidungsmodell wählen. Entwurf und Gegenprüfung nutzen das Standard-Profil (Chat-Modell); die Einstellungen stammen aus der Vorlage „KI-Antwort mit Gegenprüfung (empfohlen)“.
+2. Im Baustein **„KI-Entscheidung“** ist das Entscheidungsmodell bereits eingetragen (wie in Schritt 5). Entwurf und Gegenprüfung nutzen das Standard-Profil (Chat-Modell); die Einstellungen stammen aus der Vorlage „KI-Antwort mit Gegenprüfung (empfohlen)“.
 3. Die Kriterien der Frage **„Muss ein Mensch diese Anfrage bearbeiten?“** an Ihr Geschäft anpassen. Ab Werk heißt es **Ja** bei Beschwerden mit Ärger, rechtlichen Themen, Preisverhandlungen und individuellen Angeboten, Kündigungen, Zahlungsproblemen, sensiblen Daten, mehreren Anliegen, unklaren Anfragen und allem, was die Wissensbasis nicht abdeckt; **Nein** bei einfachen Standardfragen wie Öffnungszeiten, Versand, Lieferzeiten, Produktinformationen oder dem Stand einer Bestellung.
 4. **Speichern**, **Aktiv** prüfen.
 
@@ -375,7 +375,7 @@ Als Spam oder „Spam prüfen“ markierte Mails beantwortet die Vorlage nie (Ba
 ### 7. Vorlage „Ausgehend: KI-Entscheidung vor dem Versand“ (Priorität 50)
 
 1. **Neu** → **Vorlagen** → „Ausgehend: KI-Entscheidung vor dem Versand“ → **Vorlage laden** (Priorität 50).
-2. Im Baustein **„KI-Entscheidung“** das Entscheidungsmodell wählen; die Kriterien der Frage **„Ist diese E-Mail in dieser Form an den Kunden versandfähig?“** bei Bedarf anpassen (ab Werk: höflich, korrekte Anrede, beantwortet die Frage, keine internen Informationen, keine unbelegten Zusagen zu Preisen, Terminen oder Erstattungen, keine sensiblen Daten Dritter, angekündigte Anhänge vorhanden).
+2. Im Baustein **„KI-Entscheidung“** ist das Entscheidungsmodell bereits eingetragen (wie in Schritt 5); die Kriterien der Frage **„Ist diese E-Mail in dieser Form an den Kunden versandfähig?“** bei Bedarf anpassen (ab Werk: höflich, korrekte Anrede, beantwortet die Frage, keine internen Informationen, keine unbelegten Zusagen zu Preisen, Terminen oder Erstattungen, keine sensiblen Daten Dritter, angekündigte Anhänge vorhanden).
 3. **Speichern**, **Aktiv** prüfen.
 
 | Antwort | Ergebnis |

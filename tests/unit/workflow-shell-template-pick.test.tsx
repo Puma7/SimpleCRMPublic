@@ -22,7 +22,7 @@ jest.mock('@/components/email/use-has-electron', () => ({ useHasElectron: () => 
 jest.mock('@/components/email/workflow/node-properties-panel', () => ({ NodePropertiesPanel: () => null }));
 jest.mock('@/components/email/workflow/json-dev-drawer', () => ({ JsonDevDrawer: () => null }));
 // Der Dialog selbst hat einen eigenen Test; hier zählt nur, was onPick bewirkt.
-type TemplatesDialogProps = { onPick: (template: unknown) => void };
+type TemplatesDialogProps = { onPick: (template: unknown, info?: { decisionProfileLabel: string | null }) => void };
 let mockTemplatesDialogProps: TemplatesDialogProps | null = null;
 jest.mock('@/components/email/workflow/workflow-templates-dialog', () => ({
   WorkflowTemplatesDialog: (props: TemplatesDialogProps) => {
@@ -60,6 +60,7 @@ if (!window.matchMedia) {
 import { toast } from 'sonner';
 import { getWorkflowTemplate, PARTIAL_AUTOMATION_TEMPLATE_IDS as IDS } from '@simplecrm/core';
 import { WorkflowShell } from '@/components/email/workflow/workflow-shell';
+import { withDecisionModelProfile } from '@/components/email/workflow/workflow-template-checks';
 import { IPCChannels } from '@shared/ipc/channels';
 
 const row = {
@@ -76,14 +77,18 @@ const row = {
   updated_at: '',
 };
 
-async function openRowAndPick(templateId: string): Promise<void> {
+async function openRowAndPick(
+  templateId: string,
+  prepare: (template: unknown) => unknown = (template) => template,
+  info: { decisionProfileLabel: string | null } = { decisionProfileLabel: null },
+): Promise<void> {
   render(<WorkflowShell />);
   fireEvent.click(await screen.findByText('Neuer Workflow'));
   await screen.findByDisplayValue('100');
-  const template = getWorkflowTemplate(templateId);
+  const template = prepare(getWorkflowTemplate(templateId));
   expect(mockTemplatesDialogProps).not.toBeNull();
   act(() => {
-    mockTemplatesDialogProps!.onPick(template);
+    mockTemplatesDialogProps!.onPick(template, info);
   });
 }
 
@@ -121,6 +126,21 @@ describe('Vorlage laden übernimmt Priorität und Zeitplan (TA-P6)', () => {
     expect(update).toMatchObject({ priority: 5, trigger: 'inbound' });
     expect(JSON.parse(String(update.graphJson)).nodes.map((n: { id: string }) => n.id)).toContain('decide');
     expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  test('vom Dialog eingetragenes Entscheidungsmodell wird gemeldet und mit dem Graphen gespeichert', async () => {
+    await openRowAndPick(
+      IDS.outboundDecision,
+      (template) => withDecisionModelProfile(template as never, { id: 8, label: 'Jev' }).template,
+      { decisionProfileLabel: 'Jev' },
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      'Vorlage „Ausgehend: KI-Entscheidung vor dem Versand" geladen (Priorität 50, Entscheidungsmodell „Jev“) — bitte speichern.',
+    );
+    const update = await saveAndReadUpdate();
+    expect(update).toMatchObject({ priority: 50, trigger: 'outbound' });
+    const decide = JSON.parse(String(update.graphJson)).nodes.find((n: { id: string }) => n.id === 'decide');
+    expect(decide.data.config.profileId).toBe(8);
   });
 
   test('Learnings wöchentlich: Zeitplan 0 6 * * 1 wird eingetragen und gespeichert', async () => {
