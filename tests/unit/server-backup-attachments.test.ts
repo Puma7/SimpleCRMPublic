@@ -189,6 +189,16 @@ export ATTACHMENTS_DIR="$tmp/restored"
 sh docker/restore.sh "$tmp/plain.dump" "$list" 2>/dev/null && echo restore=ok
 diff -r "$tmp/att" "$tmp/restored" && echo files=identical
 
+# Codex-Review PR #195: ein vorhandenes, aber beschaedigtes Objekt (gleiche Groesse)
+# muss VOR pg_restore auffallen, nicht erst beim Kopieren danach.
+rm -f "$tmp/pg_restore.args"
+object="$(find "$BACKUP_DIR/attachments-store" -type f | head -n 1)"
+chmod u+w "$object"
+printf 'Angebox' > "$object"
+export ATTACHMENTS_DIR="$tmp/restored-damaged"
+sh docker/restore.sh "$tmp/plain.dump" "$list" 2>&1 || echo damaged=refused
+[ -f "$tmp/pg_restore.args" ] && echo damaged_database=touched || echo damaged_database=untouched
+
 rm -f "$tmp/pg_restore.args"
 find "$BACKUP_DIR/attachments-store" -type f -exec rm -f {} +
 export ATTACHMENTS_DIR="$tmp/restored-2"
@@ -199,6 +209,9 @@ sh docker/restore.sh "$tmp/plain.dump" "$list" 2>&1 || echo second=refused
     expect(out).toContain('manifest=ok');
     expect(out).toContain('restore=ok');
     expect(out).toContain('files=identical');
+    expect(out).toContain('attachment backup object damaged');
+    expect(out).toContain('damaged=refused');
+    expect(out).toContain('damaged_database=untouched');
     expect(out).toContain('attachment backup object missing');
     expect(out).toContain('second=refused');
     expect(out).toContain('database=untouched');

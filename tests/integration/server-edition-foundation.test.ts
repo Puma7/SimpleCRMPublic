@@ -284,8 +284,8 @@ describe('server edition repository boundaries', () => {
       restore.indexOf('pg_restore --clean --if-exists --no-owner'),
     );
     // Fehlt ein Anhang-Inhalt der Liste, bricht der Restore ab, bevor die Datenbank ersetzt wird.
-    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE"')).toBeGreaterThan(0);
-    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE"')).toBeLessThan(
+    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE" deep')).toBeGreaterThan(0);
+    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE" deep')).toBeLessThan(
       restore.indexOf('pg_restore --clean --if-exists --no-owner'),
     );
     expect(restore).toContain('unsafe tar entry');

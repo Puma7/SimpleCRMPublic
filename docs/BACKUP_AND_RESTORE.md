@@ -42,7 +42,7 @@ read what is new (`docker/backup-attachments.sh`):
 - Every set is complete on its own: list plus store give the whole attachment
   folder at the time of the backup, so any set can be restored without the
   ones before it.
-- `restore.sh` checks that every content of the list is in the store **before**
+- `restore.sh` reads every content of the list and checks its hash **before**
   `pg_restore` touches the database, then writes each file (hash checked) and
   recreates identical content as hard links. Files that are not in the list are
   left alone.

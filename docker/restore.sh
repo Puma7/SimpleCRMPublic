@@ -80,11 +80,12 @@ else
 fi
 
 # Anhaenge: neue Saetze haben eine Liste mit Inhalten im Speicher
-# attachments-store (backup-attachments.sh), alte ein tar. Fehlt ein Inhalt,
-# bricht der Restore hier ab, bevor die Datenbank ersetzt wird.
+# attachments-store (backup-attachments.sh), alte ein tar. Fehlt ein Inhalt
+# oder passt einer nicht zu seiner Pruefsumme, bricht der Restore hier ab,
+# bevor die Datenbank ersetzt wird (deep: jeder Inhalt wird gelesen).
 case "$ATTACHMENTS_ARCHIVE" in
   '') ;;
-  *.list) verify_attachment_list "$ATTACHMENTS_ARCHIVE" ;;
+  *.list) verify_attachment_list "$ATTACHMENTS_ARCHIVE" deep ;;
   *) validate_tar_archive "$ATTACHMENTS_ARCHIVE" ;;
 esac
 
