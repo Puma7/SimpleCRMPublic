@@ -64,7 +64,8 @@ export type MailSyncScheduleResult = Readonly<{
 }>;
 
 type DueAccountRow = Readonly<{
-  id: number;
+  /** email_accounts.id ist bigint: node-postgres liefert es als String. */
+  id: number | string;
   protocol: string | null;
   /** Mitgelesen, um einen Anspruch nach einem Queue-Fehler genau zurueckzunehmen. */
   last_sync_started_at: Date | string | null;
@@ -111,7 +112,10 @@ export async function runMailSyncSchedule(input: {
     { applySession: input.applyWorkspaceSession },
   );
 
-  const batch = due.slice(0, batchSize);
+  // bigint kommt aus node-postgres als String ("7"). Der Sync-Handler verlangt
+  // im Payload eine Zahl und lehnte jeden eingereihten Job ab (alle 5 Minuten,
+  // je Konto, fuenf Versuche) — der periodische Abruf lief nie.
+  const batch = due.slice(0, batchSize).map((row) => ({ ...row, id: Number(row.id) }));
   const hasMore = due.length > batch.length;
 
   let enqueued = 0;

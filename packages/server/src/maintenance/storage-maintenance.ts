@@ -135,7 +135,7 @@ async function checkAttachments(
         report.hashed += 1;
         if (await fileSha256(file) !== row.content_sha256.toLowerCase()) {
           report.hashMismatch += 1;
-          if (report.examples.length < MAX_EXAMPLES) report.examples.push(`attachment ${row.id}: content does not match its sha256`);
+          if (report.examples.length < MAX_EXAMPLES) report.examples.push(`attachment ${row.id}: content does not match its sha256 (${row.storage_path})`);
         }
       }
     }
