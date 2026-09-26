@@ -300,15 +300,30 @@ only database state and build timestamps, never MaxMind credentials or raw event
 From the repository root:
 
 ```sh
-sh docker/update.sh
+sh docker/simplecrm update --version latest   # newest release tag vX.Y.Z (recommended)
+sh docker/simplecrm update --version v1.1.0   # exactly this release
+sh docker/update.sh                           # latest origin/main (development line)
 ```
 
 This does the whole safe sequence in order and stops on the first failure:
-pull `origin/main` → back up the database → rebuild images → apply pending
-migrations → stop all old API/Graphile workers → restart `api` + `caddy` →
-verify. Useful flags / env:
+check out the release (or pull `origin/main`) → back up the database and
+attachments → rebuild images → apply pending migrations → stop all old
+API/Graphile workers → restart `api` + `caddy` → wait until the API reports
+healthy (`UPDATE_API_HEALTH_TIMEOUT_SECONDS`, default 180) → verify the
+migrations. A release tag names exactly the commit that was built and tested
+for that version, so production servers should update with `--version`.
+
+If a step fails after the source was changed, the script prints the way back:
+the previous commit and the pre-update backup set. Before the migrations ran,
+rebuilding the previous commit is enough; afterwards the printed commands check
+out the previous commit, rebuild its images and restore the pre-update backup
+(`sh docker/simplecrm restore /backups/db-<stamp>.dump`), which also restarts
+the API and waits for it to become healthy.
+
+Useful flags / env:
 
 ```sh
+VERSION=latest sh docker/update.sh       # same as --version latest
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
 SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
 SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)
@@ -323,8 +338,8 @@ replica after the backup and before starting the first new replica. Do not run
 0.16 and 0.17 workers against the same database concurrently.
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
-(alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--repair-checksums` /
-`--branch <name>`).
+(alias `upgrade`; accepts `--version <vX.Y.Z|latest>` / `--no-pull` /
+`--no-backup` / `--repair-checksums` / `--branch <name>`).
 
 The updater does NOT repair checksums by default — that would silently bless a
 genuine migration drift. If migrate fails with "Checksum mismatch", review the

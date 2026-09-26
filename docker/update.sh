@@ -4,6 +4,8 @@ set -eu
 # One-command production update for a Docker Compose SimpleCRM deployment.
 #
 #   sh docker/update.sh                  # update to the latest origin/main
+#   VERSION=latest sh docker/update.sh   # update to the newest release tag vX.Y.Z (recommended)
+#   VERSION=v1.1.0 sh docker/update.sh   # update to exactly this release tag
 #   BRANCH=some-branch sh docker/update.sh
 #   SKIP_PULL=1   sh docker/update.sh    # use the current checkout, don't git pull
 #   SKIP_BACKUP=1 sh docker/update.sh    # skip the pre-update backup (not recommended)
@@ -15,7 +17,8 @@ set -eu
 #
 # Steps: pull -> backup -> build -> reconcile checksums + migrate -> restart -> verify.
 # Any failed step aborts before the next one (set -e), so a failed migration never
-# leaves you on a half-updated stack.
+# leaves you on a half-updated stack. On failure the script prints the way back:
+# the previous commit and the pre-update backup set to restore.
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -40,7 +43,10 @@ else
   PROJECT_EXPLICIT=0
 fi
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
+BRANCH_EXPLICIT="${BRANCH:+1}"
 BRANCH="${BRANCH:-main}"
+VERSION="${VERSION:-}"
+UPDATE_API_HEALTH_TIMEOUT_SECONDS="${UPDATE_API_HEALTH_TIMEOUT_SECONDS:-180}"
 export COMPOSE_PROJECT_NAME
 
 # One -f per entry of COMPOSE_FILE, in order. POSIX sh has no arrays: append
@@ -94,6 +100,79 @@ warn_relay_override_missing() {
   printf 'WARNING: SMTP_RELAY_ENABLED is set, but COMPOSE_FILE does not include docker-compose.relay.yml; the API is recreated without the relay ports. Use: COMPOSE_FILE=%s:%s/docker-compose.relay.yml\n' "$COMPOSE_FILE" "$COMPOSE_DIR" >&2
 }
 
+# Newest release tag vX.Y.Z on origin (numeric order, so v1.10.0 > v1.9.0).
+# Pre-release tags such as v1.2.0-rc1 are ignored.
+latest_release_tag() {
+  git -C "$REPO_DIR" ls-remote --tags --refs origin 'v*' \
+    | sed -n 's#^.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
+    | sort -t. -k1.2,1n -k2,2n -k3,3n \
+    | tail -n 1
+}
+
+# Wait until the new API container reports healthy (its healthcheck probes
+# /health/ready, i.e. the database is reachable). `compose up -d` alone returns
+# as soon as the container starts, even if the new version crash-loops.
+wait_for_api_health() {
+  deadline=$(( $(date +%s) + UPDATE_API_HEALTH_TIMEOUT_SECONDS ))
+  while :; do
+    api_container="$(compose ps -q api || true)"
+    if [ -n "$api_container" ]; then
+      health="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$api_container" 2>/dev/null || true)"
+      [ "$health" = "healthy" ] && return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || break
+    sleep 3
+  done
+  compose ps || true
+  compose logs --no-color --tail=120 api migrate || true
+  echo "ERROR: the API did not become healthy within ${UPDATE_API_HEALTH_TIMEOUT_SECONDS}s." >&2
+  return 1
+}
+
+# Container path of the newest database dump in the backups volume (the one the
+# backup step just wrote), or nothing if it cannot be determined.
+latest_backup_dump() {
+  compose --profile backup run --rm --no-deps --entrypoint sh backup -c \
+    'ls -1t "${BACKUP_DIR:-/backups}"/db-*.dump 2>/dev/null | head -n 1' 2>/dev/null | tr -d '\r' | tail -n 1 || true
+}
+
+# Printed when the update stops after the source was changed. Before the
+# migrations ran, rebuilding the previous commit is enough; afterwards the
+# pre-update backup has to come back as well (the restore also restarts the API).
+print_way_back() {
+  echo >&2
+  echo "==> Update stopped during: $UPDATE_STAGE" >&2
+  echo "    Previous version: $PREV_REV" >&2
+  [ -n "$BACKUP_DUMP" ] && echo "    Pre-update backup: $BACKUP_DUMP" >&2
+  echo >&2
+  case "$UPDATE_STAGE" in
+    source|backup|build)
+      echo "The database is unchanged. To go back to the previous version:" >&2
+      echo "  git -C \"$REPO_DIR\" checkout --detach $PREV_REV" >&2
+      echo "  SKIP_PULL=1 SKIP_BACKUP=1 sh \"$SCRIPT_DIR/update.sh\"" >&2
+      ;;
+    *)
+      echo "Migrations of the new version may already have run. Fix the cause and re-run" >&2
+      echo "the update, or go back to the previous version and its data:" >&2
+      echo "  git -C \"$REPO_DIR\" checkout --detach $PREV_REV" >&2
+      echo "  COMPOSE_FILE=\"$COMPOSE_FILE\" docker compose -p \"$COMPOSE_PROJECT_NAME\" --project-directory \"$COMPOSE_DIR\" build" >&2
+      echo "  COMPOSE_PROJECT_NAME=\"$COMPOSE_PROJECT_NAME\" sh \"$SCRIPT_DIR/simplecrm\" restore ${BACKUP_DUMP:-/backups/db-<stamp>.dump}" >&2
+      ;;
+  esac
+}
+
+UPDATE_STAGE=preflight
+PREV_REV="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BACKUP_DUMP=""
+on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ "$UPDATE_STAGE" != "preflight" ]; then
+    print_way_back
+  fi
+  return "$status"
+}
+trap on_exit EXIT
+
 # True when Compose knows a (running or stopped) project named "$1".
 project_has_stack() {
   docker compose ls -a 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$1"
@@ -144,6 +223,11 @@ EOF
   exit 3
 fi
 
+if [ -n "$VERSION" ] && { [ "${SKIP_PULL:-0}" = "1" ] || [ -n "$BRANCH_EXPLICIT" ]; }; then
+  echo "VERSION cannot be combined with BRANCH or SKIP_PULL=1." >&2
+  exit 2
+fi
+
 if [ "${SKIP_PULL:-0}" = "1" ]; then
   say "[1/6] Skipping source update (SKIP_PULL=1)"
 else
@@ -156,22 +240,47 @@ else
     echo "Commit or stash them, or re-run with FORCE_RESET=1 to discard." >&2
     exit 3
   fi
-  say "[1/6] Updating source to origin/$BRANCH"
-  # Reset to FETCH_HEAD (the exact commit we just fetched) rather than the
-  # remote-tracking ref origin/$BRANCH, which a plain branch fetch may leave
-  # stale — otherwise we could rebuild the previous commit and report success.
-  git -C "$REPO_DIR" fetch origin "$BRANCH"
-  git -C "$REPO_DIR" checkout -B "$BRANCH" FETCH_HEAD
-  git -C "$REPO_DIR" reset --hard FETCH_HEAD
+  if [ -n "$VERSION" ]; then
+    if [ "$VERSION" = "latest" ]; then
+      VERSION="$(latest_release_tag)"
+      if [ -z "$VERSION" ]; then
+        echo "No release tag vX.Y.Z found on origin." >&2
+        exit 3
+      fi
+    fi
+    if ! printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+      echo "VERSION must be a release tag like v1.1.0 (or 'latest'), got: $VERSION" >&2
+      exit 2
+    fi
+    UPDATE_STAGE=source
+    say "[1/6] Updating source to release $VERSION (previous: $PREV_REV)"
+    # A release tag names one tested commit. Fetch exactly that tag; if a local
+    # tag of the same name points elsewhere, git refuses instead of guessing.
+    git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$VERSION:refs/tags/$VERSION"
+    git -C "$REPO_DIR" checkout --force --detach "refs/tags/$VERSION"
+  else
+    UPDATE_STAGE=source
+    say "[1/6] Updating source to origin/$BRANCH (previous: $PREV_REV)"
+    # Reset to FETCH_HEAD (the exact commit we just fetched) rather than the
+    # remote-tracking ref origin/$BRANCH, which a plain branch fetch may leave
+    # stale — otherwise we could rebuild the previous commit and report success.
+    git -C "$REPO_DIR" fetch origin "$BRANCH"
+    git -C "$REPO_DIR" checkout -B "$BRANCH" FETCH_HEAD
+    git -C "$REPO_DIR" reset --hard FETCH_HEAD
+  fi
 fi
 
+UPDATE_STAGE=backup
 if [ "${SKIP_BACKUP:-0}" = "1" ]; then
   say "[2/6] Skipping backup (SKIP_BACKUP=1) — not recommended"
 else
   say "[2/6] Backing up the database"
   compose --profile backup run --rm backup
+  BACKUP_DUMP="$(latest_backup_dump)"
+  [ -n "$BACKUP_DUMP" ] && echo "Pre-update backup: $BACKUP_DUMP"
 fi
 
+UPDATE_STAGE=build
 say "[3/6] Building images"
 compose build
 
@@ -182,9 +291,11 @@ if [ "${REPAIR_CHECKSUMS:-0}" = "1" ]; then
   # migration re-applies the delta idempotently — but it would also silently
   # bless genuine drift. So it is opt-in: the operator runs it after confirming
   # the situation (the runner's "Checksum mismatch" error points here).
+  UPDATE_STAGE=migrate
   say "[4/6] Reconciling migration checksums + applying pending migrations (REPAIR_CHECKSUMS=1)"
   migrate_cli --repair-checksums
 else
+  UPDATE_STAGE=migrate
   say "[4/6] Applying pending migrations"
   if ! migrate_cli; then
     cat >&2 <<EOF
@@ -202,6 +313,7 @@ EOF
   fi
 fi
 
+UPDATE_STAGE=restart
 say "[5/6] Draining old workers and restarting api + web"
 # Graphile Worker migrations may change lock ownership semantics. Scale the old
 # API/worker generation to zero before a newly built API migrates its schema.
@@ -211,8 +323,14 @@ warn_unreadable_relay_tls_key
 warn_relay_override_missing
 compose up -d api caddy
 
+UPDATE_STAGE=verify
 say "[6/6] Verifying"
+wait_for_api_health
 migrate_cli --check
 compose ps
 
-say "Update complete."
+UPDATE_STAGE=done
+NEW_REV="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+say "Update complete: $PREV_REV -> $NEW_REV${VERSION:+ ($VERSION)}"
+[ -n "$BACKUP_DUMP" ] && echo "Pre-update backup kept at: $BACKUP_DUMP"
+exit 0

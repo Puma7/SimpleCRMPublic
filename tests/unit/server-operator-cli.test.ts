@@ -15,8 +15,8 @@ const bashAvailable = () => process.platform !== 'win32'
 // compose project flags.
 function runWithFakeDocker(
   args: readonly string[],
-  options: { env?: Record<string, string>; stacks?: readonly string[] } = {},
-): { status: number; stderr: string; projectFlags: string[]; log: string } {
+  options: { env?: Record<string, string>; stacks?: readonly string[]; cwd?: string } = {},
+): { status: number; stdout: string; stderr: string; projectFlags: string[]; log: string } {
   const dir = mkdtempSync(join(tmpdir(), 'simplecrm-fakedocker-'));
   try {
     const logPath = join(dir, 'docker.log');
@@ -30,9 +30,11 @@ function runWithFakeDocker(
         'case "$*" in',
         "  *\"compose ls\"*) printf 'NAME STATUS CONFIG\\n'; for p in $FAKE_STACKS; do printf '%s running x\\n' \"$p\"; done; exit 0 ;;",
         '  *"ps -q api"*) echo "fakeapi"; exit 0 ;;',
+        // update.sh asks the backups volume for the dump it just wrote.
+        "  *'db-*.dump'*) echo \"${FAKE_BACKUP_DUMP:-}\"; exit 0 ;;",
         'esac',
-        // restore-compose.sh probes `docker inspect` for health.
-        'case "$1" in inspect) echo "healthy"; exit 0 ;; esac',
+        // restore-compose.sh and update.sh probe `docker inspect` for health.
+        'case "$1" in inspect) echo "${FAKE_API_HEALTH:-healthy}"; exit 0 ;; esac',
         // Optionally fail the plain migrate-apply (but not --check / --repair-checksums).
         'if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then',
         '  case "$*" in',
@@ -47,7 +49,7 @@ function runWithFakeDocker(
     chmodSync(fakeDocker, 0o755);
 
     const result = spawnSync('bash', args.slice(), {
-      cwd: repoRoot,
+      cwd: options.cwd ?? repoRoot,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH ?? ''}`,
@@ -60,7 +62,7 @@ function runWithFakeDocker(
 
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
     const projectFlags = [...log.matchAll(/-p (\S+)/g)].map((m) => m[1] ?? '');
-    return { status: result.status ?? -1, stderr: result.stderr ?? '', projectFlags, log };
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '', projectFlags, log };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -303,5 +305,114 @@ describe('API volume ownership after the switch to a non-root image', () => {
     const fix = lines.findIndex((line) => ownershipFix.test(line));
     expect(fix).toBeGreaterThan(lines.findIndex((line) => line.includes('--profile restore run --rm restore')));
     expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+  }));
+});
+
+describe('update: fixed release, health check and the way back', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.test', '-c', 'init.defaultBranch=main', ...args,
+  ], { cwd, encoding: 'utf8' }).trim();
+
+  /**
+   * A server checkout as operators have it: a clone of an origin with release
+   * tags. Every commit carries the real update scripts, only a marker changes.
+   */
+  function serverCheckout(tags: readonly string[]): { root: string; checkout: string; commitOf: Record<string, string> } {
+    const root = mkdtempSync(join(tmpdir(), 'simplecrm-update-tags-'));
+    const origin = join(root, 'origin');
+    execFileSync('mkdir', ['-p', join(origin, 'docker')]);
+    git(origin, 'init', '-q');
+    writeFileSync(join(origin, 'docker', 'update.sh'), readFileSync(join(repoRoot, 'docker', 'update.sh')));
+    writeFileSync(join(origin, 'docker', 'simplecrm'), readFileSync(join(repoRoot, 'docker', 'simplecrm')));
+    const commitOf: Record<string, string> = {};
+    for (const tag of tags) {
+      writeFileSync(join(origin, 'marker.txt'), `${tag}\n`);
+      git(origin, 'add', '-A');
+      git(origin, 'commit', '-q', '-m', tag);
+      git(origin, 'tag', tag);
+      commitOf[tag] = git(origin, 'rev-parse', '--short', 'HEAD');
+    }
+    writeFileSync(join(origin, 'marker.txt'), 'main\n');
+    git(origin, 'commit', '-q', '-am', 'unreleased work on main');
+    const checkout = join(root, 'checkout');
+    git(root, 'clone', '-q', '--no-tags', origin, checkout);
+    return { root, checkout, commitOf };
+  }
+
+  test('--version latest checks out the highest release tag (numeric, no pre-releases)', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.2.0', 'v1.10.0', 'v1.9.0', 'v2.0.0-rc1']);
+    try {
+      const run = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'latest', '--no-backup'], { cwd: checkout });
+      expect(run.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.10.0']);
+      expect(readFileSync(join(checkout, 'marker.txt'), 'utf8')).toBe('v1.10.0\n');
+      expect(run.stdout).toContain('Updating source to release v1.10.0');
+      expect(run.stdout).toContain(`-> ${commitOf['v1.10.0']} (v1.10.0)`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
+  test('--version vX.Y.Z checks out exactly that release; unknown or malformed tags stop before Docker', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.0.9', 'v1.1.0']);
+    try {
+      const exact = runWithFakeDocker(['docker/simplecrm', 'update', '--version=v1.0.9', '--no-backup'], { cwd: checkout });
+      expect(exact.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+
+      const unknown = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v9.9.9', '--no-backup'], { cwd: checkout });
+      expect(unknown.status).not.toBe(0);
+      expect(unknown.log).not.toContain(' build');
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+
+      const malformed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'main;rm', '--no-backup'], { cwd: checkout });
+      expect(malformed.status).toBe(2);
+      expect(malformed.stderr).toContain('VERSION must be a release tag');
+      expect(malformed.log).not.toMatch(/ build| run | up -d/);
+
+      const combined = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0', '--branch', 'main'], { cwd: checkout });
+      expect(combined.status).toBe(2);
+      expect(combined.log).not.toMatch(/ build| run | up -d/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
+  test('waits for a healthy API; an unhealthy new version fails and prints the way back with the backup', ranOrSkipped(() => {
+    const dump = '/backups/db-2026-09-26T16-00-00Z.dump';
+    const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull'], { env: { FAKE_BACKUP_DUMP: dump } });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain(`Pre-update backup: ${dump}`);
+    const lines = ok.log.split('\n');
+    expect(lines.findIndex((line) => line.startsWith('inspect')))
+      .toBeGreaterThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+
+    const unhealthy = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull'],
+      { env: { FAKE_BACKUP_DUMP: dump, FAKE_API_HEALTH: 'unhealthy', UPDATE_API_HEALTH_TIMEOUT_SECONDS: '0' } },
+    );
+    expect(unhealthy.status).not.toBe(0);
+    expect(unhealthy.stderr).toContain('the API did not become healthy');
+    expect(unhealthy.stderr).toContain('Update stopped during: verify');
+    expect(unhealthy.stderr).toContain(`simplecrm" restore ${dump}`);
+    expect(unhealthy.stdout).not.toContain('Update complete');
+  }));
+
+  test('a failure before the migrations only asks to rebuild the previous commit', ranOrSkipped(() => {
+    const failed = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { FAKE_FAIL_MIGRATE: '1' } },
+    );
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('Update stopped during: migrate');
+    expect(failed.stderr).toContain('restore /backups/db-<stamp>.dump');
+
+    const preflight = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '1' } });
+    expect(preflight.status).toBe(4);
+    expect(preflight.stderr).not.toContain('Update stopped during');
   }));
 });
