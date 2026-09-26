@@ -97,7 +97,10 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
   readAttachmentFile?: (path: string) => Promise<Buffer>;
   /** Required for runOutboundReview=true (forward via real outbound review). */
   composeSender?: EmailComposeSenderApiPort;
-  /** Actor user for review-pipeline audits. */
+  /**
+   * Fester Akteur für die Ausgangsprüfung (Tests); sonst der Akteur des Jobs,
+   * ohne Akteur als Trusted Service.
+   */
   actorUserId?: string;
   /** Injectable draft creator; defaults to the postgres compose draft helper. */
   createDraft?: (input: {
@@ -311,7 +314,10 @@ export function createPostgresWorkflowForwardCopyPort(
           db: options.db,
           composeSender: options.composeSender,
           applyWorkspaceSession: options.applyWorkspaceSession,
-          actorUserId: options.actorUserId ?? 'system',
+          // Akteur des Workflow-Laufs (von Hand gestartet) oder — ohne Menschen —
+          // als Dienst. Der frühere Platzhalter 'system' als actorUserId ließ
+          // die Prüf-Jobs der Ausgangs-Workflows im Job-Enforcer scheitern.
+          actorUserId: input.actorUserId ?? options.actorUserId ?? null,
           createDraft,
           now: now(),
         });
@@ -781,7 +787,8 @@ async function forwardViaOutboundReview(args: {
   db: Kysely<ServerDatabase>;
   composeSender: EmailComposeSenderApiPort;
   applyWorkspaceSession: WorkspaceSessionApplier | undefined;
-  actorUserId: string;
+  /** null: Workflow ohne menschlichen Akteur — Versand als Trusted Service. */
+  actorUserId: string | null;
   createDraft: (input: {
     workspaceId: string;
     accountId: number;
@@ -853,7 +860,10 @@ async function forwardViaOutboundReview(args: {
   //     result). The pipeline then drives approval + send.
   const sendResult = await args.composeSender.send({
     workspaceId: input.workspaceId,
-    actorUserId: args.actorUserId,
+    ...(args.actorUserId
+      ? { actorUserId: args.actorUserId }
+      // Wie der geplante Versand eines Workflows: Platzhalter plus Dienst-Marker.
+      : { actorUserId: 'system', trustedService: true }),
     values: {
       accountId: prepared.account.id,
       draftMessageId: draftResult.draftMessageId,
