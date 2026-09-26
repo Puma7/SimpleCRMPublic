@@ -6,6 +6,7 @@ import { createPostgresWorkflowReadPort } from '../../packages/server/src/db/pos
 import { isTrustedServiceJobPayload } from '../../packages/server/src/jobs/policy';
 import type { EnqueueJobInput } from '../../packages/server/src/jobs/types';
 import {
+  MAX_SCHEDULE_WORKFLOWS_PER_TICK,
   SERVER_SCHEDULE_SYNC_LOG,
   buildScheduleWorkflowContext,
   resetWorkflowScheduleTickLogForTests,
@@ -182,6 +183,28 @@ describe('server schedule tick (TA-P4)', () => {
     const nextDay = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date('2026-09-29T04:00:30.000Z'), log: (m) => logs.push(m) });
     expect(nextDay.enqueued).toBe(1);
     expect(enqueued[1]!.payload.scheduleSlot).toBe('2026-09-29T04:00:00.000Z');
+  });
+
+  // Codex-Review PR #194: Die Auswahl war auf die ersten 500 Zeilen (nach id)
+  // begrenzt; Workflows mit hoeheren ids wurden nie auf Faelligkeit geprueft.
+  test('checks every active schedule, not only the first page', async () => {
+    await postgres.admin.query(`
+      INSERT INTO email_workflows (
+        id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+        definition_json, graph_json, cron_expr, execution_mode, engine_version, schedule_last_slot_at
+      )
+      SELECT g, $1, g, 'Workflow ' || g, 'schedule', true, 100, '{}'::jsonb, $2::jsonb,
+             '0 12 * * *', 'graph', 1, $3
+      FROM generate_series(20001, 20000 + $4::int) AS g
+    `, [WORKSPACE_A, JSON.stringify(SCHEDULE_GRAPH), ARMED, MAX_SCHEDULE_WORKFLOWS_PER_TICK + 20]);
+    await insertWorkflow(30000, WORKSPACE_A, { trigger: 'schedule', enabled: true, cron: '0 6 * * *' });
+    const { enqueued, queue } = collectingQueue();
+
+    const result = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: NOW, log: () => undefined });
+
+    expect(result.enqueued).toBe(2);
+    expect(enqueued.map((job) => job.payload.workflowId).sort((a, b) => a - b)).toEqual([9101, 30000]);
+    expect(await lastSlot(30000)).toBe(SLOT);
   });
 
   test('two concurrent ticks enqueue a slot only once', async () => {

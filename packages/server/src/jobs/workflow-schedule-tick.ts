@@ -57,7 +57,11 @@ export const DEFAULT_WORKFLOW_SCHEDULE_TICK_INTERVAL_MS = 60_000;
  * ohnehin periodisch ab (mail.sync.schedule).
  */
 export const SERVER_SCHEDULE_SYNC_LOG = 'server: Postfächer werden automatisch abgerufen';
-/** Obergrenze je Takt — Gegendruck gegen einen Workspace mit tausenden Zeitplaenen. */
+/**
+ * Seitengroesse beim Laden der Zeitplan-Workflows eines Takts. Der Takt blaettert
+ * per id weiter, bis alle aktiven Zeitplaene geprueft sind — eine feste
+ * Obergrenze ohne Weiterblaettern wuerde Workflows mit hoeheren ids nie pruefen.
+ */
 export const MAX_SCHEDULE_WORKFLOWS_PER_TICK = 500;
 
 export type WorkflowScheduleTickQueue = Readonly<{
@@ -150,7 +154,7 @@ export async function runWorkflowScheduleTick(input: {
   const log = input.log ?? ((message: string) => console.warn(message));
   const session = input.applyWorkspaceSession ? { applySession: input.applyWorkspaceSession } : {};
 
-  const { timeZoneRaw, workflows } = await withWorkspaceTransaction(
+  const timeZoneRaw = await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
@@ -160,20 +164,26 @@ export async function runWorkflowScheduleTick(input: {
         .where('workspace_id', '=', input.workspaceId)
         .where('key', '=', WORKFLOW_SCHEDULE_TIMEZONE_SETTING_KEY)
         .executeTakeFirst();
-      const rows = await trx
-        .selectFrom('email_workflows')
-        .select(['id', 'cron_expr', 'schedule_last_slot_at'])
-        .where('workspace_id', '=', input.workspaceId)
-        .where('trigger_name', '=', 'schedule')
-        .where('enabled', '=', true)
-        .where('cron_expr', 'is not', null)
-        // Nicht scharf (siehe oben): nie ausloesen.
-        .where('schedule_last_slot_at', 'is not', null)
-        .orderBy('id', 'asc')
-        .limit(MAX_SCHEDULE_WORKFLOWS_PER_TICK)
-        .execute() as ScheduleWorkflowRow[];
-      return { timeZoneRaw: setting?.value ?? null, workflows: rows };
+      return setting?.value ?? null;
     },
+    session,
+  );
+  const loadScheduleWorkflowPage = (afterId: number): Promise<ScheduleWorkflowRow[]> => withWorkspaceTransaction(
+    input.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => await trx
+      .selectFrom('email_workflows')
+      .select(['id', 'cron_expr', 'schedule_last_slot_at'])
+      .where('workspace_id', '=', input.workspaceId)
+      .where('trigger_name', '=', 'schedule')
+      .where('enabled', '=', true)
+      .where('cron_expr', 'is not', null)
+      // Nicht scharf (siehe oben): nie ausloesen.
+      .where('schedule_last_slot_at', 'is not', null)
+      .where('id', '>', afterId)
+      .orderBy('id', 'asc')
+      .limit(MAX_SCHEDULE_WORKFLOWS_PER_TICK)
+      .execute() as ScheduleWorkflowRow[],
     session,
   );
 
@@ -194,98 +204,103 @@ export async function runWorkflowScheduleTick(input: {
   let skippedInvalid = 0;
   const failed: Array<{ workflowId: number; error: unknown }> = [];
 
-  for (const workflow of workflows) {
-    const workflowId = Number(workflow.id);
-    const cronExpr = workflow.cron_expr ?? '';
-    // Bestand kann Ausdruecke enthalten, die die Route heute ablehnt (Import
-    // vom Desktop mit Sekundenfeld, zu dichter Takt). Nicht abstuerzen, nicht
-    // raten — ueberspringen und einmal sagen, warum nichts passiert.
-    const invalid = validateWorkflowScheduleCron(cronExpr);
-    const parsed = invalid ? null : parseCronExpression(cronExpr);
-    if (!parsed || !parsed.ok) {
-      skippedInvalid += 1;
-      logInvalidScheduleOnce(
-        `${input.workspaceId}:${workflowId}:${cronExpr}`,
-        `[workflow-schedule] Workflow ${workflowId} in Workspace ${input.workspaceId}: `
-        + `Zeitplan „${cronExpr}" wird uebersprungen (${invalid ?? 'ungueltig'}).`,
-        log,
-      );
-      continue;
-    }
+  for (let afterId = 0; ;) {
+    const workflows = await loadScheduleWorkflowPage(afterId);
+    for (const workflow of workflows) {
+      const workflowId = Number(workflow.id);
+      const cronExpr = workflow.cron_expr ?? '';
+      // Bestand kann Ausdruecke enthalten, die die Route heute ablehnt (Import
+      // vom Desktop mit Sekundenfeld, zu dichter Takt). Nicht abstuerzen, nicht
+      // raten — ueberspringen und einmal sagen, warum nichts passiert.
+      const invalid = validateWorkflowScheduleCron(cronExpr);
+      const parsed = invalid ? null : parseCronExpression(cronExpr);
+      if (!parsed || !parsed.ok) {
+        skippedInvalid += 1;
+        logInvalidScheduleOnce(
+          `${input.workspaceId}:${workflowId}:${cronExpr}`,
+          `[workflow-schedule] Workflow ${workflowId} in Workspace ${input.workspaceId}: `
+          + `Zeitplan „${cronExpr}" wird uebersprungen (${invalid ?? 'ungueltig'}).`,
+          log,
+        );
+        continue;
+      }
 
-    const slot = latestCronSlotAtOrBefore(parsed.cron, now, timeZone, WORKFLOW_SCHEDULE_CATCH_UP_MINUTES);
-    if (!slot) continue;
-    if (workflow.schedule_last_slot_at === null) continue;
-    const lastSlot = new Date(workflow.schedule_last_slot_at);
-    if (slot.getTime() <= lastSlot.getTime()) continue;
+      const slot = latestCronSlotAtOrBefore(parsed.cron, now, timeZone, WORKFLOW_SCHEDULE_CATCH_UP_MINUTES);
+      if (!slot) continue;
+      if (workflow.schedule_last_slot_at === null) continue;
+      const lastSlot = new Date(workflow.schedule_last_slot_at);
+      if (slot.getTime() <= lastSlot.getTime()) continue;
 
-    // ERST beanspruchen, DANN einreihen. Das bedingte UPDATE ist der Anspruch;
-    // enabled/trigger/cron stehen mit drin, damit ein zwischenzeitlich
-    // deaktivierter oder umgestellter Workflow nicht noch mit dem alten Stand
-    // ausloest.
-    const claimed = await withWorkspaceTransaction(
-      input.db,
-      { workspaceId: input.workspaceId, role: 'system' },
-      async (trx) => trx
-        .updateTable('email_workflows')
-        .set({ schedule_last_slot_at: slot })
-        .where('workspace_id', '=', input.workspaceId)
-        .where('id', '=', workflowId)
-        .where('enabled', '=', true)
-        .where('trigger_name', '=', 'schedule')
-        .where('cron_expr', '=', cronExpr)
-        // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
-        .where('schedule_last_slot_at', '<', slot)
-        .returning(['id', 'schedule_account_id'])
-        .executeTakeFirst(),
-      session,
-    );
-    if (!claimed) continue;
-
-    try {
-      await input.queue.enqueue({
-        workspaceId: input.workspaceId,
-        type: 'workflow.execute',
-        // Kein actorUserId: der Lauf gehoert keinem Menschen, sondern dem
-        // Zeitplan — Dienst-Provenienz wie bei eingehenden Workflows.
-        payload: buildTrustedServiceJobPayload({
-          workspaceId: input.workspaceId,
-          workflowId,
-          triggerName: 'schedule',
-          // Traegt den Job-Key (Workflow + Zeitpunkt), siehe graphileJobKeyForJob.
-          scheduleSlot: slot.toISOString(),
-          context: buildScheduleWorkflowContext({
-            firedAt: now,
-            slot,
-            scheduleAccountId: claimed.schedule_account_id === null
-              ? null
-              : Number(claimed.schedule_account_id),
-          }),
-        }),
-        maxAttempts: 3,
-      });
-    } catch (error) {
-      // Anspruch zuruecknehmen, sonst galte der Zeitpunkt als ausgeloest,
-      // obwohl nie ein Lauf entstand; der naechste Takt versucht es erneut,
-      // solange der Zeitpunkt im Nachholfenster liegt. Bedingt auf den eigenen
-      // Stempel: hat inzwischen jemand anders beansprucht (oder der Workflow
-      // wurde neu gespeichert), gehoert die Zeile ihm.
-      await withWorkspaceTransaction(
+      // ERST beanspruchen, DANN einreihen. Das bedingte UPDATE ist der Anspruch;
+      // enabled/trigger/cron stehen mit drin, damit ein zwischenzeitlich
+      // deaktivierter oder umgestellter Workflow nicht noch mit dem alten Stand
+      // ausloest.
+      const claimed = await withWorkspaceTransaction(
         input.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => trx
           .updateTable('email_workflows')
-          .set({ schedule_last_slot_at: lastSlot })
+          .set({ schedule_last_slot_at: slot })
           .where('workspace_id', '=', input.workspaceId)
           .where('id', '=', workflowId)
-          .where('schedule_last_slot_at', '=', slot)
-          .execute(),
+          .where('enabled', '=', true)
+          .where('trigger_name', '=', 'schedule')
+          .where('cron_expr', '=', cronExpr)
+          // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
+          .where('schedule_last_slot_at', '<', slot)
+          .returning(['id', 'schedule_account_id'])
+          .executeTakeFirst(),
         session,
-      ).catch(() => undefined);
-      failed.push({ workflowId, error });
-      continue;
+      );
+      if (!claimed) continue;
+
+      try {
+        await input.queue.enqueue({
+          workspaceId: input.workspaceId,
+          type: 'workflow.execute',
+          // Kein actorUserId: der Lauf gehoert keinem Menschen, sondern dem
+          // Zeitplan — Dienst-Provenienz wie bei eingehenden Workflows.
+          payload: buildTrustedServiceJobPayload({
+            workspaceId: input.workspaceId,
+            workflowId,
+            triggerName: 'schedule',
+            // Traegt den Job-Key (Workflow + Zeitpunkt), siehe graphileJobKeyForJob.
+            scheduleSlot: slot.toISOString(),
+            context: buildScheduleWorkflowContext({
+              firedAt: now,
+              slot,
+              scheduleAccountId: claimed.schedule_account_id === null
+                ? null
+                : Number(claimed.schedule_account_id),
+            }),
+          }),
+          maxAttempts: 3,
+        });
+      } catch (error) {
+        // Anspruch zuruecknehmen, sonst galte der Zeitpunkt als ausgeloest,
+        // obwohl nie ein Lauf entstand; der naechste Takt versucht es erneut,
+        // solange der Zeitpunkt im Nachholfenster liegt. Bedingt auf den eigenen
+        // Stempel: hat inzwischen jemand anders beansprucht (oder der Workflow
+        // wurde neu gespeichert), gehoert die Zeile ihm.
+        await withWorkspaceTransaction(
+          input.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => trx
+            .updateTable('email_workflows')
+            .set({ schedule_last_slot_at: lastSlot })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', workflowId)
+            .where('schedule_last_slot_at', '=', slot)
+            .execute(),
+          session,
+        ).catch(() => undefined);
+        failed.push({ workflowId, error });
+        continue;
+      }
+      enqueued += 1;
     }
-    enqueued += 1;
+    if (workflows.length < MAX_SCHEDULE_WORKFLOWS_PER_TICK) break;
+    afterId = Number(workflows[workflows.length - 1]!.id);
   }
 
   return { enqueued, skippedInvalid, failed };
