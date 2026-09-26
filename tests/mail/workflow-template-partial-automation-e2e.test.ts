@@ -12,7 +12,7 @@ const mockAddMessageTag = jest.fn();
 const mockSetMessageSpam = jest.fn();
 const mockSetMessageSpamStatus = jest.fn();
 const mockSetOutboundHold = jest.fn();
-const mockMoveImapMessage = jest.fn(async () => undefined);
+const mockMoveImapMessage = jest.fn(async (): Promise<void> => undefined);
 const mockCreateComposeDraft = jest.fn(() => 42);
 const mockUpdateComposeDraft = jest.fn();
 const mockGetEmailMessageById = jest.fn();
@@ -244,6 +244,17 @@ describe('a) Eingehend: Spam-Entscheidung (Entscheidungsmodell)', () => {
     expect(tags()).toEqual(['ki-spam']);
     expect(mockSetMessageSpamStatus).not.toHaveBeenCalled();
     expect(r.log.join('\n')).not.toContain('no_prior_condition');
+  });
+
+  test('Ja bei einem POP3-Konto: Verschieben scheitert, Mail bleibt Spam, Kette stoppt trotzdem', async () => {
+    mockRunAiDecideCall.mockResolvedValueOnce(decisions(95));
+    mockMoveImapMessage.mockRejectedValueOnce(
+      new Error('POP3- oder Entwurfs-Nachrichten können nicht per IMAP verschoben werden'),
+    );
+    const r = await runInbound(IDS.spamDecision);
+    expect(r).toMatchObject({ status: 'ok', inboundChainStop: true });
+    expect(mockSetMessageSpam).toHaveBeenCalledWith(7, true, { train: false, source: 'workflow' });
+    expect(tags()).toEqual(['ki-spam']);
   });
 
   test('Unsicher: Spam-Status „prüfen“, Kette stoppt, nichts verschoben', async () => {

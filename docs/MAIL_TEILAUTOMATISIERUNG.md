@@ -116,7 +116,7 @@ Für Zeitplan- oder manuelle Workflows. Felder: Ziel-Wissensbasis (leer = „Lea
 
 Die KI-Antwort-Vorlagen schicken Antworten ab jetzt durch den Ausgangs-Workflow („Zusätzlich durch Ausgangs-Workflows prüfen“ an).
 
-Priorität und Zeitplan gehören zur Vorlage; „Vorlage laden“ trägt sie im Editor ein. „Mensch oder KI?“ beginnt mit „Stopp nach Spam“, damit eine als Spam markierte Mail nie beantwortet wird, auch wenn die Spam-Vorlage davor mit Fehler endete (z. B. Verschieben bei einem POP3-Konto). Schritt-für-Schritt-Anleitung: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md#teilautomatisierung-schritt-für-schritt).
+Priorität und Zeitplan gehören zur Vorlage; „Vorlage laden“ trägt sie im Editor ein. „Mensch oder KI?“ beginnt mit „Stopp nach Spam“, damit eine als Spam markierte Mail nie beantwortet wird, auch wenn die Spam-Vorlage davor mit Fehler endete. Scheitert beim Baustein „Als Spam markieren“ nur das Verschieben auf dem Mail-Server (POP3-Konto, kein Ordner „Spam“, IMAP-Fehler), bleibt die Mail in beiden Editionen als Spam markiert; der Desktop nennt den Grund in der Lauf-Historie (`imap_spam_move_failed: …`), der Server versucht das Verschieben nach dem Commit und übergeht ein Scheitern. Schritt-für-Schritt-Anleitung: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md#teilautomatisierung-schritt-für-schritt).
 
 ## 5. Datenmodell (neu)
 

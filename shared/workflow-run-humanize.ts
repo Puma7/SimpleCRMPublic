@@ -105,6 +105,11 @@ const PREFIX_MESSAGES: PrefixRule[] = [
       `Als gelesen markiert – die Übertragung an den Mail-Server wird beim nächsten Abgleich nachgeholt.${detail ? ` (${detail})` : ''}`,
   },
   {
+    prefix: 'imap_spam_move_failed:',
+    humanize: (detail) =>
+      `Als Spam markiert – das Verschieben in den Spam-Ordner auf dem Mail-Server ist fehlgeschlagen, die Mail bleibt in SimpleCRM als Spam markiert.${detail ? ` (${detail})` : ''}`,
+  },
+  {
     prefix: 'review_error:',
     humanize: (detail) =>
       `KI-Gegenprüfung fehlgeschlagen – der Entwurf wartet sicherheitshalber auf manuelle Freigabe.${detail ? ` (${detail})` : ''}`,

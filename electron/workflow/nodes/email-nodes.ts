@@ -347,25 +347,35 @@ export function registerEmailNodes(register: Reg): void {
       const { row, messageId } = requireMessage(ctx);
       const spam = config.spam !== false;
       const tag = String(config.tag ?? 'auto-spam').trim();
+      let moveError: string | null = null;
       if (!ctx.dryRun) {
         setMessageSpam(messageId, spam, { train: config.train === true, source: 'workflow' });
         if (tag) addMessageTag(messageId, tag);
         if (config.moveImap === true && spam) {
-          const { moveImapMessage } = await import('../../email/email-imap-move.js');
-          await moveImapMessage(row, 'Spam');
+          // Das Verschieben ist nur ein Zusatz (Parität zum Server, der es nach
+          // dem Commit versucht und ein Scheitern übergeht): POP3-Konto, kein
+          // Ordner „Spam“ oder IMAP-Fehler lassen die Mail als Spam markiert
+          // und beenden den Knoten nicht mit Fehler — sonst liefe die
+          // Inbound-Kette trotz stopFurtherWorkflows weiter.
+          try {
+            const { moveImapMessage } = await import('../../email/email-imap-move.js');
+            await moveImapMessage(row, 'Spam');
+          } catch (e) {
+            moveError = e instanceof Error ? e.message : String(e);
+          }
         }
       }
+      const stopsChain = chainStopFlagEnabled(config.stopFurtherWorkflows) && spam;
       return {
         status: 'ok',
         variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
         // Opt-in: gespeicherte Graphen ohne dieses Feld laufen unverändert weiter.
-        ...(chainStopFlagEnabled(config.stopFurtherWorkflows) && spam
-          ? {
-            stop: true,
-            inboundChainStop: true,
-            message: 'stop_further_workflows:mark_spam',
-          }
-          : {}),
+        ...(stopsChain ? { stop: true, inboundChainStop: true } : {}),
+        ...(moveError !== null
+          ? { message: `imap_spam_move_failed: ${moveError}` }
+          : stopsChain
+            ? { message: 'stop_further_workflows:mark_spam' }
+            : {}),
       };
     },
   });

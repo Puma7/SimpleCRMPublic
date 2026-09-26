@@ -712,7 +712,9 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Auf dem Mail-Server in den Spam-Ordner verschieben',
         help:
           'Ein: die Mail wird zusätzlich auf dem IMAP-Server in den Ordner „Spam“ verschoben — ' +
-          'dann sieht sie auch das Handy-Postfach als Spam. Wirkt nur beim Markieren als Spam, nicht beim Entfernen.',
+          'dann sieht sie auch das Handy-Postfach als Spam. Wirkt nur beim Markieren als Spam, nicht beim Entfernen. ' +
+          'Scheitert das Verschieben (POP3-Konto, kein Ordner „Spam“, Server nicht erreichbar), bleibt die Mail ' +
+          'trotzdem als Spam markiert; die Lauf-Historie nennt den Grund.',
       },
       {
         key: 'train',

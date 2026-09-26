@@ -354,7 +354,7 @@ Was sich ohne KI entscheiden lässt, gehört vor die KI — das ist schneller, k
 | **Nein** | Nichts passiert; die nächsten Workflows (z. B. Schritt 6) laufen weiter |
 | **KI-Fehler** | Tag `ki-fehler`; die Mail bleibt normal im Posteingang, die nächsten Workflows laufen weiter |
 
-**Verschieben auf dem Mail-Server:** Das klappt nur bei IMAP-Konten mit einem Ordner namens „Spam“. Bei POP3-Konten oder anders benanntem Spam-Ordner im Baustein **„Als Spam markieren“** den Schalter **„Auf dem Mail-Server in den Spam-Ordner verschieben“** ausschalten — die Mail landet trotzdem im Spam-Ordner von SimpleCRM. Sonst endet der Lauf auf dem Desktop mit einem Fehler; die Mail ist dann trotzdem als Spam markiert, und die Vorlage aus Schritt 6 überspringt sie. Auf dem Server bleibt die Mail in diesem Fall ebenfalls als Spam markiert, nur das Verschieben entfällt.
+**Verschieben auf dem Mail-Server:** Das klappt nur bei IMAP-Konten mit einem Ordner namens „Spam“. Scheitert es (POP3-Konto, anders benannter Spam-Ordner, Server nicht erreichbar), bleibt die Mail in beiden Editionen trotzdem als Spam markiert und die Kette stoppt wie gewohnt; auf dem Desktop nennt die Lauf-Historie den Grund. Wer das Verschieben nicht braucht, schaltet im Baustein **„Als Spam markieren“** den Schalter **„Auf dem Mail-Server in den Spam-Ordner verschieben“** aus — die Mail landet trotzdem im Spam-Ordner von SimpleCRM.
 
 ### 6. Vorlage „Eingehend: Mensch oder KI? → KI-Antwort mit Gegenprüfung“ (Priorität 50)
 
@@ -409,7 +409,7 @@ Das Ergebnis ist ein Vorschlag unter **Einstellungen → Learnings**; die Wissen
 - **Server:** Ausgangs-Workflows laufen parallel (siehe Schritt 7) — die Ausgangs-KI-Entscheidung läuft auch dann, wenn eine statische Regel schon blockiert, und kostet je ausgehender Mail einen KI-Aufruf.
 - Die KI-Entscheidung kennt die Wissensbasis nicht; das Kriterium „ohne passende Information in der Wissensbasis“ schätzt sie nur aus der Art der Frage. Die Gegenprüfung fängt Entwürfe ohne belastbare Grundlage ab.
 - Entscheidungsmodelle liefern keine Begründung; Hinweise und Lauf-Historie nennen dann die Ja-Wahrscheinlichkeit.
-- Das Verschieben in den Spam-Ordner auf dem Mail-Server funktioniert nur bei IMAP-Konten mit einem Ordner „Spam“ (siehe Schritt 5).
+- Das Verschieben in den Spam-Ordner auf dem Mail-Server funktioniert nur bei IMAP-Konten mit einem Ordner „Spam“; sonst bleibt es bei der Spam-Markierung in SimpleCRM (siehe Schritt 5).
 - Der Desktop erfasst keine KI-Kosten.
 
 ## Die Lauf-Historie lesen

@@ -40,7 +40,7 @@ const TEMPLATE_PORT_NOTES: Record<string, string> = {
     "Nur wenn nicht Spam. Agent-Workflows bitte mit Priorität 50+ hinter Spam-Pipelines (1–9) anlegen.",
   // Teilautomatisierung (TA-P6)
   "inbound-spam-decision":
-    "Ja → Spam + Verschieben in den Ordner „Spam“ auf dem Mail-Server + Stopp (bei POP3 oder anders benanntem Spam-Ordner im Baustein „Als Spam markieren“ das Verschieben ausschalten). Unsicher → „Spam prüfen“ + Stopp. Nein → keine Kante: Lauf endet, nachfolgende Workflows laufen weiter. KI-Fehler → Tag ki-fehler.",
+    "Ja → Spam + Verschieben in den Ordner „Spam“ auf dem Mail-Server + Stopp (klappt das Verschieben nicht, z. B. bei POP3, bleibt die Mail trotzdem Spam). Unsicher → „Spam prüfen“ + Stopp. Nein → keine Kante: Lauf endet, nachfolgende Workflows laufen weiter. KI-Fehler → Tag ki-fehler.",
   "inbound-human-or-ai-reply":
     "Ja/Unsicher/KI-Fehler → Tag manuell. Nein → Gate: Erlaubt → Entwurf → Gegenprüfung (Senden → Versand mit Ausgangsprüfung; Prüfen → Tag ki-freigabe + Aufgabe); Blockiert → Tag ki-manuell. Spam-Mails werden übersprungen.",
   "outbound-decision-before-send":
