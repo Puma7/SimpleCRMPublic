@@ -115,6 +115,7 @@ import { resolveIsDevelopment } from './security/runtime-mode';
 import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
 import { rewriteLegacyAttachmentStoragePaths } from './email/attachment-storage-path';
 import { localDateKey, localDateKeyInDays } from './utils/local-date';
+import { backupDatabaseBeforeVersionChange } from './maintenance/pre-update-backup';
 
 function getDatabasePath(): string {
   try {
@@ -217,8 +218,35 @@ export function bootstrapFreshDatabaseSchema(
     }
 }
 
+/**
+ * Vor dem ersten Start einer neuen App-Version die Datenbank sichern, bevor
+ * initializeDatabase das Schema erweitert (siehe maintenance/pre-update-backup).
+ * Nur in der gepackten App: im Entwicklungsmodus und in Tests gibt es keine
+ * Versionswechsel durch Updates.
+ */
+function backupBeforeFirstStartOfNewVersion(dbPath: string): void {
+    let currentVersion: string;
+    try {
+        if (!app?.isPackaged || !app.getVersion) return;
+        currentVersion = app.getVersion();
+    } catch {
+        return;
+    }
+    const result = backupDatabaseBeforeVersionChange({
+        dbPath,
+        userDataPath: path.dirname(dbPath),
+        currentVersion,
+    });
+    if (result.status === 'created') {
+        console.log(`[update] Datenbank vor dem ersten Start von ${currentVersion} gesichert: ${result.path}`);
+    } else if (result.status === 'failed') {
+        console.error(`[update] Sicherung vor dem ersten Start von ${currentVersion} fehlgeschlagen: ${result.error}`);
+    }
+}
+
 export function initializeDatabase() {
     const dbPath = getDatabasePath();
+    backupBeforeFirstStartOfNewVersion(dbPath);
     const dbExists = fs.existsSync(dbPath);
     const connection = new Database(dbPath, isDevelopment ? { verbose: sqliteVerboseLogger } : undefined);
     db = connection;
