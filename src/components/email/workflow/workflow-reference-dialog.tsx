@@ -534,7 +534,8 @@ function BestPracticesReference() {
       </Section>
       <Section title="4. Ausgangsprüfung sauber freigeben">
         Outbound-Workflows mit <code>ai.outbound_review</code> brauchen einen{" "}
-        <code>email.release_outbound</code>-Knoten am OK-Ausgang. Mit <code>autoSend=true</code>{" "}
+        <code>email.release_outbound</code>-Knoten am OK-Ausgang, mit <code>ai.decide</code>{" "}
+        am Ja-Ausgang. Mit <code>autoSend=true</code>{" "}
         verschickt der Scheduled-Send-Worker den Entwurf sofort.
       </Section>
       <Section title="5. Weiterleitungen mit Loop-Schutz">
