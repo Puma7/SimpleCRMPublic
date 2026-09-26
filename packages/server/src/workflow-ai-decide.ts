@@ -38,6 +38,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import type { AiProfileConnectionTestApiPort } from './api/types';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
 import type { JobPayload } from './jobs/types';
 import {
   assertWorkflowAiBudget,
@@ -367,12 +368,14 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
             // der Ausgang läuft dann nur noch für Zusatzschritte.
             const blockReason = input.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
             if (blockReason && input.messageId !== undefined) {
-              await trx
-                .updateTable('email_messages')
-                .set({ outbound_hold: true, outbound_block_reason: blockReason, updated_at: now() })
-                .where('workspace_id', '=', input.workspaceId)
-                .where('id', '=', input.messageId)
-                .execute();
+              // Endgültiger Block: echter Grund im Banner, Planung eines
+              // Workflow-Versands gelöscht (Entwurf erscheint im Posteingang).
+              await persistOutboundBlockOnDraft(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                reason: blockReason,
+                now: now(),
+              });
             }
             const port = outcome.answer;
             const applied = port !== 'error';
