@@ -95,6 +95,7 @@ const workflowSelectColumns = [
   'cron_expr',
   'schedule_account_source_sqlite_id',
   'schedule_account_id',
+  'schedule_last_slot_at',
   'account_source_sqlite_id',
   'account_id',
   'override_key',
@@ -1131,12 +1132,15 @@ function mutationToWorkflowPatch(
 }
 
 /**
- * Neu aktivierte oder geaenderte Zeitplaene loesen keine vergangenen
- * Zeitpunkte aus: der Taktgeber feuert nur Zeitpunkte NACH
- * schedule_last_slot_at, also wird die Spalte beim Speichern auf „jetzt"
- * gesetzt — es sei denn, der gespeicherte Workflow war schon ein aktiver
- * Zeitplan mit demselben Ausdruck (dann bliebe sonst ein gerade faelliger
- * Zeitpunkt liegen, nur weil jemand z. B. den Graphen speichert). Die
+ * Speichern schaltet einen Zeitplan scharf und verhindert Nachholungen:
+ * der Taktgeber feuert nur Zeitpunkte NACH schedule_last_slot_at und nie bei
+ * NULL (nicht scharf). Die Spalte wird deshalb auf „jetzt" gesetzt — es sei
+ * denn, der gespeicherte Workflow war schon ein SCHARFER aktiver Zeitplan mit
+ * demselben Ausdruck (dann bliebe sonst ein gerade faelliger Zeitpunkt
+ * liegen, nur weil jemand z. B. den Graphen speichert). Ein aktiver, aber
+ * nicht scharfer Zeitplan (Bestand vor 0056, Desktop-Import) wird damit beim
+ * ersten Speichern mit Ausloeser-, Aktiv- oder Zeitplan-Feld scharf; diese
+ * Felder laufen durch die Rechte- und Zeitplan-Pruefung der Route. Die
  * Bedingung liest die Spalten VOR dem Update (Postgres-SET-Semantik).
  */
 function scheduleSlotResetPatch(
@@ -1151,7 +1155,8 @@ function scheduleSlotResetPatch(
     : kyselySql<boolean>`cron_expr is not distinct from ${values.cronExpr}`;
   return {
     schedule_last_slot_at: kyselySql<Date>`case
-      when enabled is true and trigger_name = 'schedule' and ${sameCron}
+      when schedule_last_slot_at is not null
+        and enabled is true and trigger_name = 'schedule' and ${sameCron}
         then schedule_last_slot_at
       else ${now}::timestamptz
     end`,
@@ -1343,6 +1348,7 @@ function mapWorkflowRow(row: Pick<WorkflowRow, typeof workflowSelectColumns[numb
       ? null
       : Number(row.schedule_account_source_sqlite_id),
     scheduleAccountId: row.schedule_account_id === null ? null : Number(row.schedule_account_id),
+    scheduleLastSlotAt: timestampToIsoOrNull(row.schedule_last_slot_at),
     accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
     accountId: row.account_id === null ? null : Number(row.account_id),
     overrideKey: row.override_key,

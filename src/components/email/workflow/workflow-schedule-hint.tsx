@@ -13,10 +13,13 @@ import { nextCronSlotAfter } from "../../../../packages/core/src/workflow/cron-s
 export function WorkflowScheduleHint({
   cronExpr,
   timeZone,
+  notArmed = false,
   now,
 }: {
   cronExpr: string
   timeZone: string
+  /** Aktiver Zeitplan, den der Server noch nicht ausloest (nie gespeichert). */
+  notArmed?: boolean
   /** Nur fuer Tests; sonst der Zeitpunkt des Renderns. */
   now?: Date
 }) {
@@ -27,6 +30,12 @@ export function WorkflowScheduleHint({
     }
     const problem = validateServerWorkflowCronExpr(trimmed)
     if (problem) return { kind: "error" as const, text: problem }
+    if (notArmed) {
+      return {
+        kind: "warning" as const,
+        text: "Noch nicht scharf – keine Ausführung, bis der Workflow einmal gespeichert wird.",
+      }
+    }
     try {
       const next = nextCronSlotAfter(trimmed, now ?? new Date(), timeZone)
       if (!next) return { kind: "info" as const, text: "Keine Ausführung absehbar." }
@@ -43,7 +52,7 @@ export function WorkflowScheduleHint({
     } catch {
       return { kind: "error" as const, text: `Zeitzone „${timeZone}“ ist ungültig.` }
     }
-  }, [now, timeZone, trimmed])
+  }, [notArmed, now, timeZone, trimmed])
 
   return (
     <div className="space-y-0.5" data-testid="workflow-schedule-hint">
@@ -51,7 +60,9 @@ export function WorkflowScheduleHint({
         className={
           hint.kind === "error"
             ? "text-[11px] text-destructive"
-            : "text-[11px] text-muted-foreground"
+            : hint.kind === "warning"
+              ? "text-[11px] text-amber-700 dark:text-amber-400"
+              : "text-[11px] text-muted-foreground"
         }
       >
         {hint.text}

@@ -136,6 +136,8 @@ describe('workflow shell schedule fields', () => {
     expect(hint).toHaveTextContent(/Nächste Ausführung: /);
     await screen.findByText(/Zeitzone America\/New_York/);
     expect(mockInvoke).toHaveBeenCalledWith(IPCChannels.Email.GetWorkflowAutomationSettings);
+    // Ohne Zustandsangabe (aeltere Server-API) kein Hinweis auf „nicht scharf".
+    expect(screen.queryByTestId('workflow-schedule-not-armed')).not.toBeInTheDocument();
   });
 
   test('server mode validates the expression like the server', async () => {
@@ -161,6 +163,39 @@ describe('workflow shell schedule fields', () => {
     ).toBe(true));
     const update = mockInvoke.mock.calls.find(([channel]) => channel === IPCChannels.Email.UpdateWorkflow)!;
     expect(update[1]).toMatchObject({ trigger: 'schedule', cronExpr: '30 7 * * *' });
+  });
+
+  test('server mode warns about an active schedule that is not armed yet and saving arms it', async () => {
+    mockTransportKind = 'http';
+    rows = [row, { ...scheduleRow, schedule_last_slot_at: null } as typeof row];
+    await openAdvanced('Morgens abholen');
+    expect(screen.getByTestId('workflow-schedule-not-armed')).toHaveTextContent(
+      'Zeitplan ist noch nicht scharf geschaltet – einmal speichern, um ihn zu aktivieren.',
+    );
+    expect(await screen.findByTestId('workflow-schedule-hint')).toHaveTextContent(/Noch nicht scharf/);
+
+    fireEvent.click(screen.getByRole('button', { name: /Speichern/ }));
+    await waitFor(() => expect(
+      mockInvoke.mock.calls.some(([channel]) => channel === IPCChannels.Email.UpdateWorkflow),
+    ).toBe(true));
+    const update = mockInvoke.mock.calls.find(([channel]) => channel === IPCChannels.Email.UpdateWorkflow)!;
+    // Die Ausfuehrungsfelder gehen mit — erst damit schaltet der Server scharf.
+    expect(update[1]).toMatchObject({ trigger: 'schedule', enabled: true, cronExpr: '0 6 * * 1-5' });
+  });
+
+  test('no warning for an armed schedule', async () => {
+    mockTransportKind = 'http';
+    rows = [row, { ...scheduleRow, schedule_last_slot_at: '2026-09-28T04:00:00.000Z' } as typeof row];
+    await openAdvanced('Morgens abholen');
+    expect(screen.queryByTestId('workflow-schedule-not-armed')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('workflow-schedule-hint')).toHaveTextContent(/Nächste Ausführung/);
+  });
+
+  test('the desktop never shows the armed warning', async () => {
+    mockTransportKind = 'ipc';
+    rows = [row, { ...scheduleRow, schedule_last_slot_at: null } as typeof row];
+    await openAdvanced('Morgens abholen');
+    expect(screen.queryByTestId('workflow-schedule-not-armed')).not.toBeInTheDocument();
   });
 
   test('the desktop keeps its node-cron check (6 fields allowed)', async () => {

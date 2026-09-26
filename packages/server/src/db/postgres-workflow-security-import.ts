@@ -184,6 +184,9 @@ DO UPDATE SET
   cron_expr = EXCLUDED.cron_expr,
   schedule_account_source_sqlite_id = EXCLUDED.schedule_account_source_sqlite_id,
   schedule_account_id = EXCLUDED.schedule_account_id,
+  -- Zeitplan nach einem (erneuten) Desktop-Import nicht scharf: der Server
+  -- loest ihn erst aus, wenn ihn jemand im Server speichert (Migration 0056).
+  schedule_last_slot_at = NULL,
   account_source_sqlite_id = EXCLUDED.account_source_sqlite_id,
   account_id = EXCLUDED.account_id,
   override_key = EXCLUDED.override_key,

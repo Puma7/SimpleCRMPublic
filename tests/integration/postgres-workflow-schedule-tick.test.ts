@@ -12,6 +12,7 @@ import {
   runWorkflowScheduleTick,
 } from '../../packages/server/src/jobs/workflow-schedule-tick';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { nextCronSlotAfter } from '../../packages/core/src/workflow';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
@@ -26,6 +27,8 @@ const ACCOUNT_A = 9401;
 // Montag, 28.09.2026, 06:05 in Berlin (Sommerzeit, UTC+2).
 const NOW = new Date('2026-09-28T04:05:00.000Z');
 const SLOT = '2026-09-28T04:00:00.000Z';
+/** Zeitpunkt, zu dem die Test-Workflows „im Server gespeichert" (scharf geschaltet) wurden. */
+const ARMED = '2026-09-01T00:00:00.000Z';
 
 const SCHEDULE_GRAPH = {
   version: 1,
@@ -78,20 +81,30 @@ describe('server schedule tick (TA-P4)', () => {
     await insertWorkflow(9103, WORKSPACE_A, { trigger: 'schedule', enabled: true, cron: '*/5 * * * *' });
     // Ein Cron-Ausdruck an einem anderen Ausloeser ist wirkungslos.
     await insertWorkflow(9104, WORKSPACE_A, { trigger: 'inbound', enabled: true, cron: '0 6 * * *' });
+    // Bestand vor dem Update bzw. Desktop-Import: aktiv, aber nicht scharf.
+    await insertWorkflow(9106, WORKSPACE_A, { trigger: 'schedule', enabled: true, cron: '0 6 * * *', armedAt: null });
     await insertWorkflow(9201, WORKSPACE_B, { trigger: 'schedule', enabled: true, cron: '0 6 * * *' });
   });
 
   async function insertWorkflow(
     id: number,
     workspaceId: string,
-    input: { trigger: string; enabled: boolean; cron: string | null; accountId?: number; graph?: unknown },
+    input: {
+      trigger: string;
+      enabled: boolean;
+      cron: string | null;
+      accountId?: number;
+      graph?: unknown;
+      /** null = nicht scharf (nie im Server gespeichert). */
+      armedAt?: string | null;
+    },
   ): Promise<void> {
     await postgres.admin.query(`
       INSERT INTO email_workflows (
         id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
         definition_json, graph_json, cron_expr, schedule_account_id, schedule_account_source_sqlite_id,
-        execution_mode, engine_version
-      ) VALUES ($1, $2, $1, $3, $4, $5, 100, '{}'::jsonb, $6::jsonb, $7, $8, $8, 'graph', 1)
+        execution_mode, engine_version, schedule_last_slot_at
+      ) VALUES ($1, $2, $1, $3, $4, $5, 100, '{}'::jsonb, $6::jsonb, $7, $8, $8, 'graph', 1, $9)
     `, [
       id,
       workspaceId,
@@ -101,6 +114,7 @@ describe('server schedule tick (TA-P4)', () => {
       JSON.stringify(input.graph ?? SCHEDULE_GRAPH),
       input.cron,
       input.accountId ?? null,
+      input.armedAt === undefined ? ARMED : input.armedAt,
     ]);
   }
 
@@ -151,9 +165,10 @@ describe('server schedule tick (TA-P4)', () => {
       'email.account_id': ACCOUNT_A,
     });
     expect(await lastSlot(9101)).toBe(SLOT);
-    expect(await lastSlot(9102)).toBeNull();
-    expect(await lastSlot(9104)).toBeNull();
-    expect(await lastSlot(9201)).toBeNull();
+    expect(await lastSlot(9102)).toBe(ARMED);
+    expect(await lastSlot(9104)).toBe(ARMED);
+    expect(await lastSlot(9106)).toBeNull();
+    expect(await lastSlot(9201)).toBe(ARMED);
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatch(/Workflow 9103 .*uebersprungen/);
 
@@ -184,7 +199,7 @@ describe('server schedule tick (TA-P4)', () => {
     const { enqueued, queue } = collectingQueue();
     await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date('2026-09-28T04:15:01.000Z'), log: () => undefined });
     expect(enqueued).toEqual([]);
-    expect(await lastSlot(9101)).toBeNull();
+    expect(await lastSlot(9101)).toBe(ARMED);
 
     // Genau 15 Minuten alt zaehlt noch.
     await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date('2026-09-28T04:15:00.000Z'), log: () => undefined });
@@ -213,7 +228,7 @@ describe('server schedule tick (TA-P4)', () => {
     const failed = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: NOW, log: () => undefined });
     expect(failed.enqueued).toBe(0);
     expect(failed.failed.map((entry) => entry.workflowId)).toEqual([9101]);
-    expect(await lastSlot(9101)).toBeNull();
+    expect(await lastSlot(9101)).toBe(ARMED);
 
     const retried = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(NOW.getTime() + 60_000), log: () => undefined });
     expect(retried.enqueued).toBe(1);
@@ -249,7 +264,7 @@ describe('server schedule tick (TA-P4)', () => {
     await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_B, now: NOW, log: () => undefined });
     expect(enqueued.map((job) => [job.workspaceId, job.payload.workflowId])).toEqual([[WORKSPACE_B, 9201]]);
     expect(await lastSlot(9201)).toBe(SLOT);
-    expect(await lastSlot(9101)).toBeNull();
+    expect(await lastSlot(9101)).toBe(ARMED);
 
     // Unter der Session von Workspace A ist die Zeile von B per RLS unsichtbar —
     // auch ein direkter Anspruch per ID trifft sie nicht.
@@ -317,6 +332,46 @@ describe('server schedule tick (TA-P4)', () => {
     // Ein neuer Ausdruck gilt ab jetzt.
     await port.update!({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id, values: { cronExpr: '0 * * * *' } });
     expect(new Date((await lastSlot(id))!).getTime()).toBeGreaterThan(Date.parse('2026-01-01T00:00:00Z'));
+  });
+
+  test('a schedule without state (before the update, desktop import) never fires until it is saved in the server', async () => {
+    const { enqueued, queue } = collectingQueue();
+    // 06:00 ist faellig, 9106 ist aktiv — trotzdem kein Lauf.
+    await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: NOW, log: () => undefined });
+    expect(enqueued.map((job) => job.payload.workflowId)).toEqual([9101]);
+    expect(await lastSlot(9106)).toBeNull();
+
+    // Ein reines Umbenennen ueber die API schaltet nicht scharf: dafuer braucht
+    // es die ausfuehrungsrelevanten Felder samt Rechte- und Zeitplan-Pruefung.
+    const port = createPostgresWorkflowReadPort({ db });
+    await port.update!({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: 9106, values: { name: 'Umbenannt' } });
+    expect(await lastSlot(9106)).toBeNull();
+
+    // Einmal speichern, wie es der Editor tut (unveraenderte Werte mitgesendet).
+    const beforeSave = Date.now();
+    await port.update!({
+      workspaceId: WORKSPACE_A,
+      actorUserId: USER_A,
+      id: 9106,
+      values: { triggerName: 'schedule', enabled: true, graph: SCHEDULE_GRAPH, cronExpr: '0 6 * * *' },
+    });
+    const armedAt = await lastSlot(9106);
+    expect(armedAt).not.toBeNull();
+    expect(new Date(armedAt!).getTime()).toBeGreaterThanOrEqual(beforeSave - 1000);
+
+    // Der naechste Zeitpunkt nach dem Speichern loest aus, ein frueherer nie.
+    const nextSlot = nextCronSlotAfter('0 6 * * *', new Date(armedAt!), 'Europe/Berlin')!;
+    await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(armedAt!), log: () => undefined });
+    expect(enqueued.filter((job) => job.payload.workflowId === 9106)).toEqual([]);
+    await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(nextSlot.getTime() + 60_000), log: () => undefined });
+    expect(enqueued.filter((job) => job.payload.workflowId === 9106).map((job) => job.payload.scheduleSlot))
+      .toEqual([nextSlot.toISOString()]);
+  });
+
+  test('the workflow DTO tells whether a schedule is armed', async () => {
+    const port = createPostgresWorkflowReadPort({ db });
+    expect((await port.get({ workspaceId: WORKSPACE_A, id: 9106 }))?.scheduleLastSlotAt).toBeNull();
+    expect((await port.get({ workspaceId: WORKSPACE_A, id: 9101 }))?.scheduleLastSlotAt).toBe(ARMED);
   });
 
   test('a scheduled run starts at the schedule trigger node and passes the planned account', async () => {

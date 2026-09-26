@@ -133,6 +133,24 @@ describe('workflow save gate', () => {
     expect(decision.blocked).toBe(true);
   });
 
+  // TA-P4: Ein aktiver, noch nicht scharfer Zeitplan (Server) wird erst durch
+  // ein Speichern mit den Ausfuehrungsfeldern scharf — das ist ein Aktivieren.
+  test('arming a not-armed schedule sends the execution fields and keeps the manage gate', () => {
+    const withManage = decideWorkflowSaveGate(baseline, unchanged, {
+      canManageWorkflows: true,
+      hasSideEffects: true,
+      baselineHasSideEffects: true,
+      armsSchedule: true,
+    });
+    expect(withManage.executionChanged).toBe(true);
+    expect(withManage.omitExecutionFields).toBe(false);
+    expect(withManage.blocked).toBe(false);
+
+    const withoutManage = decideWorkflowSaveGate(baseline, unchanged, { ...sideEffects, armsSchedule: true });
+    expect(withoutManage.omitExecutionFields).toBe(false);
+    expect(withoutManage.blocked).toBe(true);
+  });
+
   test('a missing baseline counts as changed', () => {
     const decision = decideWorkflowSaveGate(null, unchanged, sideEffects);
 

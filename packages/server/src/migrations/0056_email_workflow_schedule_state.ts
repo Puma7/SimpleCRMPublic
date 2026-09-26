@@ -6,13 +6,16 @@ import type { SqlMigration } from './types';
  * Der Server-Taktgeber (jobs/workflow-schedule-tick.ts) prueft je Minute und
  * Workspace, welcher faellige Zeitpunkt eines aktiven Zeitplan-Workflows
  * zuletzt vor „jetzt" lag. Ausgeloest wird nur, wer diesen Zeitpunkt per
- * bedingtem UPDATE (`schedule_last_slot_at IS NULL OR < Zeitpunkt`) als Erster
- * in diese Spalte schreibt — so laeuft jeder Zeitpunkt genau einmal, auch wenn
- * mehrere Server-Prozesse gleichzeitig takten.
+ * bedingtem UPDATE (`schedule_last_slot_at < Zeitpunkt`) als Erster in diese
+ * Spalte schreibt — so laeuft jeder Zeitpunkt genau einmal, auch wenn mehrere
+ * Server-Prozesse gleichzeitig takten.
  *
- * Beim Anlegen, Aktivieren und Aendern des Zeitplans setzt die Workflow-API die
- * Spalte auf den Speicherzeitpunkt: vergangene Zeitpunkte sind damit erledigt
- * und werden nicht nachtraeglich ausgeloest.
+ * NULL heisst „nicht scharf": der Taktgeber loest einen solchen Workflow nie
+ * aus. Die Spalte wird bewusst NICHT befuellt — Bestandszeilen und
+ * Desktop-Importe laufen nach dem Update nicht ueberraschend los. Scharf wird
+ * ein Zeitplan erst, wenn die Workflow-API ihn anlegt, aktiviert oder
+ * speichert: sie setzt den Speicherzeitpunkt, vergangene Zeitpunkte sind
+ * damit erledigt und werden nicht nachtraeglich ausgeloest.
  *
  * Kein eigener Index: die Auswahl des Taktgebers (aktive Workflows eines
  * Workspaces mit Ausloeser `schedule`) deckt der bestehende

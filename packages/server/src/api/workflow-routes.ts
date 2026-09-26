@@ -1663,6 +1663,7 @@ function sanitizeWorkflow(workflow: WorkflowRecord): WorkflowRecord {
     cronExpr: workflow.cronExpr,
     scheduleAccountSourceSqliteId: workflow.scheduleAccountSourceSqliteId,
     scheduleAccountId: workflow.scheduleAccountId,
+    ...(workflow.scheduleLastSlotAt === undefined ? {} : { scheduleLastSlotAt: workflow.scheduleLastSlotAt }),
     accountSourceSqliteId: workflow.accountSourceSqliteId,
     accountId: workflow.accountId,
     overrideKey: workflow.overrideKey,

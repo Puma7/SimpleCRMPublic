@@ -4081,6 +4081,13 @@ export type WorkflowRecord = {
   cronExpr: string | null;
   scheduleAccountSourceSqliteId: number | null;
   scheduleAccountId: number | null;
+  /**
+   * Zuletzt ausgeloester Zeitplan-Zeitpunkt (ISO). null = Zeitplan nicht
+   * scharf: der Server-Taktgeber loest ihn nie aus, bis der Workflow einmal
+   * ueber die API gespeichert/aktiviert wird (Bestand vor 0056, Desktop-Import).
+   * Optional, weil nur der Postgres-Port ihn kennt.
+   */
+  scheduleLastSlotAt?: string | null;
   accountSourceSqliteId: number | null;
   accountId: number | null;
   overrideKey: string | null;

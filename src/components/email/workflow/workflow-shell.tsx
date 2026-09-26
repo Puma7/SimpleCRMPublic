@@ -108,6 +108,12 @@ type FullWorkflowRow = WorkflowRow & {
   graph_json: string | null
   cron_expr: string | null
   schedule_account_id: number | null
+  /**
+   * Nur Server: zuletzt ausgeloester Zeitplan-Zeitpunkt; null = Zeitplan noch
+   * nicht scharf (loest nie aus, bis er einmal gespeichert wird). Der Desktop
+   * liefert das Feld nicht.
+   */
+  schedule_last_slot_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -239,6 +245,14 @@ export function WorkflowShell() {
     return (triggerNode?.data as { kind?: string } | undefined)?.kind
   }, [graphNodes])
   const triggerKindDisplay = workflowTriggerLabel(graphTriggerKind)
+  const selectedRow = useMemo(() => rows.find((w) => w.id === selectedId) ?? null, [rows, selectedId])
+  // Server: aktiver Zeitplan-Workflow mit leerem Zustand (Bestand vor dem
+  // Update, Desktop-Import) loest nie aus, bis er einmal gespeichert wird.
+  const scheduleNotArmed =
+    serverClientMode
+    && selectedRow?.trigger === "schedule"
+    && selectedRow.enabled === 1
+    && selectedRow.schedule_last_slot_at === null
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -578,6 +592,9 @@ export function WorkflowShell() {
           baselineHasSideEffects:
             workflowGraphHasSideEffectNode(saveBaselineRef.current?.graphJson)
             || workflowGraphHasChainStopNode(saveBaselineRef.current?.graphJson),
+          // Noch nicht scharfer Zeitplan: die Ausfuehrungsfelder mitsenden,
+          // damit der Server ihn (nach seinen Pruefungen) scharf schaltet.
+          armsSchedule: scheduleNotArmed && trig === "schedule" && editEnabled,
         },
       )
       if (gate.blocked) {
@@ -898,6 +915,14 @@ export function WorkflowShell() {
                   Auslöser
                 </span>
                 <p className="text-sm font-medium leading-tight">{triggerKindDisplay}</p>
+                {scheduleNotArmed ? (
+                  <p
+                    className="text-[10px] font-medium text-amber-700 dark:text-amber-400"
+                    data-testid="workflow-schedule-not-armed"
+                  >
+                    Zeitplan ist noch nicht scharf geschaltet – einmal speichern, um ihn zu aktivieren.
+                  </p>
+                ) : null}
                 <p className="text-[10px] text-muted-foreground">
                   {canEditWorkflows
                     ? "Im Graph am Trigger-Knoten bearbeiten"
@@ -1031,7 +1056,11 @@ export function WorkflowShell() {
                   </div>
                   {serverClientMode && graphTriggerKind === "schedule" ? (
                     <div className="min-w-[220px] max-w-[320px] self-center">
-                      <WorkflowScheduleHint cronExpr={editCron} timeZone={scheduleTimeZone} />
+                      <WorkflowScheduleHint
+                        cronExpr={editCron}
+                        timeZone={scheduleTimeZone}
+                        notArmed={scheduleNotArmed}
+                      />
                     </div>
                   ) : null}
                   <div className="w-[120px] space-y-1">

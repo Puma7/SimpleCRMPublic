@@ -17154,6 +17154,9 @@ describe('server edition foundation', () => {
     expect(commands[2].sql).toContain('override_key');
     expect(commands[2].sql).toContain('legacy_created_by_user_id');
     expect(commands[2].sql).not.toContain("created_by_user_id', '')::uuid");
+    // TA-P4: Ein (erneut) importierter Zeitplan ist nicht scharf, bis ihn
+    // jemand im Server speichert.
+    expect(commands[2].sql).toContain('schedule_last_slot_at = NULL');
     expect(commands[4].sql).toContain('LEFT JOIN email_messages m');
     expect(commands[5].sql).toContain('LEFT JOIN email_workflow_runs wr');
     expect(commands[7].sql).toContain('INSERT INTO email_workflow_forward_dedup');

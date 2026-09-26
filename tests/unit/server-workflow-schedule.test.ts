@@ -308,6 +308,41 @@ describe('saving schedule workflows', () => {
     expect(h.updateCalls).toEqual([]);
   });
 
+  test('the API reports whether a schedule is armed (scheduleLastSlotAt)', async () => {
+    const notArmed = harness(scheduleWorkflow({ scheduleLastSlotAt: null }));
+    const read = await notArmed.api.handle({ method: 'GET', path: '/api/v1/workflows/41', principal: admin });
+    expect(read.status).toBe(200);
+    expect((read.body as any).data.scheduleLastSlotAt).toBeNull();
+
+    const armed = harness(scheduleWorkflow({ scheduleLastSlotAt: '2026-09-28T04:00:00.000Z' }));
+    const list = await armed.api.handle({ method: 'GET', path: '/api/v1/workflows', principal: admin });
+    expect((list.body as any).data.items[0].scheduleLastSlotAt).toBe('2026-09-28T04:00:00.000Z');
+
+    // Ports ohne diesen Zustand (Fakes, aeltere Adapter) liefern das Feld nicht.
+    const unknown = await harness().api.handle({ method: 'GET', path: '/api/v1/workflows/41', principal: admin });
+    expect((unknown.body as any).data).not.toHaveProperty('scheduleLastSlotAt');
+  });
+
+  test('saving a not-armed active schedule runs the schedule and manage checks', async () => {
+    // Der Editor sendet fuer einen nicht scharfen Zeitplan die Ausfuehrungsfelder
+    // mit (armsSchedule im Save-Gate); das ist fachlich ein Aktivieren.
+    const notArmed = scheduleWorkflow({ scheduleLastSlotAt: null, cronExpr: '0 0 6 * * *' });
+    const invalid = await harness(notArmed).api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { triggerName: 'schedule', enabled: true },
+      principal: admin,
+    });
+    expect(invalid.status).toBe(400);
+    const denied = await harness(scheduleWorkflow({ scheduleLastSlotAt: null })).api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { triggerName: 'schedule', enabled: true },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+  });
+
   test('a rename of a schedule workflow needs no expression check', async () => {
     const h = harness(scheduleWorkflow({ cronExpr: '0 0 6 * * *' }));
     const response = await h.api.handle({

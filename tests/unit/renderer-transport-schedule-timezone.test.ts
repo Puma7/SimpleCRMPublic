@@ -56,3 +56,45 @@ describe('renderer transport: workflow schedule time zone', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+// TA-P4: Der Editor braucht den Zustand „scharf/nicht scharf" des Zeitplans.
+describe('renderer transport: workflow schedule state', () => {
+  beforeEach(() => {
+    resetRendererTransportForTests();
+    localStorage.clear();
+  });
+
+  test('maps scheduleLastSlotAt to schedule_last_slot_at and omits it when the server does not send it', async () => {
+    const record = {
+      id: 41,
+      sourceSqliteId: 41,
+      name: 'Morgens',
+      triggerName: 'schedule',
+      enabled: true,
+      priority: 100,
+      definition: {},
+      graph: null,
+      cronExpr: '0 6 * * *',
+      scheduleAccountId: null,
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { ...record, scheduleLastSlotAt: null },
+            { ...record, id: 42, sourceSqliteId: 42, scheduleLastSlotAt: '2026-09-28T04:00:00.000Z' },
+            { ...record, id: 43, sourceSqliteId: 43 },
+          ],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+    const rows = await transport.invoke(IPCChannels.Email.ListWorkflows) as Array<Record<string, unknown>>;
+    expect(rows[0]!.schedule_last_slot_at).toBeNull();
+    expect(rows[1]!.schedule_last_slot_at).toBe('2026-09-28T04:00:00.000Z');
+    expect(rows[2]).not.toHaveProperty('schedule_last_slot_at');
+  });
+});

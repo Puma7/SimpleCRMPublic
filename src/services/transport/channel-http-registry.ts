@@ -679,6 +679,8 @@ type WorkflowRecord = {
   cronExpr?: string | null
   scheduleAccountSourceSqliteId?: number | null
   scheduleAccountId?: number | null
+  /** Server: null = Zeitplan nicht scharf (Migration 0056). */
+  scheduleLastSlotAt?: string | null
   accountSourceSqliteId?: number | null
   accountId?: number | null
   overrideKey?: string | null
@@ -6322,6 +6324,9 @@ function mapWorkflowRecord(record: WorkflowRecord) {
     cron_expr: record.cronExpr ?? null,
     schedule_account_id: record.scheduleAccountSourceSqliteId ?? record.scheduleAccountId ?? null,
     schedule_account_source_sqlite_id: record.scheduleAccountSourceSqliteId ?? undefined,
+    // Nur der Server kennt den Zustand; fehlt er (aeltere API), bleibt das Feld
+    // weg und der Editor zeigt keinen Hinweis.
+    ...(record.scheduleLastSlotAt === undefined ? {} : { schedule_last_slot_at: record.scheduleLastSlotAt }),
     account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
     ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
     override_key: record.overrideKey ?? null,

@@ -31,9 +31,13 @@ import type { EnqueueJobInput } from './types';
  * - Keine Nachholung alter Zeitpunkte: nur ein Zeitpunkt, der hoechstens
  *   WORKFLOW_SCHEDULE_CATCH_UP_MINUTES zurueckliegt, wird ausgeloest — war der
  *   Server laenger aus, verfallen die verpassten.
- * - Neu gespeicherte Zeitplaene setzen `schedule_last_slot_at` auf den
- *   Speicherzeitpunkt (postgres-workflow-read-ports), vergangene Zeitpunkte
- *   gelten damit als erledigt.
+ * - Scharf ist ein Zeitplan erst, wenn `schedule_last_slot_at` gesetzt ist.
+ *   Das geschieht nur beim Anlegen, Aktivieren oder Speichern eines
+ *   Zeitplan-Workflows ueber die Workflow-API (postgres-workflow-read-ports:
+ *   Speicherzeitpunkt, vergangene Zeitpunkte gelten damit als erledigt).
+ *   Zeilen mit NULL — Bestand aus der Zeit vor Migration 0056 und
+ *   Desktop-Importe — feuern nie, bis jemand sie einmal im Server speichert.
+ *   Kein Workflow beginnt also nach einem Update ueberraschend zu laufen.
  * - Zeitzone: Workspace-Einstellung `workflow_schedule_timezone`
  *   (Standard Europe/Berlin); der Server-Container selbst laeuft in UTC.
  *
@@ -163,6 +167,8 @@ export async function runWorkflowScheduleTick(input: {
         .where('trigger_name', '=', 'schedule')
         .where('enabled', '=', true)
         .where('cron_expr', 'is not', null)
+        // Nicht scharf (siehe oben): nie ausloesen.
+        .where('schedule_last_slot_at', 'is not', null)
         .orderBy('id', 'asc')
         .limit(MAX_SCHEDULE_WORKFLOWS_PER_TICK)
         .execute() as ScheduleWorkflowRow[];
@@ -209,10 +215,9 @@ export async function runWorkflowScheduleTick(input: {
 
     const slot = latestCronSlotAtOrBefore(parsed.cron, now, timeZone, WORKFLOW_SCHEDULE_CATCH_UP_MINUTES);
     if (!slot) continue;
-    const lastSlot = workflow.schedule_last_slot_at === null
-      ? null
-      : new Date(workflow.schedule_last_slot_at);
-    if (lastSlot && slot.getTime() <= lastSlot.getTime()) continue;
+    if (workflow.schedule_last_slot_at === null) continue;
+    const lastSlot = new Date(workflow.schedule_last_slot_at);
+    if (slot.getTime() <= lastSlot.getTime()) continue;
 
     // ERST beanspruchen, DANN einreihen. Das bedingte UPDATE ist der Anspruch;
     // enabled/trigger/cron stehen mit drin, damit ein zwischenzeitlich
@@ -229,10 +234,8 @@ export async function runWorkflowScheduleTick(input: {
         .where('enabled', '=', true)
         .where('trigger_name', '=', 'schedule')
         .where('cron_expr', '=', cronExpr)
-        .where((eb) => eb.or([
-          eb('schedule_last_slot_at', 'is', null),
-          eb('schedule_last_slot_at', '<', slot),
-        ]))
+        // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
+        .where('schedule_last_slot_at', '<', slot)
         .returning(['id', 'schedule_account_id'])
         .executeTakeFirst(),
       session,
