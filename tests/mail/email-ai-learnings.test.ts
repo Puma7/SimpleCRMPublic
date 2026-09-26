@@ -57,6 +57,7 @@ import {
 import { registerLearningsDigestNode } from '../../electron/workflow/nodes/learnings-nodes';
 import { markDraftOrigin, markDraftOriginEdited } from '../../electron/email/email-sent-provenance';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../../electron/workflow/types';
+import { LEARNINGS_DIGEST_MAX_CANDIDATES } from '../../packages/core/src/learnings';
 
 const USER = 'user-1';
 /** Wie IPC SendCompose: ein Mensch sendet immer mit seiner Sitzung als Akteur. */
@@ -302,6 +303,19 @@ describe('Learnings (Desktop, TA-P5)', () => {
       .resolves.toEqual({ status: 'skipped_pending', digestId: created.digestId, candidateCount: 0 });
     expect(listAiLearningDigests().map((d) => d.status)).toEqual(['pending', 'failed']);
     expect(await getAiLearningDigest(99_999)).toBeNull();
+  });
+
+  // Codex-Review PR #194: Einträge über der Obergrenze rutschten vor das Ende
+  // der letzten Auswertung und wurden mit „seit letzter Auswertung“ nie mehr ausgewertet.
+  test('seit letzter Auswertung: Einträge über der Obergrenze kommen beim nächsten Lauf dran', async () => {
+    seedCandidates(LEARNINGS_DIGEST_MAX_CANDIDATES + 5, new Date(Date.now() - 60_000));
+    mockRunChatCompletion.mockResolvedValue(JSON.stringify({ operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] }));
+    const first = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1, actorUserId: USER });
+    expect(first).toMatchObject({ status: 'created', candidateCount: LEARNINGS_DIGEST_MAX_CANDIDATES });
+    expect(rejectAiLearningDigest({ id: Number(first.digestId), actorUserId: USER })).toMatchObject({ success: true });
+
+    const second = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1, actorUserId: USER });
+    expect(second).toMatchObject({ status: 'created', candidateCount: 5 });
   });
 
   test('Auswerten parallel: nur eine Auswertung je Wissensbasis', async () => {

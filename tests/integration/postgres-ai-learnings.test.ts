@@ -23,6 +23,7 @@ import { markDraftOrigin } from '../../packages/server/src/mail-sent-provenance'
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
 import { buildKnowledgePromptAppend, searchKnowledgeForWorkflow } from '../../packages/server/src/knowledge-workflow-search';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
+import { LEARNINGS_DIGEST_MAX_CANDIDATES } from '../../packages/core/src/learnings';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
@@ -419,6 +420,24 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     `, [WS_A]);
     expect(await pruneAiLearningCandidates({ db }, WS_A)).toBe(1);
     expect(await listAiLearningCandidates({ db }, WS_A)).toHaveLength(1);
+  });
+
+  // Codex-Review PR #194: Über der Obergrenze liegende Einträge rutschten vor
+  // das Ende der letzten Auswertung und wurden mit „seit letzter Auswertung“
+  // nie mehr ausgewertet.
+  test('seit letzter Auswertung: Einträge über der Obergrenze kommen beim nächsten Lauf dran', async () => {
+    await seedCandidates(LEARNINGS_DIGEST_MAX_CANDIDATES + 5);
+    const chat = async () => JSON.stringify({ operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] });
+    const first = await runAiLearningsDigest({ db, chat }, {
+      workspaceId: WS_A, period: 'since_last', minCandidates: 1, trigger: 'manual', actorUserId: USER_A,
+    });
+    expect(first).toMatchObject({ status: 'created', candidateCount: LEARNINGS_DIGEST_MAX_CANDIDATES });
+    await rejectAiLearningDigest({ db }, { workspaceId: WS_A, actorUserId: USER_A, id: Number(first.digestId) });
+
+    const second = await runAiLearningsDigest({ db, chat }, {
+      workspaceId: WS_A, period: 'since_last', minCandidates: 1, trigger: 'manual', actorUserId: USER_A,
+    });
+    expect(second).toMatchObject({ status: 'created', candidateCount: 5 });
   });
 
   test('Aufräumen: Einträge eines offenen Vorschlags spätestens nach 90 Tagen, Vorschlag bleibt übernehmbar', async () => {

@@ -12,6 +12,7 @@ import {
   computeLearningsDigestProposal,
   isLearningsCollectEnabledValue,
   learningNamesFromAddressJson,
+  learningsCandidateFilterStart,
   learningsPeriodStart,
   learningsRetentionCutoff,
   LEARNING_CANDIDATE_KINDS,
@@ -1004,8 +1005,9 @@ export async function preflightAiLearningsDigest(
       return { status: 'skipped_pending', knowledgeBaseId, digestId: Number(pending.id), candidateCount: 0 };
     }
   }
-  const from = learningsPeriodStart(plan.period, now, await lastDigestPeriodEnd(trx, plan.workspaceId, knowledgeBaseId));
-  const candidates = selectLearningCandidatesForDigest(await loadOpenCandidates(trx, plan.workspaceId, from, now));
+  const candidates = selectLearningCandidatesForDigest(
+    await loadOpenCandidates(trx, plan.workspaceId, learningsCandidateFilterStart(plan.period, now), now),
+  );
   if (candidates.length < plan.minCandidates) {
     return { status: 'skipped_no_candidates', knowledgeBaseId, candidateCount: candidates.length };
   }
@@ -1045,8 +1047,11 @@ export async function runAiLearningsDigest(
         await writeSyncValues(trx, plan.workspaceId, { [LEARNINGS_DEFAULT_KB_ID_KEY]: String(created.id) }, now);
       }
       const document = await loadWorkflowKnowledgeDocument(trx, plan.workspaceId, knowledgeBaseId);
+      // `from` beschreibt den Zeitraum im Vorschlag; ausgewählt wird über processed_at.
       const from = learningsPeriodStart(plan.period, now, await lastDigestPeriodEnd(trx, plan.workspaceId, knowledgeBaseId));
-      const candidates = selectLearningCandidatesForDigest(await loadOpenCandidates(trx, plan.workspaceId, from, now));
+      const candidates = selectLearningCandidatesForDigest(
+        await loadOpenCandidates(trx, plan.workspaceId, learningsCandidateFilterStart(plan.period, now), now),
+      );
       return {
         kind: 'ready' as const,
         knowledgeBaseId,

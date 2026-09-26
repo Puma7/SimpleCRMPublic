@@ -19,6 +19,7 @@ import {
   computeLearningsDigestProposal,
   isLearningsCollectEnabledValue,
   learningNamesFromAddressJson,
+  learningsCandidateFilterStart,
   learningsPeriodStart,
   learningsRetentionCutoff,
   LEARNING_CANDIDATE_KINDS,
@@ -669,8 +670,9 @@ export function preflightAiLearningsDigest(request: {
     }
   }
   const period = normalizeLearningsDigestPeriod(request.period);
+  // `from` beschreibt den Zeitraum im Vorschlag; ausgewählt wird über processed_at.
   const from = learningsPeriodStart(period, now, lastDigestPeriodEnd(knowledgeBaseId));
-  const candidates = selectLearningCandidatesForDigest(loadOpenCandidates(from, now));
+  const candidates = selectLearningCandidatesForDigest(loadOpenCandidates(learningsCandidateFilterStart(period, now), now));
   const minCandidates = normalizeLearningsMinCandidates(request.minCandidates);
   if (candidates.length < minCandidates) {
     return { status: 'skipped_no_candidates', knowledgeBaseId, candidateCount: candidates.length };

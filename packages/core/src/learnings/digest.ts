@@ -111,6 +111,16 @@ export function learningsPeriodStart(
   }
 }
 
+/**
+ * Zeitfilter für die Auswahl der Kandidaten. `since_last` filtert nicht nach
+ * Zeit: „seit der letzten Auswertung“ heißt „noch nicht verarbeitet“
+ * (processed_at). Ein Filter ab dem Ende der letzten Auswertung würde Einträge
+ * verlieren, die beim letzten Lauf über der Obergrenze lagen.
+ */
+export function learningsCandidateFilterStart(period: LearningsDigestPeriod, now: Date): Date | null {
+  return period === 'since_last' ? null : learningsPeriodStart(period, now, null);
+}
+
 /** Cutoff für unverarbeitete Kandidaten (älter → löschen). */
 export function learningsRetentionCutoff(now: Date, days = LEARNINGS_CANDIDATE_RETENTION_DAYS): Date {
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
