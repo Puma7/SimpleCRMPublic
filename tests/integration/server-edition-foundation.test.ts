@@ -244,7 +244,9 @@ describe('server edition repository boundaries', () => {
     expect(backup).toContain('pg_dump -Fc "$DATABASE_URL"');
     expect(backup).toContain('CHECKSUM_MANIFEST="backup-$STAMP.sha256"');
     expect(backup).toContain('sha256sum "$DB_DUMP" > "$CHECKSUM_MANIFEST"');
-    expect(backup).toContain('sha256sum "$ATTACHMENTS_ARCHIVE" >> "$CHECKSUM_MANIFEST"');
+    // Anhänge inkrementell: Liste je Satz (in der Prüfsummenliste), Inhalte im Speicher.
+    expect(backup).toContain('write_attachment_list "$ATTACHMENTS_DIR" "$BACKUP_DIR" "$BACKUP_DIR/$ATTACHMENTS_LIST.partial"');
+    expect(backup).toContain('sha256sum "$ATTACHMENTS_LIST" >> "$CHECKSUM_MANIFEST"');
     expect(backup).toContain('sha256sum "$AUDIT_ARCHIVE" >> "$CHECKSUM_MANIFEST"');
     expect(backup).toContain('audit-archive-$STAMP.tar');
     expect(backup).toContain('. "$SCRIPT_DIR/backup-retention.sh"');
@@ -279,6 +281,11 @@ describe('server edition repository boundaries', () => {
     expect(restore).toContain('validate_tar_archive "$AUDIT_ARCHIVE"');
     expect(restore).toContain('if ($1 !~ /^[-d]/)');
     expect(restore.indexOf('validate_tar_archive "$ATTACHMENTS_ARCHIVE"')).toBeLessThan(
+      restore.indexOf('pg_restore --clean --if-exists --no-owner'),
+    );
+    // Fehlt ein Anhang-Inhalt der Liste, bricht der Restore ab, bevor die Datenbank ersetzt wird.
+    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE"')).toBeGreaterThan(0);
+    expect(restore.indexOf('verify_attachment_list "$ATTACHMENTS_ARCHIVE"')).toBeLessThan(
       restore.indexOf('pg_restore --clean --if-exists --no-owner'),
     );
     expect(restore).toContain('unsafe tar entry');

@@ -5,6 +5,7 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/backup-metadata.sh"
+. "$SCRIPT_DIR/backup-attachments.sh"
 
 DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
@@ -13,7 +14,7 @@ ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-/data/attachments}"
 AUDIT_ARCHIVE_DIR="${AUDIT_ARCHIVE_DIR:-/data/audit-archive}"
 
 if [ -z "$DUMP_PATH" ]; then
-  echo "usage: restore.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
+  echo "usage: restore.sh /path/to/db.dump [/path/to/attachments.list|attachments.tar] [/path/to/audit-archive.tar]" >&2
   exit 2
 fi
 
@@ -78,9 +79,14 @@ else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
 fi
 
-if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
-  validate_tar_archive "$ATTACHMENTS_ARCHIVE"
-fi
+# Anhaenge: neue Saetze haben eine Liste mit Inhalten im Speicher
+# attachments-store (backup-attachments.sh), alte ein tar. Fehlt ein Inhalt,
+# bricht der Restore hier ab, bevor die Datenbank ersetzt wird.
+case "$ATTACHMENTS_ARCHIVE" in
+  '') ;;
+  *.list) verify_attachment_list "$ATTACHMENTS_ARCHIVE" ;;
+  *) validate_tar_archive "$ATTACHMENTS_ARCHIVE" ;;
+esac
 
 if [ -n "$AUDIT_ARCHIVE" ]; then
   validate_tar_archive "$AUDIT_ARCHIVE"
@@ -140,10 +146,16 @@ printf '%s\n' "$dump_toc" | awk -v existing="$existing_extensions" '
 
 pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
 
-if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
-  mkdir -p "$ATTACHMENTS_DIR"
-  tar -C "$ATTACHMENTS_DIR" --no-same-owner --no-same-permissions -xf "$ATTACHMENTS_ARCHIVE"
-fi
+case "$ATTACHMENTS_ARCHIVE" in
+  '') ;;
+  *.list)
+    restore_attachment_list "$ATTACHMENTS_ARCHIVE" "$ATTACHMENTS_DIR"
+    ;;
+  *)
+    mkdir -p "$ATTACHMENTS_DIR"
+    tar -C "$ATTACHMENTS_DIR" --no-same-owner --no-same-permissions -xf "$ATTACHMENTS_ARCHIVE"
+    ;;
+esac
 
 if [ -n "$AUDIT_ARCHIVE" ]; then
   mkdir -p "$AUDIT_ARCHIVE_DIR"

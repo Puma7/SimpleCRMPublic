@@ -6,13 +6,16 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/backup-retention.sh"
 . "$SCRIPT_DIR/backup-metadata.sh"
+. "$SCRIPT_DIR/backup-attachments.sh"
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-/data/attachments}"
 AUDIT_ARCHIVE_DIR="${AUDIT_ARCHIVE_DIR:-/data/audit-archive}"
 STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 DB_DUMP="db-$STAMP.dump"
-ATTACHMENTS_ARCHIVE="attachments-$STAMP.tar"
+# Anhaenge inkrementell: Liste dieses Satzes, Inhalte im Speicher
+# attachments-store (backup-attachments.sh).
+ATTACHMENTS_LIST="attachments-$STAMP.list"
 AUDIT_ARCHIVE="audit-archive-$STAMP.tar"
 CHECKSUM_MANIFEST="backup-$STAMP.sha256"
 METADATA_FILE="backup-$STAMP.meta"
@@ -50,7 +53,7 @@ discard_unfinished_backup() {
   rm -f \
     "$BACKUP_DIR/$METADATA_FILE.partial" \
     "$BACKUP_DIR/$DB_DUMP.partial" \
-    "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE.partial" \
+    "$BACKUP_DIR/$ATTACHMENTS_LIST.partial" \
     "$BACKUP_DIR/$AUDIT_ARCHIVE.partial"
   remove_backup_set "$BACKUP_DIR" "$STAMP"
 }
@@ -61,7 +64,7 @@ trap 'exit 143' TERM
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP.partial"
 
 if [ -d "$ATTACHMENTS_DIR" ]; then
-  tar -C "$ATTACHMENTS_DIR" -cf "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE.partial" .
+  write_attachment_list "$ATTACHMENTS_DIR" "$BACKUP_DIR" "$BACKUP_DIR/$ATTACHMENTS_LIST.partial"
 fi
 
 if [ -d "$AUDIT_ARCHIVE_DIR" ]; then
@@ -78,7 +81,7 @@ refresh_backup_metadata_master_key "$BACKUP_DIR" "$STAMP"
 
 publish_backup_metadata "$BACKUP_DIR" "$STAMP"
 
-for archive in "$ATTACHMENTS_ARCHIVE" "$AUDIT_ARCHIVE"; do
+for archive in "$ATTACHMENTS_LIST" "$AUDIT_ARCHIVE"; do
   if [ -f "$BACKUP_DIR/$archive.partial" ]; then
     mv "$BACKUP_DIR/$archive.partial" "$BACKUP_DIR/$archive"
   fi
@@ -90,8 +93,8 @@ done
   if [ -f "$METADATA_FILE" ]; then
     sha256sum "$METADATA_FILE" >> "$CHECKSUM_MANIFEST"
   fi
-  if [ -f "$ATTACHMENTS_ARCHIVE" ]; then
-    sha256sum "$ATTACHMENTS_ARCHIVE" >> "$CHECKSUM_MANIFEST"
+  if [ -f "$ATTACHMENTS_LIST" ]; then
+    sha256sum "$ATTACHMENTS_LIST" >> "$CHECKSUM_MANIFEST"
   fi
   if [ -f "$AUDIT_ARCHIVE" ]; then
     sha256sum "$AUDIT_ARCHIVE" >> "$CHECKSUM_MANIFEST"

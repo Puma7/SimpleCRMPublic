@@ -192,6 +192,7 @@ services:
       - ./backup.sh:/app/backup.sh:ro
       - ./backup-retention.sh:/app/backup-retention.sh:ro
       - ./backup-metadata.sh:/app/backup-metadata.sh:ro
+      - ./backup-attachments.sh:/app/backup-attachments.sh:ro
       - ./restore.sh:/app/restore.sh:ro
       - ./doctor.sh:/app/doctor.sh:ro
       - attachments:/data/attachments:ro
@@ -223,6 +224,7 @@ services:
       - ./backup.sh:/app/backup.sh:ro
       - ./backup-retention.sh:/app/backup-retention.sh:ro
       - ./backup-metadata.sh:/app/backup-metadata.sh:ro
+      - ./backup-attachments.sh:/app/backup-attachments.sh:ro
       - ./backup-scheduler.sh:/app/backup-scheduler.sh:ro
       - attachments:/data/attachments:ro
       - audit_archives:/data/audit-archive:ro
@@ -267,6 +269,9 @@ services:
           db-*.dump)
             stamp="$${dump_file#db-}"
             stamp="$${stamp%.dump}"
+            if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.list" ]; then
+              attachments="$$dump_dir/attachments-$$stamp.list"
+            fi
             if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.tar" ]; then
               attachments="$$dump_dir/attachments-$$stamp.tar"
             fi
@@ -285,6 +290,7 @@ services:
     volumes:
       - ./restore.sh:/app/restore.sh:ro
       - ./backup-metadata.sh:/app/backup-metadata.sh:ro
+      - ./backup-attachments.sh:/app/backup-attachments.sh:ro
       - backups:/backups:ro
       - attachments:/data/attachments
       - audit_archives:/data/audit-archive
@@ -304,6 +310,7 @@ services:
     volumes:
       - ./doctor.sh:/app/doctor.sh:ro
       - ./backup-metadata.sh:/app/backup-metadata.sh:ro
+      - ./backup-attachments.sh:/app/backup-attachments.sh:ro
       - backups:/backups:ro
     depends_on:
       postgres:
@@ -338,6 +345,9 @@ services:
           db-*.dump)
             stamp="$${dump_file#db-}"
             stamp="$${stamp%.dump}"
+            if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.list" ]; then
+              attachments="$$dump_dir/attachments-$$stamp.list"
+            fi
             if [ -z "$$attachments" ] && [ -f "$$dump_dir/attachments-$$stamp.tar" ]; then
               attachments="$$dump_dir/attachments-$$stamp.tar"
             fi
@@ -356,6 +366,7 @@ services:
     volumes:
       - ./restore-drill.sh:/app/restore-drill.sh:ro
       - ./backup-metadata.sh:/app/backup-metadata.sh:ro
+      - ./backup-attachments.sh:/app/backup-attachments.sh:ro
       - backups:/backups:ro
     depends_on:
       postgres:
