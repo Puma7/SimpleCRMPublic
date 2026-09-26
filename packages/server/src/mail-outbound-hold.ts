@@ -49,7 +49,7 @@ export async function persistOutboundBlockOnDraft(
   const row = await trx
     .selectFrom('email_messages')
     .select([
-      'uid', 'folder_kind', 'body_text', 'body_html',
+      'uid', 'folder_kind', 'body_text', 'body_html', 'account_id',
       'subject', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json',
     ])
     .where('workspace_id', '=', input.workspaceId)
@@ -97,6 +97,7 @@ export async function persistOutboundBlockOnDraft(
     workspaceId: input.workspaceId,
     messageId: input.messageId,
     fingerprint: outboundHoldFingerprint({
+      accountId: row.account_id,
       subject: row.subject,
       bodyText: body.bodyText,
       bodyHtml: body.bodyHtml,
@@ -117,12 +118,13 @@ export async function currentOutboundHoldFingerprint(
 ): Promise<string | null> {
   const row = await trx
     .selectFrom('email_messages')
-    .select(['subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
+    .select(['account_id', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .executeTakeFirst();
   if (!row) return null;
   return outboundHoldFingerprint({
+    accountId: row.account_id,
     subject: row.subject,
     bodyText: row.body_text,
     bodyHtml: row.body_html,

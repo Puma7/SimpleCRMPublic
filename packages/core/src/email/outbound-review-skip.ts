@@ -77,6 +77,12 @@ export function outboundHoldFingerprintKey(draftId: number): string {
 
 /** Inhalt eines Entwurfs, wie gespeichert (Empfänger/Anhänge als JSON oder Liste). */
 export type OutboundHoldContentInput = {
+  /**
+   * Absenderkonto. Gehört zum angehaltenen Stand: Nach einem Kontowechsel
+   * ginge derselbe Text über eine andere Absender-Identität raus, die die
+   * Ausgangsprüfung nie gesehen hat.
+   */
+  accountId?: unknown;
   subject?: string | null;
   bodyText?: string | null;
   bodyHtml?: string | null;
@@ -89,6 +95,7 @@ export type OutboundHoldContentInput = {
 
 /** Normalisierte Felder in der Form von outboundDraftFingerprint. */
 export type OutboundHoldContent = {
+  accountId: string;
   subject: string;
   bodyText: string;
   bodyHtml: string;
@@ -110,6 +117,7 @@ export type OutboundHoldContent = {
 export function normalizeOutboundHoldContent(input: OutboundHoldContentInput): OutboundHoldContent {
   const html = stripOutboundWarningFromHtml(String(input.bodyHtml ?? ''));
   return {
+    accountId: String(input.accountId ?? '').trim(),
     subject: collapseWhitespace(String(input.subject ?? '')),
     bodyText: normalizedText(stripOutboundWarningFromPlain(String(input.bodyText ?? ''))),
     bodyHtml: JSON.stringify({

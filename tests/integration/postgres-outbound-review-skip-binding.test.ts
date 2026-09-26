@@ -20,6 +20,8 @@ const USER_ID = '20000000-0000-4000-8000-0000000000f5';
 const ACCOUNT_ID = 961;
 const FOLDER_ID = 962;
 const OUTBOUND_WORKFLOW_ID = 963;
+const OTHER_ACCOUNT_ID = 964;
+const OTHER_FOLDER_ID = 965;
 const CHANGED_MESSAGE =
   'Der Entwurf wurde nach dem Anhalten geändert. Bitte normal senden – die Ausgangsprüfung prüft dann den neuen Inhalt.';
 
@@ -54,6 +56,18 @@ describe('Server: „Ohne Ausgangsprüfung senden“ nur für den angehaltenen I
       INSERT INTO email_folders (id, workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path)
       VALUES ($1, $2, $1, $3, $3, 'INBOX')
     `, [FOLDER_ID, WORKSPACE_ID, ACCOUNT_ID]);
+    // Zweites Absenderkonto für den Kontowechsel im Entwurfsfenster („Von“).
+    await admin.query(`
+      INSERT INTO email_accounts (
+        id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username,
+        smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth
+      ) VALUES ($1, $2, $1, 'Vertrieb', 'vertrieb@example.test', 'imap.example.test', 'vertrieb',
+        'smtp.example.test', 587, true, 'vertrieb', false)
+    `, [OTHER_ACCOUNT_ID, WORKSPACE_ID]);
+    await admin.query(`
+      INSERT INTO email_folders (id, workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path)
+      VALUES ($1, $2, $1, $3, $3, 'INBOX')
+    `, [OTHER_FOLDER_ID, WORKSPACE_ID, OTHER_ACCOUNT_ID]);
     const graph = {
       version: 1,
       nodes: [
@@ -246,6 +260,29 @@ describe('Server: „Ohne Ausgangsprüfung senden“ nur für den angehaltenen I
     });
     expect((await skip(9605, smtpSend)).status).toBe(409);
     expect(smtpSend).not.toHaveBeenCalled();
+  });
+
+  test('nach dem Anhalten das Absenderkonto gewechselt ⇒ 409, kein Versand', async () => {
+    await heldDraft(9608);
+    // Gatekeeper #1: Text, Empfänger und Anhänge bleiben gleich, nur „Von“
+    // wechselt — die Ausgangsprüfung hat diese Absender-Identität nie gesehen.
+    const moved = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft!({
+      workspaceId: WORKSPACE_ID,
+      messageId: 9608,
+      values: { accountId: OTHER_ACCOUNT_ID },
+    });
+    expect(moved.ok).toBe(true);
+    const account = await postgres.admin.query<{ account_id: string }>(
+      'SELECT account_id FROM email_messages WHERE workspace_id = $1 AND id = $2',
+      [WORKSPACE_ID, 9608],
+    );
+    expect(Number(account.rows[0]!.account_id)).toBe(OTHER_ACCOUNT_ID);
+    const smtpSend = jest.fn(async () => undefined);
+    const response = await skip(9608, smtpSend);
+    expect(response.status).toBe(409);
+    expect((response.body as { error: { code: string } }).error.code).toBe('email_draft_changed_since_hold');
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(await row(9608)).toEqual(expect.objectContaining({ folder_kind: 'draft', outbound_hold: true }));
   });
 
   test('Altbestand: angehalten ohne gespeicherten Fingerprint ⇒ 409', async () => {

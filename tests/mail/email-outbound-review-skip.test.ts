@@ -257,6 +257,16 @@ describe('Desktop: Überspringen nur für den unveränderten, angehaltenen Inhal
     expect(db.prepare(`SELECT COUNT(*) AS n FROM auth_audit_log`).get()).toEqual({ n: 0 });
   });
 
+  test('nach dem Anhalten das Absenderkonto gewechselt ⇒ Fehler, kein Versand (Gatekeeper #1)', async () => {
+    insertHeldDraft(75);
+    // Wie der „Von“-Wechsel im Entwurfsfenster (updateComposeDraft verschiebt
+    // den Entwurf ins andere Konto); Text, Empfänger und Anhänge bleiben gleich.
+    db.prepare('UPDATE email_messages SET account_id = 2, folder_id = 20 WHERE id = 75').run();
+    expect(await sendDraftSkippingOutboundReview(75, user)).toEqual({ success: false, error: CHANGED });
+    expect(getEmailMessageById(75)!.outbound_hold).toBe(1);
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+  });
+
   test('Altbestand: angehalten ohne Fingerprint ⇒ Fehler wie nach einer Änderung', async () => {
     db.prepare(
       `INSERT INTO email_messages

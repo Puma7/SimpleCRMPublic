@@ -11,6 +11,7 @@ import { outboundHoldFingerprint } from '../../packages/core/src/email/outbound-
 import { outboundHoldFingerprintKey } from '../../packages/core/src/email/outbound-review-skip';
 
 type DraftContentRow = {
+  account_id: number | null;
   subject: string | null;
   body_text: string | null;
   body_html: string | null;
@@ -27,6 +28,7 @@ export function currentOutboundHoldFingerprint(draftId: number): string | null {
     .get(draftId) as DraftContentRow | undefined;
   if (!row) return null;
   return outboundHoldFingerprint({
+    accountId: row.account_id,
     subject: row.subject,
     bodyText: row.body_text,
     bodyHtml: row.body_html,

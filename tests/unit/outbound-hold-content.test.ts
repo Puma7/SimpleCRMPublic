@@ -22,6 +22,7 @@ const composeBannerText = `${OUTBOUND_WARNING_MARKER} ${reason} Bitte E-Mail pr�
 function held(text: string, html: string) {
   const body = composeOutboundHeldDraftBody(extractDraftBodyForOutboundBlock({ body_text: text, body_html: html }), reason);
   return {
+    accountId: 7,
     subject: 'Angebot',
     bodyText: body.bodyText,
     bodyHtml: body.bodyHtml,
@@ -42,6 +43,8 @@ describe('Inhalt eines angehaltenen Entwurfs vergleichen', () => {
       bodyHtml: `${composeBanner}<p>Das kostet 100 € &amp; mehr. <a href="https://shop.example.test/a" target="_blank" rel="noopener">Angebot</a></p><p><br></p>`,
       to: { value: [{ address: 'kunde@example.com' }] },
       attachments: ['/a/preis.pdf'],
+      // Server liefert die Konto-ID als Zahl, die Oberfläche als Text.
+      accountId: '7',
     };
     expect(outboundHoldContentEquals(atHold, saved)).toBe(true);
     expect(outboundHoldFingerprint(saved)).toBe(outboundHoldFingerprint(atHold));
@@ -55,6 +58,7 @@ describe('Inhalt eines angehaltenen Entwurfs vergleichen', () => {
     ['Empfänger', { to: 'andere@example.com' }],
     ['Bcc', { bcc: 'versteckt@example.com' }],
     ['Anhang', { attachments: ['/a/preis.pdf', '/a/extra.exe'] }],
+    ['Absenderkonto („Von“)', { accountId: 8 }],
   ])('%s geändert ⇒ anderer Fingerprint', (_label, patch) => {
     const changed = { ...atHold, ...patch };
     expect(outboundHoldContentEquals(atHold, changed)).toBe(false);

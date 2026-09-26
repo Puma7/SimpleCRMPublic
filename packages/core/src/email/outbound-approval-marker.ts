@@ -79,5 +79,11 @@ export function parseOutboundApprovalMarker(raw: string | null | undefined): Out
  * normalisierten Felder, Hinweis „Versand blockiert“ herausgerechnet.
  */
 export function outboundHoldFingerprint(input: OutboundHoldContentInput): string {
-  return outboundDraftFingerprint(normalizeOutboundHoldContent(input));
+  const normalized = normalizeOutboundHoldContent(input);
+  // Das Absenderkonto gehört dazu (Kontowechsel = neuer Stand); der Freigabe-
+  // Marker (outboundDraftFingerprint) bleibt unverändert.
+  return createHash('sha256')
+    .update(`${outboundDraftFingerprint(normalized)}|account:${normalized.accountId}`)
+    .digest('hex')
+    .slice(0, 32);
 }

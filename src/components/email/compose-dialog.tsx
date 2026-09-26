@@ -279,6 +279,7 @@ function heldComposeContentAtOpen(
 ): OutboundHoldContentInput | null {
   if ((message.outbound_hold ?? 0) <= 0) return null
   return {
+    accountId: message.account_id,
     subject: message.subject ?? "",
     bodyHtml: mergeEditorAndSignature(hydrated.editorHtml, hydrated.signatureHtml, hydrated.quotedHtml),
     to: recipientFieldFromJson(message.to_json),
@@ -880,6 +881,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const heldContentUnchanged = useMemo(() => (
     heldContentAtOpen !== null
     && outboundHoldContentEquals(heldContentAtOpen, {
+      accountId: composeAccountId,
       subject,
       bodyHtml: mergeEditorAndSignature(editorHtml, signatureHtml, quotedHtml),
       to,
@@ -887,7 +889,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       bcc,
       attachments: attachmentPaths,
     })
-  ), [heldContentAtOpen, subject, editorHtml, signatureHtml, quotedHtml, to, cc, bcc, attachmentPaths])
+  ), [heldContentAtOpen, composeAccountId, subject, editorHtml, signatureHtml, quotedHtml, to, cc, bcc, attachmentPaths])
 
   const reloadComposeSignature = useCallback(async (
     teamMemberId = composeTeamMemberId,
