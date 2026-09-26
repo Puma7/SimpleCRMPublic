@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-26
+
+Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt „Aktualisieren“](README.md#aktualisieren-update--upgrade).
+
+### Added
+- **Server:** `sh docker/simplecrm update --version latest` aktualisiert auf die neueste Release-Version (Git-Tag `vX.Y.Z`), `--version vX.Y.Z` auf genau eine. Ohne `--version` bleibt es beim Stand von `main`.
+- **Server:** Das Update wartet nach dem Neustart, bis die neue API gesund meldet (`UPDATE_API_HEALTH_TIMEOUT_SECONDS`, Standard 180). Scheitert ein Schritt, zeigt es den vorherigen Stand, die Sicherung von vorher und die Befehle für den Weg zurück.
+- **Desktop:** Beim ersten Start einer neuen Version sichert die App die Datenbank, bevor das Schema erweitert wird (`backups/pre-update/` im Datenordner, die letzten drei bleiben).
+
+### Fixed
+- Einstellungen → Wartung (Server-Edition) empfahl `simplecrm up --build`. Das holt keinen neuen Stand und sichert nicht. Jetzt steht dort `simplecrm update --version latest`.
+- Test `postgres-ai-learnings` scheiterte gelegentlich, weil er Datenbank- und JS-Uhr mischte (CI auf `main` nach 1.1.0).
+
+### Upgrade (Server)
+- Einmalig: Ein Server auf Stand 1.1.0 oder älter kennt `--version` noch nicht. Einmal mit `sh docker/update.sh` aktualisieren, danach `sh docker/simplecrm update --version latest`.
+
 ## [1.1.0] - 2026-09-26
 
 Die Versionen v1.0.5 bis v1.0.9 wurden ohne eigenen Abschnitt getaggt, und die Release-Builds von v1.0.8 und v1.0.9 sind gescheitert (Version in `package.json` stand noch auf 0.1.7). Dieser Abschnitt fasst deshalb auch das Sicherheits- und Bug-Audit 2026-09 (PR #193) zusammen. Ältere, noch nicht versionierte Einträge stehen im folgenden Abschnitt.

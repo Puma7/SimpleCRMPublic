@@ -1,6 +1,6 @@
 # SimpleCRM
 
-SimpleCRM is a desktop-based Customer Relationship Management (CRM) application built with Electron, React, and TypeScript. It bundles essential CRM features on your local machine, helping you manage customers, products, deals, tasks, and your schedule. It also offers optional one-way data synchronization from your JTL MSSQL database. A self-hostable **server edition** (Fastify API + PostgreSQL, deployed with Docker) is also available — see [Server edition (Docker)](#server-edition-docker) below.
+SimpleCRM is a desktop-based Customer Relationship Management (CRM) application built with Electron, React, and TypeScript. It bundles essential CRM features on your local machine, helping you manage customers, products, deals, tasks, and your schedule. It also offers optional one-way data synchronization from your JTL MSSQL database. A self-hostable **server edition** (Fastify API + PostgreSQL, deployed with Docker) is also available — see [Server edition (Docker)](#server-edition-docker) below. **Updating:** see [Aktualisieren (Update / Upgrade)](#aktualisieren-update--upgrade).
 
 <p align="center">
   <img src="assets/simplecrm.png" alt="SimpleCRM Dashboard" width="800">
@@ -112,6 +112,94 @@ Beyond the desktop app, SimpleCRM has a self-hostable **server edition**: a Fast
 - **Implementation status:** [docs/SERVER_EDITION_IMPLEMENTATION.md](docs/SERVER_EDITION_IMPLEMENTATION.md).
 
 CI validates the stack end-to-end in the `server-compose-smoke` job (`.github/workflows/ci.yml`): it builds the images, boots PostgreSQL + migrations + API + Caddy, then runs the backup, doctor, and restore-drill profiles.
+
+## Aktualisieren (Update / Upgrade)
+
+Diese Anleitung gilt für alle, die SimpleCRM nutzen. **Ihre Daten bleiben bei jedem Update erhalten.** Bevor sich die Datenbank ändert, legen die installierte Desktop-App und das Server-Update automatisch eine Sicherung an. Welcher Weg für Sie gilt:
+
+| Sie nutzen … | So aktualisieren Sie |
+|---|---|
+| die Desktop-App unter **Windows** | [A — automatisch](#a-desktop-app-unter-windows) |
+| die Desktop-App unter **macOS** | [B — neue `.dmg` installieren](#b-desktop-app-unter-macos) |
+| die **Server-Edition** (Docker) | [C — ein Befehl auf dem Server](#c-server-edition-docker) |
+| SimpleCRM **aus dem Quellcode** (Entwickler, Linux) | [D — Git und Build](#d-aus-dem-quellcode) |
+| die Desktop-App **mit einem SimpleCRM-Server** verbunden | erst den Server (C), dann die App (A oder B) auf dieselbe Version |
+
+### Vor jedem Update
+
+1. **Release-Hinweise lesen:** auf der [Release-Seite](https://github.com/Puma7/SimpleCRMPublic/releases) oder im [`CHANGELOG.md`](CHANGELOG.md). Für Server-Betreiber steht dort unter „Upgrade (Server)“, ob etwas zu beachten ist.
+2. **Zusätzliche Sicherung (empfohlen, dauert eine Minute):**
+   - Desktop: **E-Mail → Einstellungen → Diagnose & Backup → „Vollbackup (ZIP)…“** (Owner oder Admin). Das ZIP enthält Datenbank und Anhänge. Zurückspielen kann es der Owner an derselben Stelle.
+   - Server: `sh docker/simplecrm backup`. Das Update sichert zusätzlich selbst.
+
+### A) Desktop-App unter Windows
+
+Die App sucht beim Start nach Updates und lädt neue Versionen im Hintergrund. **Installiert wird beim Beenden der App.** Beim nächsten Start läuft die neue Version.
+
+- Sofort aktualisieren: **Einstellungen → Wartung → „Nach Updates suchen“**, danach **„Neustart & Aktualisieren“** (Owner oder Admin).
+- Oder von Hand: den Windows-Installer (`.exe`) der neuen Version von der [Release-Seite](https://github.com/Puma7/SimpleCRMPublic/releases) laden und über die bestehende Installation installieren. Deinstallieren ist nicht nötig.
+
+### B) Desktop-App unter macOS
+
+Die Mac-Version zeigt eine neue Version an und verlinkt die Release-Seite. Selbst installiert sie sich nicht, weil sie noch nicht von Apple signiert ist.
+
+1. SimpleCRM beenden.
+2. Die `.dmg` der neuen Version von der [Release-Seite](https://github.com/Puma7/SimpleCRMPublic/releases) laden, öffnen und SimpleCRM in „Programme“ ziehen. Die alte App ersetzen.
+3. Starten. Blockiert macOS die App („nicht verifizierter Entwickler“): **Systemeinstellungen → Datenschutz & Sicherheit → „Dennoch öffnen“**. Auf älteren macOS-Versionen genügt im Finder Rechtsklick auf SimpleCRM → **Öffnen**.
+
+Die Mac-Version gibt es für Apple-Silicon-Macs (M1 und neuer).
+
+### Was die Desktop-App beim ersten Start der neuen Version tut
+
+Bevor die neue Version die Datenbank erweitert, legt sie eine vollständige Kopie an: im Datenordner von SimpleCRM (der Ordner, in dem `database.sqlite` liegt) unter `backups/pre-update/`, mit alter und neuer Version im Dateinamen. Die letzten drei Kopien bleiben erhalten.
+
+Den Datenordner finden Sie unter Windows in `%APPDATA%`, unter macOS in `~/Library/Application Support`, jeweils im Unterordner `SimpleCRM` bzw. `simplecrm`.
+
+**Zurück zur vorherigen Version**, falls nach einem Update etwas nicht stimmt:
+
+1. SimpleCRM beenden.
+2. Im Datenordner `database.sqlite` umbenennen (z. B. in `database.sqlite.neu`). Falls vorhanden, auch `database.sqlite-wal` und `database.sqlite-shm` wegräumen.
+3. Die passende Kopie aus `backups/pre-update/` nach `database.sqlite` kopieren.
+4. Die vorherige Version von der Release-Seite installieren und starten.
+
+### C) Server-Edition (Docker)
+
+Auf dem Server, im Verzeichnis des geklonten Repositorys:
+
+```sh
+sh docker/simplecrm update --version latest
+```
+
+`--version latest` nimmt die neueste veröffentlichte Version (Git-Tag `vX.Y.Z`). Mit `--version v1.1.0` wählen Sie genau eine Version. Ohne `--version` wird auf den aktuellen Entwicklungsstand von `main` aktualisiert; für Produktivserver ist das nicht empfohlen.
+
+Der Befehl erledigt alles in sicherer Reihenfolge und bricht beim ersten Fehler ab:
+
+1. gewählte Version auschecken (lokale Änderungen an Dateien des Repositorys stoppen das Update, statt überschrieben zu werden),
+2. Datenbank und Anhänge sichern,
+3. Images bauen,
+4. Datenbank-Migrationen einspielen,
+5. alte API stoppen, neue starten,
+6. warten, bis die neue API gesund meldet, und die Migrationen prüfen.
+
+Die Anwendung ist nur kurz zwischen Schritt 5 und 6 nicht erreichbar.
+
+**Wenn etwas schiefgeht,** zeigt das Update am Ende den Weg zurück: den vorherigen Stand und die Sicherung von Schritt 2 mit den passenden Befehlen zum Kopieren. Die Sicherung spielen Sie mit `sh docker/simplecrm restore /backups/db-<Zeitstempel>.dump` zurück. Ohne Angabe nimmt der Befehl die neueste Sicherung.
+
+**Einmalig bei älteren Servern:** Kennt Ihr Server `--version` noch nicht (Stand 1.1.0 oder älter, Meldung `unknown update flag`), aktualisieren Sie einmal mit `sh docker/update.sh`. Danach steht `--version` zur Verfügung.
+
+Details, Sonderfälle und alle Optionen: [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md#upgrade--restart).
+
+### D) Aus dem Quellcode
+
+```sh
+git pull
+corepack enable
+pnpm install
+pnpm run build
+pnpm run electron:start
+```
+
+Bei selbst gebauten Ständen legt die App keine automatische Sicherung an. Exportieren Sie vorher ein Backup (siehe „Vor jedem Update“).
 
 ## Configuration
 
