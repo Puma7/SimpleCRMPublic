@@ -1,8 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-09-25 (Sicherheits- und Bug-Audit 2026-09, Branch `claude/jolly-cerf-hkvznl`)
+**Last updated:** 2026-09-26 (Teilautomatisierung eingehender E-Mails, Branch `claude/jolly-cerf-hkvznl`; davor Audit 2026-09, PR #193 gemergt)
 **Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
+**Current feature:** [`MAIL_TEILAUTOMATISIERUNG.md`](MAIL_TEILAUTOMATISIERUNG.md) (Konzept, Entscheidungen, Pakete P1–P6; Stand in [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) Abschnitt „Teilautomatisierung 2026-09“)
 **Current audit:** [`.hermes/reports/audit-2026-09/abschlussbericht.md`](../.hermes/reports/audit-2026-09/abschlussbericht.md) (Register `findings.md`, Entscheidungen `freigabeliste.md`, `freigabeliste-2.md`, `freigabeliste-3.md`, Codex-Abgleich `codex-abgleich.md`); earlier: [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
@@ -63,6 +64,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 | Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |
 | Audit 2026-09 | 196 Kandidaten → 164 behoben (je roter Regressionstest), 25 neue Befunde behoben; Freigaben E1–E42 und G1–G12 umgesetzt; PR #192 (Codex) gemergt, alle 110 Codex-Einträge abgeglichen (0 offen); Migrationen 0052–0054; API-Container läuft als `node`; Desktop-Rollen: Workflows, Wissensbasen, Konten, Verbindungstests, Backup/Restore nur Owner/Admin; siehe Abschlussbericht |
+| Teilautomatisierung 2026-09 | `ai.decide` (KI-Entscheidung, OpenRouter Decisions API, Verbindungstest), Ausgang (angehaltene Entwürfe sichtbar, „Ohne Ausgangsprüfung senden“), Kennzeichnung „gesendet von“ + „Gesendet (KI)“, Zeitplan auf dem Server, Learnings mit Freigabe, Vorlagenpaket; Migrationen `0055`–`0057` |
 
 ---
 
