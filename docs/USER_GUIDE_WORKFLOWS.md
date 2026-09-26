@@ -235,6 +235,46 @@ Damit sich nie zwei Automaten endlos gegenseitig antworten, sind mehrere Sicheru
 
 Diese Schutzmechanismen sind immer aktiv — Sie müssen dafür nichts einrichten.
 
+## Learnings: Die Wissensbasis aus dem Alltag verbessern
+
+Learnings stehen hier und nicht in der Postfach-Anleitung, weil sie die **Wissensbasis der KI-Bausteine** pflegen und über den Workflow-Baustein **„Learnings auswerten“** laufen.
+
+### Sammeln
+
+Unter **Einstellungen → Learnings** schalten Sie **„Learnings sammeln“** ein (ab Werk aus). Danach merkt sich SimpleCRM beim Versand:
+
+- **Geänderte KI-Entwürfe:** Ein Mensch hat einen KI-Entwurf vor dem Senden deutlich geändert — gespeichert werden die KI-Fassung, die gesendete Fassung und die Kundenfrage.
+- **Antworten Ihres Teams:** Eine von einem Menschen geschriebene Antwort auf eine eingehende Mail (automatisch versendete Antworten zählen nicht).
+- **Notizen:** In der Leseansicht einer Mail gibt es den Knopf **„Learning notieren“**. Die Notiz wird immer gespeichert, auch wenn das automatische Sammeln aus ist. Optional mit Bezug auf die geöffnete Mail.
+
+### Datenschutz
+
+- Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt personenbezogene Daten durch Platzhalter: Namen (Absender, Empfänger, CRM-Kunde, Ihr Team) → `[Name]`, E-Mail-Adressen → `[E-Mail]`, Telefonnummern → `[Telefon]`, IBAN/BIC → `[IBAN]`/`[BIC]`, Links → `[Link]`, Straßen und PLZ/Ort → `[Adresse]`, Bestell-, Kunden-, Rechnungs- und Ticketnummern → `[Nummer]`. Datumsangaben, Preise und Mengen bleiben stehen.
+- Gespeichert wird nur der bereinigte Text. Die KI bekommt die Anweisung, nur allgemeine Regeln ohne Personenbezug zu formulieren; ihre Ausgabe läuft noch einmal durch denselben Filter (Kontaktdaten, die schon in der Wissensbasis stehen, z. B. Ihre Hotline, bleiben erhalten).
+- Die gesammelten Einträge werden gelöscht, sobald über den Vorschlag entschieden ist, spätestens nach **90 Tagen**. Einzelne Einträge können Sie in der Übersicht selbst löschen.
+
+### Auswerten
+
+- **Per Knopf:** „Learnings jetzt auswerten“ mit Zeitraum (seit der letzten Auswertung, letzter Tag, Woche, Monat). Auf dem Server läuft die Auswertung im Hintergrund, die Übersicht zeigt „Auswertung läuft …“.
+- **Per Workflow:** Baustein **„Learnings auswerten“** in einem Workflow mit Zeitplan oder manuellem Start. Felder: Ziel-Wissensbasis, Zeitraum, Mindestanzahl gesammelter Einträge (Standard 3), KI-Profil. Ergebnis steht in `learnings.status` (`queued` auf dem Server, `created`, `skipped_no_candidates`, `skipped_pending`, `failed`), `learnings.digest_id` und `learnings.candidate_count`. In eingehenden oder ausgehenden Workflows wird der Baustein übersprungen.
+- Pro Wissensbasis gibt es höchstens **einen offenen Vorschlag**; solange er offen ist, entsteht kein zweiter.
+- **Ziel:** leer = eigene Wissensbasis **„Learnings“** (Kontext „allgemein“, wird beim ersten Vorschlag angelegt) oder eine vorhandene Wissensbasis, die korrigiert werden soll. Hinweis: KI-Bausteine lesen je Kontext nur **eine** allgemeine Wissensbasis. Gibt es schon eine, wählen Sie diese als Ziel.
+- Als KI-Profil eignet sich ein Chat-Modell; Entscheidungsmodelle liefern keine Texte.
+
+### Vorschlag prüfen und übernehmen
+
+Der offene Vorschlag zeigt die Zusammenfassung der KI und die **komplette neue Wissensbasis als Änderungsansicht**: Entferntes ist rot durchgestrichen, Neues grün hinterlegt. Mit **„Bearbeiten“** ändern oder ergänzen Sie den Vorschlag im Markdown-Editor; die Änderungsansicht vergleicht dabei immer mit dem aktuellen Stand der Wissensbasis.
+
+- **Übernehmen** schreibt die neue Fassung in einem Schritt in die Wissensbasis. Wurde die Wissensbasis seit dem Vorschlag geändert, warnt SimpleCRM und fragt nach, bevor diese Änderungen überschrieben werden.
+- **Verwerfen** lässt die Wissensbasis unverändert.
+- Der **Verlauf** zeigt die letzten Vorschläge mit Status, Zeitpunkt und wer entschieden hat.
+
+### Rechte
+
+- Einstellungen, Einträge und Vorschläge sehen, auswerten, übernehmen und verwerfen: **Owner und Admins** (Server: Recht „Workflows verwalten“). Andere Rollen sehen im Reiter nur einen Hinweis.
+- „Learning notieren“: jeder, der die Mail lesen darf; ohne Mail-Bezug jeder angemeldete Nutzer.
+- Server: Anlegen, Übernehmen und Verwerfen stehen im Audit-Log (`ai_learning_note.created`, `ai_learning_candidate.deleted`, `ai_learning_digest.created|accepted|rejected`).
+
 ## Die Lauf-Historie lesen
 
 Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie**:
