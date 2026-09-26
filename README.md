@@ -199,6 +199,20 @@ sh docker/simplecrm disk
 
 zeigt, wo der Platz hingeht: Platte, Docker-Images und Build-Cache, Volumes (auch alte Volumes ohne Container), Datenbank, Anhänge, Logs und das Systemjournal. Der Befehl löscht nichts, er gibt nur Hinweise. Das Systemjournal von Ubuntu gehört nicht zu SimpleCRM; begrenzen lässt es sich mit `SystemMaxUse=500M` in `/etc/systemd/journald.conf.d/`.
 
+**Mails und Anhänge platzsparend, ohne Verlust:**
+
+- **Mail-Original:** Es wird komprimiert gespeichert. Anhänge, die als Datei vorliegen, stehen nicht noch einmal im Original; beim Anzeigen oder Herunterladen wird es byte-genau wieder zusammengesetzt. Jedes Speichern beweist vorher, dass das gelingt, und jedes Lesen prüft die Prüfsumme.
+- **Suche:** Sie nutzt eigene Indizes (Betreff, Text, Adressen, Anhang-Text) und ist davon nicht betroffen.
+- **Gleiche Anhänge:** Sie belegen nur einmal Platz. Jede Mail behält ihre eigene Datei, per Hardlink auf denselben Inhalt.
+- **Anhangssicherung:** Sie ist inkrementell: Jede Sicherung kopiert nur neue Inhalte, lässt sich aber trotzdem allein vollständig wiederherstellen.
+- **Umstellung:** Bestehende Mails werden nach dem Update im Hintergrund umgestellt. Anhänge werden nie automatisch gelöscht.
+
+```sh
+sh docker/simplecrm maintenance
+```
+
+prüft Anhang-Dateien und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort. Es meldet fehlende oder veränderte Dateien und Dateien ohne Eintrag. Es löscht nichts. `--check-only` prüft nur, `--deep` liest jede Datei vollständig. Das Update führt am Ende eine kurze Prüfung aus.
+
 **Einmalig bei älteren Servern:** Kennt Ihr Server `--version` noch nicht (Stand 1.1.0 oder älter, Meldung `unknown update flag`), aktualisieren Sie einmal mit `sh docker/update.sh`. Danach steht `--version` zur Verfügung.
 
 Details, Sonderfälle und alle Optionen: [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md#upgrade--restart).

@@ -360,10 +360,28 @@ If a step fails after the source was changed, the script prints the way back:
   default `10m`, `DOCKER_LOG_MAX_FILE`, default `3`); new limits apply when a
   container is recreated. Caddy's access log in the `caddy_logs` volume rotates at
   25 MiB, keeps 4 files and at most 14 days.
+- **Mail storage.** The raw original of a message is stored brotli-compressed
+  (`raw_rfc822_z`, with sha256 and size of the original). Attachment parts that
+  exist as files are taken out of it and put back byte for byte on reading
+  (codec `br-parts`, part objects in `<attachments>/<ws>/raw-parts/`, hard
+  links, never deleted automatically). Every write proves the round trip,
+  every read checks the hash. Identical attachment files become hard links of
+  one inode (every row keeps its own path). Search is unaffected: it never
+  reads the original. Existing mail is converted in the background after the
+  update; PDFs and DOCX are parsed for search in an isolated worker.
+- **`sh docker/simplecrm maintenance [--check-only] [--deep]`** checks every
+  attachment row against its file (missing, size, with `--deep` the sha256),
+  counts files without a row, verifies stored originals and runs the verified
+  conversions right away. It never deletes anything; exit code 1 on findings.
+  The update runs `--check-only` at the end.
 - **`sh docker/simplecrm disk`** reports disk, Docker (images, build cache),
   volumes (including volumes of other compose projects without containers, e.g.
-  from an older install), database and attachment sizes, logs, the system journal
-  and the rollback state. It is read-only.
+  from an older install), database and attachment sizes (compressed originals,
+  copies left by the SQLite import), logs, the system journal and the rollback
+  state. It is read-only.
+- **Backups** keep attachments incrementally (`attachments-<stamp>.list` plus a
+  content store in the backups volume); see
+  [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md#incremental-attachments).
 
 Useful flags / env:
 

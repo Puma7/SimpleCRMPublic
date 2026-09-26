@@ -20,6 +20,7 @@ case "$*" in
   *'test -s'*) [ -z "${FAKE_MISSING_BACKUP:-}" ]; exit ;;
 esac
 if [ -n "${FAKE_FAIL_BUILD:-}" ]; then case "$*" in *" build"*) exit 1 ;; esac; fi
+if [ -n "${FAKE_FAIL_MAINTENANCE:-}" ]; then case "$*" in *maintenance.js*) exit 1 ;; esac; fi
 if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then
   case "$*" in *--check*|*--repair-checksums*) : ;; *migrate.js*) exit 1 ;; esac
 fi

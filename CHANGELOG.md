@@ -19,6 +19,10 @@ Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt �
 - **Server:** Speicherplatz. Das Update prüft vorher den freien Platz (`UPDATE_MIN_FREE_GB`, Standard 6) und leert bei Bedarf zuerst den Build-Cache. Danach behält es nur die aktuelle und die vorherige Version der eigenen Images und begrenzt den Build-Cache auf 2 GB (`DOCKER_BUILD_CACHE_KEEP_GB`). Auf einem Produktivserver hatten sich 17,5 GB Build-Cache angesammelt.
 - **Server:** Container-Logs rotieren (3 × 10 MB), das Caddy-Zugriffslog rotiert bei 25 MB (4 Dateien, 14 Tage).
 - **Server:** `sh docker/simplecrm disk` zeigt, wo der Speicherplatz hingeht, und gibt Hinweise; es löscht nichts.
+- **Server:** Mail-Originale werden komprimiert gespeichert, Anhänge darin nicht mehr doppelt (byte-genaue Rekonstruktion, bei jedem Lesen geprüft). Gleiche Anhänge belegen nur einmal Platz (Hardlinks). Bestehende Mails werden im Hintergrund umgestellt; die Suche ist davon nicht betroffen.
+- **Server:** Anhangssicherung inkrementell: jede Sicherung kopiert nur neue Inhalte, jeder Satz bleibt allein wiederherstellbar. Alte Sätze (tar) bleiben lesbar.
+- **Server:** `sh docker/simplecrm maintenance` prüft Anhänge und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort; es löscht nichts. Das Update prüft am Ende kurz.
+- **Server:** PDF-Anhänge werden für die Suche in einem abgeschotteten Worker gelesen (eigene Speichergrenze, Abbruch nach 30 s), wie schon DOCX.
 
 ### Fixed
 - Einstellungen → Wartung (Server-Edition) empfahl `simplecrm up --build`. Das holt keinen neuen Stand und sichert nicht. Jetzt steht dort `simplecrm update --version latest`.

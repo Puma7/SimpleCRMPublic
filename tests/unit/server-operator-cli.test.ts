@@ -689,6 +689,30 @@ describe('update: image generations, rollback and disk space', () => {
     }
   }));
 
+  // Wartung nach dem Update: prüft Anhänge und Mail-Originale; ein Befund wird gemeldet,
+  // macht das bereits abgeschlossene Update aber nicht rückgängig oder rot.
+  test('the update ends with a maintenance check that only reports', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      expect(ok.status).toBe(0);
+      expect(ok.log).toMatch(/run --rm --no-deps --entrypoint node api packages\/server\/dist\/cli\/maintenance\.js --check-only$/m);
+
+      const findings = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], {
+        host, env: { FAKE_FAIL_MAINTENANCE: '1' },
+      });
+      expect(findings.status).toBe(0);
+      expect(findings.stderr).toContain('the maintenance check reported problems');
+      expect(stateOf(findings, 'state').current_api_image).toBeTruthy();
+
+      const manual = runWithFakeDocker(['docker/simplecrm', 'maintenance', '--deep'], { host });
+      expect(manual.status).toBe(0);
+      expect(manual.log).toMatch(/--entrypoint node api packages\/server\/dist\/cli\/maintenance\.js --deep$/m);
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
   // Codex-Review PR #195: Mehrere SimpleCRM-Projekte auf einem Docker-Host dürfen sich beim Aufräumen
   // nicht gegenseitig die Rollback-Images löschen; der Rollback-Zustand gilt ja je Projekt.
   test('generations are kept per compose project: updating one project leaves the rollback images of another', ranOrSkipped(() => {

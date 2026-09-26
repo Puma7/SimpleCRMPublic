@@ -37,6 +37,10 @@ Commands:
                              update: its kept images, no rebuild; restores the
                              pre-update backup once migrations may have run.
   disk                       Show where the disk space goes (read-only).
+  maintenance [--check-only] [--deep]
+                             Check attachments and stored mail originals
+                             against the database and run the verified space
+                             savings now. Never deletes anything.
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.
@@ -121,6 +125,9 @@ case "$command" in
     ;;
   disk)
     sh "$SCRIPT_DIR/disk-report.sh"
+    ;;
+  maintenance)
+    compose run --rm --no-deps --entrypoint node api packages/server/dist/cli/maintenance.js "$@"
     ;;
   up)
     compose up -d --build

@@ -486,6 +486,12 @@ say "Cleaning up: keeping the current and the previous version, build cache down
 cleanup_app_generations "$NEW_API_GEN" "$NEW_WEB_GEN" "$FROM_API_GEN" "$FROM_WEB_GEN"
 prune_build_cache "$DOCKER_BUILD_CACHE_KEEP_GB"
 
+# Maintenance check on the new version: attachment files and stored originals
+# against the database. Only reports; the update itself is already complete.
+say "Checking attachments and stored mail originals"
+compose run --rm --no-deps --entrypoint node api packages/server/dist/cli/maintenance.js --check-only \
+  || echo "WARNING: the maintenance check reported problems (see above). Nothing was changed; details: sh $SCRIPT_DIR/simplecrm maintenance --check-only" >&2
+
 NEW_REV="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 say "Update complete: $FROM_REV -> $NEW_REV${RELEASE:+ ($RELEASE)}"
 [ -n "$ROLLBACK_BACKUP" ] && echo "Pre-update backup kept for a rollback: $ROLLBACK_BACKUP"
