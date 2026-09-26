@@ -183,7 +183,21 @@ Der Befehl erledigt alles in sicherer Reihenfolge und bricht beim ersten Fehler 
 
 Die Anwendung ist nur kurz zwischen Schritt 5 und 6 nicht erreichbar.
 
-**Wenn etwas schiefgeht,** zeigt das Update am Ende den Weg zurück: den vorherigen Stand und die Sicherung von Schritt 2 mit den passenden Befehlen zum Kopieren. Die Sicherung spielen Sie mit `sh docker/simplecrm restore /backups/db-<Zeitstempel>.dump` zurück. Ohne Angabe nimmt der Befehl die neueste Sicherung.
+**Zurück zur vorherigen Version:** Das Update behält die Images der vorherigen Version und die Sicherung von direkt davor (die normale Backup-Aufbewahrung löscht sie nicht). Ein Befehl bringt beides zurück, ohne etwas neu zu bauen:
+
+```sh
+sh docker/simplecrm rollback
+```
+
+Der Befehl zeigt vorher, was passiert, und fragt nach. Nach einem abgebrochenen Update kehrt er zur Version davor zurück, auch wenn danach weitere Versuche gescheitert sind; die Daten spielt er nur zurück, wenn Migrationen schon gelaufen waren. Nach einem erfolgreichen Update macht er dieses Update rückgängig. Dann gehen Änderungen seit dem Update verloren, und der Befehl sagt das vorher. Einzelne Sicherungen spielen Sie mit `sh docker/simplecrm restore /backups/db-<Zeitstempel>.dump` zurück.
+
+**Speicherplatz:** Das Update prüft vorher, ob genug Platz frei ist (`UPDATE_MIN_FREE_GB`, Standard 6 GB). Wird es knapp, leert es zuerst den Docker-Build-Cache; reicht es dann immer noch nicht, bricht es ab, bevor sich etwas ändert. Nach einem erfolgreichen Update bleiben nur die aktuelle und die vorherige Version der SimpleCRM-Images, und der Build-Cache wird auf 2 GB begrenzt (`DOCKER_BUILD_CACHE_KEEP_GB`). Volumes und Daten löscht das Update nie. Container-Logs sind auf 3 × 10 MB begrenzt, das Zugriffslog von Caddy auf 4 × 25 MB bzw. 14 Tage.
+
+```sh
+sh docker/simplecrm disk
+```
+
+zeigt, wo der Platz hingeht: Platte, Docker-Images und Build-Cache, Volumes (auch alte Volumes ohne Container), Datenbank, Anhänge, Logs und das Systemjournal. Der Befehl löscht nichts, er gibt nur Hinweise. Das Systemjournal von Ubuntu gehört nicht zu SimpleCRM; begrenzen lässt es sich mit `SystemMaxUse=500M` in `/etc/systemd/journald.conf.d/`.
 
 **Einmalig bei älteren Servern:** Kennt Ihr Server `--version` noch nicht (Stand 1.1.0 oder älter, Meldung `unknown update flag`), aktualisieren Sie einmal mit `sh docker/update.sh`. Danach steht `--version` zur Verfügung.
 

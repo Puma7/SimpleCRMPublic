@@ -15,6 +15,10 @@ Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt �
 - **Server:** `sh docker/simplecrm update --version latest` aktualisiert auf die neueste Release-Version (Git-Tag `vX.Y.Z`), `--version vX.Y.Z` auf genau eine. Ohne `--version` bleibt es beim Stand von `main`.
 - **Server:** Das Update wartet nach dem Neustart, bis die neue API gesund meldet (`UPDATE_API_HEALTH_TIMEOUT_SECONDS`, Standard 180). Scheitert ein Schritt, zeigt es den vorherigen Stand, die Sicherung von vorher und die Befehle für den Weg zurück.
 - **Desktop:** Beim ersten Start einer neuen Version sichert die App die Datenbank, bevor das Schema erweitert wird (`backups/pre-update/` im Datenordner, die letzten drei bleiben).
+- **Server:** `sh docker/simplecrm rollback` setzt die vorherige Version ohne Neubau wieder ein. Das Update behält dafür deren Images und die Sicherung von direkt davor; die Backup-Aufbewahrung löscht diese Sicherung nicht.
+- **Server:** Speicherplatz. Das Update prüft vorher den freien Platz (`UPDATE_MIN_FREE_GB`, Standard 6) und leert bei Bedarf zuerst den Build-Cache. Danach behält es nur die aktuelle und die vorherige Version der eigenen Images und begrenzt den Build-Cache auf 2 GB (`DOCKER_BUILD_CACHE_KEEP_GB`). Auf einem Produktivserver hatten sich 17,5 GB Build-Cache angesammelt.
+- **Server:** Container-Logs rotieren (3 × 10 MB), das Caddy-Zugriffslog rotiert bei 25 MB (4 Dateien, 14 Tage).
+- **Server:** `sh docker/simplecrm disk` zeigt, wo der Speicherplatz hingeht, und gibt Hinweise; es löscht nichts.
 
 ### Fixed
 - Einstellungen → Wartung (Server-Edition) empfahl `simplecrm up --build`. Das holt keinen neuen Stand und sichert nicht. Jetzt steht dort `simplecrm update --version latest`.

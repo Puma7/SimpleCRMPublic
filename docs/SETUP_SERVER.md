@@ -314,11 +314,49 @@ migrations. A release tag names exactly the commit that was built and tested
 for that version, so production servers should update with `--version`.
 
 If a step fails after the source was changed, the script prints the way back:
-the previous commit and the pre-update backup set. Before the migrations ran,
-rebuilding the previous commit is enough; afterwards the printed commands check
-out the previous commit, rebuild its images and restore the pre-update backup
-(`sh docker/simplecrm restore /backups/db-<stamp>.dump`), which also restarts
-the API and waits for it to become healthy.
+`sh docker/simplecrm rollback`.
+
+### Rollback, kept versions and disk space
+
+- **Two image generations.** Before building, the update tags the images that
+  are running as `simplecrm/api:gen-<commit>-<utc stamp>` (and `simplecrm/web:…`);
+  after a successful update the new images get their own generation tag. The
+  compose tag (`simplecrm/api:${VERSION:-dev}`) keeps pointing at the current
+  generation, so plain `docker compose` works as before. Exactly the current and
+  the previous generation stay; older `gen-*` tags and dangling images with the
+  label `org.simplecrm.image` are removed. Other images, volumes and data are
+  never touched (no `image prune -a`, no `volume prune`).
+- **Rollback state.** `docker/.simplecrm-update/<project>.attempt` records an
+  update in progress (what ran before it, how far it got, its backup);
+  `<project>.state` records the last successful one (current and previous commit
+  and images, the backup taken right before its migrations). Override the
+  directory with `SIMPLECRM_STATE_DIR`. Re-running the update after a failed
+  attempt keeps that attempt's rollback target: the version before it and, once
+  its migrations may have run, the backup taken before them.
+- **Protected backup.** The pre-update backup of the last successful update is
+  listed in `/backups/.protected-stamps`; backup retention keeps it until the
+  next successful update moves the protection to its own backup.
+- **`sh docker/simplecrm rollback [--yes]`.** After a failed or interrupted
+  update it returns to the version that ran before; the data is restored only if
+  the migrations may have run. Otherwise it undoes the last successful update:
+  previous commit, previous images (`docker tag`, no rebuild) and the protected
+  backup via `restore-compose.sh`, which runs the old migrations, starts api +
+  web and waits for them to become healthy. Changes made after that backup are
+  lost; the command says so and asks first (`--yes` for scripts).
+- **Disk space.** Before anything changes the update checks the free space where
+  Docker keeps its data (`UPDATE_MIN_FREE_GB`, default 6). If it is short, the
+  build cache is cleared first; if it is still short, the update stops with exit
+  code 5. After a successful update the build cache is reduced to
+  `DOCKER_BUILD_CACHE_KEEP_GB` (default 2) with `docker builder prune
+  --reserved-space` (older Docker: `--keep-storage`).
+- **Logs.** Every service rotates its container log (`DOCKER_LOG_MAX_SIZE`,
+  default `10m`, `DOCKER_LOG_MAX_FILE`, default `3`); new limits apply when a
+  container is recreated. Caddy's access log in the `caddy_logs` volume rotates at
+  25 MiB, keeps 4 files and at most 14 days.
+- **`sh docker/simplecrm disk`** reports disk, Docker (images, build cache),
+  volumes (including volumes of other compose projects without containers, e.g.
+  from an older install), database and attachment sizes, logs, the system journal
+  and the rollback state. It is read-only.
 
 Useful flags / env:
 
@@ -339,7 +377,8 @@ replica after the backup and before starting the first new replica. Do not run
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
 (alias `upgrade`; accepts `--version <vX.Y.Z|latest>` / `--no-pull` /
-`--no-backup` / `--repair-checksums` / `--branch <name>`).
+`--no-backup` / `--repair-checksums` / `--branch <name>`), plus `rollback` and
+`disk` (see above).
 
 The updater does NOT repair checksums by default — that would silently bless a
 genuine migration drift. If migrate fails with "Checksum mismatch", review the
