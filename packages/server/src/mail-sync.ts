@@ -67,6 +67,7 @@ import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type { EmailTrackingService } from './email-tracking';
 import type { MailSyncJobPlan, MailSyncJobPort, MailSyncJobResult } from './jobs';
 import { accountSyncAdvisoryLockKey } from './jobs/policy';
+import { encodeRawForStorage } from './mail-raw-storage';
 
 const FIRST_SYNC_MAX_MESSAGES = 2000;
 const POP3_UID_CEILING = -1_000_000;
@@ -1756,6 +1757,7 @@ async function upsertPostgresMailSyncMessage(
     accountEmails,
     now,
   });
+  const storedRaw = input.rawRfc822 ? await encodeRawForStorage(input.rawRfc822) : {};
   const row = await trx
     .insertInto('email_messages')
     .values({
@@ -1807,7 +1809,7 @@ async function upsertPostgresMailSyncMessage(
       scheduled_send_trusted_service_principal: null,
       pop3_uidl: pop3Uidl,
       raw_headers: input.rawHeaders,
-      raw_rfc822_b64: input.rawRfc822B64,
+      ...storedRaw,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,
       thread_resolver_version: resolvedThread.threadId ? 1 : 0,
@@ -1891,6 +1893,7 @@ async function updateExistingPostgresMailSyncMessage(
         | 'seen_local' | 'is_spam' | 'spam_status' | 'thread_id' | 'has_attachments' | 'date_received'
         | 'message_id' | 'in_reply_to' | 'references_header'>
       | undefined;
+  const storedRaw = input.rawRfc822 ? await encodeRawForStorage(input.rawRfc822) : null;
   const now = new Date();
   const nextSeenLocal = mergeSeenLocalOnMailSync({
     currentSeenLocal: Boolean(current?.seen_local),
@@ -1928,7 +1931,7 @@ async function updateExistingPostgresMailSyncMessage(
       attachments_json: input.attachmentsJson ?? undefined,
       pop3_uidl: input.pop3Uidl?.trim() || undefined,
       raw_headers: input.rawHeaders ?? undefined,
-      raw_rfc822_b64: input.rawRfc822B64 ?? undefined,
+      ...(storedRaw ?? {}),
       uid: input.pop3Uidl?.trim() ? undefined : input.uid,
       folder_kind: input.folderKind,
       archived: input.archived,

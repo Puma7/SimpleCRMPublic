@@ -5,6 +5,7 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/backup-metadata.sh"
+. "$SCRIPT_DIR/backup-attachments.sh"
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 DOCTOR_REQUIRE_BACKUP="${DOCTOR_REQUIRE_BACKUP:-false}"
@@ -54,6 +55,17 @@ check_latest_backup() {
 
   echo "latest_backup=$dump_file"
   echo "backup_checksum=ok"
+
+  # Inkrementelle Anhaenge: jeder Inhalt der Liste muss im Speicher liegen
+  # (Pruefsummen liest restore-drill vollstaendig nach).
+  if [ -f "$BACKUP_DIR/attachments-$stamp.list" ]; then
+    if verify_attachment_list "$BACKUP_DIR/attachments-$stamp.list"; then
+      echo "backup_attachments=ok"
+    else
+      echo "backup_attachments=missing"
+      fail_backup_check "attachment contents of $dump_file are missing in $(attachment_store_dir "$BACKUP_DIR")"
+    fi
+  fi
 
   # Schemastand und Schluessel-Kennung des Backups sichtbar machen. Ohne die
   # passende .env (SIMPLECRM_MASTER_KEY) laesst sich aus einem technisch

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-26
+
+Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt „Aktualisieren“](README.md#aktualisieren-update--upgrade).
+
+### Added
+- **Server:** `sh docker/simplecrm update --version latest` aktualisiert auf die neueste Release-Version (Git-Tag `vX.Y.Z`), `--version vX.Y.Z` auf genau eine. Ohne `--version` bleibt es beim Stand von `main`.
+- **Server:** Das Update wartet nach dem Neustart, bis die neue API gesund meldet (`UPDATE_API_HEALTH_TIMEOUT_SECONDS`, Standard 180). Scheitert ein Schritt, zeigt es den vorherigen Stand, die Sicherung von vorher und die Befehle für den Weg zurück.
+- **Desktop:** Beim ersten Start einer neuen Version sichert die App die Datenbank, bevor das Schema erweitert wird (`backups/pre-update/` im Datenordner, die letzten drei bleiben).
+- **Server:** `sh docker/simplecrm rollback` setzt die vorherige Version ohne Neubau wieder ein. Das Update behält dafür deren Images und die Sicherung von direkt davor; die Backup-Aufbewahrung löscht diese Sicherung nicht.
+- **Server:** Speicherplatz. Das Update prüft vorher den freien Platz (`UPDATE_MIN_FREE_GB`, Standard 6) und leert bei Bedarf zuerst den Build-Cache. Danach behält es nur die aktuelle und die vorherige Version der eigenen Images und begrenzt den Build-Cache auf 2 GB (`DOCKER_BUILD_CACHE_KEEP_GB`). Auf einem Produktivserver hatten sich 17,5 GB Build-Cache angesammelt.
+- **Server:** Container-Logs rotieren (3 × 10 MB), das Caddy-Zugriffslog rotiert bei 25 MB (4 Dateien, 14 Tage).
+- **Server:** `sh docker/simplecrm disk` zeigt, wo der Speicherplatz hingeht, und gibt Hinweise; es löscht nichts.
+- **Server:** Mail-Originale werden komprimiert gespeichert, Anhänge darin nicht mehr doppelt (byte-genaue Rekonstruktion, bei jedem Lesen geprüft). Gleiche Anhänge belegen nur einmal Platz (Hardlinks). Bestehende Mails werden im Hintergrund umgestellt; die Suche ist davon nicht betroffen.
+- **Server:** Anhangssicherung inkrementell: jede Sicherung kopiert nur neue Inhalte, jeder Satz bleibt allein wiederherstellbar. Alte Sätze (tar) bleiben lesbar.
+- **Server:** `sh docker/simplecrm maintenance` prüft Anhänge und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort; Anhänge und Originale löscht es nie. Das Update prüft am Ende kurz.
+- **Server:** Anhangkopien aus Originalen gelöschter Mails werden beiseitegelegt und nach 7 Tagen entfernt, wenn keine Mail sie mehr nennt (nur in Workspaces, die in der Datenbank stehen). Ein beschädigtes Original wird für SPF/DKIM/DMARC, Rspamd-Prüfung und Rspamd-Lernen nicht durch eine nachgebaute Nachricht ersetzt; die Prüfung entfällt dann.
+- **Server:** PDF-Anhänge werden für die Suche in einem abgeschotteten Worker gelesen (eigene Speichergrenze, Abbruch nach 30 s), wie schon DOCX.
+- **Beide Editionen:** Mehr Anhänge durchsuchbar: Excel (xlsx, xlsm, xlsb, xls), OpenDocument (ods, odt, odp), Word 97 (doc), RTF und PowerPoint (pptx), dazu tsv, json, xml, ics und vcf. Tabellenzahlen stehen mit allen Ziffern im Index (EAN-Suche). Textanhänge werden in ihrem Zeichensatz gelesen (UTF-8, UTF-16, Windows-1252 wie bei Excel-CSV). Eigene Leser ohne neue Abhängigkeiten, im abgeschotteten Worker mit Entpack-Grenze. Anhänge, die eine frühere Version ohne Text als versucht markiert hat, werden einmal nachgelesen (Migration `0059`, Desktop-Spalte `text_extractor_version`).
+
+### Fixed
+- Einstellungen → Wartung (Server-Edition) empfahl `simplecrm up --build`. Das holt keinen neuen Stand und sichert nicht. Jetzt steht dort `simplecrm update --version latest`.
+- Test `postgres-ai-learnings` scheiterte gelegentlich, weil er Datenbank- und JS-Uhr mischte (CI auf `main` nach 1.1.0).
+
+### Upgrade (Server)
+- Einmalig: Ein Server auf Stand 1.1.0 oder älter kennt `--version` noch nicht. Einmal mit `sh docker/update.sh` aktualisieren, danach `sh docker/simplecrm update --version latest`.
+
 ## [1.1.0] - 2026-09-26
 
 Die Versionen v1.0.5 bis v1.0.9 wurden ohne eigenen Abschnitt getaggt, und die Release-Builds von v1.0.8 und v1.0.9 sind gescheitert (Version in `package.json` stand noch auf 0.1.7). Dieser Abschnitt fasst deshalb auch das Sicherheits- und Bug-Audit 2026-09 (PR #193) zusammen. Ältere, noch nicht versionierte Einträge stehen im folgenden Abschnitt.

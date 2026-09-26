@@ -3146,6 +3146,7 @@ async function handleMessageSecurityCheck(
     decision: result.decision ? sanitizeSpamDecision(result.decision) : null,
     authChecked: result.authChecked,
     rspamdChecked: result.rspamdChecked,
+    ...(result.rawDamaged ? { rawDamaged: true } : {}),
   });
 }
 

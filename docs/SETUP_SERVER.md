@@ -300,15 +300,103 @@ only database state and build timestamps, never MaxMind credentials or raw event
 From the repository root:
 
 ```sh
-sh docker/update.sh
+sh docker/simplecrm update --version latest   # newest release tag vX.Y.Z (recommended)
+sh docker/simplecrm update --version v1.1.0   # exactly this release
+sh docker/update.sh                           # latest origin/main (development line)
 ```
 
 This does the whole safe sequence in order and stops on the first failure:
-pull `origin/main` → back up the database → rebuild images → apply pending
-migrations → stop all old API/Graphile workers → restart `api` + `caddy` →
-verify. Useful flags / env:
+check out the release (or pull `origin/main`) → back up the database and
+attachments → rebuild images → apply pending migrations → stop all old
+API/Graphile workers → restart `api` + `caddy` → wait until the API reports
+healthy (`UPDATE_API_HEALTH_TIMEOUT_SECONDS`, default 180) → verify the
+migrations. A release tag names exactly the commit that was built and tested
+for that version, so production servers should update with `--version`.
+
+If a step fails after the source was changed, the script prints the way back:
+`sh docker/simplecrm rollback`.
+
+### Rollback, kept versions and disk space
+
+- **Two image generations.** Before building, the update tags the images that
+  are running as `simplecrm/api:gen-<project>.<commit>-<utc stamp>` (and
+  `simplecrm/web:…`); after a successful update the new images get their own
+  generation tag. The compose tag (`simplecrm/api:${VERSION:-dev}`) keeps
+  pointing at the current generation, so plain `docker compose` works as before.
+  Exactly the current and the previous generation of the project stay; its older
+  `gen-<project>.*` tags and dangling images with the label
+  `org.simplecrm.image` are removed. Generations of other compose projects on
+  the same host, other images, volumes and data are never touched (no
+  `image prune -a`, no `volume prune`). An unknown release tag or branch stops
+  the update before any Docker command changes something.
+- **Rollback state.** `docker/.simplecrm-update/<project>.attempt` records an
+  update in progress (what ran before it, how far it got, its backup);
+  `<project>.state` records the last successful one (current and previous commit
+  and images, the backup taken right before its migrations). Override the
+  directory with `SIMPLECRM_STATE_DIR`. Re-running the update after a failed
+  attempt keeps that attempt's rollback target: the version before it and, once
+  its migrations may have run, the backup taken before them.
+- **Protected backup.** The pre-update backup of the last successful update is
+  listed in `/backups/.protected-stamps`; backup retention keeps it until the
+  next successful update moves the protection to its own backup. The update
+  only continues when its backup run left a new set (retention with all
+  `BACKUP_RETENTION_*` at 0 would remove it at once; an older set never stands
+  in for it). Paths are recorded as the restore service sees them
+  (`/backups/<name>`), also with a custom `BACKUP_DIR`.
+- **`sh docker/simplecrm rollback [--yes]`.** After a failed or interrupted
+  update it returns to the version that ran before; the data is restored only if
+  the migrations may have run. Otherwise it undoes the last successful update:
+  previous commit, previous images (`docker tag`, no rebuild) and the protected
+  backup via `restore-compose.sh`, which runs the old migrations, starts api +
+  web and waits for them to become healthy. Changes made after that backup are
+  lost; the command says so and asks first (`--yes` for scripts).
+- **Disk space.** Before anything changes the update checks the free space where
+  Docker keeps its data (`UPDATE_MIN_FREE_GB`, default 6). If it is short, the
+  build cache is cleared first; if it is still short, the update stops with exit
+  code 5. After a successful update the build cache is reduced to
+  `DOCKER_BUILD_CACHE_KEEP_GB` (default 2) with `docker builder prune
+  --reserved-space` (older Docker: `--keep-storage`).
+- **Logs.** Every service rotates its container log (`DOCKER_LOG_MAX_SIZE`,
+  default `10m`, `DOCKER_LOG_MAX_FILE`, default `3`); new limits apply when a
+  container is recreated. Caddy's access log in the `caddy_logs` volume rotates at
+  25 MiB, keeps 4 files and at most 14 days.
+- **Mail storage.** The raw original of a message is stored brotli-compressed
+  (`raw_rfc822_z`, with sha256 and size of the original). Attachment parts that
+  exist as files are taken out of it and put back byte for byte on reading
+  (codec `br-parts`, part objects in `<attachments>/<ws>/raw-parts/`, hard
+  links). A part no stored original names any more (its messages were
+  deleted) is moved to `raw-parts/.unreferenced/` (still readable) and
+  removed 7 days later after a fresh check; only workspaces that exist in the
+  database are touched. A stored original that cannot be read back is never
+  replaced by a rebuilt message for mailauth, Rspamd checks or Rspamd
+  learning: those are skipped for it. Every write proves the round trip,
+  every read checks the hash. Identical attachment files become hard links of
+  one inode (every row keeps its own path). Search is unaffected: it never
+  reads the original. Existing mail is converted in the background after the
+  update; PDF, Word (docx/doc), Excel (xlsx/xlsb/xls), OpenDocument, RTF and
+  pptx are parsed for search in an isolated worker (spreadsheet numbers keep
+  all digits, so an EAN is searchable). Attachments an older version tried
+  without text are read once more after the update (migration 0059).
+- **`sh docker/simplecrm maintenance [--check-only] [--deep]`** checks every
+  attachment row against its file (missing, size, with `--deep` the sha256),
+  counts files without a row, verifies stored originals and runs the verified
+  conversions right away. It never deletes attachments or originals (parts
+  of deleted mails: see above; `--check-only` only counts them); exit code 1
+  on findings.
+  The update runs `--check-only` at the end.
+- **`sh docker/simplecrm disk`** reports disk, Docker (images, build cache),
+  volumes (including volumes of other compose projects without containers, e.g.
+  from an older install), database and attachment sizes (compressed originals,
+  copies left by the SQLite import), logs, the system journal and the rollback
+  state. It is read-only.
+- **Backups** keep attachments incrementally (`attachments-<stamp>.list` plus a
+  content store in the backups volume); see
+  [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md#incremental-attachments).
+
+Useful flags / env:
 
 ```sh
+RELEASE=latest sh docker/update.sh       # same as --version latest (VERSION stays the image tag)
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
 SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
 SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)
@@ -323,8 +411,9 @@ replica after the backup and before starting the first new replica. Do not run
 0.16 and 0.17 workers against the same database concurrently.
 
 The operator wrapper exposes the same thing as `sh docker/simplecrm update`
-(alias `upgrade`; accepts `--no-pull` / `--no-backup` / `--repair-checksums` /
-`--branch <name>`).
+(alias `upgrade`; accepts `--version <vX.Y.Z|latest>` / `--no-pull` /
+`--no-backup` / `--repair-checksums` / `--branch <name>`), plus `rollback` and
+`disk` (see above).
 
 The updater does NOT repair checksums by default — that would silently bless a
 genuine migration drift. If migrate fails with "Checksum mismatch", review the

@@ -228,6 +228,42 @@ describe('attachment text extraction', () => {
     expect(result.server).toContain('Suchtext PDF Inhalt');
   }, 20_000);
 
+  // Excel und Word 97 in echten Node-Workern beider Editionen (wie PDF oben).
+  test('buffer extraction: xls, xlsx and doc through desktop and server Node runtimes', () => {
+    const script = `
+      import { readFileSync } from 'node:fs';
+      import { extractAttachmentTextFromBuffer as desktop } from './electron/email/attachment-text-extract.ts';
+      import { extractAttachmentTextFromBuffer as server } from './packages/server/src/mail-attachment-text.ts';
+      const result = {};
+      for (const [kind, file] of [['xls', 'lieferant-ean.xls'], ['xlsx', 'lieferant-ean.xlsx'], ['doc', 'angebot.doc']]) {
+        const input = readFileSync('tests/fixtures/attachments/' + file);
+        result[kind] = { desktop: await desktop(input, kind), server: await server(input, kind) };
+      }
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        TSX_TSCONFIG_PATH: path.resolve(__dirname, '../setup/tsconfig.node-runtime.json'),
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    const result = JSON.parse(output) as Record<string, { desktop: string; server: string }>;
+    for (const kind of ['xls', 'xlsx', 'doc']) {
+      expect(result[kind]!.desktop).toContain('4006381333931');
+      expect(result[kind]!.server).toBe(result[kind]!.desktop);
+    }
+    expect(result.xls!.desktop).toContain('Mutter Müller-Größe');
+  }, 40_000);
+
+  test('buffer extraction: Excel CSV in Windows-1252 keeps its umlauts', async () => {
+    const csv = Buffer.from('EAN;Artikel\r\n5901234123457;Unterlegscheibe Übergröße\r\n', 'latin1');
+    expect(await extractAttachmentTextFromBuffer(csv, 'text')).toBe('EAN;Artikel 5901234123457;Unterlegscheibe Übergröße');
+  });
+
   test('buffer extraction: docx (mammoth)', async () => {
     const docx = await buildMiniDocx('Suchtext DOCX Inhalt');
     const text = await extractAttachmentTextFromBuffer(docx, 'docx');
@@ -409,6 +445,49 @@ describe('attachment text extraction', () => {
     expect(rowById(id).text_content).toBe('Antworten auf alles');
     expect(await runAttachmentTextBackfillBatch(10, { attachmentsRoot: tmpDir })).toBe(0);
   });
+
+  // Bis Version 1 wurden xls/xlsx nicht gelesen: solche Zeilen sind als versucht
+  // markiert, ohne Text. Sie werden genau einmal nachgelesen.
+  test('backfill reads attachments an older extractor tried without text once more', async () => {
+    const file = path.join(tmpDir, 'preisliste.xls');
+    fs.copyFileSync(path.resolve(__dirname, '../fixtures/attachments/lieferant-ean.xls'), file);
+    const size = fs.statSync(file).size;
+    const xlsId = seedAttachment({ filename: 'preisliste.xls', contentType: 'application/vnd.ms-excel', sizeBytes: size, storagePath: file });
+    const logo = path.join(tmpDir, 'logo.png');
+    fs.writeFileSync(logo, 'PNGDATA');
+    const pngId = seedAttachment({ filename: 'logo.png', contentType: 'image/png', sizeBytes: 7, storagePath: logo });
+    const txtId = seedAttachment({ filename: 'alt.txt', sizeBytes: 3, storagePath: path.join(tmpDir, 'gibt-es-nicht.txt') });
+    db.prepare(
+      `UPDATE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}
+         SET text_extracted_at = '2026-01-01T00:00:00Z', text_content = NULL, text_extractor_version = 0
+       WHERE id IN (?, ?)`,
+    ).run(xlsId, pngId);
+    // Mit Text gespeicherte Zeilen einer alten Version bleiben unberührt.
+    db.prepare(
+      `UPDATE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}
+         SET text_extracted_at = '2026-01-01T00:00:00Z', text_content = 'alter Text', text_extractor_version = 1
+       WHERE id = ?`,
+    ).run(txtId);
+
+    expect(await runAttachmentTextBackfillBatch(10, { attachmentsRoot: tmpDir })).toBe(2);
+    expect(rowById(xlsId).text_content).toContain('4006381333931');
+    expect(rowById(pngId).text_content).toBeNull();
+    expect(rowById(txtId).text_content).toBe('alter Text');
+    const versions = db
+      .prepare(`SELECT id, text_extractor_version FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE id IN (?, ?, ?) ORDER BY id`)
+      .all(xlsId, pngId, txtId);
+    expect(versions).toEqual([
+      { id: xlsId, text_extractor_version: 2 },
+      { id: pngId, text_extractor_version: 2 },
+      { id: txtId, text_extractor_version: 1 },
+    ]);
+    expect(await runAttachmentTextBackfillBatch(10, { attachmentsRoot: tmpDir })).toBe(0);
+
+    const hits = db
+      .prepare(`SELECT rowid FROM email_attachments_fts WHERE email_attachments_fts MATCH '"4006381333931"'`)
+      .all() as Array<{ rowid: number }>;
+    expect(hits.map((hit) => hit.rowid)).toContain(xlsId);
+  }, 30_000);
 
   test('extracted text is searchable via the attachments FTS index', () => {
     const hits = db

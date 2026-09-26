@@ -51,6 +51,8 @@ export type RspamdLearnResult = {
 };
 
 export type StoredMailSecurityCheckInput = {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
@@ -104,11 +106,14 @@ export async function runStoredMailSecurityChecks(
 }
 
 export function buildRfc822FromStored(input: {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
 }): Buffer | null {
+  if (input.rawRfc822 && input.rawRfc822.length > 0) return input.rawRfc822;
   if (input.rawRfc822B64?.trim()) {
     return Buffer.from(input.rawRfc822B64, 'base64');
   }
@@ -138,6 +143,8 @@ export function extractEnvelopeSender(rawHeaders: string | null): string | undef
 }
 
 export async function verifyMailAuthentication(input: {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
@@ -209,6 +216,8 @@ async function withMailauthTimeout<T>(promise: Promise<T>, timeoutMs?: number): 
 }
 
 export async function checkMessageWithRspamd(input: {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
@@ -284,6 +293,8 @@ export async function checkMessageWithRspamd(input: {
 }
 
 export async function learnMessageWithRspamd(input: {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
   bodyText: string | null;
@@ -401,6 +412,7 @@ function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
 
 function resolveHeaderTextForMailAuth(
   input: {
+    rawRfc822?: Buffer | null;
     rawRfc822B64?: string | null;
     rawHeaders: string | null;
   },
@@ -416,12 +428,17 @@ function resolveHeaderTextForMailAuth(
 }
 
 function extractHeaderSectionFromStored(input: {
+  /** Original bytes (mail-raw-storage.ts); preferred over rawRfc822B64. */
+  rawRfc822?: Buffer | null;
   rawRfc822B64?: string | null;
   rawHeaders: string | null;
 }): string | null {
-  if (input.rawRfc822B64?.trim()) {
+  const rawBytes = input.rawRfc822 && input.rawRfc822.length > 0
+    ? input.rawRfc822
+    : input.rawRfc822B64?.trim() ? Buffer.from(input.rawRfc822B64, 'base64') : null;
+  if (rawBytes) {
     try {
-      const raw = Buffer.from(input.rawRfc822B64, 'base64').toString('utf8');
+      const raw = rawBytes.toString('utf8');
       const separator = raw.search(/\r?\n\r?\n/);
       if (separator >= 0) return raw.slice(0, separator);
     } catch {

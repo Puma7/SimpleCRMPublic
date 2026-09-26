@@ -20,5 +20,8 @@ RUN NODE_OPTIONS=--max-old-space-size=4096 SIMPLECRM_WEB_ONLY=1 npx vite build
 
 FROM caddy:2
 
+# Marks SimpleCRM's own images: the update removes only dangling images with
+# this label, never other images on the host.
+LABEL org.simplecrm.image="web"
 COPY --from=build /app/dist /srv/dist
 COPY docker/Caddyfile /etc/caddy/Caddyfile

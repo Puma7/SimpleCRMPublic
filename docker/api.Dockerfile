@@ -20,6 +20,9 @@ RUN pnpm install --prod --frozen-lockfile --node-linker=hoisted --ignore-scripts
 
 FROM node:24-alpine
 
+# Marks SimpleCRM's own images: the update removes only dangling images with
+# this label, never other images on the host.
+LABEL org.simplecrm.image="api"
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=prod-deps /app/node_modules ./node_modules

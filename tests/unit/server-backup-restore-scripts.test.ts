@@ -77,7 +77,7 @@ printf 'attachment' > "$ATTACHMENTS_DIR/file.bin"
 
     expect(result).toEqual({
       status: 0,
-      files: ['attachments-STAMP.tar', 'backup-STAMP.meta', 'backup-STAMP.sha256', 'db-STAMP.dump'],
+      files: ['attachments-STAMP.list', 'attachments-store', 'backup-STAMP.meta', 'backup-STAMP.sha256', 'db-STAMP.dump'],
     });
   });
 
@@ -99,7 +99,7 @@ STUB
     expect(result.files).toEqual([]);
   });
 
-  // F-A12-03: Scheiterte ein spaeterer Schritt (hier das Anhang-Archiv, z. B. Platte voll), blieben Dump und Metadatei ohne Pruefsummenliste als scheinbar gueltiger Satz liegen.
+  // F-A12-03: Scheiterte ein spaeterer Schritt (hier die Anhangssicherung, z. B. Platte voll), blieben Dump und Metadatei ohne Pruefsummenliste als scheinbar gueltiger Satz liegen.
   test('discards the whole set when a later step fails before the manifest is written', () => {
     if (!bashAvailable()) {
       return;
@@ -110,7 +110,7 @@ stub pg_dump <<'STUB'
 #!/bin/sh
 printf 'PGDMP-complete'
 STUB
-stub tar <<'STUB'
+stub find <<'STUB'
 #!/bin/sh
 exit 2
 STUB

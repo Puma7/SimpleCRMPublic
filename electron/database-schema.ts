@@ -903,6 +903,7 @@ export const createEmailMessageAttachmentsTable = `
     content_sha256 TEXT,
     text_content TEXT,
     text_extracted_at TEXT,
+    text_extractor_version INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE CASCADE
   );

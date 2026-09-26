@@ -393,6 +393,8 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0055_email_message_sent_provenance',
   '0056_email_workflow_schedule_state',
   '0057_ai_learnings',
+  '0058_email_raw_rfc822_storage',
+  '0059_attachment_text_extractor_version',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -46933,7 +46935,7 @@ function makeParsedServerMailSyncMessage(seed: string): any {
     hasAttachments: false,
     attachmentsJson: null,
     rawHeaders: 'Subject: Test',
-    rawRfc822B64: Buffer.from(seed).toString('base64'),
+    rawRfc822: Buffer.from(seed),
   };
 }
 

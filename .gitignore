@@ -151,3 +151,4 @@ test-results/
 !plans/**/*.md
 !advisor-plans/
 !advisor-plans/**/*.md
+docker/.simplecrm-update/

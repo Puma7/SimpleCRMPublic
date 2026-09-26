@@ -12,6 +12,7 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/backup-metadata.sh"
+. "$SCRIPT_DIR/backup-attachments.sh"
 
 DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
@@ -19,7 +20,7 @@ AUDIT_ARCHIVE="${3:-}"
 PG_APP_USER="${PG_APP_USER:-simplecrm_app}"
 
 if [ -z "$DUMP_PATH" ]; then
-  echo "usage: restore-drill.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
+  echo "usage: restore-drill.sh /path/to/db.dump [/path/to/attachments.list|attachments.tar] [/path/to/audit-archive.tar]" >&2
   exit 2
 fi
 
@@ -91,9 +92,13 @@ else
   echo "warning: checksum manifest not found; restore drill continues without backup hash verification" >&2
 fi
 
-if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
-  tar -tf "$ATTACHMENTS_ARCHIVE" >/dev/null
-fi
+# Neue Saetze: jeder Inhalt der Anhang-Liste muss im Speicher liegen und zu
+# seiner Pruefsumme passen (vollstaendig gelesen). Alte Saetze: tar lesbar.
+case "$ATTACHMENTS_ARCHIVE" in
+  '') ;;
+  *.list) verify_attachment_list "$ATTACHMENTS_ARCHIVE" deep ;;
+  *) tar -tf "$ATTACHMENTS_ARCHIVE" >/dev/null ;;
+esac
 if [ -n "$AUDIT_ARCHIVE" ]; then
   tar -tf "$AUDIT_ARCHIVE" >/dev/null
 fi

@@ -566,7 +566,9 @@ function findLatestBackupSet(backupDir: string): BackupSet | null {
       const stamp = /^db-(.+)\.dump$/.exec(fileName)?.[1] ?? '';
       const path = join(backupDir, fileName);
       const stat = statSync(path);
-      const attachmentsPath = join(backupDir, `attachments-${stamp}.tar`);
+      // Neue Sätze: Liste der inkrementellen Anhangssicherung; alte: tar.
+      const attachmentsName = [`attachments-${stamp}.list`, `attachments-${stamp}.tar`]
+        .find((name) => existsSync(join(backupDir, name)));
       const auditArchivePath = join(backupDir, `audit-archive-${stamp}.tar`);
       const manifestPath = join(backupDir, `backup-${stamp}.sha256`);
       return {
@@ -578,8 +580,8 @@ function findLatestBackupSet(backupDir: string): BackupSet | null {
           modifiedAt: stat.mtime,
           sizeBytes: stat.size,
         },
-        ...(existsSync(attachmentsPath) ? {
-          attachments: fileInfo(backupDir, `attachments-${stamp}.tar`),
+        ...(attachmentsName ? {
+          attachments: fileInfo(backupDir, attachmentsName),
         } : {}),
         ...(existsSync(auditArchivePath) ? {
           auditArchive: fileInfo(backupDir, `audit-archive-${stamp}.tar`),
