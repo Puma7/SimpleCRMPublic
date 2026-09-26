@@ -21,6 +21,7 @@ import type {
   AiReviewDraftJobPlan,
   AiReviewDraftJobPort,
 } from '../workflow-ai-draft-nodes';
+import type { AiDecideJobPlan, AiDecideJobPort } from '../workflow-ai-decide';
 import type {
   WorkflowHttpMethod,
   WorkflowHttpRequestJobPlan,
@@ -161,6 +162,7 @@ export type ProductionJobHandlersOptions = Readonly<{
   aiReview?: AiReviewJobPort;
   aiDraftReply?: AiDraftReplyJobPort;
   aiReviewDraft?: AiReviewDraftJobPort;
+  aiDecide?: AiDecideJobPort;
   aiTransformText?: AiTransformTextJobPort;
   workflowExecution?: WorkflowExecutionJobPort;
   workflowHttpRequest?: WorkflowHttpRequestPort;
@@ -226,6 +228,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'ai.review_draft': async (job) => {
       if (!options.aiReviewDraft) throw new Error('AI review-draft job port is not configured');
       await options.aiReviewDraft.reviewDraft(buildAiReviewDraftJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.decide': async (job) => {
+      if (!options.aiDecide) throw new Error('AI decide job port is not configured');
+      await options.aiDecide.decide(buildAiDecideJobPlan(job.payload, job.workspaceId));
     },
     'ai.transform_text': async (job) => {
       if (!options.aiTransformText) throw new Error('AI transform text job port is not configured');
@@ -478,6 +484,48 @@ export function buildAiReviewDraftJobPlan(
     ...optionalPositiveInteger(payload, 'profileId'),
     ...optionalString(payload, 'draftIdVariable', 120),
     ...optionalString(payload, 'reviewPrompt', 4000),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
+    ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
+      ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
+  };
+}
+
+/** Längen wie der Scheduler (packages/core AI_DECIDE_*_MAX_CHARS), mit Luft für Leerraum. */
+const MAX_AI_DECIDE_QUESTION_LENGTH = 4_000;
+const MAX_AI_DECIDE_CRITERIA_LENGTH = 2_000;
+
+export function buildAiDecideJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiDecideJobPlan {
+  const contextMode = payload.contextMode === 'metadata' ? 'metadata' : 'full';
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalPositiveInteger(payload, 'runId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalString(payload, 'direction', 40),
+    question: requiredStringValue(payload, 'question', MAX_AI_DECIDE_QUESTION_LENGTH),
+    ...optionalString(payload, 'yesCriteria', MAX_AI_DECIDE_CRITERIA_LENGTH),
+    ...optionalString(payload, 'noCriteria', MAX_AI_DECIDE_CRITERIA_LENGTH),
+    contextMode,
+    threshold: optionalInteger(payload, 'threshold', 80, 50, 99),
+    ...optionalPositiveInteger(payload, 'profileId'),
     ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
       ? {
         portResumeTargets: Object.fromEntries(

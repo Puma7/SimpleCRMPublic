@@ -33,6 +33,12 @@ export type AiUsageEventInput = {
   actorUserId?: string | null;
   usage: AiTokenUsage | null;
   latencyMs?: number | null;
+  /**
+   * Vom Anbieter gemeldete Kosten in Mikro-USD (z. B. `usage.cost` der
+   * Decisions API). Hat Vorrang vor der Schätzung aus Modellname und Tokens,
+   * damit das Budget echte Kosten zählt.
+   */
+  costMicroUsd?: number | null;
 };
 
 /** Approximate prices in USD per 1,000,000 tokens. Estimates only (configurable
@@ -100,6 +106,13 @@ export function extractChatCompletionUsage(body: string): AiTokenUsage | null {
   return { promptTokens: prompt, completionTokens: completion, totalTokens: total };
 }
 
+/** Anbieter-Kosten, falls gültig gemeldet, sonst die Schätzung aus Modell und Tokens. */
+export function aiUsageCostMicroUsd(event: Pick<AiUsageEventInput, 'model' | 'usage' | 'costMicroUsd'>): number | null {
+  const reported = event.costMicroUsd;
+  if (typeof reported === 'number' && Number.isFinite(reported) && reported >= 0) return Math.round(reported);
+  return estimateAiCostMicroUsd(event.model, event.usage);
+}
+
 /**
  * Records a single AI usage event. Opens its own workspace-scoped transaction and
  * swallows all errors — tracking must never break the actual AI work.
@@ -124,7 +137,7 @@ export async function recordAiUsageSafe(deps: AiUsageRecorderDeps, event: AiUsag
             prompt_tokens: event.usage?.promptTokens ?? null,
             completion_tokens: event.usage?.completionTokens ?? null,
             total_tokens: event.usage?.totalTokens ?? null,
-            est_cost_micro_usd: estimateAiCostMicroUsd(event.model, event.usage),
+            est_cost_micro_usd: aiUsageCostMicroUsd(event),
             latency_ms: event.latencyMs ?? null,
             created_at: now,
           })

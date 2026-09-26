@@ -154,6 +154,10 @@ import {
   createPostgresAiDraftReplyPort,
   createPostgresAiReviewDraftPort,
 } from './workflow-ai-draft-nodes';
+import {
+  createAiProfileConnectionTestPort,
+  createPostgresAiDecidePort,
+} from './workflow-ai-decide';
 import { createServerEmailOAuthPort } from './email-oauth';
 import { createPostgresJtlOrderPort } from './jtl-order';
 import { createPostgresJtlSyncPort } from './jtl-sync';
@@ -622,6 +626,9 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     aiProfiles: createPostgresAiProfileReadPort({ db: options.db, secrets: options.secrets }),
     aiPrompts: createPostgresAiPromptReadPort({ db: options.db }),
     aiTextTransform: createPostgresAiTextTransformApiPort({ db: options.db, secrets: options.secrets }),
+    ...(options.secrets ? {
+      aiProfileConnectionTest: createAiProfileConnectionTestPort({ db: options.db, secrets: options.secrets }),
+    } : {}),
     automationApiKeys: createPostgresAutomationApiKeyReadPort({ db: options.db, secrets: options.secrets }),
     calendarEntries: createPostgresCalendarEntryPort({ db: options.db }),
     calendarEvents: createPostgresCalendarEventReadPort({ db: options.db }),
@@ -1899,6 +1906,7 @@ function buildServerJobHandlers(input: {
           ...(secrets ? {
             aiDraftReply: createPostgresAiDraftReplyPort({ db, secrets }),
             aiReviewDraft: createPostgresAiReviewDraftPort({ db, secrets }),
+            aiDecide: createPostgresAiDecidePort({ db, secrets }),
           } : {}),
         } : {}),
         ...(db && ports.jobQueue ? {

@@ -128,6 +128,7 @@ import {
   buildAiReplySuggestionJobPlan,
   buildAiAgentJobPlan,
   buildAiClassificationJobPlan,
+  buildAiDecideJobPlan,
   buildAiReviewJobPlan,
   buildAiTransformTextJobPlan,
   buildMailSyncJobPlan,
@@ -584,6 +585,8 @@ describe('server edition foundation', () => {
     }
     expect(isServerWorkflowNodeTypeSupported('ai.draft_reply')).toBe(true);
     expect(isServerWorkflowNodeTypeSupported('ai.review_draft')).toBe(true);
+    expect(isServerWorkflowNodeTypeSupported('ai.decide')).toBe(true);
+    expect(serverTypes).toContain('ai.decide');
 
     // Feld-Ebene: Desktop-only-Felder (der Server-Executor wertet sie nicht
     // aus) verschwinden aus dem Server-Katalog — z. B. bewirbt ai.spam_score
@@ -2011,6 +2014,7 @@ describe('server edition foundation', () => {
       'ai.review',
       'ai.draft_reply',
       'ai.review_draft',
+      'ai.decide',
       'ai.transform_text',
       'workflow.execute',
       'workflow.http_request',
@@ -2253,6 +2257,7 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('ai.review', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.draft_reply', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.review_draft', {})).toBe('ai');
+    expect(graphileQueueNameForJob('ai.decide', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.transform_text', {})).toBe('ai');
     expect(graphileQueueNameForJob('mail.spam.score', {})).toBe('spam');
     expect(graphileQueueNameForJob('mail.vacation.auto_reply', {})).toBe('mail');
@@ -2388,6 +2393,37 @@ describe('server edition foundation', () => {
       { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, branchKey: 'edge-1', inboundFanOutRunId: 101 },
       'workspace-a',
     ));
+    // ai.decide: der Knoten gehoert in den Key — resumeNodeId ist nur der erste
+    // verdrahtete Ausgang, zwei Entscheidungen koennen auf dasselbe Ziel zeigen.
+    expect(graphileJobKeyForJob(
+      'ai.decide',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-ja', nodeId: 'decide-1', branchKey: 'edge-1', inboundFanOutRunId: 101 },
+      'workspace-a',
+    )).toBe('ai.decide:workspace-a:23:11:tag-ja:decide-1:fanout:101:edge-1');
+    expect(graphileJobKeyForJob(
+      'ai.decide',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-ja', nodeId: 'decide-2', branchKey: 'edge-1', inboundFanOutRunId: 101 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.decide',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-ja', nodeId: 'decide-1', branchKey: 'edge-1', inboundFanOutRunId: 101 },
+      'workspace-a',
+    ));
+    expect(graphileJobKeyForJob(
+      'ai.decide',
+      {
+        messageId: 11,
+        workflowId: 23,
+        nodeId: 'decide-1',
+        terminalWorkflowCompletion: true,
+        terminalNodeId: 'decide-1',
+        context: { inboundFanOutRunId: 5 },
+      },
+      'workspace-a',
+    )).toBe('ai.decide:workspace-a:23:11:decide-1:decide-1:fanout:5');
+    // Ausgang ohne Fan-out-Lauf (kein Inbound): bewusst kein Key.
+    expect(graphileJobKeyForJob('ai.decide', { messageId: 11, workflowId: 23, resumeNodeId: 'rel', nodeId: 'd' }, 'workspace-a'))
+      .toBeUndefined();
     expect(graphileJobKeyForJob('webhook.fire', { dedupeKey: 'customer-7' }, 'workspace-a'))
       .toBe('webhook.fire:workspace-a:customer-7');
     expect(graphileJobKeyForJob('webhook.fire', { url: 'https://hooks.example.com' }, 'workspace-a'))
@@ -3006,6 +3042,13 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       direction: 'manual',
     }, WORKSPACE_A_ID)).toThrow('direction must be inbound or outbound');
+    // ai.decide: der Scheduler reiht nie ohne Frage ein; die Schwelle bleibt 50–99.
+    expect(() => buildAiDecideJobPlan({ workspaceId: WORKSPACE_A_ID }, WORKSPACE_A_ID))
+      .toThrow('question is required');
+    expect(() => buildAiDecideJobPlan({ workspaceId: WORKSPACE_A_ID, question: 'Spam?', threshold: 120 }, WORKSPACE_A_ID))
+      .toThrow('threshold must be an integer between 50 and 99');
+    expect(buildAiDecideJobPlan({ workspaceId: WORKSPACE_A_ID, question: ' Spam? ', contextMode: 'summary' }, WORKSPACE_A_ID))
+      .toEqual({ workspaceId: WORKSPACE_A_ID, question: 'Spam?', contextMode: 'full', threshold: 80 });
 
     const calls: string[] = [];
     const handlers = createProductionJobHandlers({
@@ -3064,6 +3107,14 @@ describe('server edition foundation', () => {
       aiReviewDraft: {
         async reviewDraft(input) {
           calls.push(`review_draft:${input.messageId ?? 0}:${input.continuation?.resumeNodeId ?? ''}`);
+        },
+      },
+      aiDecide: {
+        async decide(input) {
+          calls.push(
+            `decide:${input.messageId ?? 0}:${input.direction ?? ''}:${input.question}:${input.contextMode}:${input.threshold}:`
+            + `${Object.entries(input.portResumeTargets ?? {}).map(([port, target]) => `${port}>${target}`).join(',')}`,
+          );
         },
       },
       aiTransformText: {
@@ -3158,6 +3209,19 @@ describe('server edition foundation', () => {
         continuation: { workflowId: 23, resumeNodeId: 'send-1' },
       },
     }));
+    await handlers['ai.decide']?.(makeQueuedJob({
+      type: 'ai.decide',
+      workspaceId: WORKSPACE_A_ID,
+      payload: {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 11,
+        direction: 'outbound',
+        question: ' Versandfaehig? ',
+        threshold: 90,
+        portResumeTargets: { ja: 'release-1', nein: ' tag-1 ', unsicher: '' },
+        continuation: { workflowId: 23, resumeNodeId: 'release-1' },
+      },
+    }));
     await handlers['ai.transform_text']?.(makeQueuedJob({
       type: 'ai.transform_text',
       workspaceId: WORKSPACE_A_ID,
@@ -3207,6 +3271,7 @@ describe('server edition foundation', () => {
       'review:11:outbound:BLOCK:tag-1',
       'draft_reply:11:review-1',
       'review_draft:11:send-1',
+      'decide:11:outbound:Versandfaehig?:full:90:ja>release-1,nein>tag-1',
       'transform:11:ai.summary:tag-1',
       'workflow:23:sync',
       'http:POST:https://api.example.com/hook:tag-1',
@@ -13201,6 +13266,262 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // TA-P1: KI-Entscheidung als eigener Kindjob mit Fortsetzungsziel je Ausgang.
+  test('postgres workflow execution job port queues ai.decide with one resume target per port', async () => {
+    const now = new Date('2026-07-04T11:04:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 33,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 330,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'decide-1',
+              type: 'registry',
+              data: {
+                nodeType: 'ai.decide',
+                config: {
+                  question: 'Ist {{subject}} Spam?',
+                  yesCriteria: 'Werbung',
+                  noCriteria: '',
+                  contextMode: 'metadata',
+                  threshold: 85,
+                  profileId: '4',
+                },
+              },
+            },
+            { id: 'tag-ja', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'spam-ja' } } },
+            { id: 'tag-nein', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'spam-nein' } } },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'decide-1' },
+            { id: 'edge-2', source: 'decide-1', target: 'tag-ja', label: 'ja' },
+            { id: 'edge-3', source: 'decide-1', target: 'tag-nein', label: 'nein' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 210,
+        subject: 'Gewinnspiel',
+        from_json: { value: [{ address: 'promo@example.com' }] },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Sie haben gewonnen',
+        body_text: 'Sie haben gewonnen.',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 33,
+      messageId: 21,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    expect(rows.jobs).toEqual([
+      expect.objectContaining({ type: 'ai.decide', run_after: now, max_attempts: 3, workspace_id: WORKSPACE_A_ID }),
+    ]);
+    const payload = rows.jobs[0]?.payload as any;
+    expect(payload).toMatchObject({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 21,
+      nodeId: 'decide-1',
+      direction: 'inbound',
+      // Roh: der Job interpoliert zur Ausführungszeit.
+      question: 'Ist {{subject}} Spam?',
+      yesCriteria: 'Werbung',
+      contextMode: 'metadata',
+      threshold: 85,
+      profileId: 4,
+      workflowId: 33,
+      resumeNodeId: 'tag-ja',
+      portResumeTargets: { ja: 'tag-ja', nein: 'tag-nein' },
+      continuation: { workflowId: 33, triggerName: 'inbound', resumeNodeId: 'tag-ja' },
+    });
+    expect(payload.noCriteria).toBeUndefined();
+    expect(payload.terminalChainPayloadForUnwiredPort).toMatchObject({ workflowId: 33, terminalNodeId: 'decide-1#edge-1' });
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
+      ['decide-1', 'ai.decide', 'ok', 'default', 'queued_ai_decide:1'],
+    ]);
+
+    // Fortsetzung am Ausgang „nein“: die Variablen des Jobs öffnen das Inbound-Gate.
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 33,
+      messageId: 21,
+      triggerName: 'inbound',
+      context: {
+        resumeNodeId: 'tag-nein',
+        eventStrings: payload.continuation.eventStrings,
+        eventVariables: {
+          ...payload.continuation.eventVariables,
+          'ai.decide.answer': 'nein',
+          __inbound_condition_ok: true,
+        },
+      },
+    });
+    expect(rows.tags.map((tag) => tag.tag)).toEqual(['spam-nein']);
+  });
+
+  test('postgres workflow execution job port defers ai.decide on a non-ja port and stamps a terminal node', async () => {
+    const now = new Date('2026-07-04T11:05:00.000Z');
+    const graph = (edges: Array<Record<string, unknown>>) => ({
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'decide-1', type: 'registry', data: { nodeType: 'ai.decide', config: { question: 'Mensch?' } } },
+        { id: 'tag-u', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'manuell' } } },
+      ],
+      edges: [{ id: 'edge-1', source: 'trigger-1', target: 'decide-1' }, ...edges],
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [
+        {
+          id: 34,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 340,
+          trigger_name: 'inbound',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: graph([{ id: 'edge-2', source: 'decide-1', target: 'tag-u', label: 'unsicher' }]),
+          execution_mode: 'graph',
+        },
+        {
+          id: 35,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 350,
+          trigger_name: 'inbound',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: graph([]),
+          execution_mode: 'graph',
+        },
+      ],
+      messages: [{
+        id: 22,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 220,
+        subject: 'Frage',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: null,
+        cc_json: null,
+        snippet: 'Frage',
+        body_text: 'Frage',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 34, messageId: 22, triggerName: 'inbound', context: {} });
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 35, messageId: 22, triggerName: 'inbound', context: {} });
+
+    const [onlyUnsicher, terminal] = rows.jobs.map((job) => job.payload as any);
+    // Nur „unsicher“ verdrahtet: der Elternlauf wartet trotzdem (Anker = unsicher-Ziel).
+    expect(onlyUnsicher).toMatchObject({
+      resumeNodeId: 'tag-u',
+      portResumeTargets: { unsicher: 'tag-u' },
+      continuation: { resumeNodeId: 'tag-u' },
+    });
+    // Ganz ohne Kante: terminaler Kindjob schließt die Kette selbst ab.
+    expect(terminal).toMatchObject({ terminalWorkflowCompletion: true, terminalNodeId: 'decide-1#edge-1', portResumeTargets: {} });
+    expect(terminal.continuation).toBeUndefined();
+    expect(rows.runs.map((run) => run.status)).toEqual(['ok', 'ok']);
+  });
+
+  test('postgres workflow dry-run evaluates ai.decide without an AI call (unsicher, outbound held)', async () => {
+    const now = new Date('2026-07-04T11:06:00.000Z');
+    const decideGraph = (kind: string) => ({
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind } },
+        { id: 'decide-1', type: 'registry', data: { nodeType: 'ai.decide', config: { question: 'Versandfähig?' } } },
+        { id: 'tag-u', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-unsicher', runOnEveryInbound: true } } },
+        { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [
+        { id: 'edge-1', source: 'trigger-1', target: 'decide-1' },
+        { id: 'edge-2', source: 'decide-1', target: 'release', label: 'ja' },
+        { id: 'edge-3', source: 'decide-1', target: 'tag-u', label: 'unsicher' },
+      ],
+    });
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [
+        {
+          id: 36,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 360,
+          trigger_name: 'manual',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: decideGraph('manual'),
+          execution_mode: 'graph',
+        },
+        {
+          id: 37,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 370,
+          trigger_name: 'outbound',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: decideGraph('outbound'),
+          execution_mode: 'graph',
+        },
+      ],
+      messages: [{
+        id: 23,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 230,
+        subject: 'Angebot',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'Anbei',
+        body_text: 'Anbei das Angebot',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    const manual = await port.dryRun!({ workspaceId: WORKSPACE_A_ID, workflowId: 36, messageId: 23, triggerName: 'manual', context: {} });
+    expect(manual).toMatchObject({ success: true, status: 'ok', blocked: false });
+    expect(manual.log).toEqual(['dry_run:server', 'dry_run:ai.decide', 'dry_run:email.tag']);
+
+    const outbound = await port.dryRun!({ workspaceId: WORKSPACE_A_ID, workflowId: 37, messageId: 23, triggerName: 'outbound', context: {} });
+    expect(outbound).toMatchObject({
+      success: true,
+      status: 'blocked',
+      blocked: true,
+      blockReason: 'Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen.',
+    });
+    // Der Ausgang „unsicher“ läuft im Ausgang nur für Zusatzschritte; freigegeben wird nichts.
+    expect(outbound.log).toEqual(['dry_run:server', 'dry_run:ai.decide', 'dry_run:email.tag']);
+    expect(rows.jobs).toEqual([]);
+    expect(rows.steps).toEqual([]);
+    expect(rows.messages[0]).not.toHaveProperty('outbound_hold', true);
+  });
+
   test('postgres workflow execution job port runs IMAP move and delete side-effect adapters', async () => {
     const now = new Date('2026-07-04T10:55:00.000Z');
     const imapMoves: unknown[] = [];
@@ -18698,6 +19019,7 @@ describe('server edition foundation', () => {
     expect((spec.body as any).paths['/workflow-versions'].post.summary).toContain('workflow version');
     expect((spec.body as any).paths['/pgp/identities'].post.summary).toContain('PGP identity');
     expect((spec.body as any).paths['/spam/list-entries'].post.summary).toContain('spam list entry');
+    expect((spec.body as any).paths['/ai/profiles/{id}/test-connection'].post.summary).toContain('AI profile connection');
     expect(JSON.stringify(spec.body)).toContain('mark_unseen');
     expect(JSON.stringify(spec.body)).toContain('spam_review');
 

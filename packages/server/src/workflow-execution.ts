@@ -4,6 +4,17 @@ import { ilikeContainsPattern } from './db/sql-ilike';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  aiDecideAnswerHoldsOutbound,
+  aiDecideDryRunOutcome,
+  aiDecideOutboundBlockReason,
+  aiDecidePortTripsInboundGate,
+  aiDecideVariables,
+  AI_DECIDE_CRITERIA_MAX_CHARS,
+  AI_DECIDE_QUESTION_MAX_CHARS,
+  normalizeAiDecideContextMode,
+  normalizeAiDecideThreshold,
+  type AiDecideOutcome,
+  aiDecideErrorOutcome,
   buildSpamDecision,
   buildFeaturePreview,
   compileUserRegex,
@@ -82,6 +93,11 @@ import {
   setDraftApprovalPending,
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
+import {
+  interpolateAiDecideField,
+  runServerAiDecision,
+  type WorkflowAiDecideDeps,
+} from './workflow-ai-decide';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { MailAccessService } from './mail-access/types';
 import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
@@ -366,6 +382,8 @@ type ServerWorkflowRuntimePorts = Readonly<{
   visibilityInvalidation?: WorkflowVisibilityInvalidation;
   aiReviewPreview?: AiReviewPreviewRunner;
   aiDraft?: WorkflowAiDraftNodeDeps;
+  /** KI-Entscheidung in der Versandvorschau (synchron, echter Modellaufruf). */
+  aiDecide?: WorkflowAiDecideDeps;
 }>;
 
 type ServerInboundBranchGate = {
@@ -468,6 +486,8 @@ export function createPostgresWorkflowExecutionJobPort(
     workflowImapActions: options.workflowImapActions,
     aiReviewPreview,
     aiDraft,
+    // Gleiche Abhängigkeiten wie aiDraft (Profil, Secret, Nutzungserfassung).
+    aiDecide: aiDraft,
   };
   return {
     async execute(input) {
@@ -1805,7 +1825,7 @@ async function walkGraph(
     // Die Ausgangs-Vorschau fuehrt KI-Pruefungen synchron aus; dort deferieren sie nicht.
     const previewRunsReviewSynchronously = input.dryRun
       && input.context.previewOutbound
-      && ['ai.outbound_review', 'ai.review', 'ai_review'].includes(nodeRuntimeType(node));
+      && ['ai.outbound_review', 'ai.review', 'ai_review', 'ai.decide'].includes(nodeRuntimeType(node));
     const loopBodyDeferral = input.insideLoopBody === true
       && !previewRunsReviewSynchronously
       && workflowNodeDefersRun(input.doc, node, 'server');
@@ -1862,7 +1882,9 @@ async function walkGraph(
       || (gateRegistryType === 'logic.threshold' && result.port === 'yes')
       || (gateRegistryType === 'logic.switch'
         && typeof result.port === 'string'
-        && result.port !== 'default');
+        && result.port !== 'default')
+      // KI-Entscheidung: „ja“/„nein“ sind beantwortete Bedingungen (Desktop-Parität).
+      || (gateRegistryType === 'ai.decide' && aiDecidePortTripsInboundGate(result.port));
     if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
@@ -1897,7 +1919,10 @@ async function walkGraph(
     }
     if (result.blocked) {
       const blockPort = typeof result.port === 'string' ? result.port : '';
-      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      // ai.decide hält den Versand auch über „nein“/„unsicher“ an; diese
+      // Ausgänge laufen wie block/error nur noch für Zusatzschritte.
+      const followBlockPort = blockPort === 'block' || blockPort === 'error'
+        || (nodeRuntimeType(node) === 'ai.decide' && aiDecideAnswerHoldsOutbound(blockPort));
       const outs = outgoing(input.doc.edges, currentId);
       const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
       if (blockEdge) {
@@ -1978,6 +2003,62 @@ function boundedWorkflowLoopItems(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(String(value ?? 50).trim());
   if (!Number.isFinite(parsed)) return 50;
   return Math.max(1, Math.min(MAX_WORKFLOW_LOOP_ITEMS, Math.trunc(parsed)));
+}
+
+/**
+ * Knotenergebnis einer KI-Entscheidung. Im Ausgang hält alles außer „ja“ den
+ * Versand an (blocked + Grund); der Ausgang läuft dann nur für Zusatzschritte.
+ */
+function aiDecideNodeResult(context: ServerWorkflowContext, outcome: AiDecideOutcome): NodeResult {
+  const variables = aiDecideVariables(outcome);
+  const blockReason = context.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
+  return blockReason
+    ? { status: 'ok', port: outcome.answer, blocked: true, blockReason, message: outcome.summary, variables }
+    : { status: 'ok', port: outcome.answer, message: outcome.summary, variables };
+}
+
+/** Rohe Konfigfelder von ai.decide, gekürzt auf die Grenzen des Job-Plans. */
+function aiDecideConfigText(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+async function executePreviewAiDecide(
+  ports: ServerWorkflowRuntimePorts,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  if (!ports.aiDecide) {
+    return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: 'Server-KI nicht konfiguriert' }));
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: profileId.message }));
+  const scope = { strings: context.strings, variables: context.variables };
+  const outcome = await runServerAiDecision(ports.aiDecide, {
+    workspaceId: context.workspaceId,
+    messageId: context.messageId,
+    actorUserId: context.actorUserId ?? null,
+    ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
+    direction: context.direction,
+    question: interpolateAiDecideField(
+      aiDecideConfigText(config.question, AI_DECIDE_QUESTION_MAX_CHARS),
+      scope,
+      AI_DECIDE_QUESTION_MAX_CHARS,
+    ),
+    yesCriteria: interpolateAiDecideField(
+      aiDecideConfigText(config.yesCriteria, AI_DECIDE_CRITERIA_MAX_CHARS),
+      scope,
+      AI_DECIDE_CRITERIA_MAX_CHARS,
+    ),
+    noCriteria: interpolateAiDecideField(
+      aiDecideConfigText(config.noCriteria, AI_DECIDE_CRITERIA_MAX_CHARS),
+      scope,
+      AI_DECIDE_CRITERIA_MAX_CHARS,
+    ),
+    contextMode: normalizeAiDecideContextMode(config.contextMode),
+    threshold: normalizeAiDecideThreshold(config.threshold),
+    strings: context.strings,
+  });
+  return aiDecideNodeResult(context, outcome);
 }
 
 async function executePreviewOutboundAiReview(
@@ -2182,6 +2263,19 @@ async function executeServerNode(
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean);
     return { status: 'ok', port: cases.includes(value) ? value : 'default' };
+  }
+  if (type === 'ai.decide') {
+    if (dryRun && context.previewOutbound) {
+      // Versandvorschau: echte Entscheidung, sonst übersprange eine dort
+      // erteilte Freigabe die KI-Entscheidung beim eigentlichen Versand.
+      return await executePreviewAiDecide(ports, context, config);
+    }
+    if (dryRun) {
+      // Testlauf: keine KI-Anfrage, Ergebnis „unsicher“.
+      log.push('dry_run:ai.decide');
+      return aiDecideNodeResult(context, aiDecideDryRunOutcome());
+    }
+    return await scheduleAiDecideJob(trx, doc, context, node, config, now);
   }
   if (dryRun && context.previewOutbound) {
     if (type === 'ai.outbound_review') {
@@ -3916,6 +4010,112 @@ async function scheduleAiReviewDraftJob(
     variables: {
       'ai.review.status': 'pending',
       'ai.review.job_id': jobId,
+    },
+  };
+}
+
+/**
+ * ai.decide als Kindjob (Muster ai.review_draft): jeder Ausgang hat sein
+ * Fortsetzungsziel; der Elternlauf wartet auch, wenn nur ein Nicht-„ja“-Ausgang
+ * verdrahtet ist, und ein Knoten ganz ohne Kante schließt die Kette im Job ab.
+ */
+async function scheduleAiDecideJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const question = aiDecideConfigText(config.question, AI_DECIDE_QUESTION_MAX_CHARS);
+  if (!question) {
+    return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: 'Keine Frage angegeben' }));
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const portResumeTargets = {
+    ja: resolveResumeNodeAfterPort(doc, node.id, 'ja'),
+    nein: resolveResumeNodeAfterPort(doc, node.id, 'nein'),
+    unsicher: resolveResumeNodeAfterPort(doc, node.id, 'unsicher'),
+    error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
+  };
+  const deferAnchor = portResumeTargets.ja
+    || portResumeTargets.nein
+    || portResumeTargets.unsicher
+    || portResumeTargets.error
+    || undefined;
+  const terminalStamp = terminalChainStamp(context, node);
+
+  const yesCriteria = aiDecideConfigText(config.yesCriteria, AI_DECIDE_CRITERIA_MAX_CHARS);
+  const noCriteria = aiDecideConfigText(config.noCriteria, AI_DECIDE_CRITERIA_MAX_CHARS);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    runId: context.runId,
+    // Knoten-Identität für den Graphile-Key: resumeNodeId ist nur der erste
+    // verdrahtete Ausgang.
+    nodeId: node.id,
+    ...workflowJobProvenance(context),
+    ...(deferAnchor ? {} : terminalStamp),
+    direction: context.direction,
+    // Roh (mit Platzhaltern): der Job interpoliert zur Ausführungszeit.
+    question,
+    contextMode: normalizeAiDecideContextMode(config.contextMode),
+    threshold: normalizeAiDecideThreshold(config.threshold),
+    eventStrings: boundedContinuationStrings(context.strings),
+    eventVariables: context.variables,
+    portResumeTargets: Object.fromEntries(
+      Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
+    ),
+  };
+  if (yesCriteria) payload.yesCriteria = yesCriteria;
+  if (noCriteria) payload.noCriteria = noCriteria;
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (deferAnchor) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = deferAnchor;
+    stampBranchKey(payload, context);
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      // Nur Verzögerungsanker — der Job nimmt das Ziel des gewählten Ausgangs.
+      resumeNodeId: deferAnchor,
+      eventStrings: boundedContinuationStrings(context.strings),
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+    // Hat der gewählte Ausgang keine Kante, endet der Zweig im Kindjob.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(context, terminalStamp);
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.decide',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: true,
+    deferred: true,
+    message: `queued_ai_decide:${jobId}`,
+    variables: {
+      'ai.decide.status': 'pending',
+      'ai.decide.job_id': jobId,
     },
   };
 }
@@ -7789,6 +7989,8 @@ function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBr
 const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
   'email.sender_filter',
   'ai.classify',
+  // KI-Entscheidung verzweigt nur; ihre Ausgänge ja/nein öffnen das Gate.
+  'ai.decide',
   // ai.reply_suggestion is the standard "generate draft" step for auto-reply
   // chains; without the allowance the inbound-gate would block it until a
   // condition fires explicitly. The auto_reply node still gates whether the

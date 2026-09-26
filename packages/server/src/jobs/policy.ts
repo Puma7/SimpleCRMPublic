@@ -39,6 +39,7 @@ export const SERVER_JOB_TYPES = [
   'ai.review',
   'ai.draft_reply',
   'ai.review_draft',
+  'ai.decide',
   'ai.transform_text',
   'workflow.execute',
   'workflow.http_request',
@@ -185,6 +186,15 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   },
   {
     type: 'ai.review_draft',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    // KI-Entscheidung liest den Mailinhalt fürs Modell und setzt im Ausgang
+    // höchstens die Versandsperre des Entwurfs (wie ai.review).
+    type: 'ai.decide',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
     permission: 'mail.content.read',

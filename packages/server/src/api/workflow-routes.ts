@@ -1,9 +1,11 @@
 import {
+  AI_DECISIONS_PROVIDER_ID,
   compileGraphToDefinition,
   definitionToJson,
   describeUnsupportedWorkflowRegex,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  isAiDecisionsProvider,
   isServerWorkflowTrigger,
   validateWorkflowScheduleCron,
   workflowGraphHasChainStopNode,
@@ -176,6 +178,11 @@ export async function handleWorkflowReadRoute(
 
   if (req.path === '/api/v1/workflows/compile-graph') {
     return handleWorkflowGraphCompileRoute(req);
+  }
+
+  const aiProfileTestMatch = /^\/api\/v1\/ai\/profiles\/([^/]+)\/test-connection$/.exec(req.path);
+  if (aiProfileTestMatch) {
+    return handleAiProfileConnectionTest(req, ports, aiProfileTestMatch[1]);
   }
 
   const aiProfileMatch = /^\/api\/v1\/ai\/profiles(?:\/([^/]+))?$/.exec(req.path);
@@ -856,6 +863,55 @@ async function handleDeleteAiProfile(
   await auditAiProfile(ports, principal, 'ai_profile.deleted', profile.profile, { label: profile.profile.label });
   await publishAiProfile(ports, principal.workspaceId, 'ai_profile.deleted', profile.profile, principal.userId);
   return data(200, { deleted: true, aiProfile: sanitizeAiProfile(profile.profile) });
+}
+
+/**
+ * „Verbindung testen“: schickt den gespeicherten Key an den Profil-Host —
+ * deshalb dieselben Rechte wie Anlegen/Ändern/Löschen (workflows.manage) und
+ * ein Audit-Eintrag. Die Antwort enthält nie den Key.
+ */
+async function handleAiProfileConnectionTest(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
+  const id = positiveIntFromPath(rawId);
+  if (id === null) return error(400, 'invalid_ai_profile_id', 'AI profile id muss eine positive Ganzzahl sein');
+  if (!ports.aiProfiles || !ports.aiProfileConnectionTest) {
+    return error(503, 'ai_profile_test_unavailable', 'KI-Verbindungstest nicht konfiguriert');
+  }
+  const profile = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
+  if (!profile) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+
+  const result = await ports.aiProfileConnectionTest.test({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    profileId: id,
+  });
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'ai_profile.connection_tested',
+    entityType: 'ai_profile',
+    entityId: String(profile.id),
+    metadata: {
+      id: profile.id,
+      provider: profile.provider,
+      model: result.model || profile.model,
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+    },
+  });
+  return data(200, result);
 }
 
 function aiProfileMutationError(code: 'secret_port_unavailable'): ApiResponse {
@@ -1906,6 +1962,15 @@ function parseAiProfileMutationBody(
     const apiKey = normalizeNullableBodyText(body.apiKey, 'apiKey', 20000);
     if (apiKey.ok) values.apiKey = apiKey.value;
     else errors.push({ field: 'apiKey', message: apiKey.message });
+  }
+  // Profil-Typ „OpenRouter Entscheidungsmodell (Decisions API)“: einheitliche
+  // Kennung speichern (die Laufzeit erkennt ihn daran) und den Key nur über
+  // HTTPS schicken.
+  if (values.provider !== undefined && isAiDecisionsProvider(values.provider)) {
+    values.provider = AI_DECISIONS_PROVIDER_ID;
+    if (values.baseUrl !== undefined && !/^https:\/\//i.test(values.baseUrl)) {
+      errors.push({ field: 'baseUrl', message: 'Entscheidungsmodelle (Decisions API) nur ueber https' });
+    }
   }
 
   if (errors.length > 0) {

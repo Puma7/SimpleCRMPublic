@@ -4,6 +4,15 @@
  * builds the right request and normalises the response to a single
  * { content, usage } shape so token/cost tracking (P0-1) works for every model.
  */
+import {
+  AI_DECISIONS_PROFILE_IN_CHAT_NODE_ERROR,
+  AI_DECISIONS_TIMEOUT_MS,
+  aiDecisionsEndpointUrl,
+  buildAiDecisionsRequestBody,
+  isAiDecisionsProvider,
+  parseAiDecisionsResponse,
+} from '@simplecrm/core';
+
 import type { AiTokenUsage } from './ai-usage';
 
 export type AiProviderKind = 'openai' | 'anthropic' | 'gemini';
@@ -188,6 +197,11 @@ function usageFrom(prompt: number | null, completion: number | null, total: numb
 
 /** Calls the configured provider and returns normalised content + usage. */
 export async function callAiChat(req: AiChatRequest): Promise<AiChatResult> {
+  // Zentrale Chat-Stelle aller KI-Bausteine: ein Entscheidungsmodell-Profil
+  // (Decisions API) spricht kein Chat-Protokoll — klare Meldung statt HTTP-Fehler.
+  if (isAiDecisionsProvider(req.provider)) {
+    throw new Error(AI_DECISIONS_PROFILE_IN_CHAT_NODE_ERROR);
+  }
   const provider = resolveProviderKind(req.provider, req.baseUrl);
   const spec = buildProviderRequest(provider, req);
   const bodyJson = JSON.stringify(spec.body);
@@ -220,4 +234,82 @@ export async function callAiChat(req: AiChatRequest): Promise<AiChatResult> {
     throw new Error(`KI API HTTP ${response.status}`);
   }
   return parseProviderResponse(provider, body);
+}
+
+export type AiDecisionRequest = {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  question: string;
+  yesCriteria?: string | null;
+  noCriteria?: string | null;
+  /** Mail-Kontext (`state` der Decisions API). */
+  state: unknown;
+  /** Test-only plain fetch; production uses SSRF-guarded pinned fetch. */
+  fetchImpl?: typeof fetch;
+  /** When true with fetchImpl, skip network SSRF guards (unit tests only). */
+  allowUnguardedFetch?: boolean;
+  signal: AbortSignal;
+};
+
+export type AiDecisionResult =
+  | { ok: true; probability: number; usage: AiTokenUsage | null; costMicroUsd: number | null }
+  | { ok: false; error: string; usage: AiTokenUsage | null; costMicroUsd: number | null };
+
+/**
+ * OpenRouter Decisions API (Entscheidungsmodelle, Baustein „KI-Entscheidung“).
+ * Läuft wie jeder KI-Aufruf über guardedAiPost (nur der Host aus dem Profil,
+ * fest aufgelöste IP, keine Weiterleitungen), Zeitlimit 30 s. HTTP-Fehler
+ * werfen ohne Antworttext; eine Antwort ohne verwertbare Wahrscheinlichkeit
+ * liefert `ok: false` samt gemeldeter Kosten (die Kosten fallen trotzdem an).
+ */
+export async function callAiDecision(req: AiDecisionRequest): Promise<AiDecisionResult> {
+  const url = aiDecisionsEndpointUrl(req.baseUrl);
+  const headers = {
+    Authorization: `Bearer ${req.apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  const bodyJson = JSON.stringify(buildAiDecisionsRequestBody({
+    model: req.model,
+    question: req.question,
+    yesCriteria: req.yesCriteria,
+    noCriteria: req.noCriteria,
+    state: req.state,
+  }));
+
+  let response: { ok: boolean; status: number; text(): Promise<string> };
+  if (req.allowUnguardedFetch && req.fetchImpl) {
+    response = await req.fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: bodyJson,
+      signal: req.signal,
+    });
+  } else {
+    const { guardedAiPost } = await import('./ai-guarded-fetch.js');
+    response = await guardedAiPost({
+      url,
+      baseUrl: req.baseUrl,
+      headers,
+      body: bodyJson,
+      signal: req.signal,
+      timeoutMs: AI_DECISIONS_TIMEOUT_MS,
+    });
+  }
+
+  const body = await response.text();
+  if (!response.ok) {
+    // Wie callAiChat: keine Antwortinhalte an den Aufrufer.
+    throw new Error(`Decisions API HTTP ${response.status}`);
+  }
+  const parsed = parseAiDecisionsResponse(body);
+  const usage = parsed.usage
+    ? {
+      promptTokens: parsed.usage.promptTokens,
+      completionTokens: parsed.usage.completionTokens,
+      totalTokens: parsed.usage.totalTokens,
+    }
+    : null;
+  if (!parsed.ok) return { ok: false, error: parsed.error, usage, costMicroUsd: parsed.costMicroUsd };
+  return { ok: true, probability: parsed.probability, usage, costMicroUsd: parsed.costMicroUsd };
 }

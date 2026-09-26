@@ -1,4 +1,26 @@
-import { callAiChat, normalizeAiProvider, parseProviderResponse, resolveProviderKind } from '../../packages/server/src';
+import {
+  callAiChat,
+  callAiDecision,
+  normalizeAiProvider,
+  parseProviderResponse,
+  resolveProviderKind,
+} from '../../packages/server/src';
+
+// Der geschützte Pfad (Produktion) wird hier abgefangen: kein Netz, aber die
+// Parameter an guardedAiPost werden geprüft.
+const guardedCalls: Array<Record<string, unknown>> = [];
+jest.mock('../../packages/server/src/ai-guarded-fetch', () => ({
+  guardedAiPost: jest.fn(async (input: Record<string, unknown>) => {
+    guardedCalls.push(input);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ answers: { decision: { type: 'noul', noul: 0.8 } }, usage: { cost: 0.0002 } });
+      },
+    };
+  }),
+}));
 
 type CapturedRequest = { url: string; init: RequestInit };
 
@@ -153,5 +175,82 @@ describe('callAiChat — errors', () => {
 
   test('parseProviderResponse tolerates malformed bodies', () => {
     expect(parseProviderResponse('openai', 'not json')).toEqual({ content: 'not json', usage: null });
+  });
+});
+
+describe('callAiChat — Entscheidungsmodell-Profile', () => {
+  test('lehnt ein Decisions-Profil an der zentralen Chat-Stelle klar ab (ohne Netzaufruf)', async () => {
+    const captured: CapturedRequest[] = [];
+    await expect(callAiChat({ ...baseReq, provider: 'openrouter_decisions', fetchImpl: fakeFetch({}, captured) }))
+      .rejects.toThrow('Dieses KI-Profil nutzt die OpenRouter Decisions API und funktioniert nur im Baustein „KI-Entscheidung“.');
+    expect(captured).toEqual([]);
+  });
+});
+
+describe('callAiDecision — OpenRouter Decisions API', () => {
+  const decisionReq = {
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'typesafe/jev-1.13',
+    apiKey: 'or-secret',
+    question: 'Ist das Spam?',
+    yesCriteria: 'Werbung',
+    noCriteria: '',
+    state: { email: { subject: 'Gewinn' } },
+    signal: new AbortController().signal,
+  };
+
+  test('POST <base ohne /v1>/alpha/decisions mit Bearer und noul-Frage; Kosten und Tokens', async () => {
+    const captured: CapturedRequest[] = [];
+    const fetchImpl = fakeFetch({
+      answers: { decision: { type: 'noul', noul: 0.12 } },
+      usage: { input_tokens: 40, output_tokens: 2, cost: 0.00042 },
+    }, captured);
+    const result = await callAiDecision({ ...decisionReq, fetchImpl, allowUnguardedFetch: true });
+    expect(result).toEqual({
+      ok: true,
+      probability: 12,
+      usage: { promptTokens: 40, completionTokens: 2, totalTokens: 42 },
+      costMicroUsd: 420,
+    });
+    expect(captured[0]!.url).toBe('https://openrouter.ai/api/alpha/decisions');
+    expect(captured[0]!.init.headers).toEqual({ Authorization: 'Bearer or-secret', 'Content-Type': 'application/json' });
+    expect(JSON.parse(String(captured[0]!.init.body))).toEqual({
+      model: 'typesafe/jev-1.13',
+      state: { email: { subject: 'Gewinn' } },
+      questions: {
+        decision: { type: 'noul', instructions: 'Ist das Spam?', criteria: { true: 'Werbung', false: 'Nein' } },
+      },
+    });
+  });
+
+  test('HTTP-Fehler ohne Antworttext; unverwertbare Antwort liefert ok:false mit Kosten', async () => {
+    const captured: CapturedRequest[] = [];
+    await expect(callAiDecision({ ...decisionReq, fetchImpl: fakeFetch('secret error page', captured, 401), allowUnguardedFetch: true }))
+      .rejects.toThrow('Decisions API HTTP 401');
+    await expect(callAiDecision({ ...decisionReq, fetchImpl: fakeFetch('secret error page', captured, 500), allowUnguardedFetch: true }))
+      .rejects.not.toThrow(/secret/);
+    const result = await callAiDecision({
+      ...decisionReq,
+      fetchImpl: fakeFetch({ answers: { decision: { noul: 'n/a' } }, usage: { cost: 0.001 } }, captured),
+      allowUnguardedFetch: true,
+    });
+    expect(result).toMatchObject({ ok: false, costMicroUsd: 1000 });
+  });
+
+  test('Produktion: SSRF-geschützter Aufruf über guardedAiPost mit Profil-Host und 30 s', async () => {
+    guardedCalls.length = 0;
+    const result = await callAiDecision(decisionReq);
+    expect(result).toMatchObject({ ok: true, probability: 80, costMicroUsd: 200 });
+    expect(guardedCalls).toHaveLength(1);
+    expect(guardedCalls[0]).toMatchObject({
+      url: 'https://openrouter.ai/api/alpha/decisions',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      timeoutMs: 30_000,
+      headers: { Authorization: 'Bearer or-secret', 'Content-Type': 'application/json' },
+    });
+    // fetchImpl allein schaltet den Schutz nicht ab.
+    guardedCalls.length = 0;
+    await callAiDecision({ ...decisionReq, fetchImpl: fakeFetch({}, []) });
+    expect(guardedCalls).toHaveLength(1);
   });
 });

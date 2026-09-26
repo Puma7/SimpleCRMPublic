@@ -549,6 +549,7 @@ function graphileSharedQueueKind(type: ServerJobType): string | undefined {
     || type === 'ai.review'
     || type === 'ai.draft_reply'
     || type === 'ai.review_draft'
+    || type === 'ai.decide'
     || type === 'ai.transform_text'
   ) {
     return 'ai';
@@ -750,6 +751,19 @@ export function graphileJobKeyForJob(
     }
     if (workspaceKey && messageId) {
       return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+    }
+  }
+  if (type === 'ai.decide') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
+    // Der Knoten gehört in den Key: resumeNodeId ist hier nur der erste
+    // verdrahtete Ausgang, zwei Entscheidungen können auf dasselbe Ziel zeigen.
+    const nodeId = graphileKeyScalar(payload.nodeId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${nodeId ?? 'none'}${identity}`;
     }
   }
   if (type === 'ai.transform_text') {

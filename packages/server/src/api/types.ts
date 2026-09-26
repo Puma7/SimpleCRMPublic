@@ -4069,6 +4069,24 @@ export type AiTextTransformApiPort = {
   transformText(input: AiTextTransformInput): Promise<AiTextTransformResult>;
 };
 
+/** Ergebnis von „Verbindung testen“ eines KI-Profils; `message` enthält nie den Key. */
+export type AiProfileConnectionTestResult = {
+  ok: boolean;
+  message: string;
+  model: string;
+  latencyMs: number;
+  /** Nur Entscheidungsmodelle: Ja-Wahrscheinlichkeit der Testfrage (0–100). */
+  probability?: number;
+};
+
+export type AiProfileConnectionTestApiPort = {
+  test(input: {
+    workspaceId: string;
+    actorUserId: string;
+    profileId: number;
+  }): Promise<AiProfileConnectionTestResult>;
+};
+
 export type WorkflowRecord = {
   id: number;
   sourceSqliteId: number | null;
@@ -5620,6 +5638,7 @@ export type ServerApiPorts = {
   aiProfiles?: AiProfileApiPort;
   aiPrompts?: AiPromptApiPort;
   aiTextTransform?: AiTextTransformApiPort;
+  aiProfileConnectionTest?: AiProfileConnectionTestApiPort;
   automationApiKeys?: AutomationApiKeyApiPort;
   customerCustomFields?: CustomerCustomFieldApiPort;
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;

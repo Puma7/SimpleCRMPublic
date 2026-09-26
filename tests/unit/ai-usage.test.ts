@@ -1,4 +1,5 @@
 import {
+  aiUsageCostMicroUsd,
   estimateAiCostMicroUsd,
   extractChatCompletionUsage,
   recordAiUsageSafe,
@@ -93,6 +94,29 @@ describe('recordAiUsageSafe', () => {
       est_cost_micro_usd: 450,
       latency_ms: 1234,
     });
+  });
+
+  test('prefers the provider-reported cost (Decisions API usage.cost) over the estimate', async () => {
+    const captured: Array<{ table: string; values: Record<string, unknown> }> = [];
+    await recordAiUsageSafe(
+      { db: fakeDb(captured), applyWorkspaceSession: async () => {} },
+      {
+        workspaceId: WS,
+        aiProfileId: 9,
+        model: 'typesafe/jev-1.13',
+        nodeType: 'ai.decide',
+        usage: { promptTokens: 120, completionTokens: 3, totalTokens: 123 },
+        costMicroUsd: 420,
+      },
+    );
+    expect(captured[0].values).toMatchObject({ node_type: 'ai.decide', est_cost_micro_usd: 420, total_tokens: 123 });
+    // Ohne gemeldete Kosten bleibt es bei der Schätzung; ungültige Werte zählen nicht.
+    const usage = { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 };
+    expect(aiUsageCostMicroUsd({ model: 'gpt-4o-mini', usage, costMicroUsd: null })).toBe(450);
+    expect(aiUsageCostMicroUsd({ model: 'gpt-4o-mini', usage, costMicroUsd: -1 })).toBe(450);
+    expect(aiUsageCostMicroUsd({ model: 'gpt-4o-mini', usage, costMicroUsd: Number.NaN })).toBe(450);
+    expect(aiUsageCostMicroUsd({ model: 'unknown', usage: null, costMicroUsd: 0 })).toBe(0);
+    expect(aiUsageCostMicroUsd({ model: 'unknown', usage: null, costMicroUsd: 12.6 })).toBe(13);
   });
 
   test('never throws (best-effort) when the insert fails', async () => {

@@ -503,6 +503,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         patch: { summary: 'Update AI profile' },
         delete: { summary: 'Delete AI profile' },
       },
+      '/ai/profiles/{id}/test-connection': { post: { summary: 'Test AI profile connection' } },
       '/ai/prompts': {
         get: { summary: 'List AI prompts' },
         post: { summary: 'Create AI prompt' },
