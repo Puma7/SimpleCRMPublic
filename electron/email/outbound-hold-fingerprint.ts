@@ -37,10 +37,18 @@ export function currentOutboundHoldFingerprint(draftId: number): string | null {
   });
 }
 
-/** Nach dem endgültigen Anhalten: den angehaltenen Inhalt festhalten. */
+/**
+ * Nach dem endgültigen Anhalten: den angehaltenen Inhalt festhalten. Best
+ * effort — scheitert es, bleibt der Entwurf trotzdem angehalten und das
+ * Überspringen wird (sicher) abgelehnt wie bei einem Altbestand.
+ */
 export function storeOutboundHoldFingerprint(draftId: number): void {
-  const fingerprint = currentOutboundHoldFingerprint(draftId);
-  if (fingerprint) setSyncInfo(outboundHoldFingerprintKey(draftId), fingerprint);
+  try {
+    const fingerprint = currentOutboundHoldFingerprint(draftId);
+    if (fingerprint) setSyncInfo(outboundHoldFingerprintKey(draftId), fingerprint);
+  } catch (error) {
+    console.warn('[email] outbound hold fingerprint not stored:', error);
+  }
 }
 
 /** Gespeicherter Fingerprint; null = keiner (Altbestand). */
