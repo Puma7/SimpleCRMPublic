@@ -66,11 +66,18 @@ echo "second_objects=$(objects) second_hashes=$(hashes)"
 echo "second_lines=$(wc -l < "$tmp/backups/attachments-2026-09-02T00-00-00Z.list" | tr -d ' ')"
 cut -f4 "$tmp/backups/attachments-2026-09-02T00-00-00Z.list"
 `, useBusybox);
-    // Erster Lauf: 3 Dateien gelesen, 2 Inhalte kopiert und geprüft.
-    expect(out).toContain('first_objects=2 first_hashes=5');
-    // Zweiter Lauf: nur die neue Datei gelesen und ihr Inhalt kopiert.
-    expect(out).toContain('second_objects=3 second_hashes=2');
+    expect(out).toContain('first_objects=2 ');
+    expect(out).toContain('second_objects=3 ');
     expect(out).toContain('second_lines=4');
+    // Lesezähler nur mit den Host-Werkzeugen: ein BusyBox mit eingebauten
+    // Applets (z. B. busybox-static im CI) ruft sha256sum intern auf und
+    // umgeht den gezählten Wrapper im PATH.
+    if (!useBusybox) {
+      // Erster Lauf: 3 Dateien gelesen, 2 Inhalte kopiert und geprüft.
+      expect(out).toContain('first_objects=2 first_hashes=5');
+      // Zweiter Lauf: nur die neue Datei gelesen und ihr Inhalt kopiert.
+      expect(out).toContain('second_objects=3 second_hashes=2');
+    }
     expect(out).toContain('./ws/mail-sync/2/vertrag kopie.pdf');
   });
 
