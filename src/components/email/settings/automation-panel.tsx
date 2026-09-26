@@ -80,6 +80,7 @@ export function AutomationPanel() {
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null)
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [savingWorkflowOpts, setSavingWorkflowOpts] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -152,6 +153,7 @@ export function AutomationPanel() {
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
+    if (savingWorkflowOpts) return
     const payload: {
       imapDeleteOptIn: boolean
       httpAllowlist: string
@@ -175,8 +177,26 @@ export function AutomationPanel() {
       payload.autoReplyMaxPerSenderPerDay = maxPerDay
       setAutoReplyMaxPerDay(String(maxPerDay))
     }
-    await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, payload)
-    toast.success("Workflow-Optionen gespeichert.")
+    // Server: Ablehnung kommt als Ausnahme (HTTP-Fehler); Desktop: als
+    // { success: false, error }. Beides ist kein „gespeichert“.
+    setSavingWorkflowOpts(true)
+    try {
+      const result = (await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, payload)) as
+        | { success?: boolean; error?: string }
+        | undefined
+      if (result?.success === false) {
+        toast.error(`Workflow-Optionen nicht gespeichert: ${result.error ?? "unbekannter Fehler"}`)
+        return
+      }
+      toast.success("Workflow-Optionen gespeichert.")
+    } catch (error) {
+      console.error("Workflow options save failed:", error)
+      toast.error(
+        `Workflow-Optionen nicht gespeichert: ${error instanceof Error && error.message ? error.message : "unbekannter Fehler"}`,
+      )
+    } finally {
+      setSavingWorkflowOpts(false)
+    }
   }
 
   const saveApiOpts = async () => {
@@ -568,9 +588,9 @@ export function AutomationPanel() {
         <Button
           type="button"
           onClick={() => void saveWorkflowOpts()}
-          disabled={loading || !canEditWorkflowOptions}
+          disabled={loading || savingWorkflowOpts || !canEditWorkflowOptions}
         >
-          Workflow-Optionen speichern
+          {savingWorkflowOpts ? "Speichern…" : "Workflow-Optionen speichern"}
         </Button>
       </section>
 
