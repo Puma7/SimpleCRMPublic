@@ -38,6 +38,7 @@ export type SettingsTab =
   | "ai"
   | "accountMail"
   | "knowledge"
+  | "learnings"
   | "mailSecurity"
   | "tracking"
   | "smtpRelay"
@@ -244,6 +245,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "ai",
   "accountMail",
   "knowledge",
+  "learnings",
   "mailSecurity",
   "tracking",
   "smtpRelay",

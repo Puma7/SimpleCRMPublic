@@ -11,6 +11,7 @@ import {
   Activity,
   BookOpen,
   BrainCircuit,
+  Lightbulb,
   Clock,
   Download,
   KeyRound,
@@ -35,6 +36,7 @@ import { CannedPanel } from "./settings/canned-panel"
 import { PromptsPanel } from "./settings/prompts-panel"
 import { ExportPanel } from "./settings/export-panel"
 import { KnowledgePanel } from "./settings/knowledge-panel"
+import { LearningsPanel } from "./settings/learnings-panel"
 import { AutomationPanel } from "./settings/automation-panel"
 import { MailSecurityPanel } from "./settings/mail-security-panel"
 import { MiscPanel, SnoozePanel } from "./settings/misc-panel"
@@ -97,6 +99,12 @@ const TAB_DEFS: TabDef[] = [
     icon: BookOpen,
     fullBleed: true,
     render: () => <KnowledgePanel />,
+  },
+  {
+    id: "learnings",
+    label: "Learnings",
+    icon: Lightbulb,
+    render: () => <LearningsPanel />,
   },
   {
     id: "mailSecurity",
@@ -171,7 +179,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Konten & Versand", tabIds: ["accounts", "oauthApps", "smtpRelay"] },
   {
     label: "KI & Automation",
-    tabIds: ["ai", "knowledge", "mailSecurity", "tracking", "automation", "prompts"],
+    tabIds: ["ai", "knowledge", "learnings", "mailSecurity", "tracking", "automation", "prompts"],
   },
   { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "delegation", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics", "snooze"] },
@@ -194,7 +202,7 @@ function SettingsPanels({ current, personalOnly }: { current: SettingsTab; perso
   const active = TAB_DEFS.find(
     (t) => t.id === current && (!t.serverOnly || isServerClientMode()),
   ) ?? TAB_DEFS[0]!
-  const wide = active.id === "knowledge" || active.id === "prompts"
+  const wide = active.id === "knowledge" || active.id === "prompts" || active.id === "learnings"
   return (
     <div
       className={cn(

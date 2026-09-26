@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/tooltip"
 import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 import { MessageAddressesBlock } from "./message-addresses-block"
+import { LearningNoteButton } from "./learning-note-button"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import { getTranslationSettings } from "@/lib/translation-settings"
 import {
@@ -1124,6 +1125,7 @@ export function MessageViewer(props: Props) {
                   <Code2 className="h-4 w-4" />
                   <span className="hidden lg:inline">Rohdaten</span>
                 </Button>
+                <LearningNoteButton messageId={selectedMessage.id} />
               </>
             ) : null}
           </div>
