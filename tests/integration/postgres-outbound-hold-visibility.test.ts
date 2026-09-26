@@ -3,7 +3,7 @@ import type { Kysely } from 'kysely';
 import { createPostgresEmailMessageReadPort } from '../../packages/server/src/db/postgres-mail-read-ports';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { buildWorkflowExecutionJobPlan } from '../../packages/server/src/jobs/production-handlers';
-import { TRUSTED_SERVICE_JOB_MARKER_VALUE } from '../../packages/server/src/jobs/policy';
+import { isTrustedServiceJobPayload, TRUSTED_SERVICE_JOB_MARKER_VALUE } from '../../packages/server/src/jobs/policy';
 import type { JobPayload } from '../../packages/server/src/jobs/types';
 import type { WorkflowExecutionDryRunResult } from '../../packages/server/src/jobs';
 import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
@@ -210,6 +210,12 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
     expect(pending.scheduled_send_at).not.toBeNull();
     const jobs = await takeWorkflowJobs();
     expect(jobs).toHaveLength(1);
+    // Workflow-Versand (Trusted Service): der Ausgangs-Job läuft als Dienst. Ein
+    // actorUserId 'system' würde der Job-Enforcer als unbekannten Nutzer abweisen —
+    // die Prüfung liefe nie und der Entwurf bliebe bei „Prüfung läuft“ stehen.
+    expect(jobs[0]!.actorUserId).toBeUndefined();
+    expect(isTrustedServiceJobPayload(jobs[0]!)).toBe(true);
+    expect(buildWorkflowExecutionJobPlan(jobs[0]!, WORKSPACE_ID)).toMatchObject({ trustedService: true });
 
     await createPostgresWorkflowExecutionJobPort({ db }).execute(
       buildWorkflowExecutionJobPlan(jobs[0]!, WORKSPACE_ID),

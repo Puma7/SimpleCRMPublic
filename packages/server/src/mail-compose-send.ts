@@ -32,7 +32,8 @@ import type {
   EmailOutboundValidationInput,
   PgpMessageCryptoApiPort,
 } from './api';
-import type { WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
+import type { JobPayload, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
 import {
@@ -276,6 +277,8 @@ export type ComposeOutboundReviewInput = Readonly<{
    * Planung gelöscht) statt nur einen Fehler zu melden.
    */
   holdOnBlock?: boolean;
+  /** Workflow-Versand ohne menschlichen Akteur: Ausgangs-Workflows laufen als Dienst. */
+  trustedService?: boolean;
 }>;
 
 export type ComposeOutboundReviewResult =
@@ -491,6 +494,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             attachmentCount: attachments.length,
             ...(values.attachmentPaths === undefined ? {} : { attachmentPaths: values.attachmentPaths }),
             ...(input.holdOnOutboundBlock ? { holdOnBlock: true } : {}),
+            ...(input.trustedService ? { trustedService: true } : {}),
           });
           if (!review.allowed) {
             return {
@@ -952,6 +956,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
               workflowDryRun: options.workflowDryRun,
               workspaceId: input.workspaceId,
               actorUserId: input.actorUserId,
+              trustedService: input.trustedService === true,
               draftMessageId: input.draftMessageId,
               subject: input.subject,
               bodyText: input.bodyText,
@@ -1950,6 +1955,7 @@ async function evaluateComposeOutboundDryRun(input: {
   workflowDryRun: (plan: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   workspaceId: string;
   actorUserId: string;
+  trustedService: boolean;
   draftMessageId: number;
   subject: string;
   bodyText: string;
@@ -1969,7 +1975,7 @@ async function evaluateComposeOutboundDryRun(input: {
       workflowId: Number(workflow.id),
       messageId: input.draftMessageId,
       triggerName: 'outbound',
-      actorUserId: input.actorUserId,
+      ...(input.trustedService ? { trustedService: true } : { actorUserId: input.actorUserId }),
       context: {
         outbound: {
           messageId: input.draftMessageId,
@@ -2028,13 +2034,16 @@ function outboundWorkflowJobPayload(
   workflowId: number,
   runId: number,
 ): Record<string, unknown> {
-  return {
+  const payload: Record<string, unknown> = {
     workspaceId: input.workspaceId,
     workflowId,
     messageId: input.draftMessageId,
     runId,
     triggerName: 'outbound',
-    actorUserId: input.actorUserId,
+    // Workflow-Versand ohne Mensch: als Dienst (Trusted-Service-Marker). Der
+    // Platzhalter 'system' als actorUserId scheiterte im Job-Enforcer an der
+    // Nutzerauflösung — die Ausgangs-Workflows liefen dann nie.
+    ...(input.trustedService ? {} : { actorUserId: input.actorUserId }),
     context: {
       outbound: {
         messageId: input.draftMessageId,
@@ -2051,6 +2060,7 @@ function outboundWorkflowJobPayload(
       source: 'server_compose_outbound_review',
     },
   };
+  return input.trustedService ? buildTrustedServiceJobPayload(payload as JobPayload) : payload;
 }
 
 function truncateContextText(value: string): string {

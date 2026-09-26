@@ -910,7 +910,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'inbound-ai-auto-reply',
     name: 'Eingehend: KI antwortet mit Textbaustein (mit Gate)',
     description:
-      'KI klassifiziert, das Auto-Antwort-Gate prüft (Schalter, Absender, Sicherheit, Anti-Loop), die KI wählt einen Textbaustein und der Entwurf wird versendet. Blockierte Mails bekommen den Tag ki-manuell. Voraussetzungen: Auto-Antwort-Schalter (Einstellungen → Automatisierung) AN, ein KI-Profil mit API-Schlüssel, mindestens ein Textbaustein.',
+      'KI klassifiziert, das Auto-Antwort-Gate prüft (Schalter, Absender, Sicherheit, Anti-Loop), die KI wählt einen Textbaustein und der Entwurf wird versendet — vorher durchläuft er die aktiven Ausgangs-Workflows; hält einer ihn an, liegt der Entwurf mit Grund im Posteingang. Blockierte Mails bekommen den Tag ki-manuell. Voraussetzungen: Auto-Antwort-Schalter (Einstellungen → Automatisierung) AN, ein KI-Profil mit API-Schlüssel, mindestens ein Textbaustein; empfohlen: ein Ausgangs-Workflow (z. B. „Ausgehend: KI-Qualitätsprüfung“).',
     trigger: 'inbound',
     graph: {
       version: 1,
@@ -941,13 +941,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'registry',
           data: { nodeType: 'ai.pick_canned', config: { createDraft: true } },
         },
-        // (4) Entwurf versenden (das Gate hat schon gefiltert).
+        // (4) Entwurf versenden (das Gate hat schon gefiltert). Vor dem Versand
+        //     laufen die Ausgangs-Workflows; ein Block hält den Entwurf im Posteingang an.
         {
           id: 'send',
           type: 'registry',
           data: {
             nodeType: 'email.send_draft',
-            config: { draftIdVariable: 'draft.id', runOutboundReview: false },
+            config: { draftIdVariable: 'draft.id', runOutboundReview: true },
           },
         },
         // (3b) blocked: NUR bei "KI unsicher" (low_confidence) taggen — bei
@@ -981,7 +982,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'inbound-ai-two-stage-reply',
     name: 'Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)',
     description:
-      'Zwei-Stufen-Antwort: Agent 1 entwirft mit Wissensbasis eine Antwort (Anrede + Signatur automatisch), Agent 2 liest gegen und entscheidet — nur bei „senden" geht die Mail raus, sonst wartet der Entwurf im Posteingang auf menschliche Freigabe. Voraussetzungen: Auto-Antwort-Schalter AN, KI-Profil mit API-Schlüssel; Wissensbasis empfohlen.',
+      'Zwei-Stufen-Antwort: Agent 1 entwirft mit Wissensbasis eine Antwort (Anrede + Signatur automatisch), Agent 2 liest gegen und entscheidet — nur bei „senden" geht die Mail raus, und zwar durch die aktiven Ausgangs-Workflows (hält einer sie an, liegt der Entwurf mit Grund im Posteingang); sonst wartet der Entwurf im Posteingang auf menschliche Freigabe. Voraussetzungen: Auto-Antwort-Schalter AN, KI-Profil mit API-Schlüssel; Wissensbasis und ein Ausgangs-Workflow empfohlen.',
     trigger: 'inbound',
     graph: {
       version: 1,
@@ -1030,13 +1031,14 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { draftIdVariable: 'draft.id', reviewPrompt: '' },
           },
         },
-        // (5a) send: Entwurf versenden.
+        // (5a) send: Entwurf versenden — durch die Ausgangs-Workflows (ein Block
+        //      hält den Entwurf mit Grund im Posteingang an).
         {
           id: 'send',
           type: 'registry',
           data: {
             nodeType: 'email.send_draft',
-            config: { draftIdVariable: 'draft.id', runOutboundReview: false },
+            config: { draftIdVariable: 'draft.id', runOutboundReview: true },
           },
         },
         // (5b) hold: sichtbar machen — Entwurf wartet im Posteingang auf Freigabe.

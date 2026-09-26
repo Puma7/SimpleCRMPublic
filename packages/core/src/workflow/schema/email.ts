@@ -193,7 +193,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Zusätzlich durch Ausgangs-Workflows prüfen',
         help:
           'Aus (Standard): die Antwort geht direkt raus. Ein: die Antwort durchläuft vor dem Versand ' +
-          'die Ausgangs-Workflows (z. B. „KI-Ausgangsprüfung“) — wirkt nur, wenn ein Ausgangs-Workflow aktiv ist.',
+          'die Ausgangs-Workflows (z. B. „KI-Ausgangsprüfung“) — wirkt nur, wenn ein Ausgangs-Workflow aktiv ist. ' +
+          'Hält ein Ausgangs-Workflow sie an, liegt der Entwurf mit dem Grund im Posteingang und wird nicht automatisch erneut versendet.',
       },
       {
         key: 'draftId',

@@ -2648,6 +2648,12 @@ export type EmailComposeSenderApiPort = {
     values: EmailComposeSendInput;
     /** Geplanter Versand: ein synchroner Ausgangs-Block hält den Entwurf an. */
     holdOnOutboundBlock?: boolean;
+    /**
+     * Versand eines Workflows ohne menschlichen Akteur (Trusted Service,
+     * actorUserId ist der Platzhalter 'system'): Ausgangs-Workflows laufen
+     * als Dienst statt als Nutzer.
+     */
+    trustedService?: boolean;
   }): Promise<EmailComposeSendResult>;
 };
 

@@ -214,9 +214,11 @@ Die empfohlene Vorlage **„Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)�
 
 | Weg | Wann | Ergebnis |
 |-----|------|----------|
-| **Senden** | Gate erlaubt + Gegenprüfung sagt „senden“ | Antwort geht automatisch raus |
+| **Senden** | Gate erlaubt + Gegenprüfung sagt „senden“ | Antwort geht automatisch raus — vorher durch die aktiven **Ausgangs-Workflows**; hält einer sie an, liegt der Entwurf mit Grund im Posteingang |
 | **Wartet auf Freigabe** | Gegenprüfung hat Zweifel (oder ein KI-Fehler trat auf) | Entwurf bleibt liegen, Sie entscheiden |
 | **Blockiert** | Das Gate stoppt (Schalter aus, unsicherer Absender, Tageslimit, KI zu unsicher) | Nichts wird gesendet; war die KI sich zu unsicher, bekommt die Mail das Tag `ki-manuell` zur manuellen Bearbeitung |
+
+Die KI-Antwort-Vorlagen haben am Baustein „Entwurf versenden“ die Option **„Zusätzlich durch Ausgangs-Workflows prüfen“** eingeschaltet. Legen Sie dazu einen Ausgangs-Workflow an (z. B. Vorlage **„Ausgehend: KI-Qualitätsprüfung“**); ohne aktiven Ausgangs-Workflow geht die Antwort nach der Gegenprüfung direkt raus.
 
 ### „Wartet auf Freigabe“ — was tun?
 

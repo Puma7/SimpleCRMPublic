@@ -133,10 +133,12 @@ export function createScheduledSendJobPort(options: ScheduledSendJobPortOptions)
     async processDue(input) {
       const drafts = await options.store.claimDueDrafts(input);
       for (const draft of drafts) {
+        const actorUserId = resolveScheduledSendActor(input, draft);
         await processScheduledDraft({
           store: options.store,
           composeSender: options.composeSender,
-          actorUserId: resolveScheduledSendActor(input, draft),
+          actorUserId,
+          trustedService: actorUserId === SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR,
           workspaceId: input.workspaceId,
           draft,
         });
@@ -167,6 +169,8 @@ async function processScheduledDraft(input: {
   store: ScheduledSendStore;
   composeSender: EmailComposeSenderApiPort;
   actorUserId: string;
+  /** Workflow-Versand ohne menschlichen Akteur (actorUserId ist der Platzhalter 'system'). */
+  trustedService: boolean;
   workspaceId: string;
   draft: ScheduledDraft;
 }): Promise<void> {
@@ -195,6 +199,7 @@ async function processScheduledDraft(input: {
     // Ein synchroner Block der Ausgangs-Workflows hält den geplanten Entwurf
     // an (Posteingang, Banner) statt fünf Fehlversuche zu zählen.
     holdOnOutboundBlock: true,
+    ...(input.trustedService ? { trustedService: true } : {}),
     values: {
       accountId: draft.accountId,
       draftMessageId: draft.id,
