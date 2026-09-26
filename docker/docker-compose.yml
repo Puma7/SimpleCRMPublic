@@ -1,5 +1,15 @@
+# Container logs (docker logs) rotate: without a limit the json-file logs of
+# api and caddy grow for as long as the container lives. Caddy's access log
+# in the caddy_logs volume rotates separately (Caddyfile).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: ${DOCKER_LOG_MAX_SIZE:-10m}
+    max-file: "${DOCKER_LOG_MAX_FILE:-3}"
+
 services:
   caddy:
+    logging: *default-logging
     networks:
       proxy:
         ipv4_address: ${CADDY_PROXY_IP:-172.31.255.2}
@@ -22,6 +32,7 @@ services:
         condition: service_healthy
 
   api:
+    logging: *default-logging
     networks:
       - default
       - proxy
@@ -112,6 +123,7 @@ services:
       start_period: 20s
 
   geoip-updater:
+    logging: *default-logging
     image: ghcr.io/maxmind/geoipupdate:v7.1.1@sha256:45e15eb310528fd308c5c0abee9a8e6d580f1e2b1251e960dec2863dc7f0102f
     profiles: ["geoip"]
     env_file:
@@ -124,6 +136,7 @@ services:
       - geoip:/usr/share/GeoIP
 
   postgres:
+    logging: *default-logging
     image: postgres:18-alpine
     restart: unless-stopped
     environment:
@@ -143,6 +156,7 @@ services:
       start_period: 60s
 
   migrate:
+    logging: *default-logging
     build:
       context: ..
       dockerfile: docker/api.Dockerfile
@@ -162,6 +176,7 @@ services:
     restart: "no"
 
   backup:
+    logging: *default-logging
     image: postgres:18-alpine
     profiles: ["backup"]
     environment:
@@ -189,6 +204,7 @@ services:
         condition: service_healthy
 
   backup-scheduler:
+    logging: *default-logging
     image: postgres:18-alpine
     profiles: ["backup-scheduler"]
     restart: unless-stopped
@@ -218,6 +234,7 @@ services:
         condition: service_healthy
 
   restore:
+    logging: *default-logging
     image: postgres:18-alpine
     profiles: ["restore"]
     environment:
@@ -276,6 +293,7 @@ services:
         condition: service_healthy
 
   doctor:
+    logging: *default-logging
     image: postgres:18-alpine
     profiles: ["doctor"]
     environment:
@@ -292,6 +310,7 @@ services:
         condition: service_healthy
 
   restore-drill:
+    logging: *default-logging
     image: postgres:18-alpine
     profiles: ["restore-drill"]
     environment:
@@ -343,6 +362,7 @@ services:
         condition: service_healthy
 
   monitor:
+    logging: *default-logging
     image: louislam/uptime-kuma:1
     profiles: ["monitor"]
     restart: unless-stopped
@@ -352,6 +372,7 @@ services:
       - uptime_kuma_data:/app/data
 
   pgadmin:
+    logging: *default-logging
     # Release line instead of :latest, so a pull cannot jump a major version.
     image: dpage/pgadmin4:9
     profiles: ["pgadmin"]
