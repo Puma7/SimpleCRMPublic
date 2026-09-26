@@ -103,9 +103,16 @@ section "Datenbank"
 psql_run() {
   compose exec -T postgres psql -U simplecrm_admin -d simplecrm -c "$1" 2>/dev/null
 }
-if psql_run "SELECT pg_size_pretty(pg_database_size('simplecrm')) AS datenbank;"; then
+if psql_run "SELECT pg_size_pretty(pg_database_size(current_database())) AS datenbank;"; then
   psql_run "SELECT c.relname AS tabelle, pg_size_pretty(pg_total_relation_size(c.oid)) AS groesse FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 8;"
-  psql_run "SELECT count(*) AS mails, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS original_mails, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;"
+  # Mail-Originale: komprimiert (raw_rfc822_z) oder noch als base64-Text (Altbestand,
+  # wird nach dem Update im Hintergrund umgestellt). Ältere Schemata ohne die neuen
+  # Spalten bekommen die einfache Abfrage.
+  psql_run "SELECT count(*) AS mails, count(raw_rfc822_z) AS original_komprimiert, count(raw_rfc822_b64) AS original_base64, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_z)), 0) + coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS originale_belegt, pg_size_pretty(coalesce(sum(raw_rfc822_size), 0)) AS originale_entpackt, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;" \
+    || psql_run "SELECT count(*) AS mails, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS original_mails, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;"
+  # Kopien aus der Übernahme vom Desktop (SQLite): source_row trägt das Original ein zweites Mal,
+  # die Zwischentabelle ein drittes. Nur Anzeige; entfernt wird nichts automatisch.
+  psql_run "SELECT (SELECT count(*) FROM email_messages WHERE source_row ? 'raw_rfc822_b64') AS mails_mit_importkopie, (SELECT pg_size_pretty(coalesce(sum(pg_column_size(source_row)), 0)) FROM email_messages WHERE source_row ? 'raw_rfc822_b64') AS importkopien_in_mails, pg_size_pretty(pg_total_relation_size('sqlite_import_rows')) AS import_zwischentabelle;"
   psql_run "WITH a AS (SELECT size_bytes, row_number() OVER (PARTITION BY content_sha256 ORDER BY id) AS n FROM email_message_attachments) SELECT count(*) AS anhaenge, pg_size_pretty(coalesce(sum(size_bytes), 0)) AS gesamt, pg_size_pretty(coalesce(sum(size_bytes) FILTER (WHERE n > 1), 0)) AS davon_doppelt FROM a;"
 else
   echo "Datenbank nicht erreichbar (läuft der postgres-Container?)."

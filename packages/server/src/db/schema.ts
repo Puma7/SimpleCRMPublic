@@ -846,7 +846,15 @@ export type EmailMessagesTable = {
   sent_outbound_review_skipped: ColumnType<boolean, boolean | undefined, boolean>;
   pop3_uidl: string | null;
   raw_headers: string | null;
+  /** Altbestand: Original als base64-Text; neue Zeilen nutzen raw_rfc822_z (mail-raw-storage.ts). */
   raw_rfc822_b64: string | null;
+  /** Original brotli-komprimiert; raw_rfc822_sha256/raw_rfc822_size beschreiben die Original-Bytes. */
+  raw_rfc822_z: Buffer | null;
+  raw_rfc822_codec: string | null;
+  raw_rfc822_sha256: string | null;
+  raw_rfc822_size: ColumnType<string | number | null, number | null | undefined, number | null>;
+  /** Bei Codec 'br-parts': Prüfsummen der herausgenommenen Anhangteile. */
+  raw_rfc822_part_sha256s: string[] | null;
   remote_content_policy: string;
   read_receipt_requested: boolean;
   pgp_status: string | null;

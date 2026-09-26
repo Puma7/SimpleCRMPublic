@@ -203,6 +203,7 @@ import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt
 import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
 import { startAttachmentTextBackfillTicker } from './mail-attachment-text';
 import { startBodyTextBackfillRun } from './mail-body-text-backfill';
+import { startRawCompressionBackfillRun } from './mail-raw-compression-backfill';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -445,6 +446,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         attachmentsRoot,
       });
       bodyTextBackfillRun = startBodyTextBackfillRun({ db });
+      maintenanceTickers.push(startRawCompressionBackfillRun({ db }));
       if (ports.emailTracking?.pruneWorkspace) {
         emailTrackingRetentionTicker = startEmailTrackingRetentionTicker({
           db,

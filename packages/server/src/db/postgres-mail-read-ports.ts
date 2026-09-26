@@ -104,6 +104,7 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import { loadStoredRawOrNull, storedRawColumns, type StoredRawColumns } from '../mail-raw-storage';
 import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
 import {
   approveDraftSendInTransaction,
@@ -249,7 +250,7 @@ const emailMessageSpamStatusMutationColumns = [
   'rspamd_score',
   'rspamd_action',
   'raw_headers',
-  'raw_rfc822_b64',
+  ...storedRawColumns,
   'spam_score',
   'spam_score_label',
   'spam_decision_source',
@@ -298,7 +299,7 @@ const emailMessageRawHeadersColumns = [
   'body_html',
   'pop3_uidl',
   'raw_headers',
-  'raw_rfc822_b64',
+  ...storedRawColumns,
   'auth_spf',
   'auth_dkim',
   'auth_dmarc',
@@ -394,7 +395,8 @@ type SpamLearningSettings = {
 
 type RspamdLearningRequest = {
   label: RspamdLearnLabel;
-  rawRfc822B64: string | null;
+  messageId: number;
+  storedRaw: StoredRawColumns;
   rawHeaders: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
@@ -1679,7 +1681,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .executeTakeFirst();
-          return row ? mapEmailMessageRawHeadersRow(row) : null;
+          if (!row) return null;
+          return mapEmailMessageRawHeadersRow(row, await loadStoredRawOrNull(row, `raw source of message ${input.id}`));
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -2339,7 +2342,7 @@ async function runPostgresMailSecurityCheck(
 
   const settings = await loadMailSecurityCheckSettings(trx, workspaceId);
   const checks = await runStoredMailSecurityChecks({
-    rawRfc822B64: current.raw_rfc822_b64,
+    rawRfc822: await loadStoredRawOrNull(current, `security check of message ${messageId}`),
     rawHeaders: current.raw_headers,
     bodyText: current.body_text,
     bodyHtml: current.body_html,
@@ -4579,7 +4582,14 @@ function rspamdLearningRequestForMessage(
   if (!settings.rspamdLearningEnabled) return null;
   return {
     label,
-    rawRfc822B64: message.raw_rfc822_b64,
+    messageId: Number(message.id),
+    storedRaw: {
+      raw_rfc822_b64: message.raw_rfc822_b64,
+      raw_rfc822_z: message.raw_rfc822_z,
+      raw_rfc822_codec: message.raw_rfc822_codec,
+      raw_rfc822_sha256: message.raw_rfc822_sha256,
+      raw_rfc822_size: message.raw_rfc822_size,
+    },
     rawHeaders: message.raw_headers,
     bodyText: message.body_text,
     bodyHtml: message.body_html,
@@ -4592,9 +4602,11 @@ async function runRspamdLearningBestEffort(
   requests: readonly RspamdLearningRequest[],
   options: Pick<PostgresMailReadPortOptions, 'rspamdFetch'>,
 ): Promise<void> {
-  for (const request of requests) {
+  for (const { storedRaw, messageId, ...request } of requests) {
+    const rawRfc822 = await loadStoredRawOrNull(storedRaw, `rspamd learning of message ${messageId}`);
     await learnMessageWithRspamd({
       ...request,
+      rawRfc822,
       fetchImpl: options.rspamdFetch,
     }).catch(() => undefined);
   }
@@ -5825,8 +5837,11 @@ function countValue(value: number | string | bigint | null | undefined): number 
   return Number.isFinite(count) && count >= 0 ? count : 0;
 }
 
-function mapEmailMessageRawHeadersRow(row: EmailMessageRawHeadersRow): EmailMessageRawHeadersRecord {
-  const original = decodeStoredRawRfc822(row.raw_rfc822_b64);
+function mapEmailMessageRawHeadersRow(
+  row: EmailMessageRawHeadersRow,
+  rawRfc822: Buffer | null,
+): EmailMessageRawHeadersRecord {
+  const original = rawRfc822 ? rawRfc822.toString('latin1') : null;
   const emlSource = original === null ? 'reconstructed' : 'original';
   const rawEml = original ?? buildServerReconstructedEml(row);
   return {
@@ -5836,12 +5851,6 @@ function mapEmailMessageRawHeadersRow(row: EmailMessageRawHeadersRow): EmailMess
     messageIdHeader: row.message_id ?? null,
     fromJson: row.from_json ?? null,
   };
-}
-
-function decodeStoredRawRfc822(rawRfc822B64: string | null): string | null {
-  const encoded = rawRfc822B64?.trim();
-  if (!encoded) return null;
-  return Buffer.from(encoded, 'base64').toString('latin1');
 }
 
 function buildServerReconstructedEml(row: EmailMessageRawHeadersRow): string {
