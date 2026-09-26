@@ -105,6 +105,10 @@ function pruneOldBackups(backupDir: string, keep: number): void {
     return;
   }
   for (const name of files.slice(0, Math.max(0, files.length - keep))) {
-    fs.rmSync(path.join(backupDir, name), { force: true });
+    try {
+      fs.rmSync(path.join(backupDir, name), { force: true });
+    } catch {
+      // Gesperrt oder ohne Rechte: bleibt liegen. Aufräumen darf den Start nie verhindern.
+    }
   }
 }

@@ -35,6 +35,8 @@ function runWithFakeDocker(
         'esac',
         // restore-compose.sh and update.sh probe `docker inspect` for health.
         'case "$1" in inspect) echo "${FAKE_API_HEALTH:-healthy}"; exit 0 ;; esac',
+        // Optionally fail the image build (a failure before the migrations).
+        'if [ -n "${FAKE_FAIL_BUILD:-}" ]; then case "$*" in *" build"*) exit 1 ;; esac; fi',
         // Optionally fail the plain migrate-apply (but not --check / --repair-checksums).
         'if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then',
         '  case "$*" in',
@@ -402,6 +404,28 @@ describe('update: fixed release, health check and the way back', () => {
     expect(unhealthy.stderr).toContain('Update stopped during: verify');
     expect(unhealthy.stderr).toContain(`simplecrm" restore ${dump}`);
     expect(unhealthy.stdout).not.toContain('Update complete');
+  }));
+
+  // Codex-Review PR #195: Die Befehle für den Weg zurück müssen denselben Stack treffen wie das Update.
+  test('the way back keeps the compose project and every compose file', ranOrSkipped(() => {
+    const composeFile = `${repoRoot}/docker/docker-compose.yml:${repoRoot}/docker/docker-compose.relay.yml`;
+    const env = { COMPOSE_PROJECT_NAME: 'prod42', COMPOSE_FILE: composeFile };
+    const selection = `COMPOSE_PROJECT_NAME="prod42" COMPOSE_FILE="${composeFile}"`;
+
+    const beforeMigrations = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { ...env, FAKE_FAIL_BUILD: '1' } },
+    );
+    expect(beforeMigrations.status).not.toBe(0);
+    expect(beforeMigrations.stderr).toContain('Update stopped during: build');
+    expect(beforeMigrations.stderr).toContain(`${selection} SKIP_PULL=1 SKIP_BACKUP=1 sh "${repoRoot}/docker/update.sh"`);
+
+    const afterMigrations = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { ...env, FAKE_FAIL_MIGRATE: '1' } },
+    );
+    expect(afterMigrations.stderr).toContain(`${selection} docker compose -p "prod42"`);
+    expect(afterMigrations.stderr).toContain(`${selection} sh "${repoRoot}/docker/simplecrm" restore`);
   }));
 
   test('a failure before the migrations only asks to rebuild the previous commit', ranOrSkipped(() => {

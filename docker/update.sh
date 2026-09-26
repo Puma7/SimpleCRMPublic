@@ -140,6 +140,9 @@ latest_backup_dump() {
 # migrations ran, rebuilding the previous commit is enough; afterwards the
 # pre-update backup has to come back as well (the restore also restarts the API).
 print_way_back() {
+  # Same stack as this update: project and every compose file (relay override,
+  # custom locations), so a copied command never hits the default stack.
+  selection="COMPOSE_PROJECT_NAME=\"$COMPOSE_PROJECT_NAME\" COMPOSE_FILE=\"$COMPOSE_FILE\""
   echo >&2
   echo "==> Update stopped during: $UPDATE_STAGE" >&2
   echo "    Previous version: $PREV_REV" >&2
@@ -149,14 +152,14 @@ print_way_back() {
     source|backup|build)
       echo "The database is unchanged. To go back to the previous version:" >&2
       echo "  git -C \"$REPO_DIR\" checkout --detach $PREV_REV" >&2
-      echo "  SKIP_PULL=1 SKIP_BACKUP=1 sh \"$SCRIPT_DIR/update.sh\"" >&2
+      echo "  $selection SKIP_PULL=1 SKIP_BACKUP=1 sh \"$SCRIPT_DIR/update.sh\"" >&2
       ;;
     *)
       echo "Migrations of the new version may already have run. Fix the cause and re-run" >&2
       echo "the update, or go back to the previous version and its data:" >&2
       echo "  git -C \"$REPO_DIR\" checkout --detach $PREV_REV" >&2
-      echo "  COMPOSE_FILE=\"$COMPOSE_FILE\" docker compose -p \"$COMPOSE_PROJECT_NAME\" --project-directory \"$COMPOSE_DIR\" build" >&2
-      echo "  COMPOSE_PROJECT_NAME=\"$COMPOSE_PROJECT_NAME\" sh \"$SCRIPT_DIR/simplecrm\" restore ${BACKUP_DUMP:-/backups/db-<stamp>.dump}" >&2
+      echo "  $selection docker compose -p \"$COMPOSE_PROJECT_NAME\" --project-directory \"$COMPOSE_DIR\" build" >&2
+      echo "  $selection sh \"$SCRIPT_DIR/simplecrm\" restore ${BACKUP_DUMP:-/backups/db-<stamp>.dump}" >&2
       ;;
   esac
 }

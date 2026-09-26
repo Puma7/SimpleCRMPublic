@@ -88,6 +88,21 @@ describe('Desktop: Sicherung vor dem ersten Start einer neuen Version', () => {
     ]);
   });
 
+  // Codex-Review PR #195: Ein nicht löschbarer Altbestand (unter Windows z. B. gesperrt) darf den Start nicht verhindern.
+  test('eine alte Sicherung, die sich nicht löschen lässt, verhindert weder Sicherung noch Start', () => {
+    seedDatabase(2).close();
+    fs.writeFileSync(path.join(userData, LAST_RUN_VERSION_FILE), '1.0.9\n');
+    const stuck = path.join(userData, PRE_UPDATE_BACKUP_DIR, '0000-alt.sqlite');
+    fs.mkdirSync(stuck, { recursive: true });
+    fs.writeFileSync(path.join(stuck, 'gesperrt'), 'x');
+
+    const result = backupDatabaseBeforeVersionChange({ dbPath, userDataPath: userData, currentVersion: '1.1.0', keep: 1 });
+
+    expect(result.status).toBe('created');
+    expect(backups()).toHaveLength(2);
+    expect(marker()).toBe('1.1.0');
+  });
+
   test('scheitert die Sicherung, startet die App trotzdem und versucht es beim nächsten Start erneut', () => {
     seedDatabase(1).close();
     fs.writeFileSync(path.join(userData, LAST_RUN_VERSION_FILE), '1.0.9\n');
