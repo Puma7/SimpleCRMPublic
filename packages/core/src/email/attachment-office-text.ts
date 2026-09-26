@@ -208,51 +208,157 @@ function sortedEntries(entries: ZipEntries, pattern: RegExp): Uint8Array[] {
 }
 
 // ---------------------------------------------------------------------------
-// XLSX / XLSM (SpreadsheetML)
+// XML: a linear tokenizer instead of regular expressions over whole documents
+// (a lazy pattern like `<c ...>[\s\S]*?</c>` backtracks quadratically on
+// crafted input). Only indexOf moves forward; every character is read a
+// constant number of times.
 
-/** Text of all <t> elements inside a fragment (shared string item, inline string). */
-function xmlRunText(fragment: string): string {
-  let out = '';
-  const pattern = /<(?:[a-zA-Z0-9]+:)?t(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?t>/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(fragment)) !== null) out += match[1];
-  return unescapeXml(out);
+type XmlToken =
+  | { kind: 'text'; text: string }
+  | { kind: 'open'; name: string; attrs: string; selfClosing: boolean }
+  | { kind: 'close'; name: string };
+
+function* xmlTokens(xml: string): Generator<XmlToken> {
+  let pos = 0;
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    if (lt < 0) {
+      yield { kind: 'text', text: unescapeXml(xml.slice(pos)) };
+      return;
+    }
+    if (lt > pos) yield { kind: 'text', text: unescapeXml(xml.slice(pos, lt)) };
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      if (end < 0) return;
+      yield { kind: 'text', text: xml.slice(lt + 9, end) };
+      pos = end + 3;
+      continue;
+    }
+    const closer = xml.startsWith('<!--', lt) ? '-->' : xml.startsWith('<?', lt) ? '?>' : '>';
+    const gt = xml.indexOf(closer, lt + 1);
+    if (gt < 0) return;
+    pos = gt + closer.length;
+    if (closer !== '>' || xml[lt + 1] === '!') continue;
+    const inner = xml.slice(lt + 1, gt);
+    if (inner.startsWith('/')) {
+      yield { kind: 'close', name: inner.slice(1).trim() };
+      continue;
+    }
+    const selfClosing = inner.endsWith('/');
+    const body = selfClosing ? inner.slice(0, -1) : inner;
+    let nameEnd = 0;
+    while (nameEnd < body.length && !isXmlSpace(body.charCodeAt(nameEnd))) nameEnd += 1;
+    yield { kind: 'open', name: body.slice(0, nameEnd), attrs: body.slice(nameEnd), selfClosing };
+  }
 }
+
+function isXmlSpace(code: number): boolean {
+  return code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d;
+}
+
+/** Element name without namespace prefix (`x:c` -> `c`). */
+function localName(name: string): string {
+  return name.slice(name.indexOf(':') + 1);
+}
+
+/** Attribute value (single or double quotes), or undefined. */
+function xmlAttribute(attrs: string, name: string): string | undefined {
+  for (let from = 0; ;) {
+    const at = attrs.indexOf(name, from);
+    if (at < 0) return undefined;
+    from = at + 1;
+    if (at > 0 && !isXmlSpace(attrs.charCodeAt(at - 1))) continue;
+    let i = at + name.length;
+    while (isXmlSpace(attrs.charCodeAt(i))) i += 1;
+    if (attrs[i] !== '=') continue;
+    i += 1;
+    while (isXmlSpace(attrs.charCodeAt(i))) i += 1;
+    const quote = attrs[i];
+    if (quote !== '"' && quote !== "'") continue;
+    const end = attrs.indexOf(quote, i + 1);
+    if (end < 0) return undefined;
+    return unescapeXml(attrs.slice(i + 1, end));
+  }
+}
+
+function collapseSpaces(text: string): string {
+  return text.replace(/[ \t]+/g, ' ').trim();
+}
+
+// ---------------------------------------------------------------------------
+// XLSX / XLSM (SpreadsheetML)
 
 const XLSX_SHARED_STRINGS = /^xl\/sharedstrings\.xml$/i;
 const XLSX_SHEET = /^xl\/worksheets\/sheet[^/]*\.xml$/i;
 
 // Element names may carry a namespace prefix (`<x:c>` from .NET exports).
-export function extractXlsxText(entries: ZipEntries): string {
+function xlsxSharedStrings(xml: string): string[] {
   const shared: string[] = [];
-  const sst = findEntry(entries, 'xl/sharedStrings.xml');
-  if (sst) {
-    const xml = utf8.decode(sst);
-    const itemPattern = /<(?:[a-zA-Z0-9]+:)?si(?:\s[^>]*)?>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?si>|<(?:[a-zA-Z0-9]+:)?si\/>/g;
-    let match: RegExpExecArray | null;
-    while ((match = itemPattern.exec(xml)) !== null) shared.push(xmlRunText(match[1] ?? ''));
+  let item: string[] | null = null;
+  let inText = false;
+  for (const token of xmlTokens(xml)) {
+    if (token.kind === 'text') {
+      if (item && inText) item.push(token.text);
+      continue;
+    }
+    const local = localName(token.name);
+    if (token.kind === 'open') {
+      if (local === 'si') {
+        if (token.selfClosing) shared.push('');
+        else item = [];
+      } else if (local === 't' && !token.selfClosing) {
+        inText = true;
+      }
+    } else if (local === 't') {
+      inText = false;
+    } else if (local === 'si' && item) {
+      shared.push(item.join(''));
+      item = null;
+    }
   }
+  return shared;
+}
+
+type XlsxCell = { type: string; value: string | null; inline: string[]; in: 'v' | 't' | null };
+
+function addXlsxCell(values: DistinctValues, cell: XlsxCell, shared: readonly string[]): void {
+  if (cell.type === 's') {
+    const index = Number(cell.value);
+    if (cell.value !== null && Number.isInteger(index) && index >= 0 && index < shared.length) values.add(shared[index]);
+  } else if (cell.type === 'inlineStr') {
+    values.add(cell.inline.join(''));
+  } else if (cell.type === 'str' || cell.type === 'e') {
+    if (cell.value !== null) values.add(cell.value);
+  } else if (cell.type !== 'b' && cell.value !== null) {
+    values.add(spreadsheetNumber(cell.value));
+  }
+}
+
+export function extractXlsxText(entries: ZipEntries): string {
+  const sst = findEntry(entries, 'xl/sharedStrings.xml');
+  const shared = sst ? xlsxSharedStrings(utf8.decode(sst)) : [];
   const values = new DistinctValues();
   for (const sheet of sortedEntries(entries, XLSX_SHEET)) {
-    const xml = utf8.decode(sheet);
-    const cellPattern = /<(?:[a-zA-Z0-9]+:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?c>)/g;
-    let match: RegExpExecArray | null;
-    while ((match = cellPattern.exec(xml)) !== null) {
-      const attrs = match[1] ?? '';
-      const body = match[2] ?? '';
-      const type = /\st=["']([^"']*)["']/.exec(attrs)?.[1] ?? 'n';
-      const raw = /<(?:[a-zA-Z0-9]+:)?v(?:\s[^>]*)?>([^<]*)<\/(?:[a-zA-Z0-9]+:)?v>/.exec(body)?.[1];
-      if (type === 's') {
-        const index = Number(raw);
-        if (Number.isInteger(index) && index >= 0 && index < shared.length) values.add(shared[index]);
-      } else if (type === 'inlineStr') {
-        values.add(xmlRunText(body));
-      } else if (type === 'str' || type === 'e') {
-        if (raw !== undefined) values.add(unescapeXml(raw));
-      } else if (type === 'b') {
+    let cell: XlsxCell | null = null;
+    for (const token of xmlTokens(utf8.decode(sheet))) {
+      if (token.kind === 'text') {
+        if (cell?.in === 'v') cell.value = (cell.value ?? '') + token.text;
+        else if (cell?.in === 't') cell.inline.push(token.text);
         continue;
-      } else if (raw !== undefined) {
-        values.add(spreadsheetNumber(unescapeXml(raw)));
+      }
+      const local = localName(token.name);
+      if (token.kind === 'open') {
+        if (local === 'c' && !token.selfClosing) {
+          cell = { type: xmlAttribute(token.attrs, 't') ?? 'n', value: null, inline: [], in: null };
+        } else if (cell && !token.selfClosing && (local === 'v' || local === 't')) {
+          cell.in = local;
+          if (local === 'v') cell.value ??= '';
+        }
+      } else if (cell && (local === 'v' || local === 't')) {
+        cell.in = null;
+      } else if (cell && local === 'c') {
+        addXlsxCell(values, cell, shared);
+        cell = null;
       }
     }
   }
@@ -260,17 +366,30 @@ export function extractXlsxText(entries: ZipEntries): string {
 }
 
 // ---------------------------------------------------------------------------
-// PPTX (PresentationML): <a:t> of slides and notes
+// PPTX (PresentationML): <a:t> of slides and notes, one line per paragraph
+
+const PPTX_PARTS = /^ppt\/(slides\/slide|notesSlides\/notesSlide)[^/]*\.xml$/;
 
 export function extractPptxText(entries: ZipEntries): string {
   const parts: string[] = [];
-  for (const slide of sortedEntries(entries, /^ppt\/(slides\/slide|notesSlides\/notesSlide)[^/]*\.xml$/)) {
-    const xml = utf8.decode(slide);
-    const paragraphs = xml.split(/<\/a:p>/);
-    for (const paragraph of paragraphs) {
-      const text = xmlRunText(paragraph);
+  for (const slide of sortedEntries(entries, PPTX_PARTS)) {
+    let paragraph: string[] = [];
+    let inText = false;
+    const flush = () => {
+      const text = paragraph.join('');
       if (text.trim()) parts.push(text);
+      paragraph = [];
+    };
+    for (const token of xmlTokens(utf8.decode(slide))) {
+      if (token.kind === 'text') {
+        if (inText) paragraph.push(token.text);
+      } else if (localName(token.name) === 't') {
+        inText = token.kind === 'open' && !token.selfClosing;
+      } else if (token.kind === 'close' && localName(token.name) === 'p') {
+        flush();
+      }
     }
+    flush();
   }
   return parts.join('\n');
 }
@@ -282,31 +401,52 @@ export function extractOdfText(entries: ZipEntries, spreadsheet: boolean): strin
   const content = findEntry(entries, 'content.xml');
   if (!content) throw new OfficeTextError('OpenDocument without content.xml');
   const xml = utf8.decode(content);
-  const body = xml.slice(Math.max(0, xml.indexOf('<office:body')));
+  let inBody = !xml.includes('<office:body');
   if (spreadsheet) {
     const values = new DistinctValues();
-    const cellPattern = /<table:table-cell\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-cell>)/g;
-    let match: RegExpExecArray | null;
-    while ((match = cellPattern.exec(body)) !== null) {
-      const attrs = match[1] ?? '';
-      const numeric = /office:value="([^"]*)"/.exec(attrs)?.[1];
-      if (numeric !== undefined) values.add(spreadsheetNumber(unescapeXml(numeric)));
-      const text = stripXml(match[2] ?? '');
-      if (text && text !== numeric) values.add(text);
+    let cell: { numeric: string | undefined; parts: string[]; depth: number } | null = null;
+    for (const token of xmlTokens(xml)) {
+      if (!inBody) {
+        inBody = token.kind === 'open' && token.name === 'office:body';
+        continue;
+      }
+      if (token.kind === 'text') {
+        cell?.parts.push(token.text);
+      } else if (token.name === 'table:table-cell' && token.kind === 'open') {
+        if (cell) {
+          if (!token.selfClosing) cell.depth += 1;
+          continue;
+        }
+        const numeric = xmlAttribute(token.attrs, 'office:value');
+        if (token.selfClosing) {
+          if (numeric !== undefined) values.add(spreadsheetNumber(numeric));
+        } else {
+          cell = { numeric, parts: [], depth: 1 };
+        }
+      } else if (cell && token.name === 'table:table-cell' && token.kind === 'close' && --cell.depth === 0) {
+        if (cell.numeric !== undefined) values.add(spreadsheetNumber(cell.numeric));
+        const text = collapseSpaces(cell.parts.join(''));
+        if (text && text !== cell.numeric) values.add(text);
+        cell = null;
+      } else {
+        cell?.parts.push(' ');
+      }
     }
     return values.text();
   }
-  return stripXml(
-    body
-      .replace(/<text:tab\/>/g, '\t')
-      .replace(/<text:line-break\/>/g, '\n')
-      .replace(/<text:s(?:\s[^>]*)?\/>/g, ' ')
-      .replace(/<\/text:(p|h)>/g, '\n'),
-  );
-}
-
-function stripXml(xml: string): string {
-  return unescapeXml(xml.replace(/<[^>]*>/g, ' ')).replace(/[ \t]+/g, ' ').trim();
+  const parts: string[] = [];
+  for (const token of xmlTokens(xml)) {
+    if (!inBody) {
+      inBody = token.kind === 'open' && token.name === 'office:body';
+      continue;
+    }
+    if (token.kind === 'text') parts.push(token.text);
+    else if (token.kind === 'close') parts.push(token.name === 'text:p' || token.name === 'text:h' ? '\n' : ' ');
+    else if (token.name === 'text:tab') parts.push('\t');
+    else if (token.name === 'text:line-break') parts.push('\n');
+    else parts.push(' ');
+  }
+  return collapseSpaces(parts.join(''));
 }
 
 // ---------------------------------------------------------------------------
@@ -948,7 +1088,7 @@ export function extractOfficeText(kind: OfficeTextKind, data: Uint8Array, inflat
     case 'xlsb':
       return extractXlsbText(readZipEntries(data, (name) => XLSB_SHARED_STRINGS.test(name) || XLSB_SHEET.test(name), inflateRaw));
     case 'pptx':
-      return extractPptxText(readZipEntries(data, (name) => /^ppt\/(slides\/slide|notesSlides\/notesSlide)[^/]*\.xml$/.test(name), inflateRaw));
+      return extractPptxText(readZipEntries(data, (name) => PPTX_PARTS.test(name), inflateRaw));
     case 'ods':
       return extractOdfText(readZipEntries(data, (name) => name.toLowerCase() === 'content.xml', inflateRaw), true);
     case 'odt':

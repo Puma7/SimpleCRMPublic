@@ -185,6 +185,26 @@ describe('damaged or crafted office files fail safely', () => {
     expect(() => extract('xlsx', zip)).toThrow();
   });
 
+  // Muster wie `<c ...>[\s\S]*?</c>` laufen auf solchen Dateien quadratisch lange;
+  // der Leser liest jedes Zeichen nur wenige Male.
+  test('crafted XML without closing tags is read in linear time', async () => {
+    const open = '<c t="s"><v>1'.repeat(40_000);
+    const unclosed = '<t <t '.repeat(40_000);
+    const zip = new JSZip();
+    zip.file('xl/sharedStrings.xml', `<sst><si>${'<si>'.repeat(40_000)}${unclosed}`);
+    zip.file('xl/worksheets/sheet1.xml', `<worksheet><sheetData>${open}${'<'.repeat(200_000)}`);
+    const xlsx = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    const ods = new JSZip();
+    ods.file('content.xml', `<office:body>${'<table:table-cell office:value="1">'.repeat(40_000)}${'<'.repeat(200_000)}`);
+    const odsFile = await ods.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+    const started = Date.now();
+    expect(typeof extract('xlsx', xlsx)).toBe('string');
+    expect(typeof extract('ods', odsFile)).toBe('string');
+    expect(typeof extract('odt', odsFile)).toBe('string');
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
   test('rtf nested beyond any real document is refused', () => {
     expect(() => extractRtfText(Buffer.from(`{\\rtf1 ${'{'.repeat(200_000)}x`))).toThrow('rtf nested too deeply');
   });
