@@ -77,7 +77,7 @@ Nebenbei wird ein bestehender Fehler behoben: Mit aktivem Sync des Gesendet-Ordn
 - **Datenschutz:** Schon beim Sammeln werden Zitat und Signatur entfernt und personenbezogene Daten ersetzt (E-Mail-Adressen, Telefonnummern, IBAN, URLs, Absender- und Kundennamen, Adressen, Bestell- und Kundennummern). Gespeichert wird nur der bereinigte Text. Die KI bekommt zusätzlich die Anweisung, nur allgemeine Regeln ohne Personenbezug zu formulieren; ihre Ausgabe läuft noch einmal durch denselben Filter. Rohdaten werden nach der Auswertung gelöscht, spätestens nach 90 Tagen.
 - **Auswerten:** per Knopf „Learnings jetzt auswerten“ oder per Workflow mit Zeitplan (Baustein „Learnings auswerten“, Vorlage „wöchentlich“). Täglich, wöchentlich oder monatlich stellt man im Zeitplan ein.
 - **Vorschlag:** Die KI liefert Änderungen je Abschnitt (`##`) der Ziel-Wissensbasis (hinzufügen, ändern, entfernen). SimpleCRM baut daraus die **komplette neue Wissensbasis** und zeigt sie als Änderungsansicht: Entferntes rot durchgestrichen, Neues farbig. Der Vorschlag lässt sich vor der Übernahme bearbeiten und um eigene Punkte ergänzen.
-- **Ziel:** eine eigene Wissensbasis „Learnings“ (Kontext „allgemein“, damit alle KI-Bausteine sie automatisch mitlesen) oder eine vorhandene Wissensbasis, die korrigiert werden soll.
+- **Ziel:** eine eigene Wissensbasis „Learnings“ (eigener Kontext „Learnings“, den alle KI-Bausteine in jeder Richtung automatisch mitlesen) oder eine vorhandene Wissensbasis, die korrigiert werden soll.
 - **Freigabe:** Owner/Admin (Server: Recht `workflows.manage`) übernimmt oder verwirft. Hat sich die Wissensbasis seit dem Vorschlag geändert, warnt SimpleCRM vor dem Überschreiben.
 
 ### 3.5 Zeitplan auch auf dem Server
