@@ -675,6 +675,11 @@ function migrateAttachmentTextSearch(): void {
     const cols = (conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGE_ATTACHMENTS_TABLE})`).all() as { name: string }[])
         .map((c) => c.name);
     if (cols.length === 0) return; // attachments table not created yet
+    // Extractor version of the last try: attachments tried by an older version
+    // without text are extracted once more (newly supported formats).
+    if (!cols.includes('text_extractor_version')) {
+        conn.exec(`ALTER TABLE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} ADD COLUMN text_extractor_version INTEGER NOT NULL DEFAULT 0`);
+    }
     const ftsMaster = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
         .get(EMAIL_ATTACHMENTS_FTS_TABLE) as { name: string } | undefined;

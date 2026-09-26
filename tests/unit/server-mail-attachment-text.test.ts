@@ -1,13 +1,19 @@
 /**
  * @jest-environment node
  */
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { deflateRawSync } from 'node:zlib';
 
 import JSZip from 'jszip';
 
-import { extractDocxText, extractDocxTextInWorker, extractPdfTextInWorker } from '../../packages/server/src/mail-attachment-docx';
+import {
+  extractDocxText,
+  extractDocxTextInWorker,
+  extractOfficeTextInWorker,
+  extractPdfTextInWorker,
+} from '../../packages/server/src/mail-attachment-docx';
 import { extractAttachmentTextFromBuffer } from '../../packages/server/src/mail-attachment-text';
 
 // The DOCX worker loads the TS sources through tsx; map @simplecrm/core to src like Jest does.
@@ -280,5 +286,53 @@ describe('server PDF text extraction runs isolated in a worker', () => {
 
   test('a damaged PDF fails in the worker, not in the server', async () => {
     await expect(extractPdfTextInWorker(Buffer.from('%PDF-1.4 kaputt'), 15_000)).rejects.toThrow();
+  }, 30_000);
+});
+
+// Lieferanten schicken Preislisten als CSV oder Excel; gesucht wird nach der EAN.
+describe('server office and CSV attachments become searchable text', () => {
+  const fixture = (name: string) => readFileSync(path.join(__dirname, '../fixtures/attachments', name));
+  const EAN = '4006381333931';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['xlsx', 'lieferant-ean.xlsx'],
+    ['xls', 'lieferant-ean.xls'],
+    ['ods', 'lieferant-ean.ods'],
+    ['doc', 'angebot.doc'],
+    ['rtf', 'angebot.rtf'],
+    ['odt', 'angebot.odt'],
+  ] as const)('%s is read in the isolated worker', async (kind, file) => {
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    const text = await extractAttachmentTextFromBuffer(fixture(file), kind);
+    expect(text).toContain(EAN);
+    expect(terminate).toHaveBeenCalled();
+  }, 30_000);
+
+  test('an Excel CSV in Windows-1252 keeps its umlauts', async () => {
+    const csv = Buffer.from(`EAN;Artikel\r\n${EAN};Mutter Müller-Größe\r\n`, 'latin1');
+    await expect(extractAttachmentTextFromBuffer(csv, 'text')).resolves.toBe(`EAN;Artikel ${EAN};Mutter Müller-Größe`);
+  });
+
+  test('an "xls" that is really CSV is read as text', async () => {
+    await expect(extractAttachmentTextFromBuffer(Buffer.from(`${EAN};Schraube`), 'xls')).resolves.toBe(`${EAN};Schraube`);
+  });
+
+  // Viele Warenwirtschaften exportieren "Excel" als XML-Tabelle (Excel 2003) mit Endung .xls.
+  test('an "xls" that is an Excel 2003 XML table is read as markup text', async () => {
+    const xml = Buffer.from(`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet><Table>`
+      + `<Row><Cell><Data ss:Type="Number">${EAN}</Data></Cell><Cell><Data ss:Type="String">Mutter M8</Data></Cell></Row>`
+      + '</Table></Worksheet></Workbook>');
+    const text = await extractAttachmentTextFromBuffer(xml, 'xls');
+    expect(text).toContain(EAN);
+    expect(text).toContain('Mutter M8');
+  });
+
+  test('a damaged spreadsheet fails in the worker, not in the server', async () => {
+    const damaged = fixture('lieferant-ean.xls').subarray(0, 600);
+    await expect(extractOfficeTextInWorker('xls', damaged, 15_000)).rejects.toThrow();
   }, 30_000);
 });

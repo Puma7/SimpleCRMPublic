@@ -1082,6 +1082,8 @@ export type EmailMessageAttachmentsTable = EmailMessageChildTable & {
   /** Extrahierter Anhangstext fuer die Suche (Suche Phase 3, Migration 0026). */
   content_text: string | null;
   text_extracted_at: TimestampColumn | null;
+  /** Extractor version of the last try (ATTACHMENT_TEXT_EXTRACTOR_VERSION); older without text = try again. */
+  text_extractor_version: ColumnType<number, number | undefined, number>;
 };
 
 export type EmailMessageTagsTable = EmailMessageChildTable & {

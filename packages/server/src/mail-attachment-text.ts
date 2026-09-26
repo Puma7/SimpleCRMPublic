@@ -17,10 +17,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 
 import {
+  ATTACHMENT_TEXT_EXTRACTOR_VERSION,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
+  decodeAttachmentText,
   plainTextFromHtml,
+  refineAttachmentTextKind,
   type AttachmentTextKind,
 } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
@@ -32,7 +35,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
-import { extractDocxTextInWorker, extractPdfTextInWorker } from './mail-attachment-docx';
+import { extractDocxTextInWorker, extractOfficeTextInWorker, extractPdfTextInWorker } from './mail-attachment-docx';
 
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_POLL_INTERVAL_MS = 30_000;
@@ -89,13 +92,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
 export async function extractAttachmentTextFromBuffer(
   buf: Buffer,
-  kind: AttachmentTextKind,
+  declaredKind: AttachmentTextKind,
 ): Promise<string> {
+  const kind = refineAttachmentTextKind(declaredKind, buf.subarray(0, 512));
   switch (kind) {
     case 'text':
-      return capAttachmentText(buf.toString('utf8'));
+      return capAttachmentText(decodeAttachmentText(buf));
     case 'html':
-      return capAttachmentText(plainTextFromHtml(buf.toString('utf8')));
+      return capAttachmentText(plainTextFromHtml(decodeAttachmentText(buf)));
     case 'pdf':
       // pdf.js runs in a worker with its own heap limit; on timeout the worker
       // is terminated (a parse in the main thread could not be stopped).
@@ -104,6 +108,17 @@ export async function extractAttachmentTextFromBuffer(
       await validateDocxArchive(buf);
       // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
       return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
+    case 'xlsx':
+    case 'xlsb':
+    case 'xls':
+    case 'ods':
+    case 'odt':
+    case 'rtf':
+    case 'doc':
+    case 'pptx':
+      // Own readers (core), in the same isolated worker: spreadsheets keep
+      // numbers as stored, so an EAN stays searchable as all its digits.
+      return extractOfficeTextInWorker(kind, buf, EXTRACT_TIMEOUT_MS);
   }
 }
 
@@ -155,7 +170,12 @@ async function markExtracted(
     async (trx) => {
       await trx
         .updateTable('email_message_attachments')
-        .set({ content_text: text, text_extracted_at: new Date(), updated_at: new Date() })
+        .set({
+          content_text: text,
+          text_extracted_at: new Date(),
+          text_extractor_version: ATTACHMENT_TEXT_EXTRACTOR_VERSION,
+          updated_at: new Date(),
+        })
         .where('workspace_id', '=', row.workspace_id)
         .where('id', '=', Number(row.id))
         .execute();
@@ -260,7 +280,15 @@ export async function runAttachmentTextBackfillBatch(
       trx
         .selectFrom('email_message_attachments')
         .select(EXTRACTABLE_COLUMNS)
-        .where('text_extracted_at', 'is', null)
+        // Never tried, or tried without text by an older extractor (a format
+        // may have become readable since): each such row is tried once more.
+        .where((eb) => eb.or([
+          eb('text_extracted_at', 'is', null),
+          eb.and([
+            eb('content_text', 'is', null),
+            eb('text_extractor_version', '<', ATTACHMENT_TEXT_EXTRACTOR_VERSION),
+          ]),
+        ]))
         .orderBy('id', 'asc')
         .limit(limit)
         .execute(),

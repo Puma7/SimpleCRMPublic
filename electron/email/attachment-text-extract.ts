@@ -1,6 +1,8 @@
 /**
- * Attachment text extraction (Suche Phase 2): txt/md/csv/log, html, pdf
- * (pdf-parse), docx (mammoth). Results land in
+ * Attachment text extraction (Suche Phase 2): text formats (txt, md, csv,
+ * tsv, json, xml, ics, vcf; charset detected), html, pdf (pdf-parse), docx
+ * (mammoth) and, in the isolated worker, xlsx/xlsb/xls/ods/odt/rtf/doc/pptx
+ * (core readers). Results land in
  * email_message_attachments.text_content and are indexed by the
  * email_attachments_fts triggers. Every failure is non-fatal: the row is
  * marked as tried (text_extracted_at) and skipped from future backfills.
@@ -14,12 +16,15 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 import { resolveStoredAttachmentPath } from './attachment-storage-path';
-import { extractDocxTextInWorker } from './attachment-text-docx';
+import { extractDocxTextInWorker, extractOfficeTextInWorker } from './attachment-text-docx';
 import {
+  ATTACHMENT_TEXT_EXTRACTOR_VERSION,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
+  decodeAttachmentText,
   plainTextFromHtml,
+  refineAttachmentTextKind,
   type AttachmentTextKind,
 } from './email-parse-utils';
 
@@ -70,13 +75,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
 export async function extractAttachmentTextFromBuffer(
   buf: Buffer,
-  kind: AttachmentTextKind,
+  declaredKind: AttachmentTextKind,
 ): Promise<string> {
+  const kind = refineAttachmentTextKind(declaredKind, buf.subarray(0, 512));
   switch (kind) {
     case 'text':
-      return capAttachmentText(buf.toString('utf8'));
+      return capAttachmentText(decodeAttachmentText(buf));
     case 'html':
-      return capAttachmentText(plainTextFromHtml(buf.toString('utf8')));
+      return capAttachmentText(plainTextFromHtml(decodeAttachmentText(buf)));
     case 'pdf': {
       const { PDFParse } = await import('pdf-parse');
       const parser = new PDFParse({ data: new Uint8Array(buf) });
@@ -90,6 +96,16 @@ export async function extractAttachmentTextFromBuffer(
     case 'docx':
       // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
       return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
+    case 'xlsx':
+    case 'xlsb':
+    case 'xls':
+    case 'ods':
+    case 'odt':
+    case 'rtf':
+    case 'doc':
+    case 'pptx':
+      // Own readers (core) in the same isolated worker; numbers as stored (EAN).
+      return extractOfficeTextInWorker(kind, buf, EXTRACT_TIMEOUT_MS);
   }
 }
 
@@ -97,9 +113,9 @@ function markExtracted(id: number, text: string | null): void {
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}
-       SET text_content = ?, text_extracted_at = datetime('now') WHERE id = ?`,
+       SET text_content = ?, text_extracted_at = datetime('now'), text_extractor_version = ? WHERE id = ?`,
     )
-    .run(text, id);
+    .run(text, ATTACHMENT_TEXT_EXTRACTOR_VERSION, id);
 }
 
 /**
@@ -187,9 +203,10 @@ export async function runAttachmentTextBackfillBatch(
       `SELECT id, filename_display, content_type, size_bytes, storage_path
        FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE}
        WHERE text_extracted_at IS NULL
+          OR (text_content IS NULL AND COALESCE(text_extractor_version, 0) < ?)
        ORDER BY id ASC LIMIT ?`,
     )
-    .all(limit) as ExtractableRow[];
+    .all(ATTACHMENT_TEXT_EXTRACTOR_VERSION, limit) as ExtractableRow[];
   for (const row of rows) {
     await extractTextForAttachmentRow(row, opts);
   }

@@ -1,6 +1,7 @@
 export * from './attachment-filename';
 export * from './attachment-safety';
 export * from './attachment-text';
+export * from './attachment-office-text';
 export * from './authentication-results';
 export * from './automation-headers';
 export * from './imap-sync-cursor';

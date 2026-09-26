@@ -368,7 +368,10 @@ If a step fails after the source was changed, the script prints the way back:
   every read checks the hash. Identical attachment files become hard links of
   one inode (every row keeps its own path). Search is unaffected: it never
   reads the original. Existing mail is converted in the background after the
-  update; PDFs and DOCX are parsed for search in an isolated worker.
+  update; PDF, Word (docx/doc), Excel (xlsx/xlsb/xls), OpenDocument, RTF and
+  pptx are parsed for search in an isolated worker (spreadsheet numbers keep
+  all digits, so an EAN is searchable). Attachments an older version tried
+  without text are read once more after the update (migration 0059).
 - **`sh docker/simplecrm maintenance [--check-only] [--deep]`** checks every
   attachment row against its file (missing, size, with `--deep` the sha256),
   counts files without a row, verifies stored originals and runs the verified

@@ -15,10 +15,14 @@
 import { createRequire } from 'node:module';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
+import { inflateRawSync } from 'node:zlib';
+
 import {
   assertDocxInflatesWithinLimit,
   capAttachmentText,
+  extractOfficeText,
   type DocxZipLoader,
+  type OfficeTextKind,
 } from '@simplecrm/core';
 
 const DOCX_WORKER_RESOURCE_LIMITS = {
@@ -31,7 +35,7 @@ const MIB = 1024 * 1024;
 const HEAP_POLL_INTERVAL_MS = 100;
 const WORKER_KIND = 'simplecrm-docx-text';
 
-type TextWorkerFormat = 'docx' | 'pdf';
+type TextWorkerFormat = 'docx' | 'pdf' | OfficeTextKind;
 type DocxWorkerInput = { kind: typeof WORKER_KIND; format?: TextWorkerFormat; docx: Uint8Array };
 type DocxWorkerResult = { text: string } | { error: string };
 
@@ -61,6 +65,11 @@ export async function extractPdfText(buf: Buffer): Promise<string> {
   } finally {
     await parser.destroy().catch(() => undefined);
   }
+}
+
+/** Spreadsheets, RTF, DOC, OpenDocument, PPTX (core readers); runs inside the worker. */
+export function extractOfficeTextInThread(kind: OfficeTextKind, buf: Buffer): string {
+  return capAttachmentText(extractOfficeText(kind, buf, (data, maxOutputLength) => inflateRawSync(data, { maxOutputLength })));
 }
 
 /** Built code starts this compiled module; from TS sources (Jest, tsx) the worker needs the tsx loader too. */
@@ -93,8 +102,13 @@ export function extractPdfTextInWorker(buf: Buffer, timeoutMs: number): Promise<
   return runTextWorker('pdf', buf, timeoutMs);
 }
 
+/** Office formats (xlsx, xlsb, xls, ods, odt, rtf, doc, pptx) in the same kind of worker. */
+export function extractOfficeTextInWorker(kind: OfficeTextKind, buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker(kind, buf, timeoutMs);
+}
+
 function runTextWorker(format: TextWorkerFormat, buf: Buffer, timeoutMs: number): Promise<string> {
-  const label = format === 'pdf' ? 'PDF' : 'DOCX';
+  const label = format.toUpperCase();
   const entry = workerEntry();
   const worker = new Worker(entry.filename, {
     execArgv: entry.execArgv,
@@ -161,7 +175,12 @@ function runTextWorker(format: TextWorkerFormat, buf: Buffer, timeoutMs: number)
 if (!isMainThread && (workerData as Partial<DocxWorkerInput> | null)?.kind === WORKER_KIND) {
   const { docx, format } = workerData as DocxWorkerInput;
   const input = Buffer.from(docx.buffer, docx.byteOffset, docx.byteLength);
-  (format === 'pdf' ? extractPdfText(input) : extractDocxText(input)).then(
+  const run = format === 'pdf'
+    ? extractPdfText(input)
+    : format === 'docx' || format === undefined
+      ? extractDocxText(input)
+      : Promise.resolve().then(() => extractOfficeTextInThread(format, input));
+  run.then(
     (text) => parentPort?.postMessage({ text } satisfies DocxWorkerResult),
     (error: unknown) =>
       parentPort?.postMessage({

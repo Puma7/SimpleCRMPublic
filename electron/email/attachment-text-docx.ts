@@ -12,12 +12,14 @@
  */
 import { createRequire } from 'module';
 import { isMainThread, parentPort, Worker, workerData } from 'worker_threads';
+import { inflateRawSync } from 'zlib';
 // Straight from the core module, not via email-parse-utils: the worker loads only what it needs.
 import {
   assertDocxInflatesWithinLimit,
   capAttachmentText,
   type DocxZipLoader,
 } from '../../packages/core/src/email/attachment-text';
+import { extractOfficeText, type OfficeTextKind } from '../../packages/core/src/email/attachment-office-text';
 
 const DOCX_WORKER_RESOURCE_LIMITS = {
   maxOldGenerationSizeMb: 512,
@@ -29,7 +31,8 @@ const MIB = 1024 * 1024;
 const HEAP_POLL_INTERVAL_MS = 100;
 const WORKER_KIND = 'simplecrm-docx-text';
 
-type DocxWorkerInput = { kind: typeof WORKER_KIND; docx: Uint8Array };
+type TextWorkerFormat = 'docx' | OfficeTextKind;
+type DocxWorkerInput = { kind: typeof WORKER_KIND; format?: TextWorkerFormat; docx: Uint8Array };
 type DocxWorkerResult = { text: string } | { error: string };
 
 /** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
@@ -46,6 +49,11 @@ export async function extractDocxText(buf: Buffer): Promise<string> {
   const mammoth = await import('mammoth');
   const result = await mammoth.extractRawText({ buffer: buf });
   return capAttachmentText(result.value ?? '');
+}
+
+/** Spreadsheets, RTF, DOC, OpenDocument, PPTX (core readers); runs inside the worker. */
+export function extractOfficeTextInThread(kind: OfficeTextKind, buf: Buffer): string {
+  return capAttachmentText(extractOfficeText(kind, buf, (data, maxOutputLength) => inflateRawSync(data, { maxOutputLength })));
 }
 
 /** Built code starts this compiled module; from TS sources (Jest, tsx) the worker needs the tsx loader too. */
@@ -70,13 +78,23 @@ function heapLimitOverridden(heapSizeLimit: number): boolean {
  * timeoutMs. Rejects on parse errors, out-of-memory and timeout.
  */
 export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker('docx', buf, timeoutMs);
+}
+
+/** Office formats (xlsx, xlsb, xls, ods, odt, rtf, doc, pptx) in the same kind of worker. */
+export function extractOfficeTextInWorker(kind: OfficeTextKind, buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker(kind, buf, timeoutMs);
+}
+
+function runTextWorker(format: TextWorkerFormat, buf: Buffer, timeoutMs: number): Promise<string> {
+  const label = format.toUpperCase();
   const entry = workerEntry();
   const worker = new Worker(entry.filename, {
     execArgv: entry.execArgv,
     // Explicitly the caller's process.env (the default outside Jest): under Jest the
     // test's sandboxed env (e.g. TSX_TSCONFIG_PATH) must reach the tsx-loaded worker.
     env: process.env,
-    workerData: { kind: WORKER_KIND, docx: buf } satisfies DocxWorkerInput,
+    workerData: { kind: WORKER_KIND, format, docx: buf } satisfies DocxWorkerInput,
     resourceLimits: DOCX_WORKER_RESOURCE_LIMITS,
   });
   return new Promise<string>((resolve, reject) => {
@@ -92,7 +110,7 @@ export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise
       else resolve(text);
     };
     const stop = (reason: string) => {
-      const error = new Error(`DOCX parse stopped: ${reason}`);
+      const error = new Error(`${label} parse stopped: ${reason}`);
       console.warn(`[email] attachment text: ${error.message}; attachment stays without text`);
       finish(error);
     };
@@ -125,17 +143,21 @@ export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise
         stop(heapLimit);
         return;
       }
-      console.warn(`[email] attachment text: DOCX worker failed: ${error.message}`);
+      console.warn(`[email] attachment text: ${label} worker failed: ${error.message}`);
       finish(error);
     });
-    worker.on('exit', (code) => finish(new Error(`DOCX worker exited with code ${code}`)));
+    worker.on('exit', (code) => finish(new Error(`${label} worker exited with code ${code}`)));
     watchHeap();
   });
 }
 
 if (!isMainThread && (workerData as Partial<DocxWorkerInput> | null)?.kind === WORKER_KIND) {
-  const { docx } = workerData as DocxWorkerInput;
-  extractDocxText(Buffer.from(docx.buffer, docx.byteOffset, docx.byteLength)).then(
+  const { docx, format } = workerData as DocxWorkerInput;
+  const input = Buffer.from(docx.buffer, docx.byteOffset, docx.byteLength);
+  const run = format === undefined || format === 'docx'
+    ? extractDocxText(input)
+    : Promise.resolve().then(() => extractOfficeTextInThread(format, input));
+  run.then(
     (text) => parentPort?.postMessage({ text } satisfies DocxWorkerResult),
     (error: unknown) =>
       parentPort?.postMessage({

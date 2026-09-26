@@ -23,6 +23,7 @@ Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt �
 - **Server:** Anhangssicherung inkrementell: jede Sicherung kopiert nur neue Inhalte, jeder Satz bleibt allein wiederherstellbar. Alte Sätze (tar) bleiben lesbar.
 - **Server:** `sh docker/simplecrm maintenance` prüft Anhänge und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort; es löscht nichts. Das Update prüft am Ende kurz.
 - **Server:** PDF-Anhänge werden für die Suche in einem abgeschotteten Worker gelesen (eigene Speichergrenze, Abbruch nach 30 s), wie schon DOCX.
+- **Beide Editionen:** Mehr Anhänge durchsuchbar: Excel (xlsx, xlsm, xlsb, xls), OpenDocument (ods, odt, odp), Word 97 (doc), RTF und PowerPoint (pptx), dazu tsv, json, xml, ics und vcf. Tabellenzahlen stehen mit allen Ziffern im Index (EAN-Suche). Textanhänge werden in ihrem Zeichensatz gelesen (UTF-8, UTF-16, Windows-1252 wie bei Excel-CSV). Eigene Leser ohne neue Abhängigkeiten, im abgeschotteten Worker mit Entpack-Grenze. Anhänge, die eine frühere Version ohne Text als versucht markiert hat, werden einmal nachgelesen (Migration `0059`, Desktop-Spalte `text_extractor_version`).
 
 ### Fixed
 - Einstellungen → Wartung (Server-Edition) empfahl `simplecrm up --build`. Das holt keinen neuen Stand und sichert nicht. Jetzt steht dort `simplecrm update --version latest`.
