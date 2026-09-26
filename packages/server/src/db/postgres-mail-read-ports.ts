@@ -218,6 +218,8 @@ const emailMessageSummaryColumns = [
   'reply_parent_message_id',
   'approval_state',
   'approval_reason',
+  'outbound_hold',
+  'outbound_block_reason',
   'tracking_override',
   'updated_at',
 ] as const;
@@ -5697,6 +5699,11 @@ function mapEmailMessageRow(
     // approval_reason summarizes AI review of customer + draft content — redact for
     // metadata-only callers (content_readable===false), same boundary as snippet/body.
     approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
+    // Ausgangsprüfung: angehaltene Entwürfe zeigen Banner und Listen-Kennzeichen.
+    // Der Grund stammt aus Workflows/KI-Prüfung über den Entwurfsinhalt — wie
+    // approval_reason für metadata-only Aufrufer geschwärzt.
+    outboundHold: row.outbound_hold === true,
+    outboundBlockReason: row.content_readable === false ? null : (row.outbound_block_reason ?? null),
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

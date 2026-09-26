@@ -2176,6 +2176,10 @@ export type EmailMessageRecord = {
   replyParentMessageId?: number | null;
   approvalState?: string | null;
   approvalReason?: string | null;
+  /** Ausgangsprüfung: Entwurf angehalten (Versand blockiert). */
+  outboundHold?: boolean;
+  /** Grund der Sperre (Workflow/KI-Prüfung); null ohne Grund oder bei metadata-only. */
+  outboundBlockReason?: string | null;
   /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
   searchSnippet?: string | null;
   bodyText?: string | null;
