@@ -70,6 +70,8 @@ import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
 import { buildMetadataContextFromMessage, interpolateTemplate } from '../context';
+import { storeDraftAiSuggestionSnapshot } from '../../email/email-ai-learnings';
+import { registerLearningsDigestNode } from './learnings-nodes';
 import { formatMetadataForSpamPrompt, parseSpamScore } from '../ai-score';
 import {
   classificationPrompt,
@@ -223,6 +225,9 @@ function holdResultOrSendInFlight(
 }
 
 export function registerAiNodes(register: Reg): void {
+  // TA-P5: „Learnings auswerten“ (eigene Datei, gleiche Registrierung wie die übrigen KI-Knoten).
+  registerLearningsDigestNode(register);
+
   register({
     type: 'ai.review',
     label: 'KI-Prüfung',
@@ -635,6 +640,7 @@ export function registerAiNodes(register: Reg): void {
         if (ctx.messageId != null) {
           updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
         }
+        storeDraftAiSuggestionSnapshot(id, out);
         variables['draft.id'] = id;
       }
       return { status: 'ok', variables };
@@ -897,6 +903,8 @@ export function registerAiNodes(register: Reg): void {
         toJson: recipientJsonFromField(replyTo),
       });
       updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
+      // TA-P5: KI-Text (ohne Anrede/Signatur) wie der Server für den Vergleich beim Versand.
+      storeDraftAiSuggestionSnapshot(draftId, aiText);
       // Bewusst KEIN markDraftAutoSubmitted hier: der RFC-3834-Marker gehört
       // an den tatsächlichen Versand (email.send_draft / ApproveDraftSend).
       // Ein liegen gebliebener Entwurf, den ein Mensch später unbearbeitet
@@ -1113,6 +1121,7 @@ export function registerAiNodes(register: Reg): void {
           if (ctx.messageId != null) {
             updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
           }
+          storeDraftAiSuggestionSnapshot(id, draftBody);
           variables['draft.id'] = id;
         }
       } else if (createDraft) {

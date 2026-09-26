@@ -188,6 +188,13 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         }
         runScheduledSendTick(logger);
         try {
+          // TA-P5: Learnings-Rohdaten (90 Tage / entschiedene Vorschläge) aufräumen.
+          const { pruneAiLearningCandidatesIfDue } = await import('./email-ai-learnings.js');
+          pruneAiLearningCandidatesIfDue(logger);
+        } catch (e) {
+          logger.warn('[ai-learnings] prune', e);
+        }
+        try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
           logger.warn('[workflow] task due scan', e);

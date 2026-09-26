@@ -32,6 +32,12 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
     "signature",
     "systemPrompt",
   ],
+  "ai.learnings_digest": [
+    "knowledgeBaseId",
+    "minCandidates",
+    "period",
+    "profileId",
+  ],
   "ai.outbound_review": [
     "checkReplyContext",
     "promptId",

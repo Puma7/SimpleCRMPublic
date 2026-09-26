@@ -4,6 +4,7 @@ import { CODE_NODE_SCHEMAS } from './code';
 import { CRM_NODE_SCHEMAS } from './crm';
 import { EMAIL_NODE_SCHEMAS } from './email';
 import { INTEGRATION_NODE_SCHEMAS } from './integration';
+import { LEARNINGS_NODE_SCHEMAS } from './learnings';
 import { LOGIC_NODE_SCHEMAS } from './logic';
 
 /** Alle Knoten-Schemata, keyed nach Knotentyp. Kategorie-Dateien daneben pflegen. */
@@ -14,6 +15,7 @@ export const WORKFLOW_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> 
   ...CRM_NODE_SCHEMAS,
   ...INTEGRATION_NODE_SCHEMAS,
   ...CODE_NODE_SCHEMAS,
+  ...LEARNINGS_NODE_SCHEMAS,
 };
 
 export function getWorkflowNodeSchema(type: string): WorkflowNodeSchemaExtension | undefined {

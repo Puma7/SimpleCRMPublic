@@ -517,6 +517,15 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { createDraft: true },
   },
   {
+    type: 'ai.learnings_digest',
+    label: 'Learnings auswerten',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Wertet gesammelte Learnings per KI aus und legt einen Vorschlag für die Wissensbasis an (Einstellungen → Learnings). Ändert die Wissensbasis nie selbst. Für Zeitplan- und manuelle Workflows.',
+    defaultConfig: { knowledgeBaseId: null, period: 'since_last', minCandidates: 3, profileId: null },
+  },
+  {
     type: 'email.auto_reply',
     label: 'Auto-Antwort (Gate)',
     category: 'email',

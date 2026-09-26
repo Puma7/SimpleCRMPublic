@@ -48,6 +48,7 @@ import {
 import { persistLocalComposeAttachments } from './email-message-attachments-store';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
+import { collectSentLearningCandidateSafe } from './email-ai-learnings';
 
 function maxComposeAttachmentBytes(): number {
   const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
@@ -155,6 +156,8 @@ async function finalizeSentDraft(input: {
     );
   }
 
+  // TA-P5: Learning sammeln, solange die Zeile noch ein Entwurf ist (best effort).
+  collectSentLearningCandidateSafe(input.draftMessageId, { text: input.text, html: input.html });
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
   clearScheduledSendActor(input.draftMessageId);

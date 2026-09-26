@@ -1103,6 +1103,15 @@ export async function runAiLearningsDigest(
     let digestId: number;
     try {
       digestId = await withWorkspaceTransaction(deps.db, { workspaceId: plan.workspaceId, role: 'system' }, async (trx) => {
+        // Nur eine noch vorhandene Workflow-ID speichern (Fremdschlüssel).
+        const workflow = plan.workflowId
+          ? await trx
+            .selectFrom('email_workflows')
+            .select('id')
+            .where('workspace_id', '=', plan.workspaceId)
+            .where('id', '=', plan.workflowId)
+            .executeTakeFirst()
+          : undefined;
         const row = await trx
           .insertInto('ai_learning_digests')
           .values({
@@ -1111,7 +1120,7 @@ export async function runAiLearningsDigest(
             status: computed.ok ? 'pending' : 'failed',
             trigger: plan.trigger,
             requested_by_user_id: plan.actorUserId ?? null,
-            workflow_id: plan.workflowId ?? null,
+            workflow_id: workflow ? Number(workflow.id) : null,
             period_from: prepared.from,
             period_to: now,
             candidate_count: prepared.candidates.length,

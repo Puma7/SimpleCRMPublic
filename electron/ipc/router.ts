@@ -19,6 +19,7 @@ import { registerPgpHandlers } from './pgp';
 import { registerSetupHandlers } from './setup';
 import { registerDiagnosticsHandlers } from './diagnostics';
 import { registerMaintenanceHandlers } from './maintenance';
+import { registerAiLearningsHandlers } from './ai-learnings';
 
 interface IpcRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -49,6 +50,7 @@ export function registerAllIpcHandlers(options: IpcRouterOptions) {
   disposers.push(registerUpdateHandlers({ logger }));
   disposers.push(registerEmailHandlers({ logger, isDevelopment }));
   disposers.push(registerWorkflowHandlers({ logger }));
+  disposers.push(registerAiLearningsHandlers({ logger }));
   disposers.push(registerFollowUpHandlers({ logger }));
   disposers.push(registerAutomationHandlers({ logger }));
   disposers.push(registerAuthHandlers({ logger, getMainWindow }));

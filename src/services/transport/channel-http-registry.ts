@@ -3610,53 +3610,103 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }
     },
   })],
+  // TA-P5: ein atomarer Server-Aufruf statt GET/PATCH/POST/DELETE über mehrere Chunks.
   [IPCChannels.Email.SaveKnowledgeBaseDocument, ([payload]) => {
     const input = objectPayload(payload, "workflow knowledge base document payload")
     const knowledgeBaseId = positiveId(input.knowledgeBaseId, "workflow knowledge base id")
     const content = normalizeKnowledgeMarkdownContent(knowledgeMarkdownContent(input.content))
     return {
+      method: "POST",
+      path: `/api/v1/workflow-knowledge-bases/${knowledgeBaseId}/document`,
+      body: { content },
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.GetLearningsOverview, () => ({
+    method: "GET",
+    path: "/api/v1/ai-learnings/overview",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Email.SaveLearningsSettings, ([payload]) => ({
+    method: "PATCH",
+    path: "/api/v1/ai-learnings/settings",
+    body: learningsSettingsBody(objectPayload(payload, "learnings settings payload")),
+    transform: (body) => ({ success: true, settings: dataBody(body) }),
+  })],
+  [IPCChannels.Email.ListLearningCandidates, ([payload]) => {
+    const input = objectPayload(payload, "learnings candidate list payload")
+    return {
       method: "GET",
-      path: "/api/v1/workflow-knowledge-chunks",
-      query: { knowledgeBaseId, includeContent: true, limit: DEFAULT_LIST_LIMIT },
-      transform: async (body, context) => {
-        const chunks = await collectWorkflowKnowledgeChunksFromFirstPage(
-          body,
-          context,
-          knowledgeBaseId,
-          true,
-        )
-        const [documentChunk, ...obsoleteChunks] = chunks
-        if (documentChunk) {
-          await context.fetchJson({
-            method: "PATCH",
-            path: `/api/v1/workflow-knowledge-chunks/${positiveId(documentChunk.id, "workflow knowledge chunk id")}`,
-            body: {
-              knowledgeBaseId,
-              title: "Dokument",
-              content,
-              sourcePath: null,
-            },
-          })
-        } else {
-          await context.fetchJson({
-            method: "POST",
-            path: "/api/v1/workflow-knowledge-chunks",
-            body: {
-              knowledgeBaseId,
-              title: "Dokument",
-              content,
-              sourcePath: null,
-            },
-          })
-        }
-        for (const chunk of obsoleteChunks) {
-          await context.fetchJson({
-            method: "DELETE",
-            path: `/api/v1/workflow-knowledge-chunks/${positiveId(chunk.id, "workflow knowledge chunk id")}`,
-          })
-        }
-        return { success: true }
+      path: "/api/v1/ai-learnings/candidates",
+      query: {
+        ...(typeof input.kind === "string" ? { kind: input.kind } : {}),
+        limit: typeof input.limit === "number" ? input.limit : 100,
       },
+      transform: (body) => listItems(body),
+    }
+  }],
+  [IPCChannels.Email.DeleteLearningCandidate, ([payload]) => {
+    const input = objectPayload(payload, "learnings candidate delete payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/ai-learnings/candidates/${positiveId(input.id, "learning candidate id")}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.RunLearningsDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest payload")
+    return {
+      method: "POST",
+      path: "/api/v1/ai-learnings/digests",
+      body: {
+        ...(typeof input.period === "string" ? { period: input.period } : {}),
+        ...(input.knowledgeBaseId ? { knowledgeBaseId: positiveId(input.knowledgeBaseId, "knowledge base id") } : {}),
+        ...(input.profileId ? { profileId: positiveId(input.profileId, "ai profile id") } : {}),
+        ...(typeof input.minCandidates === "number" ? { minCandidates: input.minCandidates } : {}),
+      },
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Email.ListLearningDigests, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/ai-learnings/digests",
+      query: { limit: typeof input.limit === "number" ? input.limit : 20 },
+      transform: (body) => listItems(body),
+    }
+  }],
+  [IPCChannels.Email.GetLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest payload")
+    return {
+      method: "GET",
+      path: `/api/v1/ai-learnings/digests/${positiveId(input.id, "learning digest id")}`,
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Email.AcceptLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest accept payload")
+    const id = positiveId(input.id, "learning digest id")
+    if (typeof input.content !== "string") throw new Error("Invalid learnings digest content")
+    return learningDecisionSpec(`/api/v1/ai-learnings/digests/${id}/accept`, {
+      content: input.content,
+      ...(input.confirmOverwrite === true ? { confirmOverwrite: true } : {}),
+    })
+  }],
+  [IPCChannels.Email.RejectLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest reject payload")
+    return learningDecisionSpec(`/api/v1/ai-learnings/digests/${positiveId(input.id, "learning digest id")}/reject`, {})
+  }],
+  [IPCChannels.Email.AddLearningNote, ([payload]) => {
+    const input = objectPayload(payload, "learning note payload")
+    return {
+      method: "POST",
+      path: "/api/v1/ai-learnings/notes",
+      body: {
+        text: typeof input.text === "string" ? input.text : "",
+        ...(input.messageId ? { messageId: positiveId(input.messageId, "email message id") } : {}),
+      },
+      transform: (body) => ({ success: true, candidate: dataBody(body) }),
     }
   }],
 
@@ -6583,6 +6633,53 @@ function knowledgeDocumentFileName(record: WorkflowKnowledgeBaseRecord): string 
     .replace(/[^a-z0-9]+/gi, "-")
     .replace(/^-+|-+$/g, "")
   return `${record.id}-${slug || "wissensbasis"}.md`
+}
+
+function learningsSettingsBody(input: Record<string, any>): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+  if (typeof input.collectEnabled === "boolean") body.collectEnabled = input.collectEnabled
+  for (const key of ["targetKnowledgeBaseId", "profileId"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue
+    body[key] = input[key] == null ? null : positiveId(input[key], key)
+  }
+  return body
+}
+
+const LEARNING_DECISION_ERROR_CODES: Record<string, string> = {
+  ai_learning_digest_not_found: "not_found",
+  ai_learning_digest_not_pending: "not_pending",
+  workflow_knowledge_base_not_found: "knowledge_base_missing",
+  knowledge_base_changed: "knowledge_base_changed",
+  invalid_content: "content_invalid",
+}
+
+/**
+ * Übernehmen/Verwerfen liefern wie der Desktop `{ success: false, code }` statt
+ * einer Ausnahme, damit die Oberfläche die Konfliktwarnung zeigen kann. Die
+ * Übersicht dient als leichter Einstiegsaufruf; die Entscheidung läuft im transform.
+ */
+function learningDecisionSpec(path: string, body: Record<string, unknown>): HttpInvocationSpec {
+  return {
+    method: "GET",
+    path: "/api/v1/ai-learnings/overview",
+    transform: async (_overview, context) => {
+      try {
+        const decided = await context.fetchJson({ method: "POST", path, body })
+        return { success: true, digest: dataBody(decided) }
+      } catch (error) {
+        if (error instanceof RendererTransportError && error.code && LEARNING_DECISION_ERROR_CODES[error.code]) {
+          const details = isRecord(error.details) ? error.details : {}
+          return {
+            success: false,
+            code: LEARNING_DECISION_ERROR_CODES[error.code],
+            error: error.message,
+            ...(typeof details.currentContent === "string" ? { currentContent: details.currentContent } : {}),
+          }
+        }
+        throw error
+      }
+    },
+  }
 }
 
 function knowledgeMarkdownContent(value: unknown): string {
