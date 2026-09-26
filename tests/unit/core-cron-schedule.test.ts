@@ -99,6 +99,14 @@ describe('validateWorkflowScheduleCron', () => {
     // aufeinanderfolgenden aktiven Stunden (00:00 und 00:50 liegen 50 Minuten auseinander).
     '0,50 0 * * *',
     '0,50 0,2 * * *',
+    // Codex-Review PR #194 (Runde 2): 23 → 0 nur, wenn zwei aufeinanderfolgende
+    // Kalendertage beide passen. Montags 23:50, danach erst wieder Montag 00:00.
+    '0,50 0,23 * * MON',
+    '0,50 0,23 * * 1,3,5',
+    // Nur der 1. und der 15.: nie zwei Tage hintereinander.
+    '0,50 0,23 1,15 * *',
+    // 31.12. und 1.1. liegen hintereinander, aber Januar ist nicht dabei.
+    '0,50 0,23 1,31 12 *',
   ])('accepts %p', (expression) => {
     expect(validateWorkflowScheduleCron(expression)).toBeNull();
   });
@@ -110,6 +118,14 @@ describe('validateWorkflowScheduleCron', () => {
     ['0,50 * * * *', /über die volle Stunde/],
     ['0,50 8,9 * * *', /über die volle Stunde/],
     ['0,50 23,0 * * *', /über die volle Stunde/],
+    // Sonntag → Montag, 31. → 1. über den Monatswechsel, 31.12. → 1.1.,
+    // 28.2. → 1.3. (kein Schaltjahr) und 28.2. → 29.2.
+    ['0,50 0,23 * * SUN,MON', /über die volle Stunde/],
+    ['0,50 0,23 * * SAT,SUN', /über die volle Stunde/],
+    ['0,50 0,23 1,31 1,2 *', /über die volle Stunde/],
+    ['0,50 0,23 1,31 1,12 *', /über die volle Stunde/],
+    ['0,50 0,23 1,28 2,3 *', /über die volle Stunde/],
+    ['0,50 0,23 28,29 2 *', /über die volle Stunde/],
     ['0-5 * * * *', /Intervall zu kurz/],
     ['0 0 31 2 *', /trifft nie zu/],
     ['0 0 30,31 2 *', /trifft nie zu/],
@@ -120,6 +136,40 @@ describe('validateWorkflowScheduleCron', () => {
     ['0 6 * *', /genau 5 Felder/],
   ])('rejects %p', (expression, message) => {
     expect(validateWorkflowScheduleCron(expression)).toMatch(message);
+  });
+});
+
+describe('Mindestabstand über Mitternacht gegen die echten Termine', () => {
+  // Gegenprobe zur Regel „23 → 0 nur bei zwei passenden Folgetagen“: die
+  // tatsächlichen Läufe von Dez. 2027 bis März 2029 (Schaltjahr 2028 und
+  // Februar 2029 ohne Schalttag) ausrechnen und den kleinsten Abstand prüfen.
+  test.each([
+    '0,50 0,23 * * *',
+    '0,50 0,23 * * MON',
+    '0,50 0,23 * * 1,3,5',
+    '0,50 0,23 * * SUN,MON',
+    '0,50 0,23 * * SAT,SUN',
+    '0,50 0,23 1,15 * *',
+    '0,50 0,23 1,31 12 *',
+    '0,50 0,23 1,31 1,2 *',
+    '0,50 0,23 1,31 1,12 *',
+    '0,50 0,23 1,28 2,3 *',
+    '0,50 0,23 28,29 2 *',
+  ])('%p: Prüfung stimmt mit dem kleinsten echten Abstand überein', (expression) => {
+    const parsed = parseCronExpression(expression);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const runs: number[] = [];
+    for (let day = Date.UTC(2027, 11, 1); day < Date.UTC(2029, 2, 15); day += 24 * 60 * 60_000) {
+      for (const minuteOfDay of [0, 50, 23 * 60, 23 * 60 + 50]) {
+        const instant = new Date(day + minuteOfDay * 60_000);
+        if (cronMatches(parsed.cron, instant, 'UTC')) runs.push(instant.getTime());
+      }
+    }
+    let minGapMinutes = Infinity;
+    for (let index = 1; index < runs.length; index += 1) {
+      minGapMinutes = Math.min(minGapMinutes, (runs[index]! - runs[index - 1]!) / 60_000);
+    }
+    expect(validateWorkflowScheduleCron(expression) === null).toBe(minGapMinutes >= 15);
   });
 });
 

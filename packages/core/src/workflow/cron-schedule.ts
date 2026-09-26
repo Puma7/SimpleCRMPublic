@@ -197,9 +197,11 @@ function parseCronValue(raw: string, spec: CronFieldSpec): number | string {
  *
  * Der Abstand ergibt sich aus dem Minutenfeld: innerhalb einer Stunde die
  * Luecken zwischen den Minutenwerten; die Luecke vom letzten zum ersten
- * Minutenwert nur dann, wenn zwei aufeinanderfolgende Stunden aktiv sind
- * (23 → 0 zaehlt dazu). `0,50 0 * * *` laeuft um 00:00 und 00:50 und ist
- * damit erlaubt.
+ * Minutenwert nur dann, wenn zwei aufeinanderfolgende Stunden aktiv sind.
+ * `0,50 0 * * *` laeuft um 00:00 und 00:50 und ist damit erlaubt. 23 → 0
+ * zaehlt nur, wenn auch zwei aufeinanderfolgende Kalendertage passen
+ * (`0,50 0,23 * * MON` laeuft montags 23:50 und erst eine Woche spaeter
+ * wieder um 00:00).
  */
 export function validateWorkflowScheduleCron(expression: string): string | null {
   const parsed = parseCronExpression(expression);
@@ -216,7 +218,8 @@ export function validateWorkflowScheduleCron(expression: string): string | null 
       }
     }
     const hours = parsed.cron.hours;
-    const consecutiveHours = [...hours].some((hour) => hours.has((hour + 1) % 24));
+    const consecutiveHours = [...hours].some((hour) => hour < 23 && hours.has(hour + 1))
+      || (hours.has(23) && hours.has(0) && cronMatchesConsecutiveDays(parsed.cron));
     if (consecutiveHours && minutes[0]! + 60 - minutes[minutes.length - 1]! < minInterval) {
       return `Intervall zu kurz — mindestens alle ${minInterval} Minuten (auch über die volle Stunde)`;
     }
@@ -228,6 +231,29 @@ export function validateWorkflowScheduleCron(expression: string): string | null 
 }
 
 const DAYS_IN_MONTH_MAX = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+/**
+ * Passen zwei aufeinanderfolgende Kalendertage beide (Tag des Monats UND
+ * Wochentag, wie node-cron)? Jeder Tageswechsel — auch 28.2. → 29.2. und
+ * 28.2. → 1.3. — kommt im 400-Jahre-Zyklus mit jedem Wochentag vor; Datum
+ * und Wochentag lassen sich deshalb getrennt pruefen.
+ */
+function cronMatchesConsecutiveDays(cron: ParsedCronExpression): boolean {
+  const weekdays = cron.daysOfWeek;
+  if (![...weekdays].some((day) => weekdays.has((day + 1) % 7))) return false;
+  const matches = (month: number, day: number) => cron.months.has(month) && cron.daysOfMonth.has(day);
+  for (let month = 1; month <= 12; month += 1) {
+    const lastDay = DAYS_IN_MONTH_MAX[month]!;
+    for (let day = 1; day <= lastDay; day += 1) {
+      if (!matches(month, day)) continue;
+      if (day < lastDay && matches(month, day + 1)) return true;
+      if (day === lastDay && matches((month % 12) + 1, 1)) return true;
+      // Februar ohne Schalttag.
+      if (month === 2 && day === 28 && matches(3, 1)) return true;
+    }
+  }
+  return false;
+}
 
 function cronCanEverMatch(cron: ParsedCronExpression): boolean {
   // Jedes Datum faellt irgendwann auf jeden Wochentag (auch der 29. Februar im
