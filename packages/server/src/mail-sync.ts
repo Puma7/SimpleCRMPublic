@@ -1719,6 +1719,17 @@ async function upsertPostgresMailSyncMessage(
     else context?.imapUidToId?.set(uidForRow, Number(existing.id));
     return { id: Number(existing.id), isNew: false };
   }
+  if (!pop3Uidl && input.folderKind === 'sent') {
+    const promotedId = await promoteLocalSentRowForSync(
+      trx,
+      { ...input, uid: uidForRow },
+      Boolean(context?.reconcileSeenFromServer),
+    );
+    if (promotedId !== null) {
+      context?.imapUidToId?.set(uidForRow, promotedId);
+      return { id: promotedId, isNew: false };
+    }
+  }
 
   const now = new Date();
   // Reference-thread the message (Message-ID / In-Reply-To / References) so it
@@ -1817,6 +1828,48 @@ async function upsertPostgresMailSyncMessage(
   if (pop3Uidl) context?.pop3UidlToId?.set(pop3Uidl, id);
   else context?.imapUidToId?.set(uidForRow, id);
   return { id, isNew: true };
+}
+
+/**
+ * TA-P3 (Parität zu tryPromoteLocalSentImapRow auf dem Desktop): Die
+ * Server-Kopie einer von SimpleCRM gesendeten Mail im Gesendet-Ordner
+ * übernimmt die lokale Gesendet-Zeile (gleiches Konto, gleiche Message-ID,
+ * uid < 0) statt eine zweite Zeile anzulegen. Id, Kennzeichnung „gesendet von“
+ * und alle übrigen lokalen Spalten bleiben erhalten.
+ */
+async function promoteLocalSentRowForSync(
+  trx: MailSyncTransaction,
+  input: ServerMailSyncMessageInput,
+  reconcileSeenFromServer: boolean,
+): Promise<number | null> {
+  const messageId = input.messageId?.trim();
+  if (!messageId) return null;
+  const local = await trx
+    .selectFrom('email_messages')
+    .select(['id'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('account_id', '=', input.account.id)
+    .where('message_id', '=', messageId)
+    .where('folder_kind', '=', 'sent')
+    .where('uid', '<', 0)
+    .orderBy('id', 'asc')
+    .limit(1)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!local) return null;
+  const id = Number(local.id);
+  await trx
+    .updateTable('email_messages')
+    .set({
+      folder_id: input.folder.id,
+      folder_source_sqlite_id: input.folder.sourceSqliteId,
+      updated_at: new Date(),
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', id)
+    .execute();
+  await updateExistingPostgresMailSyncMessage(trx, input, id, reconcileSeenFromServer);
+  return id;
 }
 
 async function updateExistingPostgresMailSyncMessage(
