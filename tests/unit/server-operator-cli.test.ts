@@ -16,7 +16,7 @@ const bashAvailable = () => process.platform !== 'win32'
 function runWithFakeDocker(
   args: readonly string[],
   options: { env?: Record<string, string>; stacks?: readonly string[]; cwd?: string } = {},
-): { status: number; stdout: string; stderr: string; projectFlags: string[]; log: string } {
+): { status: number; stdout: string; stderr: string; projectFlags: string[]; log: string; dockerEnv: string[] } {
   const dir = mkdtempSync(join(tmpdir(), 'simplecrm-fakedocker-'));
   try {
     const logPath = join(dir, 'docker.log');
@@ -26,6 +26,8 @@ function runWithFakeDocker(
       [
         '#!/bin/sh',
         'echo "$*" >> "$DOCKER_LOG"',
+        // Which image tag variable each docker call sees (docker-compose.yml: simplecrm/api:${VERSION:-dev}).
+        'echo "VERSION=${VERSION-<unset>}" >> "$DOCKER_LOG.env"',
         // `compose ls` -> a table header plus one row per configured fake stack.
         'case "$*" in',
         "  *\"compose ls\"*) printf 'NAME STATUS CONFIG\\n'; for p in $FAKE_STACKS; do printf '%s running x\\n' \"$p\"; done; exit 0 ;;",
@@ -64,7 +66,8 @@ function runWithFakeDocker(
 
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
     const projectFlags = [...log.matchAll(/-p (\S+)/g)].map((m) => m[1] ?? '');
-    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '', projectFlags, log };
+    const dockerEnv = existsSync(`${logPath}.env`) ? readFileSync(`${logPath}.env`, 'utf8').split('\n').filter(Boolean) : [];
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '', projectFlags, log, dockerEnv };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -359,6 +362,35 @@ describe('update: fixed release, health check and the way back', () => {
     }
   }));
 
+  // Gatekeeper PR #195: VERSION ist in docker-compose.yml der Image-Tag (simplecrm/api:${VERSION:-dev}) und
+  // wird der API übergeben. Der Release-Wunsch darf ihn weder setzen noch aus ihm gelesen werden.
+  test('--version never leaks into the image tag; an operator VERSION stays the image tag', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.0.9', 'v1.1.0']);
+    try {
+      const release = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.0.9', '--no-backup'], { cwd: checkout });
+      expect(release.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+      expect(release.dockerEnv.length).toBeGreaterThan(0);
+      expect(new Set(release.dockerEnv)).toEqual(new Set(['VERSION=<unset>']));
+
+      // Operator pins the image tag in the shell; the update follows main as before.
+      const imageTag = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { VERSION: 'prod-2026' } });
+      expect(imageTag.status).toBe(0);
+      expect(new Set(imageTag.dockerEnv)).toEqual(new Set(['VERSION=prod-2026']));
+
+      // Both at once: release from --version, image tag from the operator.
+      const both = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--version', 'v1.1.0', '--no-backup'],
+        { cwd: checkout, env: { VERSION: 'prod-2026' } },
+      );
+      expect(both.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.1.0']);
+      expect(new Set(both.dockerEnv)).toEqual(new Set(['VERSION=prod-2026']));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
   test('--version vX.Y.Z checks out exactly that release; unknown or malformed tags stop before Docker', ranOrSkipped(() => {
     const { root, checkout, commitOf } = serverCheckout(['v1.0.9', 'v1.1.0']);
     try {
@@ -375,7 +407,7 @@ describe('update: fixed release, health check and the way back', () => {
 
       const malformed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'main;rm', '--no-backup'], { cwd: checkout });
       expect(malformed.status).toBe(2);
-      expect(malformed.stderr).toContain('VERSION must be a release tag');
+      expect(malformed.stderr).toContain('--version must be a release tag');
       expect(malformed.log).not.toMatch(/ build| run | up -d/);
 
       const combined = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0', '--branch', 'main'], { cwd: checkout });

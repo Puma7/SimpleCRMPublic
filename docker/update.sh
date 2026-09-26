@@ -4,8 +4,12 @@ set -eu
 # One-command production update for a Docker Compose SimpleCRM deployment.
 #
 #   sh docker/update.sh                  # update to the latest origin/main
-#   VERSION=latest sh docker/update.sh   # update to the newest release tag vX.Y.Z (recommended)
-#   VERSION=v1.1.0 sh docker/update.sh   # update to exactly this release tag
+#   RELEASE=latest sh docker/update.sh   # update to the newest release tag vX.Y.Z (recommended)
+#   RELEASE=v1.1.0 sh docker/update.sh   # update to exactly this release tag
+#
+# RELEASE, not VERSION: docker-compose.yml uses VERSION as the image tag
+# (simplecrm/api:${VERSION:-dev}) and hands it to the API. This script never
+# reads or sets VERSION, so an operator's image tag stays untouched.
 #   BRANCH=some-branch sh docker/update.sh
 #   SKIP_PULL=1   sh docker/update.sh    # use the current checkout, don't git pull
 #   SKIP_BACKUP=1 sh docker/update.sh    # skip the pre-update backup (not recommended)
@@ -45,7 +49,7 @@ fi
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 BRANCH_EXPLICIT="${BRANCH:+1}"
 BRANCH="${BRANCH:-main}"
-VERSION="${VERSION:-}"
+RELEASE="${RELEASE:-}"
 UPDATE_API_HEALTH_TIMEOUT_SECONDS="${UPDATE_API_HEALTH_TIMEOUT_SECONDS:-180}"
 export COMPOSE_PROJECT_NAME
 
@@ -226,8 +230,8 @@ EOF
   exit 3
 fi
 
-if [ -n "$VERSION" ] && { [ "${SKIP_PULL:-0}" = "1" ] || [ -n "$BRANCH_EXPLICIT" ]; }; then
-  echo "VERSION cannot be combined with BRANCH or SKIP_PULL=1." >&2
+if [ -n "$RELEASE" ] && { [ "${SKIP_PULL:-0}" = "1" ] || [ -n "$BRANCH_EXPLICIT" ]; }; then
+  echo "--version (RELEASE) cannot be combined with --branch or --no-pull." >&2
   exit 2
 fi
 
@@ -243,25 +247,25 @@ else
     echo "Commit or stash them, or re-run with FORCE_RESET=1 to discard." >&2
     exit 3
   fi
-  if [ -n "$VERSION" ]; then
-    if [ "$VERSION" = "latest" ]; then
-      VERSION="$(latest_release_tag)"
-      if [ -z "$VERSION" ]; then
+  if [ -n "$RELEASE" ]; then
+    if [ "$RELEASE" = "latest" ]; then
+      RELEASE="$(latest_release_tag)"
+      if [ -z "$RELEASE" ]; then
         echo "No release tag vX.Y.Z found on origin." >&2
         exit 3
       fi
     fi
-    if ! printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-      echo "VERSION must be a release tag like v1.1.0 (or 'latest'), got: $VERSION" >&2
+    if ! printf '%s\n' "$RELEASE" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+      echo "--version must be a release tag like v1.1.0 (or 'latest'), got: $RELEASE" >&2
       exit 2
     fi
-    say "[1/6] Updating source to release $VERSION (previous: $PREV_REV)"
+    say "[1/6] Updating source to release $RELEASE (previous: $PREV_REV)"
     # A release tag names one tested commit. Fetch exactly that tag; if a local
     # tag of the same name points elsewhere, git refuses instead of guessing.
-    git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$VERSION:refs/tags/$VERSION"
+    git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$RELEASE:refs/tags/$RELEASE"
     # From here on the checkout changes: a failure prints the way back.
     UPDATE_STAGE=source
-    git -C "$REPO_DIR" checkout --force --detach "refs/tags/$VERSION"
+    git -C "$REPO_DIR" checkout --force --detach "refs/tags/$RELEASE"
   else
     say "[1/6] Updating source to origin/$BRANCH (previous: $PREV_REV)"
     # Reset to FETCH_HEAD (the exact commit we just fetched) rather than the
@@ -335,6 +339,6 @@ compose ps
 
 UPDATE_STAGE=done
 NEW_REV="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-say "Update complete: $PREV_REV -> $NEW_REV${VERSION:+ ($VERSION)}"
+say "Update complete: $PREV_REV -> $NEW_REV${RELEASE:+ ($RELEASE)}"
 [ -n "$BACKUP_DUMP" ] && echo "Pre-update backup kept at: $BACKUP_DUMP"
 exit 0

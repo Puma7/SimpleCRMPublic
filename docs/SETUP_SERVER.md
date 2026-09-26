@@ -323,7 +323,7 @@ the API and waits for it to become healthy.
 Useful flags / env:
 
 ```sh
-VERSION=latest sh docker/update.sh       # same as --version latest
+RELEASE=latest sh docker/update.sh       # same as --version latest (VERSION stays the image tag)
 BRANCH=some-branch sh docker/update.sh   # update to a specific branch
 SKIP_PULL=1   sh docker/update.sh        # use the current checkout, don't git pull
 SKIP_BACKUP=1 sh docker/update.sh        # skip the pre-update backup (not recommended)

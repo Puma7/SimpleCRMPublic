@@ -49,7 +49,7 @@ Optional env:
   COMPOSE_PROJECT_NAME    Compose project (default: this file's directory name)
   COMPOSE_FILE=/path/to/docker-compose.yml
   BRANCH                  Branch for `update` (default: main)
-  VERSION                 Release tag for `update` (vX.Y.Z or latest)
+  RELEASE                 Release tag for `update` (vX.Y.Z or latest), same as --version
   UPDATE_API_HEALTH_TIMEOUT_SECONDS  Wait for a healthy API after `update` (default: 180)
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
   RESTORE_CADDY_INSECURE=true
@@ -101,8 +101,9 @@ case "$command" in
         --repair-checksums) export REPAIR_CHECKSUMS=1 ;;
         --branch) shift; [ -n "${1:-}" ] || { echo "--branch requires a value" >&2; exit 2; }; export BRANCH="$1" ;;
         --branch=*) export BRANCH="${1#--branch=}" ;;
-        --version) shift; [ -n "${1:-}" ] || { echo "--version requires a value" >&2; exit 2; }; export VERSION="$1" ;;
-        --version=*) export VERSION="${1#--version=}" ;;
+        # RELEASE, not VERSION: VERSION is the image tag in docker-compose.yml.
+        --version) shift; [ -n "${1:-}" ] || { echo "--version requires a value" >&2; exit 2; }; export RELEASE="$1" ;;
+        --version=*) export RELEASE="${1#--version=}" ;;
         *) echo "unknown update flag: $1" >&2; exit 2 ;;
       esac
       shift
