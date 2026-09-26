@@ -4,6 +4,7 @@ import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { createPostgresWorkflowReadPort } from '../../packages/server/src/db/postgres-workflow-read-ports';
 import { isTrustedServiceJobPayload } from '../../packages/server/src/jobs/policy';
+import { buildWorkflowExecutionJobPlan } from '../../packages/server/src/jobs/production-handlers';
 import type { EnqueueJobInput } from '../../packages/server/src/jobs/types';
 import {
   MAX_SCHEDULE_WORKFLOWS_PER_TICK,
@@ -256,6 +257,71 @@ describe('server schedule tick (TA-P4)', () => {
     const retried = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(NOW.getTime() + 60_000), log: () => undefined });
     expect(retried.enqueued).toBe(1);
     expect(enqueued[0]!.payload.scheduleSlot).toBe(SLOT);
+  });
+
+  test('Gatekeeper #4: Einreihung committed, Bestätigung verloren ⇒ der Zeitpunkt läuft trotzdem nur einmal', async () => {
+    // Die Queue hat den Job gespeichert, der Aufruf scheitert aber danach
+    // (Verbindung weg vor der Antwort). Der Takt nimmt seinen Anspruch zurück
+    // und reiht im nächsten Takt erneut ein — zwei Jobs für denselben Zeitpunkt.
+    // Läuft der erste schon vor der zweiten Einreihung, fängt der Job-Key das
+    // nicht ab; der Lauf selbst muss den Zeitpunkt genau einmal ausführen.
+    let loseAck = true;
+    const enqueued: Enqueued[] = [];
+    const queue = {
+      async enqueue(input: EnqueueJobInput) {
+        enqueued.push(input as Enqueued);
+        if (loseAck) {
+          loseAck = false;
+          throw new Error('connection reset after commit');
+        }
+      },
+    };
+    const first = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: NOW, log: () => undefined });
+    expect(first.failed.map((entry) => entry.workflowId)).toEqual([9101]);
+    const second = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(NOW.getTime() + 60_000), log: () => undefined });
+    expect(second.enqueued).toBe(1);
+    expect(enqueued.map((job) => job.payload.scheduleSlot)).toEqual([SLOT, SLOT]);
+
+    const execution = createPostgresWorkflowExecutionJobPort({ db });
+    for (const job of enqueued) {
+      await execution.execute(buildWorkflowExecutionJobPlan(job.payload, WORKSPACE_A));
+    }
+
+    const runs = await postgres.admin.query<{ id: number; log_json: unknown }>(
+      'SELECT id, log_json FROM email_workflow_runs WHERE workflow_id = 9101 ORDER BY id',
+    );
+    expect(runs.rows).toHaveLength(2);
+    expect(JSON.stringify(runs.rows[1]!.log_json)).toContain('skip:schedule_slot_already_ran');
+    const steps = await postgres.admin.query<{ run_id: number }>(
+      'SELECT run_id FROM email_workflow_run_steps WHERE run_id = ANY($1::bigint[])',
+      [runs.rows.map((row) => row.id)],
+    );
+    expect(steps.rows.map((row) => Number(row.run_id))).toEqual([Number(runs.rows[0]!.id)]);
+    const syncJobs = await postgres.admin.query(
+      `SELECT 1 FROM job_queue WHERE workspace_id = $1 AND type = 'mail.sync.imap'`,
+      [WORKSPACE_A],
+    );
+    expect(syncJobs.rows).toHaveLength(1);
+
+    // Der nächste Zeitpunkt läuft wieder; „Jetzt ausführen“ (ohne Zeitpunkt
+    // im Job) ist davon nie betroffen.
+    const nextSlot = '2026-09-29T04:00:00.000Z';
+    await execution.execute(buildWorkflowExecutionJobPlan({
+      ...enqueued[0]!.payload,
+      scheduleSlot: nextSlot,
+    }, WORKSPACE_A));
+    await execution.execute(buildWorkflowExecutionJobPlan({
+      workspaceId: WORKSPACE_A,
+      workflowId: 9101,
+      triggerName: 'schedule',
+      actorUserId: USER_A,
+      context: buildScheduleWorkflowContext({ firedAt: NOW, slot: new Date(SLOT), scheduleAccountId: ACCOUNT_A }),
+    }, WORKSPACE_A));
+    const allSyncJobs = await postgres.admin.query(
+      `SELECT 1 FROM job_queue WHERE workspace_id = $1 AND type = 'mail.sync.imap'`,
+      [WORKSPACE_A],
+    );
+    expect(allSyncJobs.rows).toHaveLength(3);
   });
 
   test('uses the workspace time zone', async () => {

@@ -103,6 +103,11 @@ export type WorkflowExecutionJobPlan = Readonly<{
   actorUserId?: string;
   trustedService?: boolean;
   manualAdminExecute?: boolean;
+  /**
+   * Zeitpunkt eines Zeitplan-Laufs aus dem Taktgeber (ISO, UTC). Der Lauf
+   * beansprucht ihn genau einmal; „Jetzt ausfuehren" setzt ihn nie.
+   */
+  scheduleSlot?: string;
   context: JobPayload;
 }>;
 
@@ -603,6 +608,7 @@ export function buildWorkflowExecutionJobPlan(
     ...optionalString(payload, 'actorUserId'),
     ...optionalTrustedService(payload),
     ...optionalManualAdminExecute(payload),
+    ...optionalScheduleSlot(payload),
     context: optionalContext(payload, 'context'),
   };
 }
@@ -909,6 +915,14 @@ function optionalTrustedService(payload: JobPayload): { trustedService?: true } 
 
 function optionalManualAdminExecute(payload: JobPayload): { manualAdminExecute?: true } {
   return payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] === true ? { manualAdminExecute: true } : {};
+}
+
+/** Nur Zeitplan-Laeufe tragen ihn; normiert auf ISO/UTC fuer den Vergleich. */
+function optionalScheduleSlot(payload: JobPayload): { scheduleSlot?: string } {
+  if (payload.triggerName !== 'schedule' || typeof payload.scheduleSlot !== 'string') return {};
+  const slot = new Date(payload.scheduleSlot);
+  if (Number.isNaN(slot.getTime())) throw new Error('scheduleSlot must be an ISO timestamp');
+  return { scheduleSlot: slot.toISOString() };
 }
 
 function optionalDate(payload: JobPayload, key: string, fallback: Date): Date {

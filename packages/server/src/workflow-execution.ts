@@ -740,6 +740,31 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          // Genau einmal je Zeitpunkt, auch wenn der Taktgeber denselben
+          // Zeitpunkt zweimal einreiht (Einreihung gespeichert, Bestaetigung
+          // verloren ⇒ Anspruch zurueckgenommen ⇒ naechster Takt reiht erneut
+          // ein). Der Anspruch liegt in derselben Transaktion wie der Lauf:
+          // Scheitert der Lauf, faellt er mit zurueck und der Retry desselben
+          // Jobs darf erneut.
+          if (
+            trigger === 'schedule'
+            && !resumeNodeId
+            && input.scheduleSlot !== undefined
+            && !await claimScheduleSlotRun(trx, {
+              workspaceId: input.workspaceId,
+              workflowId: Number(workflow.id),
+              slot: input.scheduleSlot,
+              now,
+            })
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:schedule_slot_already_ran'],
+              now,
+            });
+            return;
+          }
+
           // Die Kette wurde beim Eingang der Mail mit den damals zustaendigen
           // Workflows festgelegt. Wurde dieser Workflow seitdem auf ein anderes
           // Postfach umgehaengt oder vom Inbound-Trigger genommen, ist er fuer
@@ -8503,6 +8528,42 @@ function blockedResult(reason: string, existingLog: string[] = []): GraphRunResu
 
 function serverWorkerSourceRow() {
   return { origin: 'server_worker' };
+}
+
+/** sync_info-Schluessel: zuletzt ausgefuehrter Zeitplan-Zeitpunkt je Workflow. */
+export const WORKFLOW_SCHEDULE_RUN_KEY_PREFIX = 'workflow_schedule_run:';
+
+/**
+ * Beansprucht einen Zeitplan-Zeitpunkt fuer genau einen Lauf: monoton, nur ein
+ * spaeterer Zeitpunkt als der gespeicherte gewinnt (ISO/UTC vergleicht als
+ * Text wie als Zeit). Parallele Laeufe warten auf die Zeilensperre und sehen
+ * danach den neuen Stand.
+ */
+async function claimScheduleSlotRun(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; workflowId: number; slot: string; now: Date },
+): Promise<boolean> {
+  const claimed = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: `${WORKFLOW_SCHEDULE_RUN_KEY_PREFIX}${input.workflowId}`,
+      value: input.slot,
+      last_updated: input.now,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'key'])
+      .doUpdateSet({ value: input.slot, last_updated: input.now, updated_at: input.now })
+      .where((eb) => eb.or([
+        eb('sync_info.value', 'is', null),
+        eb('sync_info.value', '<', input.slot),
+      ])))
+    .returning('key')
+    .executeTakeFirst();
+  return claimed !== undefined;
 }
 
 function serverCreatedWorkflowTaskSourceSqliteId(

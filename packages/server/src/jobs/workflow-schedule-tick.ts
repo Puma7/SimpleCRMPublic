@@ -27,7 +27,11 @@ import type { EnqueueJobInput } from './types';
  *   runMailSyncSchedule). Laufen zwei Ticks gleichzeitig (mehrere
  *   Server-Prozesse, ein verspaeteter Job), bekommt nur einer die Zeile
  *   zurueck. Der Job-Key des Laufs (Workflow + Zeitpunkt) faengt zusaetzlich
- *   doppelte Einreihungen ab, solange der Lauf noch wartet.
+ *   doppelte Einreihungen ab, solange der Lauf noch wartet. Laeuft derselbe
+ *   Zeitpunkt trotzdem zweimal an (Einreihung gespeichert, Bestaetigung
+ *   verloren, Anspruch zurueckgenommen), fuehrt ihn der Lauf selbst nur
+ *   einmal aus: `scheduleSlot` im Job, Anspruch `workflow_schedule_run:<id>`
+ *   in derselben Transaktion wie der Lauf (workflow-execution).
  * - Keine Nachholung alter Zeitpunkte: nur ein Zeitpunkt, der hoechstens
  *   WORKFLOW_SCHEDULE_CATCH_UP_MINUTES zurueckliegt, wird ausgeloest — war der
  *   Server laenger aus, verfallen die verpassten.
@@ -279,7 +283,10 @@ export async function runWorkflowScheduleTick(input: {
       } catch (error) {
         // Anspruch zuruecknehmen, sonst galte der Zeitpunkt als ausgeloest,
         // obwohl nie ein Lauf entstand; der naechste Takt versucht es erneut,
-        // solange der Zeitpunkt im Nachholfenster liegt. Bedingt auf den eigenen
+        // solange der Zeitpunkt im Nachholfenster liegt. War die Einreihung
+        // doch gespeichert (nur die Bestaetigung ging verloren), laeuft der
+        // Zeitpunkt trotzdem nur einmal — der Lauf beansprucht ihn selbst
+        // (scheduleSlot, workflow-execution). Bedingt auf den eigenen
         // Stempel: hat inzwischen jemand anders beansprucht (oder der Workflow
         // wurde neu gespeichert), gehoert die Zeile ihm.
         await withWorkspaceTransaction(
