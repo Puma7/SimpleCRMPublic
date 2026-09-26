@@ -15,7 +15,8 @@ import {
   InboundMessageTooLargeError,
   MAX_INBOUND_RFC822_BYTES,
 } from '../../packages/core/src/email/inbound-message-size';
-import { SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { SmtpDataRejectedError, SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { isNonRetryableJobError, NonRetryableJobError } from '../../packages/server/src/jobs/errors';
 import { mailSyncJobTypeForProtocol } from '../../packages/server/src/jobs/mail-sync-scheduler';
 
 import {
@@ -12898,6 +12899,86 @@ describe('server edition foundation', () => {
     smtpMode = 'ok';
     await expect(port.forwardCopy(plan)).rejects.toThrow(/Zustellstatus ist unklar/);
     expect(smtpSends).toHaveLength(0);
+  });
+
+  // IONOS lehnte eine Weiterleitung mit 554 ab. Die Reservierung blieb stehen, und
+  // jeder weitere Versuch meldete nur noch "Zustellstatus unklar"; ein 5xx wurde
+  // trotzdem fuenfmal wiederholt.
+  test('postgres workflow forward-copy: a 5xx rejection ends the job, a 4xx is really retried', async () => {
+    const now = new Date('2026-07-04T11:06:30.000Z');
+    let reply: { text: string; code: number } | null = {
+      text: '554-Transaction failed\n554-Reject due to policy restrictions\n554 For explanation visit https://example.test',
+      code: 554,
+    };
+    const smtpSends: Array<{ recipients: string[] }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 41, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 410, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 30,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 300,
+        account_id: 7,
+        subject: 'Preisliste',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Preisliste',
+        body_text: 'Anbei die Preisliste.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        if (reply) throw new SmtpDataRejectedError(reply.text, reply.code);
+        smtpSends.push(input as { recipients: string[] });
+      },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 41, messageId: 30, to: 'audit@example.com' };
+
+    // 554: final. The job fails without retries and says why, nothing stays reserved.
+    const rejection = await port.forwardCopy(plan).then(() => null, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(NonRetryableJobError);
+    expect(isNonRetryableJobError(rejection)).toBe(true);
+    expect((rejection as Error).message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 554): '
+      + 'Transaction failed Reject due to policy restrictions For explanation visit https://example.test. '
+      + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
+      + 'Es folgt kein weiterer Versuch.',
+    );
+    expect(rows.forwardDedup).toEqual([]);
+
+    // 451: temporary. The job is retried, and the retry really sends.
+    reply = { text: '451 4.7.1 Try again later', code: 451 };
+    const temporary = await port.forwardCopy(plan).then(() => null, (error: unknown) => error);
+    expect(temporary).toBeInstanceOf(Error);
+    expect(isNonRetryableJobError(temporary)).toBe(false);
+    expect(rows.forwardDedup).toEqual([]);
+    reply = null;
+    await port.forwardCopy(plan);
+    expect(smtpSends).toHaveLength(1);
   });
 
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {

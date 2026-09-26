@@ -25,7 +25,13 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
-import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
+import { NonRetryableJobError } from './jobs/errors';
+import {
+  sendSmtpMessage,
+  SmtpDataRejectedError,
+  SmtpPreDataSendError,
+  type ServerSmtpSendInput,
+} from './mail-smtp-send';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import { isInboundSiblingAborted } from './workflow-inbound-chain-advance';
 import type { JobPayload } from './jobs/types';
@@ -419,11 +425,14 @@ export function createPostgresWorkflowForwardCopyPort(
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });
       } catch (error) {
-        if (error instanceof SmtpPreDataSendError) {
-          // Nothing reached the DATA stage, so nothing can have been
-          // delivered — release the reservation so a later retry may send.
-          // Ambiguous failures (after body submission) keep the reservation
-          // and block automatic resend.
+        // Nothing delivered: the DATA stage was never reached, or the server
+        // answered the message with an explicit 4xx/5xx (same rule as
+        // mail-compose-send). Release the reservation so a retry really sends;
+        // before, a rejected forward kept it and every retry only reported
+        // "Zustellstatus unklar". Ambiguous failures (no reply after the body)
+        // keep the reservation and block automatic resend.
+        const rejected = error instanceof SmtpDataRejectedError;
+        if (error instanceof SmtpPreDataSendError || rejected) {
           await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
@@ -431,11 +440,16 @@ export function createPostgresWorkflowForwardCopyPort(
             { applySession: options.applyWorkspaceSession },
           );
         }
+        // A 5xx is final (RFC 5321): the same message would be rejected again.
+        const permanent = rejected && error.smtpCode >= 500;
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: permanent
+            ? permanentForwardRejectionMessage(smtpHost, error)
+            : error instanceof Error ? error.message : String(error),
           duplicate: false,
           now: now(),
+          permanent,
         });
         return;
       }
@@ -906,13 +920,34 @@ async function forwardViaOutboundReview(args: {
 async function failOrEnqueueForwardCopyContinuation(
   options: PostgresWorkflowForwardCopyPortOptions,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: false; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
+  result: {
+    ok: false;
+    error: string | null;
+    duplicate: boolean;
+    now: Date;
+    reviewPending?: boolean;
+    /** Another attempt cannot succeed: fail the job without retries. */
+    permanent?: boolean;
+  },
 ): Promise<void> {
   if (input.continuation) {
     await enqueueForwardCopyContinuation(options, input, result);
     return;
   }
-  throw new Error(result.error || 'workflow forward-copy failed');
+  const message = result.error || 'workflow forward-copy failed';
+  throw result.permanent ? new NonRetryableJobError(message) : new Error(message);
+}
+
+/** German, for the job's last error: what the server said and the usual cause. */
+function permanentForwardRejectionMessage(host: string, error: SmtpDataRejectedError): string {
+  const reply = error.message
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d{3}[ -]/, '').trim())
+    .filter(Boolean)
+    .join(' ');
+  return `Der Mailserver ${host} hat die Weiterleitung endgültig abgelehnt (SMTP ${error.smtpCode}): ${reply}. `
+    + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
+    + 'Es folgt kein weiterer Versuch.';
 }
 
 async function enqueueForwardCopyContinuation(

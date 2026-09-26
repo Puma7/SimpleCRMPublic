@@ -215,12 +215,18 @@ export async function createPostgresServerEventNotificationChannel(
     }
   });
 
+  // One client serves LISTEN and every pg_notify. Requests and jobs publish
+  // concurrently; overlapping client.query() calls are deprecated in pg (removed
+  // in pg@9), so notifications are sent one after another.
+  let notifyChain: Promise<unknown> = Promise.resolve();
   return {
     async notify(notification) {
-      await client.query('SELECT pg_notify($1, $2);', [
+      const send = notifyChain.then(() => client.query('SELECT pg_notify($1, $2);', [
         channelName,
         JSON.stringify(notification),
-      ]);
+      ]));
+      notifyChain = send.catch(() => undefined);
+      await send;
     },
     subscribe(subscriber) {
       subscribers.add(subscriber);

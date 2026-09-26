@@ -1,3 +1,4 @@
+import { isNonRetryableJobError } from './errors';
 import type { JobQueuePort, QueuedJob } from './types';
 import type { JobWorkerLogFn } from './job-worker-log';
 import {
@@ -62,7 +63,7 @@ export async function runJobQueueOnce(input: {
     return { status: 'completed', job, durationMs };
   } catch (error) {
     const message = formatJobError(error);
-    if (error instanceof MailAsyncAuthorizationError) {
+    if (error instanceof MailAsyncAuthorizationError || isNonRetryableJobError(error)) {
       await input.queue.failTerminal({ job, error, now: input.now });
     } else {
       await input.queue.fail({ job, error, now: input.now });

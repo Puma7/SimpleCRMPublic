@@ -943,6 +943,9 @@ async function createDefaultGraphileWorkerRuntime(options: {
   const runner = await run({
     connectionString: options.connectionString,
     concurrency: options.concurrentJobs,
+    // Default pool is 10; with concurrency 50 (mail) graphile warns that jobs wait
+    // for a connection. The pool opens connections only on demand.
+    maxPoolSize: Math.max(10, options.concurrentJobs),
     taskList: options.taskList,
   });
   return {
