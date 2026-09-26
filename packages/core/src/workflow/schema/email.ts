@@ -355,7 +355,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Grund der Sperre',
         help:
           'Wird als Hinweis-Banner an der Mail angezeigt, damit klar ist, warum sie nicht rausgeht. ' +
-          'Leer = „Workflow“. Platzhalter wie {{ai.class}} werden beim Ausführen ersetzt.',
+          'Leer = „Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.“ ' +
+          'Platzhalter wie {{ai.class}} werden beim Ausführen ersetzt.',
         example: 'Verdacht auf Zahlungsdaten im Text',
         placeholder: 'z. B. Manueller Versand-Stopp nach 17 Uhr',
         interpolate: true,

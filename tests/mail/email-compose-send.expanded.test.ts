@@ -156,6 +156,21 @@ describe('email-compose-send expanded', () => {
     expect(r).toMatchObject({ ok: false, error: 'hold', workflowRunId: null });
   });
 
+  test('meldet outboundHeld, wenn der Ausgang den Entwurf angehalten hat (TA-P2)', async () => {
+    mockEvaluateOutbound.mockResolvedValueOnce({ allowed: false, reason: 'Preis fehlt', workflowRunId: 7 });
+    mockGetMessage
+      .mockReturnValueOnce(draft())
+      .mockReturnValueOnce({ ...draft(), outbound_hold: 1, outbound_block_reason: 'Preis fehlt' });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+    });
+    expect(r).toEqual({ ok: false, error: 'Preis fehlt', workflowRunId: 7, outboundHeld: true });
+  });
+
   test('sends successfully with reply parent and attachments', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'attach-'));
     const file = path.join(tmp, 'doc.txt');

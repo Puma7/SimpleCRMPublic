@@ -104,6 +104,7 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
 import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
+import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
 
 type Props = {
   accounts: EmailAccount[]
@@ -1259,8 +1260,7 @@ export function MessageViewer(props: Props) {
                     >
                       <p className="font-semibold">Ausgangsprüfung — Versand blockiert</p>
                       <p className="mt-1 text-[13px] leading-snug">
-                        {selectedMessage.outbound_block_reason ||
-                          "Die E-Mail entspricht nicht den Prüfkriterien. Bitte korrigieren und erneut senden."}
+                        {selectedMessage.outbound_block_reason || OUTBOUND_HOLD_FALLBACK_REASON}
                       </p>
                       {/* Die Run-Endpunkte verlangen workflows.view; ohne die Stufe
                           endet der sichtbare Diagnosepfad garantiert im 403. */}

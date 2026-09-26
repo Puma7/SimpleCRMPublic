@@ -380,7 +380,14 @@ export async function sendComposeDraft(input: {
   actor?: ComposeSendActor | null;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
-  | { ok: false; error: string; workflowRunId?: number | null; deliveryAmbiguous?: true }
+  | {
+      ok: false;
+      error: string;
+      workflowRunId?: number | null;
+      deliveryAmbiguous?: true;
+      /** Der Ausgang hat den Entwurf angehalten (Banner, Posteingang, Planung geloescht). */
+      outboundHeld?: true;
+    }
 > {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -503,10 +510,12 @@ export async function sendComposeDraft(input: {
       attachmentPaths: input.attachmentPaths,
     });
     if (!outbound.allowed) {
+      const heldDraft = getEmailMessageById(input.draftMessageId);
       return {
         ok: false,
         error: outbound.reason || 'Outbound blockiert',
         workflowRunId: outbound.workflowRunId ?? null,
+        ...((heldDraft?.outbound_hold ?? 0) > 0 ? { outboundHeld: true as const } : {}),
       };
     }
 

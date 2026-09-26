@@ -10,6 +10,7 @@ import {
   getEmailAccountById,
 } from '../../email/email-store';
 import { chainStopFlagEnabled } from '@simplecrm/core';
+import { outboundHoldReasonOrFallback } from '../../../packages/core/src/email/outbound-review-parse';
 import { evaluateSenderFilter } from '../sender-filter';
 import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
 import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
@@ -101,7 +102,8 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const id = ctx.messageId ?? ctx.outbound?.messageId;
       if (id == null) return { status: 'error', message: 'Keine Nachricht/Entwurf' };
-      const reason = String(config.reason ?? 'Workflow');
+      // Leerer Grund (Standard): einheitlicher Hinweis statt leerem Banner.
+      const reason = outboundHoldReasonOrFallback(String(config.reason ?? ''));
       if (!ctx.dryRun) setOutboundHold(id, true, reason);
       return { status: 'ok', blocked: true, blockReason: reason };
     },

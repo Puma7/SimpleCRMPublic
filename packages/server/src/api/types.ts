@@ -2612,6 +2612,11 @@ export type EmailComposeSendResult =
      * the message).
      */
     deliveryAmbiguous?: boolean;
+    /**
+     * Der Ausgang hat den Entwurf endgültig angehalten (nur mit
+     * `holdOnOutboundBlock`): Banner, Posteingang, Planung gelöscht.
+     */
+    outboundHeld?: boolean;
   };
 
 export type EmailComposeSenderApiPort = {
@@ -2619,6 +2624,8 @@ export type EmailComposeSenderApiPort = {
     workspaceId: string;
     actorUserId: string;
     values: EmailComposeSendInput;
+    /** Geplanter Versand: ein synchroner Ausgangs-Block hält den Entwurf an. */
+    holdOnOutboundBlock?: boolean;
   }): Promise<EmailComposeSendResult>;
 };
 

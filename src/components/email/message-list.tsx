@@ -61,6 +61,7 @@ import { MessageFilterChips } from "./message-filter-chips"
 import { MessageDoneFilterChips } from "./message-done-filter-chips"
 import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 import { invokeRenderer } from "@/services/transport"
+import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
 import type { BulkListAction } from "./hooks/use-email-messages"
 
 type Props = {
@@ -950,7 +951,7 @@ export function MessageList({
                             )}
                             title={
                               isDraft && blocked
-                                ? (m.outbound_block_reason || "Ausgangsprüfung: Versand blockiert").toString()
+                                ? (m.outbound_block_reason || OUTBOUND_HOLD_FALLBACK_REASON).toString()
                                 : undefined
                             }
                           >

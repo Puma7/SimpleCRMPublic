@@ -188,3 +188,48 @@ export function buildOutboundWarningBanner(reason: string): { text: string; html
   const html = `<div style="background:#fef3c7;border:1px solid #d97706;border-radius:6px;padding:12px;margin:0 0 16px 0;color:#78350f;font-family:sans-serif;font-size:14px;line-height:1.45"><strong>${OUTBOUND_WARNING_MARKER}</strong><br/>${reason.replace(/</g, '&lt;').replace(/>/g, '&gt;')}<br/><em>Bitte E-Mail prüfen, korrigieren und erneut senden.</em></div>`;
   return { text, html };
 }
+
+/**
+ * Einheitlicher Hinweis, wenn ein Workflow den Versand ohne Begründung anhält
+ * (leerer Grund am Knoten „Versand sperren“, leere Block-Antwort). Beide
+ * Editionen und die Oberfläche verwenden denselben Text.
+ */
+export const OUTBOUND_HOLD_FALLBACK_REASON =
+  'Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.';
+
+const MAX_OUTBOUND_HOLD_REASON_LENGTH = 500;
+
+/** Grund einer Ausgangssperre: getrimmt und begrenzt, leer ⇒ Fallback-Text. */
+export function outboundHoldReasonOrFallback(reason: string | null | undefined): string {
+  const trimmed = (reason ?? '').trim();
+  return (trimmed || OUTBOUND_HOLD_FALLBACK_REASON).slice(0, MAX_OUTBOUND_HOLD_REASON_LENGTH);
+}
+
+function escapeBannerHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Entwurfsinhalt eines angehaltenen Entwurfs: Warn-Banner mit dem Grund vor
+ * dem bereinigten Text. `snapshot` stammt aus extractDraftBodyForOutboundBlock,
+ * ein vorhandener Banner (z. B. „Prüfung läuft“) ist dort schon entfernt und
+ * wird so durch den neuen Grund ersetzt.
+ */
+export function composeOutboundHeldDraftBody(
+  snapshot: DraftBodySnapshot,
+  reason: string,
+): { bodyText: string; bodyHtml: string; plain: string } {
+  const banner = buildOutboundWarningBanner(reason);
+  const { plain, html } = snapshot;
+  const bannerParagraph = `<p>${escapeBannerHtml(banner.text).replace(/\n/g, '<br/>')}</p>`;
+  const bodyHtml = html.trim()
+    ? `${banner.html}${html}`
+    : plain.trim()
+      ? `${bannerParagraph}<p>${escapeBannerHtml(plain).replace(/\n/g, '<br/>')}</p>`
+      : bannerParagraph;
+  return { bodyText: `${banner.text}${plain}`, bodyHtml, plain };
+}

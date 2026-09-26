@@ -103,6 +103,25 @@ describe('email-scheduled-send', () => {
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:99', '1');
   });
 
+  // TA-P2: Der Ausgang hat den Entwurf angehalten (Banner, Posteingang, Planung
+  // geloescht). Das ist kein Fehlversuch: kein Zaehler, kein „pending“-Status,
+  // sonst zeigte der Entwurf einen Versandfehler statt „Versand blockiert“.
+  test('Ausgangssperre zaehlt nicht als Fehlversuch und raeumt den Planungsstatus', async () => {
+    mockSendComposeDraft.mockResolvedValue({
+      ok: false,
+      error: 'Preisangabe fehlt',
+      workflowRunId: 5,
+      outboundHeld: true,
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_failures:99', '1');
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_status:99', 'pending');
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_status:99', '');
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+  });
+
   test('does not clear schedule on first throw', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('transient'));
     syncInfo({ 'scheduled_send_failures:99': '0' });

@@ -15058,10 +15058,13 @@ describe('server edition foundation', () => {
       limit: 10,
     });
 
+    // TA-P2: geplante Sendungen lassen einen synchronen Ausgangs-Block den Entwurf
+    // anhalten (Posteingang) statt fuenf Fehlversuche zu zaehlen.
     expect(composeCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
+        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 101,
@@ -15076,6 +15079,7 @@ describe('server edition foundation', () => {
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
+        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 103,
@@ -15088,6 +15092,7 @@ describe('server edition foundation', () => {
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
+        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 104,

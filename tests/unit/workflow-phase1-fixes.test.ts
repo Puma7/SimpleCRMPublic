@@ -155,6 +155,25 @@ describe('email.release_outbound (eine Registrierung, beide Richtungen)', () => 
   });
 });
 
+describe('email.hold_outbound: Grund der Sperre (TA-P2)', () => {
+  const defs = collect(registerEmailNodes);
+  const fallback = 'Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.';
+
+  test('ohne Grund speichert und meldet der Knoten den einheitlichen Fallback-Text', async () => {
+    const def = defs.get('email.hold_outbound')!;
+    const r = await def.execute(ctx({ direction: 'outbound', messageId: 11 }), { reason: '' }, 'n1');
+    expect(r).toMatchObject({ status: 'ok', blocked: true, blockReason: fallback });
+    expect(setOutboundHold).toHaveBeenCalledWith(11, true, fallback);
+  });
+
+  test('ein angegebener Grund bleibt unverändert', async () => {
+    const def = defs.get('email.hold_outbound')!;
+    const r = await def.execute(ctx({ direction: 'outbound', messageId: 12 }), { reason: 'Preis fehlt' }, 'n1');
+    expect(r).toMatchObject({ blockReason: 'Preis fehlt' });
+    expect(setOutboundHold).toHaveBeenCalledWith(12, true, 'Preis fehlt');
+  });
+});
+
 describe('sync.run (Konto aus Config)', () => {
   const defs = collect(registerIntegrationNodes);
 

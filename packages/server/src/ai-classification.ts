@@ -31,6 +31,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
 import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
@@ -1686,16 +1687,14 @@ async function persistAiReviewBlock(
 ): Promise<void> {
   if (input.messageId === undefined) return;
   if (input.direction === 'outbound') {
-    await trx
-      .updateTable('email_messages')
-      .set({
-        outbound_hold: true,
-        outbound_block_reason: reason,
-        updated_at: now,
-      })
-      .where('workspace_id', '=', input.workspaceId)
-      .where('id', '=', input.messageId)
-      .execute();
+    // Endgültiger Block der KI-Prüfung: echter Grund im Banner, Planung eines
+    // Workflow-Versands gelöscht (Entwurf erscheint im Posteingang).
+    await persistOutboundBlockOnDraft(trx, {
+      workspaceId: input.workspaceId,
+      messageId: input.messageId,
+      reason,
+      now,
+    });
     return;
   }
 

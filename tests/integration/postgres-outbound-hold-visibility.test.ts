@@ -2,6 +2,18 @@ import type { Kysely } from 'kysely';
 
 import { createPostgresEmailMessageReadPort } from '../../packages/server/src/db/postgres-mail-read-ports';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
+import { buildWorkflowExecutionJobPlan } from '../../packages/server/src/jobs/production-handlers';
+import { TRUSTED_SERVICE_JOB_MARKER_VALUE } from '../../packages/server/src/jobs/policy';
+import type { JobPayload } from '../../packages/server/src/jobs/types';
+import type { WorkflowExecutionDryRunResult } from '../../packages/server/src/jobs';
+import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
+import { createPostgresScheduledSendJobPort } from '../../packages/server/src/mail-scheduled-send';
+import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import type { EmailComposeSenderApiPort } from '../../packages/server/src/api';
+import {
+  OUTBOUND_HOLD_FALLBACK_REASON,
+  OUTBOUND_WARNING_MARKER,
+} from '../../packages/core/src/email';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
@@ -11,6 +23,8 @@ jest.setTimeout(120_000);
 const WORKSPACE_ID = '10000000-0000-4000-8000-0000000000e1';
 const ACCOUNT_ID = 501;
 const FOLDER_ID = 511;
+const HOLD_WORKFLOW_ID = 531;
+const PENDING_REVIEW_TEXT = 'serverseitig';
 
 /**
  * Teilautomatisierung P2: Angehaltene Entwürfe müssen in der Server-Oberfläche
@@ -69,5 +83,209 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
 
     const single = await port.get({ workspaceId: WORKSPACE_ID, id: 5101, includeBody: true });
     expect(single).toEqual(expect.objectContaining({ outboundHold: true, outboundBlockReason: 'Preisangabe fehlt' }));
+  });
+
+  async function seedHoldWorkflow(reason: string): Promise<void> {
+    await postgres.admin.query(`DELETE FROM email_workflows WHERE workspace_id = $1`, [WORKSPACE_ID]);
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'hold', type: 'registry', data: { nodeType: 'email.hold_outbound', config: { reason } } },
+      ],
+      edges: [{ id: 'edge-1', source: 'trigger-1', target: 'hold' }],
+    };
+    await postgres.admin.query(`
+      INSERT INTO email_workflows (
+        id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+        definition_json, graph_json, execution_mode, engine_version
+      ) VALUES ($1, $2, $1, 'Ausgang: Sperre', 'outbound', true, 10, '{}'::jsonb, $3::jsonb, 'graph', 1)
+    `, [HOLD_WORKFLOW_ID, WORKSPACE_ID, JSON.stringify(graph)]);
+  }
+
+  /** Workflow-Versand: KI-Antwort per send_draft (runOutboundReview:true) eingeplant. */
+  async function seedWorkflowScheduledDraft(draftId: number): Promise<void> {
+    await postgres.admin.query(`
+      INSERT INTO email_messages (
+        id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+        account_id, folder_id, uid, folder_kind, subject, to_json, body_text, body_html,
+        scheduled_send_at, scheduled_send_trusted_service_principal
+      ) VALUES ($1, $2, $1, $3, $4, $3, $4, $5, 'draft', 'Re: Frage', $6::jsonb,
+        'Antwort an den Kunden', '<p>Antwort an den Kunden</p>', now() - interval '1 minute', $7)
+    `, [
+      draftId,
+      WORKSPACE_ID,
+      ACCOUNT_ID,
+      FOLDER_ID,
+      -draftId,
+      JSON.stringify({ value: [{ address: `kunde${draftId}@example.com` }] }),
+      TRUSTED_SERVICE_JOB_MARKER_VALUE,
+    ]);
+  }
+
+  async function draftRow(draftId: number) {
+    const rows = await postgres.admin.query<{
+      outbound_hold: boolean;
+      outbound_block_reason: string | null;
+      scheduled_send_at: Date | null;
+      scheduled_send_actor_user_id: string | null;
+      scheduled_send_trusted_service_principal: string | null;
+      body_text: string | null;
+      body_html: string | null;
+    }>(`
+      SELECT outbound_hold, outbound_block_reason, scheduled_send_at, scheduled_send_actor_user_id,
+        scheduled_send_trusted_service_principal, body_text, body_html
+      FROM email_messages WHERE workspace_id = $1 AND id = $2
+    `, [WORKSPACE_ID, draftId]);
+    return rows.rows[0]!;
+  }
+
+  async function syncInfoValue(key: string): Promise<string | null> {
+    const rows = await postgres.admin.query<{ value: string | null }>(
+      `SELECT value FROM sync_info WHERE workspace_id = $1 AND key = $2`,
+      [WORKSPACE_ID, key],
+    );
+    return rows.rows[0]?.value ?? null;
+  }
+
+  async function takeWorkflowJobs(): Promise<JobPayload[]> {
+    const rows = await postgres.admin.query<{ payload: JobPayload }>(
+      `SELECT payload FROM job_queue WHERE workspace_id = $1 AND type = 'workflow.execute' ORDER BY id`,
+      [WORKSPACE_ID],
+    );
+    await postgres.admin.query(`DELETE FROM job_queue WHERE workspace_id = $1`, [WORKSPACE_ID]);
+    return rows.rows.map((row) => row.payload);
+  }
+
+  function composeSender(options: {
+    smtpSend: jest.Mock;
+    workflowDryRun?: () => Promise<WorkflowExecutionDryRunResult>;
+  }): EmailComposeSenderApiPort {
+    return createPostgresEmailComposeSenderPort({
+      db,
+      smtpSend: options.smtpSend,
+      ...(options.workflowDryRun ? { workflowDryRun: options.workflowDryRun } : {}),
+    });
+  }
+
+  async function runScheduledTick(sender: EmailComposeSenderApiPort): Promise<void> {
+    await createPostgresScheduledSendJobPort({ db, composeSender: sender }).processDue({
+      workspaceId: WORKSPACE_ID,
+      trustedService: true,
+      dueBefore: new Date(),
+      limit: 10,
+    });
+  }
+
+  async function inboxIds(): Promise<number[]> {
+    const inbox = await createPostgresEmailMessageReadPort({ db }).list({
+      workspaceId: WORKSPACE_ID,
+      view: 'inbox',
+      limit: 100,
+    });
+    return inbox.items.map((item) => item.id);
+  }
+
+  test('asynchroner Block eines Ausgangs-Workflows: Planung weg, echter Grund im Banner, Entwurf im Posteingang', async () => {
+    await postgres.admin.query(`DELETE FROM job_queue`);
+    await seedHoldWorkflow('Preisangabe fehlt');
+    await seedWorkflowScheduledDraft(5201);
+    const smtpSend = jest.fn();
+
+    await runScheduledTick(composeSender({ smtpSend }));
+
+    // Zwischenzustand „Prüfung läuft“: gehalten, Planung bleibt (Freigabe darf planen).
+    const pending = await draftRow(5201);
+    expect(pending.outbound_hold).toBe(true);
+    expect(pending.outbound_block_reason).toContain(PENDING_REVIEW_TEXT);
+    expect(pending.scheduled_send_at).not.toBeNull();
+    const jobs = await takeWorkflowJobs();
+    expect(jobs).toHaveLength(1);
+
+    await createPostgresWorkflowExecutionJobPort({ db }).execute(
+      buildWorkflowExecutionJobPlan(jobs[0]!, WORKSPACE_ID),
+    );
+
+    const held = await draftRow(5201);
+    expect(held.outbound_hold).toBe(true);
+    expect(held.outbound_block_reason).toBe('Preisangabe fehlt');
+    expect(held.scheduled_send_at).toBeNull();
+    expect(held.scheduled_send_trusted_service_principal).toBeNull();
+    expect(held.scheduled_send_actor_user_id).toBeNull();
+    expect(held.body_text?.startsWith(OUTBOUND_WARNING_MARKER)).toBe(true);
+    expect(held.body_text).toContain('Preisangabe fehlt');
+    expect(held.body_text).not.toContain(PENDING_REVIEW_TEXT);
+    expect(held.body_html).toContain('Preisangabe fehlt');
+    expect(held.body_html).not.toContain(PENDING_REVIEW_TEXT);
+    expect(held.body_text).toContain('Antwort an den Kunden');
+    expect(await inboxIds()).toContain(5201);
+
+    // Kein erneuter automatischer Versand.
+    await runScheduledTick(composeSender({ smtpSend }));
+    expect(smtpSend).not.toHaveBeenCalled();
+  });
+
+  test('Block vor dem Zurücksetzen der Planung: restoreClaimedDraft plant den angehaltenen Entwurf nicht neu', async () => {
+    await postgres.admin.query(`DELETE FROM job_queue`);
+    await seedHoldWorkflow('');
+    await seedWorkflowScheduledDraft(5202);
+    const smtpSend = jest.fn();
+    const real = composeSender({ smtpSend });
+    // Der Ausgangs-Workflow-Job läuft, bevor der Planer den Claim zurückgibt.
+    const racing: EmailComposeSenderApiPort = {
+      async send(input) {
+        const result = await real.send(input);
+        for (const payload of await takeWorkflowJobs()) {
+          await createPostgresWorkflowExecutionJobPort({ db }).execute(
+            buildWorkflowExecutionJobPlan(payload, WORKSPACE_ID),
+          );
+        }
+        return result;
+      },
+    };
+
+    await runScheduledTick(racing);
+
+    const held = await draftRow(5202);
+    expect(held.outbound_hold).toBe(true);
+    // Leerer Grund am Knoten „Versand sperren“: einheitlicher Fallback-Text.
+    expect(held.outbound_block_reason).toBe(OUTBOUND_HOLD_FALLBACK_REASON);
+    expect(held.body_text).toContain(OUTBOUND_HOLD_FALLBACK_REASON);
+    expect(held.scheduled_send_at).toBeNull();
+    expect(await syncInfoValue(`scheduled_send_claimed_at:5202`)).toBeNull();
+    expect(await inboxIds()).toContain(5202);
+    expect(smtpSend).not.toHaveBeenCalled();
+  });
+
+  test('synchroner Block (Dry-Run) beim geplanten Versand hält den Entwurf an statt ihn fünfmal zu wiederholen', async () => {
+    await postgres.admin.query(`DELETE FROM job_queue`);
+    await seedHoldWorkflow('Statische Regel');
+    await seedWorkflowScheduledDraft(5203);
+    const smtpSend = jest.fn();
+    const sender = composeSender({
+      smtpSend,
+      workflowDryRun: async () => ({
+        success: true,
+        dryRun: true as const,
+        blocked: true,
+        blockReason: 'Statische Regel',
+        status: 'blocked' as const,
+      }),
+    });
+
+    await runScheduledTick(sender);
+
+    const held = await draftRow(5203);
+    expect(held.outbound_hold).toBe(true);
+    expect(held.outbound_block_reason).toBe('Statische Regel');
+    expect(held.scheduled_send_at).toBeNull();
+    expect(held.scheduled_send_trusted_service_principal).toBeNull();
+    expect(held.body_text).toContain('Statische Regel');
+    expect(await syncInfoValue('scheduled_send_failures:5203')).not.toBe('1');
+    expect(await syncInfoValue('scheduled_send_status:5203')).not.toBe('pending');
+    expect(await syncInfoValue('scheduled_send_claimed_at:5203')).toBeNull();
+    expect(await takeWorkflowJobs()).toHaveLength(0);
+    expect(await inboxIds()).toContain(5203);
+    expect(smtpSend).not.toHaveBeenCalled();
   });
 });

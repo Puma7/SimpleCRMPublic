@@ -24,6 +24,7 @@ import {
   aiDecideAnswerHoldsOutbound,
   aiDecidePortTripsInboundGate,
 } from '../../packages/core/src/workflow/ai-decide';
+import { outboundHoldReasonOrFallback } from '../../packages/core/src/email/outbound-review-parse';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -390,8 +391,9 @@ async function walkGraph(
     // Hold as side effect: follow only explicit block/error ports so template
     // branches still run, then finish blocked. Ordinary errors and port
     // 'blocked' (unsupported) must terminate without walking further edges.
+    // Leere Gründe zählen als fehlend (`??` behielt ''): einheitlicher Fallback.
     const pendingBlockReason = result.blocked
-      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      ? outboundHoldReasonOrFallback(result.blockReason?.trim() || result.message)
       : null;
     if (result.status === 'error') {
       return {

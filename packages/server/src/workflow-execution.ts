@@ -34,6 +34,7 @@ import {
   normalizeMailboxName,
   normalizeEmailAddress,
   outboundDraftFingerprint,
+  outboundHoldReasonOrFallback,
   outgoing,
   parseGraphDocument,
   parseSenderList,
@@ -125,6 +126,7 @@ import {
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { executeServerLearningsDigestNode } from './ai-learnings';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
@@ -1895,20 +1897,19 @@ async function walkGraph(
     // template branches (tags, notifications) run before finishing blocked.
     // Do NOT follow ports for ordinary status:'error' (e.g. Continuation-Kontext
     // overflow) or port:'blocked' unsupported-node results — those must stop.
+    // Leere Gründe zählen als fehlend (`??` behielt ''): einheitlicher Fallback.
     const pendingBlockReason = result.blocked
-      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      ? outboundHoldReasonOrFallback(result.blockReason?.trim() || result.message)
       : null;
     if (result.blocked && !input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
-      await trx
-        .updateTable('email_messages')
-        .set({
-          outbound_hold: true,
-          outbound_block_reason: pendingBlockReason,
-          updated_at: input.now,
-        })
-        .where('workspace_id', '=', input.context.workspaceId)
-        .where('id', '=', input.context.messageId)
-        .execute();
+      // Endgültiger Block: echter Grund im Banner, Planung eines Workflow-
+      // Versands gelöscht, damit der Entwurf im Posteingang erscheint.
+      await persistOutboundBlockOnDraft(trx, {
+        workspaceId: input.context.workspaceId,
+        messageId: input.context.messageId,
+        reason: pendingBlockReason,
+        now: input.now,
+      });
     }
     if (result.status === 'error') {
       return {
@@ -2409,8 +2410,7 @@ async function executeServerNode(
     return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
   }
   if (type === 'email.hold_outbound' || type === 'hold_outbound') {
-    const reason = String(config.reason ?? node.data.reason ?? '').trim()
-      || 'Ausgehende Nachricht durch Workflow zurueckgestellt.';
+    const reason = outboundHoldReasonOrFallback(String(config.reason ?? node.data.reason ?? ''));
     return {
       status: 'ok',
       port: 'blocked',

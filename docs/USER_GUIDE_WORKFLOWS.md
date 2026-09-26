@@ -150,6 +150,13 @@ Ergebnis-Variablen für spätere Schritte: `ai.decide.answer` (ja, nein, unsiche
 
 Der **Testlauf** fragt die KI nicht, Ergebnis ist immer „Unsicher“ („Testlauf: keine KI-Anfrage“). Die Prüfung beim Senden (Ausgang prüfen) fragt die KI dagegen wirklich. Auf dem Server läuft der Baustein als Hintergrund-Job; nachrangige eingehende Workflows warten darauf.
 
+### Angehaltene Mails im Posteingang
+
+Hält ein Ausgangs-Workflow eine Mail an (Baustein **„Versand sperren“**, KI-Ausgangsprüfung **Blockiert** oder **KI-Fehler**), liegt der Entwurf mit dem gelben Hinweis **„Versand blockiert“** und dem Grund im **Posteingang**. Das gilt auch für **automatische Antworten** aus Workflows und für Mails, die mit **„Später senden“** geplant waren: Ihre Planung wird aufgehoben, damit nichts ohne Ihre Entscheidung doch noch rausgeht. Nach dem Korrigieren senden Sie den Entwurf wie gewohnt.
+
+- Gibt der Workflow keinen Grund an, steht dort **„Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.“**
+- Server-Edition: Während die Ausgangs-Workflows noch laufen, zeigt der Entwurf „Ausgangsprüfung wird serverseitig ausgeführt …“. Erst ein echter Block ersetzt diesen Hinweis durch den Grund.
+
 ### Ihr erster Workflow in fünf Schritten
 
 1. **E-Mail → Workflows** öffnen und links auf **„Neu“** klicken.

@@ -58,6 +58,7 @@ import {
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
+import { OUTBOUND_REVIEW_PENDING_REASON, persistOutboundBlockOnDraft } from './mail-outbound-hold';
 
 export {
   OUTBOUND_REVIEW_APPROVED_PREFIX,
@@ -118,8 +119,7 @@ const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
  *  so the scheduled-send cron doesn't loop through the review again. */
 const OUTBOUND_REVIEW_APPROVED_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
-const OUTBOUND_REVIEW_REASON =
-  'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
+const OUTBOUND_REVIEW_REASON = OUTBOUND_REVIEW_PENDING_REASON;
 const MAX_OUTBOUND_CONTEXT_TEXT = 20_000;
 
 export function isOutboundReviewPendingError(error: string): boolean {
@@ -270,11 +270,17 @@ export type ComposeOutboundReviewInput = Readonly<{
   inReplyToMessageId?: number | null;
   attachmentCount: number;
   attachmentPaths?: readonly string[];
+  /**
+   * Geplanter Versand (Workflow, „Später senden“): ein synchroner Block der
+   * Ausgangs-Workflows hält den Entwurf endgültig an (Banner, Posteingang,
+   * Planung gelöscht) statt nur einen Fehler zu melden.
+   */
+  holdOnBlock?: boolean;
 }>;
 
 export type ComposeOutboundReviewResult =
   | { allowed: true }
-  | { allowed: false; error: string; workflowRunId?: number | null };
+  | { allowed: false; error: string; workflowRunId?: number | null; held?: true };
 
 export type ComposeOutboundReviewPort = Readonly<{
   review(input: ComposeOutboundReviewInput): Promise<ComposeOutboundReviewResult>;
@@ -484,12 +490,14 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(values.inReplyToMessageId === undefined ? {} : { inReplyToMessageId: values.inReplyToMessageId }),
             attachmentCount: attachments.length,
             ...(values.attachmentPaths === undefined ? {} : { attachmentPaths: values.attachmentPaths }),
+            ...(input.holdOnOutboundBlock ? { holdOnBlock: true } : {}),
           });
           if (!review.allowed) {
             return {
               ok: false,
               error: review.error,
               ...(review.workflowRunId === undefined ? {} : { workflowRunId: review.workflowRunId }),
+              ...(review.held ? { outboundHeld: true } : {}),
             };
           }
         }
@@ -957,6 +965,15 @@ export function createPostgresComposeOutboundReviewPort(options: {
               workflows,
             });
             if (!dryRun.allowed) {
+              if (input.holdOnBlock) {
+                const reason = await persistOutboundBlockOnDraft(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.draftMessageId,
+                  reason: dryRun.reason,
+                  now,
+                });
+                return { allowed: false, error: reason, held: true };
+              }
               return { allowed: false, error: dryRun.reason };
             }
           }

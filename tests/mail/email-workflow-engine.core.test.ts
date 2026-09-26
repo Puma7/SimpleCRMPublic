@@ -503,6 +503,30 @@ describe('email-workflow-engine core', () => {
       expect(mockReturnOutboundDraftToInbox).toHaveBeenCalled();
     });
 
+    test('block without reason uses the unified fallback text (TA-P2)', async () => {
+      const fallback = 'Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.';
+      const row = draftRow();
+      mockGetEmailMessageById.mockReturnValue(row);
+      mockListWorkflowsByTrigger.mockReturnValue([{ id: 1, name: 'W', trigger: 'outbound', enabled: 1 }]);
+      mockExecuteWorkflowForTrigger.mockResolvedValueOnce({
+        status: 'blocked',
+        blocked: true,
+        blockReason: '',
+        log: [],
+      });
+      const r = await evaluateOutboundWorkflows(outboundPayloadFromMessage(row));
+      expect(r.reason).toBe(fallback);
+      expect(mockReturnOutboundDraftToInbox).toHaveBeenCalledWith(10, fallback, expect.anything());
+
+      mockReturnOutboundDraftToInbox.mockClear();
+      mockGetEmailMessageById
+        .mockReturnValueOnce(row)
+        .mockReturnValueOnce({ ...row, outbound_hold: 1, outbound_block_reason: '' });
+      mockExecuteWorkflowForTrigger.mockResolvedValueOnce({ status: 'ok', blocked: false, blockReason: null, log: [] });
+      const held = await evaluateOutboundWorkflows(outboundPayloadFromMessage(row));
+      expect(held.reason).toBe(fallback);
+    });
+
     test('dryRun and sideEffects none skip hold side effects', async () => {
       const row = draftRow();
       mockGetEmailMessageById.mockReturnValue(row);
