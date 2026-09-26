@@ -20,6 +20,7 @@ import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { buildKnowledgePromptAppend, searchKnowledgeForWorkflow } from '../../packages/server/src/knowledge-workflow-search';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
@@ -279,8 +280,8 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
       requestedByName: 'Erika Beispiel',
     });
     expect(digest!.proposedContent).toContain('## Rückgabe\n\nInnerhalb von 30 Tagen, Etikett im Kundenkonto.');
-    const kb = await postgres.admin.query('SELECT name, knowledge_context, account_id FROM workflow_knowledge_bases WHERE id = $1', [created.knowledgeBaseId]);
-    expect(kb.rows[0]).toEqual({ name: 'Learnings', knowledge_context: 'general', account_id: null });
+    const kb = await postgres.admin.query('SELECT name, knowledge_context, override_key, account_id FROM workflow_knowledge_bases WHERE id = $1', [created.knowledgeBaseId]);
+    expect(kb.rows[0]).toEqual({ name: 'Learnings', knowledge_context: 'learnings', override_key: 'kb.learnings', account_id: null });
 
     await seedCandidates(3);
     const pending = await runAiLearningsDigest({ db, chat }, {
@@ -325,6 +326,9 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     expect(accepted).toMatchObject({ ok: true, digest: { status: 'accepted', decidedByName: 'Erika Beispiel' }, deletedCandidates: 2 });
     const chunks = await postgres.admin.query('SELECT title, content FROM workflow_knowledge_chunks WHERE knowledge_base_id = $1', [KB_ID]);
     expect(chunks.rows).toEqual([{ title: 'Dokument', content: '# Firma\n\n## Rückgabe\n\n30 Tage (bearbeitet).\n' }]);
+    // Gewähltes Ziel behält seinen Kontext.
+    const target = await postgres.admin.query('SELECT knowledge_context FROM workflow_knowledge_bases WHERE id = $1', [KB_ID]);
+    expect(target.rows[0]).toEqual({ knowledge_context: 'inbound' });
     await expect(acceptAiLearningDigest({ db }, { workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: 'x' }))
       .resolves.toEqual({ ok: false, code: 'not_pending' });
     expect(await listAiLearningCandidates({ db }, WS_A)).toEqual([]);
@@ -363,6 +367,65 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     const other = await withWorkspaceTransaction(db, { workspaceId: WS_B, role: 'system' }, (trx) =>
       saveWorkflowKnowledgeDocument(trx, WS_B, KB_ID, 'fremd', new Date()));
     expect(other).toBeNull();
+  });
+
+  test('Abruf: Learnings-Basis (eigener Kontext) neben anderer allgemeiner Wissensbasis, Quote je Wissensbasis', async () => {
+    const GENERAL_KB = 972;
+    await postgres.admin.query(`
+      INSERT INTO workflow_knowledge_bases (id, workspace_id, source_sqlite_id, name, knowledge_context, override_key, account_id)
+      VALUES ($1, $2, $1, 'Allgemein', 'general', 'kb.general', NULL)
+    `, [GENERAL_KB, WS_A]);
+    for (const n of [1, 2, 3, 4]) {
+      await postgres.admin.query(`
+        INSERT INTO workflow_knowledge_chunks (workspace_id, source_sqlite_id, knowledge_base_source_sqlite_id, knowledge_base_id, title, content)
+        VALUES ($1, $2, $3, $3, $4, $5)
+      `, [WS_A, 9720 + n, GENERAL_KB, `Rückgabe ${n}`, `Rückgabe Hinweis ${n}.`]);
+    }
+    await withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
+      saveWorkflowKnowledgeDocument(trx, WS_A, KB_ID, '# Firma\n\n## Rückgabe\n\nRückgabe-Anfragen am selben Tag beantworten.', new Date()));
+
+    await seedCandidates(2);
+    const created = await runAiLearningsDigest({
+      db,
+      chat: async () => JSON.stringify({
+        operations: [{ op: 'add', section: 'Rückgabe', content: 'Rückgabe innerhalb von 30 Tagen, Etikett im Kundenkonto.' }],
+      }),
+    }, { workspaceId: WS_A, period: 'since_last', minCandidates: 1, trigger: 'manual', actorUserId: USER_A });
+    expect(created).toMatchObject({ status: 'created' });
+    const learningsKb = Number(created.knowledgeBaseId);
+    const digest = await getAiLearningDigest({ db }, WS_A, Number(created.digestId));
+    await expect(acceptAiLearningDigest({ db }, {
+      workspaceId: WS_A, actorUserId: USER_A, id: Number(created.digestId), content: digest!.proposedContent,
+    })).resolves.toMatchObject({ ok: true });
+
+    const chunkKb = new Map<number, number>();
+    const chunkRows = await postgres.admin.query('SELECT id, knowledge_base_id FROM workflow_knowledge_chunks WHERE workspace_id = $1', [WS_A]);
+    for (const row of chunkRows.rows as Array<{ id: string | number; knowledge_base_id: string | number }>) {
+      chunkKb.set(Number(row.id), Number(row.knowledge_base_id));
+    }
+    const countByKb = (rows: { id: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
+      const kbId = chunkKb.get(row.id) ?? -1;
+      acc[kbId] = (acc[kbId] ?? 0) + 1;
+      return acc;
+    }, {});
+    const search = (direction: string | undefined, limit: number, explicit?: number) =>
+      withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
+        searchKnowledgeForWorkflow(trx, WS_A, ACCOUNT_ID, direction, 'Rückgabe Etikett', limit, explicit));
+
+    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    const inbound = await search('inbound', 5);
+    expect(countByKb(inbound)).toEqual({ [GENERAL_KB]: 2, [KB_ID]: 1, [learningsKb]: 1 });
+    expect(inbound.find((chunk) => chunkKb.get(chunk.id) === learningsKb)?.content).toContain('Etikett im Kundenkonto');
+    // Ausgang und manuell lesen die Learnings ebenfalls.
+    expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 1, [learningsKb]: 1 });
+    expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 3, [learningsKb]: 1 });
+    // Explizit gewählte Wissensbasis (ai.draft_reply): Learnings kommen nicht dazu.
+    expect(countByKb(await search('inbound', 5, KB_ID))).not.toHaveProperty(String(learningsKb));
+    // Reader-KI-Antwort (Antwortvorschlag) nutzt dieselbe Kontext-Liste.
+    const promptAppend = await withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
+      buildKnowledgePromptAppend(trx, WS_A, ACCOUNT_ID, 'inbound', 'Rückgabe Etikett'));
+    expect(promptAppend).toContain('Etikett im Kundenkonto');
+    expect(promptAppend).toContain('Rückgabe Hinweis');
   });
 
   test('Knoten im echten Workflow-Lauf (manuell): Job wird eingereiht, Lauf endet ok', async () => {

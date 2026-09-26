@@ -45,7 +45,6 @@ function overview(extra: Record<string, unknown> = {}) {
     running: false,
     lastDigestAt: null,
     effectiveKnowledgeBaseId: 3,
-    generalKnowledgeBaseCount: 1,
     ...extra,
   };
 }
@@ -75,7 +74,11 @@ const pendingDetail = {
   knowledgeBaseChanged: false,
 };
 
-function mockBackend(options: { overview?: Record<string, unknown>; detail?: Record<string, unknown> } = {}) {
+function mockBackend(options: {
+  overview?: Record<string, unknown>;
+  detail?: Record<string, unknown>;
+  knowledgeBases?: Array<Record<string, unknown>>;
+} = {}) {
   mockInvoke.mockImplementation(async (channel: string) => {
     switch (channel) {
       case IPCChannels.Email.GetLearningsOverview:
@@ -87,7 +90,7 @@ function mockBackend(options: { overview?: Record<string, unknown>; detail?: Rec
           { ...pendingDetail, id: 5, status: 'accepted', decidedByName: 'Admin', decidedAt: '2026-09-19T10:00:00.000Z' },
         ];
       case IPCChannels.Email.ListKnowledgeBases:
-        return [{ id: 3, name: 'Learnings' }];
+        return options.knowledgeBases ?? [{ id: 3, name: 'Learnings', knowledge_context: 'learnings', account_id: null }];
       case IPCChannels.Email.GetLearningDigest:
         return { ...pendingDetail, ...options.detail };
       case IPCChannels.Email.ListLearningCandidates:
@@ -123,6 +126,35 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     render(<LearningsPanel />);
     expect(screen.getByText('Nur für Owner und Admins')).toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  test('Ziel-Hinweis: eigene Learnings-Basis wird immer gelesen, gewählte Basis behält ihren Kontext', async () => {
+    mockBackend();
+    const { unmount } = render(<LearningsPanel />);
+    expect(await screen.findByTestId('learnings-target-hint')).toHaveTextContent(
+      'KI-Bausteine lesen sie immer zusätzlich zu den übrigen Wissensbasen.',
+    );
+    expect(screen.queryByText('Hinweis zur allgemeinen Wissensbasis')).not.toBeInTheDocument();
+    unmount();
+
+    mockBackend({
+      overview: { settings: { collectEnabled: false, targetKnowledgeBaseId: 4, profileId: null } },
+      knowledgeBases: [{ id: 4, name: 'Firma', knowledge_context: 'general', account_id: null }],
+    });
+    const second = render(<LearningsPanel />);
+    expect(await screen.findByTestId('learnings-target-hint')).toHaveTextContent(
+      'Diese Wissensbasis behält ihren Kontext „Allgemein (Firma)“ und wird wie bisher gelesen.',
+    );
+    second.unmount();
+
+    mockBackend({
+      overview: { settings: { collectEnabled: false, targetKnowledgeBaseId: 5, profileId: null } },
+      knowledgeBases: [{ id: 5, name: 'Ohne Kontext', knowledge_context: null, account_id: null }],
+    });
+    render(<LearningsPanel />);
+    expect(await screen.findByTestId('learnings-target-hint')).toHaveTextContent(
+      'nur, wenn sie im Baustein ausdrücklich gewählt ist',
+    );
   });
 
   test('Server-Nutzer mit workflows.manage verwaltet Learnings', async () => {

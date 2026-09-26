@@ -4,6 +4,7 @@ import { messageListFilterSchema } from '../email-list-filters';
 import { messageDoneFilterSchema } from '../email-done-filter';
 import { messageSearchScopeSchema } from '../email-search-scope';
 import { compileWorkflowGraphPayloadSchema } from './workflow-graph-schema';
+import { KNOWLEDGE_CONTEXTS } from '../knowledge-context';
 
 type SchemaEntry = {
   payload: z.ZodTypeAny;
@@ -1686,7 +1687,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       name: nonEmptyString,
       description: z.string().nullable().optional(),
-      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      knowledgeContext: z.enum(KNOWLEDGE_CONTEXTS).nullable().optional(),
       ...accountOverrideMutationFields,
     }),
     result: z.union([
@@ -1699,7 +1700,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       id: positiveInt,
       name: nonEmptyString.optional(),
       description: z.string().nullable().optional(),
-      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      knowledgeContext: z.enum(KNOWLEDGE_CONTEXTS).nullable().optional(),
       ...accountOverrideMutationFields,
     }),
     result: standardResult,

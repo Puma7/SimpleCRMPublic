@@ -117,8 +117,6 @@ export type AiLearningsOverview = {
   lastDigestAt: string | null;
   /** Wissensbasis, die eine Auswertung ohne Ziel verwenden würde (null = wird angelegt). */
   effectiveKnowledgeBaseId: number | null;
-  /** Anzahl globaler Wissensbasen mit Kontext „allgemein“ (KI liest je Kontext nur eine). */
-  generalKnowledgeBaseCount: number;
 };
 
 function iso(value: Date | string | null | undefined): string | null {
@@ -564,13 +562,6 @@ export async function getAiLearningsOverview(deps: AiLearningsDeps, workspaceId:
         .orderBy('created_at', 'desc')
         .limit(1)
         .executeTakeFirst();
-      const general = await trx
-        .selectFrom('workflow_knowledge_bases')
-        .select((eb) => eb.fn.countAll<string>().as('count'))
-        .where('workspace_id', '=', workspaceId)
-        .where('knowledge_context', '=', LEARNINGS_DEFAULT_KB_CONTEXT)
-        .where('account_id', 'is', null)
-        .executeTakeFirst();
       const runningAt = markers.get(LEARNINGS_DIGEST_RUNNING_KEY);
       const runningSince = runningAt ? Date.parse(runningAt) : Number.NaN;
       return {
@@ -580,7 +571,6 @@ export async function getAiLearningsOverview(deps: AiLearningsDeps, workspaceId:
         running: Number.isFinite(runningSince) && now.getTime() - runningSince < RUNNING_MARKER_TTL_MS,
         lastDigestAt: iso(last?.created_at ?? null),
         effectiveKnowledgeBaseId,
-        generalKnowledgeBaseCount: Number(general?.count ?? 0),
       };
     },
     { applySession: deps.applyWorkspaceSession },
@@ -1036,7 +1026,7 @@ export async function runAiLearningsDigest(
       if (preflight.status !== 'ready') return { kind: 'skip' as const, preflight };
       let knowledgeBaseId = preflight.knowledgeBaseId;
       if (knowledgeBaseId === null) {
-        // Eigene Wissensbasis „Learnings“ (Kontext allgemein) beim ersten Vorschlag anlegen.
+        // Eigene Wissensbasis „Learnings“ (eigener Kontext, wird immer mitgelesen) beim ersten Vorschlag anlegen.
         const created = await insertWorkflowKnowledgeBase(trx, plan.workspaceId, {
           name: LEARNINGS_DEFAULT_KB_NAME,
           description: 'Von SimpleCRM aus freigegebenen Learnings gepflegt.',

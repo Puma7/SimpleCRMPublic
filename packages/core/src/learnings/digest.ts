@@ -40,9 +40,13 @@ export const LEARNINGS_SETTING_KEYS = {
   profileId: 'learnings_profile_id',
 } as const;
 
-/** Name/Kontext der Wissensbasis, die angelegt wird, wenn kein Ziel gewählt ist. */
+/**
+ * Name/Kontext der Wissensbasis, die angelegt wird, wenn kein Ziel gewählt ist.
+ * Der eigene Kontext `learnings` wird in jeder Richtung zusätzlich gelesen
+ * (shared/knowledge-context.ts bzw. die Server-Kopie in knowledge-workflow-search.ts).
+ */
 export const LEARNINGS_DEFAULT_KB_NAME = 'Learnings';
-export const LEARNINGS_DEFAULT_KB_CONTEXT = 'general';
+export const LEARNINGS_DEFAULT_KB_CONTEXT = 'learnings';
 export const LEARNINGS_DEFAULT_KB_DOCUMENT =
   '# Learnings\n\nAllgemeine Regeln und Fakten aus freigegebenen Learnings (Einstellungen → Learnings).\n';
 

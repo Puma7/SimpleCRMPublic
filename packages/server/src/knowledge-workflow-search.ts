@@ -4,23 +4,24 @@ import type { ServerDatabase } from './db/schema';
 import type { WorkspaceTransaction } from './db/workspace-context';
 
 /** Mirrors shared/knowledge-context — inlined for packages/server Docker build (no /shared copy). */
-const KNOWLEDGE_CONTEXTS = ['inbound', 'outbound', 'general'] as const;
-type KnowledgeContext = (typeof KNOWLEDGE_CONTEXTS)[number];
+export const KNOWLEDGE_CONTEXTS = ['inbound', 'outbound', 'general', 'learnings'] as const;
+export type KnowledgeContext = (typeof KNOWLEDGE_CONTEXTS)[number];
 
-function isKnowledgeContext(value: unknown): value is KnowledgeContext {
+export function isKnowledgeContext(value: unknown): value is KnowledgeContext {
   return typeof value === 'string' && (KNOWLEDGE_CONTEXTS as readonly string[]).includes(value);
 }
 
-function knowledgeContextsForDirection(
+/** Learnings (TA-P5) werden in jeder Richtung zusätzlich gelesen. */
+export function knowledgeContextsForDirection(
   direction: 'inbound' | 'outbound' | 'draft_created' | 'manual' | string | undefined,
 ): KnowledgeContext[] {
   if (direction === 'outbound' || direction === 'draft_created') {
-    return ['general', 'outbound'];
+    return ['general', 'outbound', 'learnings'];
   }
   if (direction === 'inbound') {
-    return ['general', 'inbound'];
+    return ['general', 'inbound', 'learnings'];
   }
-  return ['general'];
+  return ['general', 'learnings'];
 }
 
 function formatKnowledgeChunksForPrompt(
@@ -113,6 +114,7 @@ export async function listKnowledgeBaseIdsForWorkflow(
   workspaceId: string,
   accountId: number | null,
   direction: string | undefined,
+  options: { includeLearnings?: boolean } = {},
 ): Promise<number[]> {
   const contexts = knowledgeContextsForDirection(
     direction as 'inbound' | 'outbound' | 'draft_created' | undefined,
@@ -120,6 +122,7 @@ export async function listKnowledgeBaseIdsForWorkflow(
   const ids = new Set<number>();
   for (const context of contexts) {
     if (!isKnowledgeContext(context)) continue;
+    if (context === 'learnings' && options.includeLearnings === false) continue;
     const id = await findKnowledgeBaseIdForContext(trx, workspaceId, accountId, context);
     if (id != null) ids.add(id);
   }
@@ -136,8 +139,12 @@ export async function searchKnowledgeForWorkflow(
   explicitKbId?: number | null,
 ): Promise<WorkflowKnowledgeChunkMatch[]> {
   const kbIds = new Set<number>();
-  if (explicitKbId != null && explicitKbId > 0) kbIds.add(explicitKbId);
-  for (const id of await listKnowledgeBaseIdsForWorkflow(trx, workspaceId, accountId, direction)) {
+  const explicit = explicitKbId != null && explicitKbId > 0;
+  if (explicit) kbIds.add(explicitKbId);
+  // Eine im Knoten gewählte Wissensbasis bekommt keine Learnings dazu (Verhalten wie vor TA-P5).
+  for (const id of await listKnowledgeBaseIdsForWorkflow(trx, workspaceId, accountId, direction, {
+    includeLearnings: !explicit,
+  })) {
     kbIds.add(id);
   }
   const merged: WorkflowKnowledgeChunkMatch[] = [];

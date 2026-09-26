@@ -29,6 +29,7 @@ import type {
 import { workflowGraphHasChainStopNode, workflowGraphHasSideEffectNode } from '@simplecrm/core';
 import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import { recordKnowledgeDocumentSaved } from './ai-learnings-routes';
+import { KNOWLEDGE_CONTEXTS, isKnowledgeContext } from '../knowledge-workflow-search';
 import {
   data,
   error,
@@ -1454,8 +1455,10 @@ function parseKnowledgeBaseMutationBody(
   }
   if (Object.prototype.hasOwnProperty.call(body, 'knowledgeContext')) {
     const knowledgeContext = normalizeNullableBodyText(body.knowledgeContext, 'knowledgeContext', 32);
-    if (knowledgeContext.ok) values.knowledgeContext = knowledgeContext.value;
-    else errors.push({ field: 'knowledgeContext', message: knowledgeContext.message });
+    if (!knowledgeContext.ok) errors.push({ field: 'knowledgeContext', message: knowledgeContext.message });
+    else if (knowledgeContext.value !== null && !isKnowledgeContext(knowledgeContext.value)) {
+      errors.push({ field: 'knowledgeContext', message: `knowledgeContext muss einer von ${KNOWLEDGE_CONTEXTS.join(', ')} sein` });
+    } else values.knowledgeContext = knowledgeContext.value;
   }
 
   if (errors.length > 0) {

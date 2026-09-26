@@ -62,7 +62,6 @@ function makePorts(overrides: Partial<AiLearningsApiPort> = {}) {
       running: false,
       lastDigestAt: null,
       effectiveKnowledgeBaseId: null,
-      generalKnowledgeBaseCount: 0,
     })),
     listCandidates: jest.fn(async () => []),
     deleteCandidate: jest.fn(async () => ({
@@ -285,6 +284,33 @@ describe('Wissensbasis-Dokument atomar speichern (TA-P5)', () => {
     expect(saveDocument).toHaveBeenCalledWith({ workspaceId: WS, actorUserId: 'u-admin', id: 3, content: '# Neu' });
     expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ action: 'workflow_knowledge_chunk.created' }));
     expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'workflow_knowledge_chunk.created' }));
+  });
+});
+
+describe('Wissensbasis-Kontext „learnings“ (TA-P5)', () => {
+  test('POST /workflow-knowledge-bases akzeptiert learnings und lehnt unbekannte Kontexte ab', async () => {
+    const create = jest.fn(async (input: { values: Record<string, unknown> }) => ({
+      id: 5, sourceSqliteId: -5, name: String(input.values.name), description: null, accountSourceSqliteId: null, accountId: null,
+      overrideKey: 'kb.learnings', knowledgeContext: (input.values.knowledgeContext as string | null) ?? null, createdAt: null, updatedAt: '',
+    }));
+    const ports = {
+      workflowKnowledgeBases: { create },
+      audit: { record: jest.fn(async () => undefined) },
+      events: { publish: jest.fn(async () => undefined) },
+    } as unknown as ServerApiPorts;
+    const path = '/api/v1/workflow-knowledge-bases';
+    const ok = await handleWorkflowRuntimeReadRoute({ method: 'POST', path, principal: manager, body: { name: 'Learnings', knowledgeContext: 'learnings' } }, ports);
+    expect(ok).toMatchObject({ status: 201 });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ values: { name: 'Learnings', knowledgeContext: 'learnings' } }));
+
+    const invalid = await handleWorkflowRuntimeReadRoute({ method: 'POST', path, principal: manager, body: { name: 'X', knowledgeContext: 'foo' } }, ports);
+    expect(invalid).toMatchObject({ status: 400 });
+    expect((invalid!.body as { error: { details: { fields: unknown[] } } }).error.details.fields).toEqual([
+      { field: 'knowledgeContext', message: 'knowledgeContext muss einer von inbound, outbound, general, learnings sein' },
+    ]);
+    const cleared = await handleWorkflowRuntimeReadRoute({ method: 'POST', path, principal: manager, body: { name: 'Ohne', knowledgeContext: null } }, ports);
+    expect(cleared).toMatchObject({ status: 201 });
+    expect(create).toHaveBeenCalledTimes(2);
   });
 });
 

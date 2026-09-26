@@ -52,6 +52,7 @@ import {
   createKnowledgeBase,
   getKnowledgeBaseDocument,
   saveKnowledgeBaseDocument,
+  searchKnowledgeForWorkflow,
 } from '../../electron/workflow/knowledge-base';
 import { registerLearningsDigestNode } from '../../electron/workflow/nodes/learnings-nodes';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../../electron/workflow/types';
@@ -259,6 +260,46 @@ describe('Learnings (Desktop, TA-P5)', () => {
     await expect(first).resolves.toMatchObject({ status: 'created' });
   });
 
+  test('Abruf: Learnings-Basis (eigener Kontext) neben anderer allgemeiner Wissensbasis, Quote je Wissensbasis', async () => {
+    const firma = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(firma, '# Firma\n\n## Rückgabe\n\nRückgabe über das Portal.\n');
+    const insertChunk = db.prepare(
+      'INSERT INTO workflow_knowledge_chunks (knowledge_base_id, title, content, created_at) VALUES (?, ?, ?, ?)',
+    );
+    for (const n of [1, 2, 3]) insertChunk.run(firma, `Rückgabe ${n}`, `Rückgabe Hinweis ${n}.`, new Date().toISOString());
+    const eingang = createKnowledgeBase('Eingang', null, { knowledgeContext: 'inbound' });
+    saveKnowledgeBaseDocument(eingang, '# Eingang\n\n## Rückgabe\n\nRückgabe-Anfragen am selben Tag beantworten.\n');
+
+    seedCandidates(2);
+    mockRunChatCompletion.mockResolvedValueOnce(JSON.stringify({
+      operations: [{ op: 'add', section: 'Rückgabe', content: 'Rückgabe innerhalb von 30 Tagen, Etikett im Kundenkonto.' }],
+    }));
+    const created = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1, actorUserId: USER });
+    const detail = (await getAiLearningDigest(Number(created.digestId)))!;
+    const learningsKb = detail.knowledgeBaseId;
+    expect(db.prepare('SELECT name, knowledge_context, override_key, account_id FROM workflow_knowledge_bases WHERE id = ?').get(learningsKb))
+      .toEqual({ name: 'Learnings', knowledge_context: 'learnings', override_key: 'kb.learnings', account_id: null });
+    await expect(acceptAiLearningDigest({ id: detail.id, content: detail.proposedContent, actorUserId: USER }))
+      .resolves.toMatchObject({ success: true });
+
+    const countByKb = (rows: { knowledge_base_id: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
+      acc[row.knowledge_base_id] = (acc[row.knowledge_base_id] ?? 0) + 1;
+      return acc;
+    }, {});
+    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    const inboundChunks = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe Etikett', 5);
+    expect(countByKb(inboundChunks)).toEqual({ [firma]: 2, [eingang]: 1, [learningsKb]: 1 });
+    expect(inboundChunks.find((c) => c.knowledge_base_id === learningsKb)?.content).toContain('Etikett im Kundenkonto');
+    // Ausgang und manuell lesen die Learnings ebenfalls; ceil(2 / 2) = 1 je Wissensbasis.
+    expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 1 });
+    expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 3, [learningsKb]: 1 });
+    // Explizit gewählte Wissensbasis: keine Learnings dazu.
+    const explicit = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe', 5, eingang);
+    expect(explicit.map((c) => c.knowledge_base_id)).not.toContain(learningsKb);
+    // Bestands-Wissensbasen behalten ihren Kontext.
+    expect(db.prepare('SELECT knowledge_context FROM workflow_knowledge_bases WHERE id = ?').get(firma)).toEqual({ knowledge_context: 'general' });
+  });
+
   test('Übernehmen mit Konfliktwarnung, Verwerfen, Fehlerfälle', async () => {
     const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
     saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');
@@ -281,6 +322,9 @@ describe('Learnings (Desktop, TA-P5)', () => {
     });
     expect(accepted).toMatchObject({ success: true, digest: { status: 'accepted', decidedByName: 'Erika Beispiel' } });
     expect(getKnowledgeBaseDocument(kb)?.content).toBe('# Firma\n\n## Rückgabe\n\n30 Tage (bearbeitet).\n');
+    // Gewähltes Ziel behält seinen Kontext.
+    expect(db.prepare('SELECT knowledge_context, override_key FROM workflow_knowledge_bases WHERE id = ?').get(kb))
+      .toEqual({ knowledge_context: 'general', override_key: 'kb.general' });
     expect(db.prepare('SELECT COUNT(*) AS n FROM ai_learning_candidates').get()).toEqual({ n: 0 });
     await expect(acceptAiLearningDigest({ id, content: 'x', actorUserId: USER })).resolves.toMatchObject({ code: 'not_pending' });
 

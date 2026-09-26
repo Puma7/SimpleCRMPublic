@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { Check, Loader2, Pencil, Play, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
+import { isKnowledgeContext, KNOWLEDGE_CONTEXT_LABELS } from "@shared/knowledge-context"
 import {
   learningCandidateKindLabel,
   type AiLearningCandidateDto,
@@ -34,12 +35,28 @@ import { AiProfileSelect } from "../ai-profile-select"
 import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
 import { LearningsDiffView } from "./learnings-diff-view"
 
-type KnowledgeBaseOption = { id: number; name?: string | null }
+type KnowledgeBaseOption = {
+  id: number
+  name?: string | null
+  knowledge_context?: string | null
+  account_id?: number | null
+}
 
 const DEFAULT_KB_VALUE = "__default__"
 const ALL_KINDS = "__all__"
 const POLL_INTERVAL_MS = 4000
 const POLL_MAX_ATTEMPTS = 45
+
+/** Wie KI-Bausteine eine gewählte Ziel-Wissensbasis lesen (Kontext bleibt unverändert). */
+function knowledgeBaseReadHint(kb: KnowledgeBaseOption | undefined): string | null {
+  if (!kb) return null
+  const context = kb.knowledge_context && isKnowledgeContext(kb.knowledge_context) ? kb.knowledge_context : null
+  if (!context) {
+    return "Diese Wissensbasis hat keinen Kontext: KI-Bausteine lesen sie nur, wenn sie im Baustein ausdrücklich gewählt ist."
+  }
+  const scope = kb.account_id ? " für ihr Postfach" : ""
+  return `Diese Wissensbasis behält ihren Kontext „${KNOWLEDGE_CONTEXT_LABELS[context]}“ und wird${scope} wie bisher gelesen.`
+}
 
 const PERIOD_LABELS: Record<LearningsDigestPeriod, string> = {
   since_last: "Seit der letzten Auswertung",
@@ -336,10 +353,12 @@ function LearningsManager() {
     if (!id) return null
     return knowledgeBases.find((kb) => kb.id === id)?.name ?? `Wissensbasis #${id}`
   }, [knowledgeBases, overview?.effectiveKnowledgeBaseId, settings?.targetKnowledgeBaseId])
-  const showGeneralHint = Boolean(
-    overview
-    && !settings?.targetKnowledgeBaseId
-    && overview.generalKnowledgeBaseCount > (overview.effectiveKnowledgeBaseId ? 1 : 0),
+  const targetKnowledgeBaseId = settings?.targetKnowledgeBaseId ?? null
+  const targetReadHint = useMemo(
+    () => knowledgeBaseReadHint(
+      targetKnowledgeBaseId ? knowledgeBases.find((kb) => kb.id === targetKnowledgeBaseId) : undefined,
+    ),
+    [knowledgeBases, targetKnowledgeBaseId],
   )
 
   return (
@@ -391,8 +410,9 @@ function LearningsManager() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] text-muted-foreground">
-              Leer: SimpleCRM legt beim ersten Vorschlag eine Wissensbasis „Learnings“ (Kontext allgemein) an.
+            <p className="text-[11px] text-muted-foreground" data-testid="learnings-target-hint">
+              {targetReadHint
+                ?? "Leer: SimpleCRM legt beim ersten Vorschlag eine Wissensbasis „Learnings“ mit eigenem Kontext an. KI-Bausteine lesen sie immer zusätzlich zu den übrigen Wissensbasen."}
             </p>
           </div>
           <AiProfileSelect
@@ -404,15 +424,6 @@ function LearningsManager() {
           />
         </div>
 
-        {showGeneralHint ? (
-          <Alert>
-            <AlertTitle>Hinweis zur allgemeinen Wissensbasis</AlertTitle>
-            <AlertDescription>
-              KI-Bausteine lesen je Kontext nur eine allgemeine Wissensbasis. Es gibt bereits eine allgemeine
-              Wissensbasis — wählen Sie sie als Ziel, damit freigegebene Learnings sicher mitgelesen werden.
-            </AlertDescription>
-          </Alert>
-        ) : null}
 
         <div className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground" data-testid="learnings-privacy">
           <p className="font-medium text-foreground">Datenschutz</p>

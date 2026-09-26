@@ -383,9 +383,6 @@ export function getAiLearningsOverview(): AiLearningsOverviewDto {
   const last = db
     .prepare(`SELECT created_at FROM ${AI_LEARNING_DIGESTS_TABLE} ORDER BY created_at DESC, id DESC LIMIT 1`)
     .get() as { created_at: string } | undefined;
-  const general = db
-    .prepare(`SELECT COUNT(*) AS count FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE knowledge_context = ? AND account_id IS NULL`)
-    .get(LEARNINGS_DEFAULT_KB_CONTEXT) as { count: number };
   return {
     settings: getAiLearningsSettings(),
     counts,
@@ -393,7 +390,6 @@ export function getAiLearningsOverview(): AiLearningsOverviewDto {
     running: runningDigests.size > 0,
     lastDigestAt: last?.created_at ?? null,
     effectiveKnowledgeBaseId,
-    generalKnowledgeBaseCount: Number(general.count),
   };
 }
 

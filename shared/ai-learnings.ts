@@ -26,7 +26,6 @@ export type AiLearningsOverviewDto = {
   running: boolean;
   lastDigestAt: string | null;
   effectiveKnowledgeBaseId: number | null;
-  generalKnowledgeBaseCount: number;
 };
 
 export type AiLearningCandidateDto = {
