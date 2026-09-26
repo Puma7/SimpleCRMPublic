@@ -507,6 +507,15 @@ export async function sendComposeDraft(input: {
       fromJson,
       draftAttachmentPaths: input.attachmentPaths,
     });
+    if (draft.auto_submitted === 1) {
+      // updateComposeDraft löscht den RFC-3834-Marker bei jedem Inhaltsschreiben;
+      // dieses Normalisieren vor dem Versand ist keine menschliche Änderung. Der
+      // SMTP-Versand stempelt aus dem vorher gelesenen Stand — ein Halt durch den
+      // Ausgang muss den Marker ebenso behalten (Server-Parität).
+      getDb()
+        .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET auto_submitted = 1 WHERE id = ?`)
+        .run(input.draftMessageId);
+    }
 
     const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
     clearOutboundHoldForResend(input.draftMessageId);
