@@ -292,9 +292,14 @@ const OP_ALIASES: Record<string, KnowledgeOperationKind> = {
   delete: 'delete', remove: 'delete', drop: 'delete', entfernen: 'delete', loeschen: 'delete', 'löschen': 'delete',
 };
 
+// Obergrenze der Zeichenschritte über alle Kandidaten: Ohne sie wäre die Suche
+// bei vielen offenen Klammern ohne Gegenstück quadratisch in der Textlänge.
+const LEARNINGS_JSON_SCAN_BUDGET = 2_000_000;
+
 /** Codeblöcke und balancierte JSON-Objekte/-Arrays im Text (String-bewusst). */
 function extractJsonCandidates(text: string): string[] {
   const out: string[] = [];
+  let budget = LEARNINGS_JSON_SCAN_BUDGET;
   const fence = /```(?:json|JSON)?[ \t]*\n?([\s\S]*?)```/g;
   for (let m = fence.exec(text); m; m = fence.exec(text)) out.push(m[1]!.trim());
   let start = 0;
@@ -310,6 +315,8 @@ function extractJsonCandidates(text: string): string[] {
     let escaped = false;
     let end = -1;
     for (let i = start; i < text.length; i += 1) {
+      budget -= 1;
+      if (budget < 0) return out;
       const ch = text[i];
       if (inString) {
         if (escaped) escaped = false;

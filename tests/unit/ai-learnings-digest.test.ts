@@ -72,6 +72,13 @@ describe('parseLearningsDigestResponse (TA-P5)', () => {
     expect(parsed.ok && parsed.discarded).toBe(45);
   });
 
+  // Viele offene Klammern ohne Gegenstück: die Kandidatensuche war quadratisch.
+  it('bleibt bei entarteter Antwort schnell', () => {
+    const started = Date.now();
+    expect(parseLearningsDigestResponse('{'.repeat(200_000)).ok).toBe(false);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   it('meldet Fehler bei leerer/kaputter Antwort', () => {
     expect(parseLearningsDigestResponse('')).toEqual({ ok: false, error: 'Leere Antwort der KI' });
     expect(parseLearningsDigestResponse('Ich kann das nicht.')).toEqual({ ok: false, error: 'Antwort der KI enthält kein gültiges JSON' });
