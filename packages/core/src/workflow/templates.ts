@@ -1,4 +1,5 @@
 import type { WorkflowGraphDocument } from './graph-types';
+import { partialAutomationWorkflowTemplates } from './templates-partial-automation';
 import type { WorkflowTriggerKind } from './trigger-utils';
 
 export type WorkflowTemplate = {
@@ -7,6 +8,10 @@ export type WorkflowTemplate = {
   description: string;
   trigger: WorkflowTriggerKind;
   graph: WorkflowGraphDocument;
+  /** Empfohlene Priorität; „Vorlage laden“ trägt sie im Editor ein. */
+  priority?: number;
+  /** Cron-Ausdruck einer Zeitplan-Vorlage; „Vorlage laden“ trägt ihn im Editor ein. */
+  cronExpr?: string;
 };
 
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
@@ -1085,6 +1090,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       ],
     } as WorkflowGraphDocument,
   },
+  ...partialAutomationWorkflowTemplates(),
   ...ecommerceSupportTemplates(),
 ];
 

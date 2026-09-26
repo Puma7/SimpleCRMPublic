@@ -16,4 +16,5 @@ export * from './node-catalog';
 export * from './node-chain-stop';
 export * from './sender-filter';
 export * from './templates';
+export * from './templates-partial-automation';
 export * from './trigger-utils';

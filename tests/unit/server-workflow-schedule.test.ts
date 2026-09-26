@@ -154,15 +154,17 @@ describe('schedule trigger on the server (TA-P4)', () => {
 
   test('the schedule template is offered and runs on the server', () => {
     const scheduleTemplates = listServerWorkflowTemplates().filter((template) => template.trigger === 'schedule');
-    expect(scheduleTemplates.map((template) => template.id)).toEqual(['schedule-inbox-sync']);
+    // TA-P6: dazu die Vorlage „Learnings wöchentlich auswerten“.
+    expect(scheduleTemplates.map((template) => template.id)).toEqual(['schedule-inbox-sync', 'learnings-weekly-digest']);
     for (const template of scheduleTemplates) {
       for (const node of template.graph.nodes) {
         const nodeType = node.data.nodeType;
         if (typeof nodeType === 'string') expect(isServerWorkflowNodeTypeSupported(nodeType)).toBe(true);
       }
-      // sync.run liest email.account_id — der Taktgeber setzt es aus dem geplanten Konto.
-      expect(template.graph.nodes.some((node) => node.data.nodeType === 'sync.run')).toBe(true);
     }
+    // sync.run liest email.account_id — der Taktgeber setzt es aus dem geplanten Konto.
+    const syncTemplate = scheduleTemplates.find((template) => template.id === 'schedule-inbox-sync');
+    expect(syncTemplate?.graph.nodes.some((node) => node.data.nodeType === 'sync.run')).toBe(true);
     const context = buildScheduleWorkflowContext({
       firedAt: new Date('2026-09-28T04:00:10.000Z'),
       slot: new Date('2026-09-28T04:00:00.000Z'),

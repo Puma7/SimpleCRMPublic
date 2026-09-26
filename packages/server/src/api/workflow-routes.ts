@@ -1739,6 +1739,9 @@ function sanitizeWorkflowTemplate(template: WorkflowTemplate): WorkflowTemplate 
     description: template.description,
     trigger: template.trigger,
     graph: template.graph,
+    // Empfehlungen, die „Vorlage laden“ im Editor einträgt (TA-P6).
+    ...(typeof template.priority === 'number' ? { priority: template.priority } : {}),
+    ...(typeof template.cronExpr === 'string' ? { cronExpr: template.cronExpr } : {}),
   };
 }
 
