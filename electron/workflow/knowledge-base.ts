@@ -351,14 +351,12 @@ export function findKnowledgeBaseForAccountContext(
 export function listKnowledgeBaseIdsForWorkflow(
   accountId: number | null | undefined,
   direction: string | undefined,
-  options: { includeLearnings?: boolean } = {},
 ): number[] {
   const contexts = knowledgeContextsForDirection(
     direction as 'inbound' | 'outbound' | 'draft_created' | undefined,
   );
   const ids = new Set<number>();
   for (const ctx of contexts) {
-    if (ctx === 'learnings' && options.includeLearnings === false) continue;
     const row = findKnowledgeBaseForAccountContext(accountId ?? null, ctx);
     if (row) ids.add(row.id);
   }
@@ -373,10 +371,10 @@ export async function searchKnowledgeForWorkflow(
   explicitKbId?: number | null,
 ): Promise<KnowledgeChunkRow[]> {
   const kbIds = new Set<number>();
-  const explicit = explicitKbId != null && explicitKbId > 0;
-  if (explicit) kbIds.add(explicitKbId);
-  // Eine explizit gewählte Wissensbasis bekommt keine Learnings dazu (wie Server).
-  for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction, { includeLearnings: !explicit })) {
+  if (explicitKbId != null && explicitKbId > 0) kbIds.add(explicitKbId);
+  // Eine explizit gewählte Wissensbasis ergänzt die Kontext-Wissensbasen der
+  // Richtung — die Learnings eingeschlossen — statt sie zu ersetzen (wie Server).
+  for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction)) {
     kbIds.add(id);
   }
   const merged: KnowledgeChunkRow[] = [];

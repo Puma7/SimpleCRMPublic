@@ -364,9 +364,10 @@ describe('Learnings (Desktop, TA-P5)', () => {
     // Ausgang und manuell lesen die Learnings ebenfalls; ceil(2 / 2) = 1 je Wissensbasis.
     expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 1 });
     expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 3, [learningsKb]: 1 });
-    // Explizit gewählte Wissensbasis: keine Learnings dazu.
+    // Explizit gewählte Wissensbasis: die Learnings kommen wie die übrigen
+    // Kontext-Wissensbasen dazu (Codex-Review PR #194).
     const explicit = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe', 5, eingang);
-    expect(explicit.map((c) => c.knowledge_base_id)).not.toContain(learningsKb);
+    expect(explicit.map((c) => c.knowledge_base_id)).toEqual(expect.arrayContaining([eingang, learningsKb]));
     // Bestands-Wissensbasen behalten ihren Kontext.
     expect(db.prepare('SELECT knowledge_context FROM workflow_knowledge_bases WHERE id = ?').get(firma)).toEqual({ knowledge_context: 'general' });
   });

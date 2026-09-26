@@ -530,8 +530,11 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     // Ausgang und manuell lesen die Learnings ebenfalls.
     expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 1, [learningsKb]: 1 });
     expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 3, [learningsKb]: 1 });
-    // Explizit gewählte Wissensbasis (ai.draft_reply): Learnings kommen nicht dazu.
-    expect(countByKb(await search('inbound', 5, KB_ID))).not.toHaveProperty(String(learningsKb));
+    // Explizit gewählte Wissensbasis (ai.draft_reply): die Learnings kommen wie
+    // die übrigen Kontext-Wissensbasen dazu (Codex-Review PR #194).
+    const explicit = countByKb(await search('inbound', 5, KB_ID));
+    expect(explicit).toHaveProperty(String(KB_ID));
+    expect(explicit).toHaveProperty(String(learningsKb));
     // Reader-KI-Antwort (Antwortvorschlag) nutzt dieselbe Kontext-Liste.
     const promptAppend = await withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
       buildKnowledgePromptAppend(trx, WS_A, ACCOUNT_ID, 'inbound', 'Rückgabe Etikett'));
