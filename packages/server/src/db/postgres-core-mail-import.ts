@@ -299,6 +299,8 @@ DO UPDATE SET
   snoozed_until, scheduled_send_at, reply_suggestion_text, reply_suggestion_status,
   reply_suggestion_error, reply_suggestion_updated_at,
   approval_state, approval_reason, auto_submitted,
+  draft_origin_kind, draft_origin_workflow_id, draft_origin_edited,
+  sent_by_kind, sent_by_user_id, sent_by_workflow_id, sent_by_label, sent_outbound_review_skipped,
   pop3_uidl, raw_headers, raw_rfc822_b64, remote_content_policy, read_receipt_requested,
   pgp_status, pgp_signer_fingerprint, thread_confidence, thread_resolver_version,
   normalized_subject, server_thread_source, source_row, imported_in_run_id, created_at, updated_at
@@ -352,6 +354,23 @@ SELECT
   NULLIF(r.source_row->>'approval_state', ''),
   NULLIF(r.source_row->>'approval_reason', ''),
   COALESCE(NULLIF(r.source_row->>'auto_submitted', '')::smallint, 0),
+  -- TA-P3: Herkunft/„gesendet von“. Workflow-IDs über source_sqlite_id; die
+  -- Desktop-Nutzer-ID ist kein Server-Nutzer (der Name bleibt in sent_by_label).
+  CASE WHEN r.source_row->>'draft_origin_kind' IN ('ai', 'workflow') THEN r.source_row->>'draft_origin_kind' END,
+  (SELECT w.id FROM email_workflows w
+    WHERE w.workspace_id = $1
+      AND w.source_sqlite_id = NULLIF(r.source_row->>'draft_origin_workflow_id', '')::bigint
+    LIMIT 1),
+  COALESCE(${sqliteBoolean('draft_origin_edited')}, false),
+  CASE WHEN r.source_row->>'sent_by_kind' IN ('human', 'ai_auto', 'ai_approved', 'workflow', 'relay')
+    THEN r.source_row->>'sent_by_kind' END,
+  NULL,
+  (SELECT w.id FROM email_workflows w
+    WHERE w.workspace_id = $1
+      AND w.source_sqlite_id = NULLIF(r.source_row->>'sent_by_workflow_id', '')::bigint
+    LIMIT 1),
+  NULLIF(r.source_row->>'sent_by_label', ''),
+  COALESCE(${sqliteBoolean('sent_outbound_review_skipped')}, false),
   NULLIF(r.source_row->>'pop3_uidl', ''),
   NULLIF(r.source_row->>'raw_headers', ''), NULLIF(r.source_row->>'raw_rfc822_b64', ''),
   COALESCE(NULLIF(r.source_row->>'remote_content_policy', ''), 'blocked'),
@@ -427,6 +446,14 @@ DO UPDATE SET
   approval_state = EXCLUDED.approval_state,
   approval_reason = EXCLUDED.approval_reason,
   auto_submitted = EXCLUDED.auto_submitted,
+  draft_origin_kind = EXCLUDED.draft_origin_kind,
+  draft_origin_workflow_id = EXCLUDED.draft_origin_workflow_id,
+  draft_origin_edited = EXCLUDED.draft_origin_edited,
+  sent_by_kind = EXCLUDED.sent_by_kind,
+  sent_by_user_id = EXCLUDED.sent_by_user_id,
+  sent_by_workflow_id = EXCLUDED.sent_by_workflow_id,
+  sent_by_label = EXCLUDED.sent_by_label,
+  sent_outbound_review_skipped = EXCLUDED.sent_outbound_review_skipped,
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   updated_at = now()`,

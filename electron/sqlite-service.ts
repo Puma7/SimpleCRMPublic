@@ -4,6 +4,7 @@ import os from 'os';
 import { app } from 'electron';
 import fs from 'fs';
 import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
+import { ensureSentProvenanceColumns } from './email/email-sent-provenance-schema';
 import { plainTextFromHtml } from './email/email-parse-utils';
 import { runMailRoadmapMigrations } from './mail-roadmap-migrations';
 import {
@@ -1018,6 +1019,8 @@ function runMigrations() {
                     mcn = readMsgCols2();
                 }
             }
+            // Teilautomatisierung P3: Kennzeichnung „gesendet von“.
+            ensureSentProvenanceColumns(conn);
             const trashSnap = [
                 { name: 'trash_prev_archived', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_archived INTEGER` },
                 { name: 'trash_prev_is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_is_spam INTEGER` },

@@ -641,6 +641,7 @@ export function registerAiNodes(register: Reg): void {
           updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
         }
         storeDraftAiSuggestionSnapshot(id, out);
+        await markAiDraftOrigin(id, ctx.workflowId);
         variables['draft.id'] = id;
       }
       return { status: 'ok', variables };
@@ -905,6 +906,7 @@ export function registerAiNodes(register: Reg): void {
       updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
       // TA-P5: KI-Text (ohne Anrede/Signatur) wie der Server für den Vergleich beim Versand.
       storeDraftAiSuggestionSnapshot(draftId, aiText);
+      await markAiDraftOrigin(draftId, ctx.workflowId);
       // Bewusst KEIN markDraftAutoSubmitted hier: der RFC-3834-Marker gehört
       // an den tatsächlichen Versand (email.send_draft / ApproveDraftSend).
       // Ein liegen gebliebener Entwurf, den ein Mensch später unbearbeitet
@@ -1122,6 +1124,7 @@ export function registerAiNodes(register: Reg): void {
             updateComposeDraft(id, { replyParentMessageId: ctx.messageId });
           }
           storeDraftAiSuggestionSnapshot(id, draftBody);
+          await markAiDraftOrigin(id, ctx.workflowId);
           variables['draft.id'] = id;
         }
       } else if (createDraft) {
@@ -1131,4 +1134,10 @@ export function registerAiNodes(register: Reg): void {
       return { status: 'ok', variables };
     },
   });
+}
+
+/** TA-P3: Ein KI-Knoten hat den Entwurf angelegt (Kennzeichnung „gesendet von“). */
+async function markAiDraftOrigin(draftId: number, workflowId: number): Promise<void> {
+  const { markDraftOrigin } = await import('../../email/email-sent-provenance.js');
+  markDraftOrigin(draftId, 'ai', workflowId);
 }

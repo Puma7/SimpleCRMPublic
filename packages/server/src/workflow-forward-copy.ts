@@ -14,6 +14,7 @@ import {
 
 import type { EmailComposeSenderApiPort, EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
+import { markDraftOrigin } from './mail-sent-provenance';
 import {
   createPostgresComposeDraftInTransaction,
   resolveAttachmentStoragePath,
@@ -106,6 +107,8 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
     bodyText: string;
     recipients: readonly string[];
     attachmentPaths?: readonly string[];
+    /** TA-P3: Workflow der Weiterleitung (Herkunft des Entwurfs). */
+    workflowId?: number;
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
 }>;
 
@@ -172,19 +175,31 @@ export function createPostgresWorkflowForwardCopyPort(
     const draft = await withWorkspaceTransaction(
       options.db,
       { workspaceId: draftInput.workspaceId, role: 'system' },
-      async (trx) => createPostgresComposeDraftInTransaction(trx, {
-        workspaceId: draftInput.workspaceId,
-        accountId: draftInput.accountId,
-        values: {
+      async (trx) => {
+        const created = await createPostgresComposeDraftInTransaction(trx, {
+          workspaceId: draftInput.workspaceId,
           accountId: draftInput.accountId,
-          subject: draftInput.subject,
-          bodyText: draftInput.bodyText,
-          toJson: { value: draftInput.recipients.map((address) => ({ address })) },
-          ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
-            ? { draftAttachmentPaths: draftInput.attachmentPaths }
-            : {}),
-        },
-      }),
+          values: {
+            accountId: draftInput.accountId,
+            subject: draftInput.subject,
+            bodyText: draftInput.bodyText,
+            toJson: { value: draftInput.recipients.map((address) => ({ address })) },
+            ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
+              ? { draftAttachmentPaths: draftInput.attachmentPaths }
+              : {}),
+          },
+        });
+        if (created.ok) {
+          // TA-P3: Weiterleitung eines Workflows (Kennzeichnung „gesendet von“).
+          await markDraftOrigin(trx, {
+            workspaceId: draftInput.workspaceId,
+            draftId: Number(created.message.id),
+            kind: 'workflow',
+            workflowId: draftInput.workflowId ?? null,
+          });
+        }
+        return created;
+      },
       { applySession: options.applyWorkspaceSession },
     );
     return draft.ok ? { ok: true as const, draftMessageId: draft.message.id } : { ok: false as const, reason: draft.reason };
@@ -777,6 +792,7 @@ async function forwardViaOutboundReview(args: {
      *  picks the attachments up later (the scheduled-send worker reads them
      *  back from the draft, not from this call's args). */
     attachmentPaths?: readonly string[];
+    workflowId?: number;
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
   now: Date;
 }): Promise<ForwardReviewResult> {
@@ -800,6 +816,7 @@ async function forwardViaOutboundReview(args: {
     bodyText: prepared.bodyText,
     recipients: prepared.recipients,
     attachmentPaths: forwardedAttachmentPaths,
+    workflowId: input.workflowId,
   });
   if (!draftResult.ok) {
     return {

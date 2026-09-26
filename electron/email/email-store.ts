@@ -109,6 +109,10 @@ export type EmailMessageRow = {
   soft_deleted: number;
   outbound_hold: number;
   outbound_block_reason: string | null;
+  /** Kennzeichnung „gesendet von“ (Teilautomatisierung P3, siehe email-sent-provenance.ts). */
+  sent_by_kind?: string | null;
+  sent_by_label?: string | null;
+  sent_outbound_review_skipped?: number;
   /** Zwei-Stufen-KI-Antwort: 'pending' = wartet auf menschliche Freigabe. */
   approval_state?: string | null;
   approval_reason?: string | null;
@@ -640,6 +644,8 @@ export function listMessagesForFolder(
 export type AccountMailView =
   | 'inbox'
   | 'sent'
+  /** TA-P3: „Gesendet (KI)“ — gesendete Mails automatischer Herkunft. */
+  | 'sent_ai'
   | 'archived'
   | 'drafts'
   | 'scheduled_send'
@@ -650,6 +656,8 @@ export type AccountMailView =
   | 'all';
 
 const SCHEDULED_SEND_SQL = `(m.scheduled_send_at IS NOT NULL AND m.scheduled_send_at != '')`;
+/** TA-P3: „Gesendet (KI)“ = sent_by_kind aus SENT_AI_VIEW_KINDS (core). */
+export const SENT_AI_VIEW_SQL = `m.folder_kind = 'sent' AND m.is_spam = 0 AND m.sent_by_kind IN ('ai_auto', 'ai_approved', 'workflow')`;
 const NOT_SCHEDULED_SEND_SQL = `(m.scheduled_send_at IS NULL OR m.scheduled_send_at = '')`;
 
 function orderClauseForSort(sort?: MessageListSortMode): string {
@@ -752,6 +760,8 @@ export function listMessagesForAccountView(
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+  } else if (view === 'sent_ai') {
+    sql += ` AND ${SENT_AI_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -838,6 +848,8 @@ export function listMessagesForAllAccountsView(
     )`;
   } else if (view === 'sent') {
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+  } else if (view === 'sent_ai') {
+    sql += ` AND ${SENT_AI_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -2076,6 +2088,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
       setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row });
       break;
     case 'sent':
+    case 'sent_ai':
     case 'drafts':
     case 'all':
       throw new Error('Dieser Ordner unterstützt kein Verschieben per Drag & Drop');

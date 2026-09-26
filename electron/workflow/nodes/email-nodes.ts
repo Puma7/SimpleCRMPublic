@@ -208,6 +208,8 @@ export function registerEmailNodes(register: Reg): void {
         ...(toJson ? { toJson } : {}),
       });
       updateComposeDraft(id, { replyParentMessageId: messageId });
+      const { markDraftOrigin } = await import('../../email/email-sent-provenance.js');
+      markDraftOrigin(id, 'workflow', ctx.workflowId);
       return { status: 'ok', variables: { 'draft.id': id } };
     },
   });
@@ -601,6 +603,11 @@ export function registerEmailNodes(register: Reg): void {
         dryRun: ctx.dryRun,
       });
       if (!prep.ok) return { status: 'error', message: prep.message };
+      if (!ctx.dryRun) {
+        // TA-P3: Workflow-Versand — Herkunft festhalten, falls der Entwurf noch keine hat.
+        const { markDraftOrigin } = await import('../../email/email-sent-provenance.js');
+        markDraftOrigin(draftId, 'workflow', ctx.workflowId, { onlyIfUnset: true });
+      }
 
       if (ctx.direction === 'inbound' && !ctx.dryRun) {
         // RFC-3834-Marker NACH prep stempeln: prep normalisiert per

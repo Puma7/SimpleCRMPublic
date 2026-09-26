@@ -118,6 +118,54 @@ describe('Server-Mailrouten: angehaltene Entwürfe (TA-P2)', () => {
   });
 });
 
+describe('Server-Mailrouten: „gesendet von“ und Ansicht sent_ai (TA-P3)', () => {
+  test('view=sent_ai erreicht den Port; die Kennzeichnung passiert den Sanitizer', async () => {
+    const sent = makeMessage({
+      id: 42,
+      uid: 7,
+      folderKind: 'sent',
+      sentByKind: 'ai_approved',
+      sentByLabel: 'Anna Beispiel',
+      sentOutboundReviewSkipped: true,
+    });
+    const list = jest.fn(async () => ({ items: [sent], nextCursor: null }));
+    const api = createServerApi(makePorts({
+      emailMessages: { list } as unknown as ServerApiPorts['emailMessages'],
+    }));
+
+    const response = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: { view: 'sent_ai' },
+      principal,
+    });
+
+    expect(response.status).toBe(200);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view: 'sent_ai' }));
+    const item = (response.body as { data: { items: Array<Record<string, unknown>> } }).data.items[0]!;
+    expect(item).toEqual(expect.objectContaining({
+      sentByKind: 'ai_approved',
+      sentByLabel: 'Anna Beispiel',
+      sentOutboundReviewSkipped: true,
+    }));
+  });
+
+  test('unbekannte Ansicht wird abgewiesen', async () => {
+    const list = jest.fn();
+    const api = createServerApi(makePorts({
+      emailMessages: { list } as unknown as ServerApiPorts['emailMessages'],
+    }));
+    const response = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages',
+      query: { view: 'sent_robot' },
+      principal,
+    });
+    expect(response.status).toBe(400);
+    expect(list).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/v1/email/messages/:id/send-skip-outbound-review (TA-P2)', () => {
   const values: EmailComposeSendInput = {
     accountId: 1,

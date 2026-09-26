@@ -127,6 +127,7 @@ import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { executeServerLearningsDigestNode } from './ai-learnings';
 import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import { markDraftOrigin } from './mail-sent-provenance';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
@@ -2388,6 +2389,7 @@ async function executeServerNode(
         variables: context.variables,
         actorUserId: context.actorUserId,
         dryRun: true,
+        workflowId: context.workflowId,
       });
     }
     return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
@@ -4248,6 +4250,13 @@ async function createWorkflowComposeDraft(
   if (!draft.ok) {
     return { status: 'error', port: 'error', message: `Entwurf konnte nicht erstellt werden: ${draft.reason}` };
   }
+  // TA-P3: Workflow-Entwurf (Kennzeichnung „gesendet von“).
+  await markDraftOrigin(trx, {
+    workspaceId: context.workspaceId,
+    draftId: Number(draft.message.id),
+    kind: 'workflow',
+    workflowId: context.workflowId,
+  });
   if (context.messageId !== null) {
     await trx
       .updateTable('email_messages')
@@ -6120,6 +6129,17 @@ async function releaseWorkflowOutboundHold(
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .execute();
+  if (!context.actorUserId) {
+    // TA-P3: Workflow-Versand ohne Menschen — Herkunft festhalten, falls leer.
+    // Gibt ein Ausgangs-Workflow die Mail eines Menschen frei, bleibt sie dessen Mail.
+    await markDraftOrigin(trx, {
+      workspaceId: context.workspaceId,
+      draftId: context.messageId,
+      kind: 'workflow',
+      workflowId: context.workflowId,
+      onlyIfUnset: true,
+    });
+  }
 
   // Multi-outbound-workflow safety: if there are OTHER outbound runs against
   // this draft still queued/running, the user has multiple parallel quality
@@ -6389,6 +6409,15 @@ async function sendWorkflowDraft(
       .where('id', '=', draftId)
       .execute();
   }
+
+  // TA-P3: Workflow-Versand — Herkunft festhalten, falls der Entwurf noch keine hat.
+  await markDraftOrigin(trx, {
+    workspaceId: context.workspaceId,
+    draftId,
+    kind: 'workflow',
+    workflowId: context.workflowId,
+    onlyIfUnset: true,
+  });
 
   if (context.direction === 'inbound') {
     await trx

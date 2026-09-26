@@ -939,6 +939,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftAttachmentPaths: payload.draftAttachmentPaths,
           replyParentMessageId: replyParentMessageIdForCaller(event, payload.replyParentMessageId),
         });
+        // TA-P3: gleiche „Inhalt geändert“-Erkennung wie updateComposeDraft — ein
+        // Mensch hat einen KI-/Workflow-Entwurf bearbeitet (kein „KI · freigegeben“ mehr).
+        if (
+          payload.subject !== undefined ||
+          payload.bodyText !== undefined ||
+          payload.bodyHtml !== undefined ||
+          toJson !== undefined ||
+          ccJson !== undefined ||
+          bccJson !== undefined ||
+          payload.draftAttachmentPaths !== undefined ||
+          payload.accountId !== undefined
+        ) {
+          const { markDraftOriginEdited } = await import('../email/email-sent-provenance.js');
+          markDraftOriginEdited(payload.messageId);
+        }
         if (payload.markReplyParentDone !== undefined) {
           const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
           setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);
@@ -1003,7 +1018,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessagesByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1031,7 +1046,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessageIdsByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;

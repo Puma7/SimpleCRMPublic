@@ -33,6 +33,8 @@ import type { EmailAccountRow } from './email-store';
 import { canAccessLocalAccount } from '../auth/auth-store';
 import type { SessionRole } from '../auth/session-store';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
+import { recordSentProvenance, type DesktopSentByActor } from './email-sent-provenance';
+import type { SentProvenance } from '../../packages/core/src/email/sent-provenance';
 
 function resolveRequestReadReceipt(
   acc: EmailAccountRow,
@@ -141,7 +143,9 @@ async function finalizeSentDraft(input: {
   references?: string;
   attachments?: { filename: string; path: string; cid?: string }[];
   requestReadReceipt?: boolean;
-}): Promise<{ sentAppendWarning?: string }> {
+  /** Wer versendet (TA-P3: Kennzeichnung „gesendet von“). */
+  sentBy: DesktopSentByActor;
+}): Promise<{ sentAppendWarning?: string; provenance: SentProvenance | null }> {
   const warnings: string[] = [];
   let imapSyncFailed = false;
 
@@ -159,6 +163,8 @@ async function finalizeSentDraft(input: {
   // TA-P5: Learning sammeln, solange die Zeile noch ein Entwurf ist (best effort).
   collectSentLearningCandidateSafe(input.draftMessageId, { text: input.text, html: input.html });
   markDraftAsSent(input.draftMessageId);
+  // Kennzeichnung direkt beim Übergang zu 'sent' (Herkunft/Marker noch vorhanden).
+  const provenance = recordSentProvenance(input.draftMessageId, input.sentBy);
   clearSmtpCommitted(input.draftMessageId);
   clearScheduledSendActor(input.draftMessageId);
 
@@ -169,7 +175,7 @@ async function finalizeSentDraft(input: {
       'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. POP3-Konten können keine Kopie per IMAP auf dem Server ablegen.',
     );
     setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
-    return { sentAppendWarning: joinWarnings(warnings) };
+    return { sentAppendWarning: joinWarnings(warnings), provenance };
   }
 
   const appendInput = {
@@ -201,7 +207,7 @@ async function finalizeSentDraft(input: {
       `E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie (IMAP) übersprungen — Nachricht zu groß (ca. ${mb} MB, IMAP-Limit ${limitMb} MB).`,
     );
     setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
-    return { sentAppendWarning: joinWarnings(warnings) };
+    return { sentAppendWarning: joinWarnings(warnings), provenance };
   }
 
   let builtRfc822: Buffer | undefined;
@@ -219,13 +225,13 @@ async function finalizeSentDraft(input: {
         : 'E-Mail wurde versendet und lokal unter „Gesendet“ gespeichert. Server-Kopie konnte nicht vorbereitet werden.',
     );
     setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
-    return { sentAppendWarning: joinWarnings(warnings) };
+    return { sentAppendWarning: joinWarnings(warnings), provenance };
   }
   if (!builtRfc822) {
     imapSyncFailed = true;
     warnings.push('E-Mail wurde versendet und lokal unter "Gesendet" gespeichert. Server-Kopie konnte nicht vorbereitet werden.');
     setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
-    return { sentAppendWarning: joinWarnings(warnings) };
+    return { sentAppendWarning: joinWarnings(warnings), provenance };
   }
   const rfc822 = builtRfc822;
 
@@ -246,7 +252,7 @@ async function finalizeSentDraft(input: {
   }
 
   setSentImapSyncFailed(input.draftMessageId, imapSyncFailed);
-  return { sentAppendWarning: joinWarnings(warnings) };
+  return { sentAppendWarning: joinWarnings(warnings), provenance };
 }
 
 /**
@@ -261,6 +267,7 @@ async function finalizeCommittedSmtpDraft(
     subject: string;
     inReplyToMessageId?: number | null;
     requestReadReceipt?: boolean;
+    actor?: ComposeSendActor | null;
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
 ): Promise<
@@ -311,6 +318,7 @@ async function finalizeCommittedSmtpDraft(
     references: draft.references_header ?? undefined,
     attachments: recoveredAttachments,
     requestReadReceipt: requestReceipt,
+    sentBy: sentByActor(input.actor),
   });
   if (fin.sentAppendWarning) {
     return { ok: true, warning: fin.sentAppendWarning, recoveredSentAppend: true };
@@ -320,6 +328,14 @@ async function finalizeCommittedSmtpDraft(
 
 /** Wer den Versand ausloest: SendCompose die Sitzung, der geplante Versand den gespeicherten Planer. */
 export type ComposeSendActor = { userId: string; role: SessionRole };
+
+/**
+ * TA-P3: Ohne Akteur sendet ein Workflow (geplanter Versand ohne gespeicherten
+ * Planer, z. B. email.send_draft), sonst ein Mensch.
+ */
+function sentByActor(actor: ComposeSendActor | null | undefined): DesktopSentByActor {
+  return actor ? { kind: 'human', userId: actor.userId } : { kind: 'workflow' };
+}
 
 /**
  * C-A79 (G5): Die Eltern-Mail liefert Threading-Header, Ticket und den KI-Kontext
@@ -683,6 +699,7 @@ export async function sendComposeDraft(input: {
       references: threadHeaders.references,
       attachments: sentAppendAttachments,
       requestReadReceipt: requestReceipt,
+      sentBy: sentByActor(input.actor),
     });
 
     maybeMarkReplyParentDone(

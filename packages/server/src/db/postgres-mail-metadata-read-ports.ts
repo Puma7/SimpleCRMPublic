@@ -944,6 +944,10 @@ function threadMessageViewPredicate(
   if (view === 'sent') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'sent' AND m.is_spam = false`;
   }
+  if (view === 'sent_ai') {
+    // TA-P3: „Gesendet (KI)“ — automatisch oder aus KI-Entwurf versendet.
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'sent' AND m.is_spam = false AND m.sent_by_kind IN ('ai_auto', 'ai_approved', 'workflow')`;
+  }
   if (view === 'archived') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND m.archived = true AND m.is_spam = false AND coalesce(m.spam_status, 'clean') = 'clean'`;
   }

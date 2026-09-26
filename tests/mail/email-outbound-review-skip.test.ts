@@ -47,6 +47,8 @@ import {
   saveOutboundReviewSkipPolicy,
 } from '../../electron/email/outbound-review-skip-settings';
 import { OUTBOUND_WARNING_MARKER } from '../../packages/core/src/email';
+import { ensureSentProvenanceColumns } from '../../electron/email/email-sent-provenance-schema';
+import { markDraftOrigin, recordSentProvenance } from '../../electron/email/email-sent-provenance';
 
 beforeAll(() => {
   db.exec(createEmailMessagesTable);
@@ -60,6 +62,7 @@ beforeAll(() => {
     ALTER TABLE email_messages ADD COLUMN draft_attachment_paths_json TEXT;
     ALTER TABLE email_messages ADD COLUMN reply_parent_message_id INTEGER;
   `);
+  ensureSentProvenanceColumns(db);
 });
 
 beforeEach(() => {
@@ -188,5 +191,22 @@ describe('Desktop: Ohne Ausgangsprüfung senden', () => {
       error: 'SMTP down',
       workflowRunId: null,
     });
+  });
+
+  test('TA-P3: der Versand trägt „Ausgangsprüfung übersprungen“; Banner-Entfernen ist keine Bearbeitung', async () => {
+    insertHeldDraft(66);
+    markDraftOrigin(66, 'ai', null);
+    // Wie finalizeSentDraft: Kennzeichnung beim Übergang zu 'sent'.
+    mockSendComposeDraft.mockImplementationOnce(async (input: { draftMessageId: number; actor: { userId: string } }) => {
+      recordSentProvenance(input.draftMessageId, { kind: 'human', userId: input.actor.userId });
+      return { ok: true };
+    });
+
+    expect(await sendDraftSkippingOutboundReview(66, user)).toEqual({ success: true });
+
+    expect(db.prepare(
+      `SELECT sent_by_kind, sent_by_user_id, sent_outbound_review_skipped FROM email_messages WHERE id = 66`,
+    ).get()).toEqual({ sent_by_kind: 'ai_approved', sent_by_user_id: 'user-1', sent_outbound_review_skipped: 1 });
+    expect(db.prepare(`SELECT 1 FROM sync_info WHERE key = 'outbound_review_skipped:66'`).get()).toBeUndefined();
   });
 });

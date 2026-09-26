@@ -3430,6 +3430,12 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     // angehalten (kein „Versand blockiert“-Hinweis, kein Listen-Kennzeichen).
     ...(message.outboundHold === undefined ? {} : { outboundHold: message.outboundHold }),
     ...(message.outboundBlockReason === undefined ? {} : { outboundBlockReason: message.outboundBlockReason }),
+    // TA-P3: Kennzeichen „gesendet von“ in Liste und Leseansicht.
+    ...(message.sentByKind === undefined ? {} : { sentByKind: message.sentByKind }),
+    ...(message.sentByLabel === undefined ? {} : { sentByLabel: message.sentByLabel }),
+    ...(message.sentOutboundReviewSkipped === undefined
+      ? {}
+      : { sentOutboundReviewSkipped: message.sentOutboundReviewSkipped }),
     ...(message.threadMessageCount === undefined ? {} : { threadMessageCount: message.threadMessageCount }),
     ...(message.trackingOverride === undefined ? {} : { trackingOverride: message.trackingOverride }),
     ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),
@@ -5625,7 +5631,7 @@ function textIdFromPath(value: string | undefined, maxLength: number): string | 
 
 function parseOptionalMessageView(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

@@ -1234,6 +1234,13 @@ async function insertRelayedMessage(
     input.firstRecipient,
   );
   const uid = await nextLocalRelayUid(trx, input.workspaceId, input.accountId, folder.id);
+  // TA-P3: Kennzeichnung „gesendet von“ — externes System über das SMTP-Relay.
+  const relay = await trx
+    .selectFrom('smtp_relays')
+    .select('label')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.relayId)
+    .executeTakeFirst();
 
   const row = await trx
     .insertInto('email_messages')
@@ -1289,6 +1296,8 @@ async function insertRelayedMessage(
       read_receipt_requested: false,
       thread_resolver_version: 0,
       source_row: relaySourceRow(),
+      sent_by_kind: 'relay',
+      sent_by_label: relay?.label?.trim() || null,
       created_at: timestamp,
       updated_at: timestamp,
     })

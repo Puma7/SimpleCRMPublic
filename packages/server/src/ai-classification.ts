@@ -32,6 +32,7 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import { markDraftOrigin, workflowIdFromAiJob } from './mail-sent-provenance';
 import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
@@ -964,6 +965,13 @@ export function createPostgresAiAgentPort(
                 });
                 if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
                 continuationVariables['draft.id'] = draft.message.id;
+                // TA-P3: KI-Entwurf (Kennzeichnung „gesendet von“).
+                await markDraftOrigin(trx, {
+                  workspaceId: input.workspaceId,
+                  draftId: Number(draft.message.id),
+                  kind: 'ai',
+                  workflowId: workflowIdFromAiJob(input),
+                });
                 // P2-9: snapshot the AI draft so feedback learning can measure how
                 // much a human edits it before sending.
                 await trx
@@ -1178,6 +1186,13 @@ export function createPostgresAiPickCannedPort(
                 });
                 if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
                 continuationVariables['draft.id'] = draft.message.id;
+                // TA-P3: KI-Entwurf (Kennzeichnung „gesendet von“).
+                await markDraftOrigin(trx, {
+                  workspaceId: input.workspaceId,
+                  draftId: Number(draft.message.id),
+                  kind: 'ai',
+                  workflowId: workflowIdFromAiJob(input),
+                });
                 await trx
                   .updateTable('email_messages')
                   .set({

@@ -36,6 +36,7 @@ const accountOverrideScopePayloadSchema = z
 const accountMailViewSchema = z.enum([
   'inbox',
   'sent',
+  'sent_ai',
   'archived',
   'drafts',
   'scheduled_send',

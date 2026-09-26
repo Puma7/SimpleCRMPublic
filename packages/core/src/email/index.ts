@@ -25,6 +25,7 @@ export * from './relay-tracking-rules';
 export * from './scheduled-send-state';
 export * from './search-highlight';
 export * from './search-query';
+export * from './sent-provenance';
 export * from './spam-engine';
 export * from './spam-features';
 export * from './ticket';

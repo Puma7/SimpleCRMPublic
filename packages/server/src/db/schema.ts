@@ -832,6 +832,18 @@ export type EmailMessagesTable = {
   approval_state: string | null;
   approval_reason: string | null;
   auto_submitted: ColumnType<number, number | undefined, number>;
+  /** Teilautomatisierung P3: Entwurf von einem KI-/Workflow-Knoten angelegt ('ai' | 'workflow'). */
+  draft_origin_kind: string | null;
+  draft_origin_workflow_id: number | null;
+  /** Ein Mensch hat den Inhalt eines solchen Entwurfs geändert. */
+  draft_origin_edited: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Beim Versand bestimmt: 'human' | 'ai_auto' | 'ai_approved' | 'workflow' | 'relay'. */
+  sent_by_kind: string | null;
+  sent_by_user_id: string | null;
+  sent_by_workflow_id: number | null;
+  /** Schnappschuss des Namens (Nutzer, „Workflow „…““, Relay-Client). */
+  sent_by_label: string | null;
+  sent_outbound_review_skipped: ColumnType<boolean, boolean | undefined, boolean>;
   pop3_uidl: string | null;
   raw_headers: string | null;
   raw_rfc822_b64: string | null;

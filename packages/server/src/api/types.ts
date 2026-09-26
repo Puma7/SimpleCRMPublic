@@ -2181,6 +2181,11 @@ export type EmailMessageRecord = {
   outboundHold?: boolean;
   /** Grund der Sperre (Workflow/KI-Prüfung); null ohne Grund oder bei metadata-only. */
   outboundBlockReason?: string | null;
+  /** TA-P3: human | ai_auto | ai_approved | workflow | relay; null = Altbestand/kein Versand. */
+  sentByKind?: string | null;
+  /** Name als Schnappschuss (Nutzer, „Workflow „…““, Relay). */
+  sentByLabel?: string | null;
+  sentOutboundReviewSkipped?: boolean;
   /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
   searchSnippet?: string | null;
   bodyText?: string | null;
@@ -2785,7 +2790,7 @@ export type EmailMessageApiPort = {
     done?: boolean;
     spam?: boolean;
     search?: string;
-    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+    view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
     sort?: 'date_desc' | 'date_asc' | 'priority' | 'relevance';
     /** Suchbereich: 'broad' sucht ueber alle Ordner (nur mit search wirksam). */
@@ -3270,7 +3275,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;

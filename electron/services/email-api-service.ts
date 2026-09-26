@@ -18,6 +18,7 @@ import { coercePositiveInt } from '../automation/http-response';
 const ALLOWED_VIEWS: AccountMailView[] = [
   'inbox',
   'sent',
+  'sent_ai',
   'archived',
   'drafts',
   'scheduled_send',

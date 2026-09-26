@@ -343,11 +343,17 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
     expect(rfc822).toContain('Antwort an den Kunden');
     // Kein neuer Durchlauf der Ausgangs-Workflows.
     expect(await takeWorkflowJobs()).toHaveLength(0);
-    const sent = await postgres.admin.query<{ folder_kind: string }>(
-      `SELECT folder_kind FROM email_messages WHERE workspace_id = $1 AND id = 5204`,
+    const sent = await postgres.admin.query<{
+      folder_kind: string;
+      sent_by_kind: string | null;
+      sent_outbound_review_skipped: boolean;
+    }>(
+      `SELECT folder_kind, sent_by_kind, sent_outbound_review_skipped FROM email_messages WHERE workspace_id = $1 AND id = 5204`,
       [WORKSPACE_ID],
     );
-    expect(sent.rows[0]?.folder_kind).toBe('sent');
+    // TA-P3: Mensch sendet, Ausgangsprüfung übersprungen.
+    expect(sent.rows[0]).toEqual({ folder_kind: 'sent', sent_by_kind: 'human', sent_outbound_review_skipped: true });
+    expect(await syncInfoValue('outbound_review_skipped:5204')).toBeNull();
   });
 
   test('„Ohne Ausgangsprüfung senden“ nur für angehaltene lokale Entwürfe', async () => {

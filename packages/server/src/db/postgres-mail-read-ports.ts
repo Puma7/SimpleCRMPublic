@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import {
+  SENT_AI_VIEW_KINDS,
   buildFeaturePreview,
   buildSpamDecision,
   evaluatePreWorkflowMailSecurity,
@@ -220,6 +221,9 @@ const emailMessageSummaryColumns = [
   'approval_reason',
   'outbound_hold',
   'outbound_block_reason',
+  'sent_by_kind',
+  'sent_by_label',
+  'sent_outbound_review_skipped',
   'tracking_override',
   'updated_at',
 ] as const;
@@ -1396,6 +1400,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                   approval_state: null,
                   approval_reason: null,
                   auto_submitted: 0,
+                  // TA-P3: ein Mensch hat einen KI-/Workflow-Entwurf bearbeitet
+                  // (Versand dann „Mensch“ statt „KI · freigegeben“).
+                  draft_origin_edited: kyselySql<boolean>`(email_messages.draft_origin_edited OR email_messages.draft_origin_kind IS NOT NULL)`,
                 }
                 : {}),
               updated_at: new Date(),
@@ -3607,6 +3614,13 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
   if (view === 'sent') {
     return query.where('folder_kind', '=', 'sent').where('is_spam', '=', false);
   }
+  if (view === 'sent_ai') {
+    // TA-P3: „Gesendet (KI)“ — automatisch oder aus KI-Entwurf versendet.
+    return query
+      .where('folder_kind', '=', 'sent')
+      .where('is_spam', '=', false)
+      .where('sent_by_kind', 'in', [...SENT_AI_VIEW_KINDS]);
+  }
   if (view === 'archived') {
     return query
       .where(nonDraftMail)
@@ -5704,6 +5718,10 @@ function mapEmailMessageRow(
     // approval_reason für metadata-only Aufrufer geschwärzt.
     outboundHold: row.outbound_hold === true,
     outboundBlockReason: row.content_readable === false ? null : (row.outbound_block_reason ?? null),
+    // TA-P3: Kennzeichnung „gesendet von“ (Metadaten: Art, Name, übersprungene Prüfung).
+    sentByKind: row.sent_by_kind ?? null,
+    sentByLabel: row.sent_by_label ?? null,
+    sentOutboundReviewSkipped: row.sent_outbound_review_skipped === true,
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

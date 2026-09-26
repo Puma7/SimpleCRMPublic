@@ -200,6 +200,16 @@ describe('Server: automatische Antwort durch den Ausgang', () => {
     expect(rfc822).toContain('Auto-Submitted: auto-replied');
     expect(rfc822).not.toContain('AUSGANGSPR');
     expect((await draft(6102)).folder_kind).toBe('sent');
+    // TA-P3: send_draft hat die Herkunft gesetzt, versendet hat der Workflow ohne Menschen.
+    const provenance = await postgres.admin.query(
+      `SELECT sent_by_kind, sent_by_workflow_id::int AS workflow_id, sent_by_label FROM email_messages WHERE workspace_id = $1 AND id = 6102`,
+      [WORKSPACE_ID],
+    );
+    expect(provenance.rows[0]).toEqual({
+      sent_by_kind: 'workflow',
+      workflow_id: INBOUND_WORKFLOW_ID,
+      sent_by_label: 'Workflow „Auto-Antwort“',
+    });
   });
 
   test('Block durch den Ausgangs-Workflow: Entwurf angehalten im Posteingang, kein Versand', async () => {

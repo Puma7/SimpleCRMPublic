@@ -390,6 +390,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0052_jtl_key_uniqueness',
   '0053_task_assignment_scope_orphan_backfill',
   '0054_email_account_trusted_authserv_id',
+  '0055_email_message_sent_provenance',
   '0056_email_workflow_schedule_state',
   '0057_ai_learnings',
 ];
@@ -46139,8 +46140,11 @@ class FakeAiReplySuggestionUpdate {
   async execute() {
     for (const row of this.rows) {
       const match = this.wheres.every(([column, operator, value]) => {
-        if (operator !== '=') throw new Error(`unexpected AI reply suggestion update operator: ${operator}`);
-        return row[column] === value;
+        if (operator === '=') return row[column] === value;
+        // TA-P3: markDraftOrigin (nur lokale Entwürfe, optional nur ohne Herkunft).
+        if (operator === '<') return Number(row[column]) < Number(value);
+        if (operator === 'is') return (row[column] ?? null) === value;
+        throw new Error(`unexpected AI reply suggestion update operator: ${operator}`);
       });
       if (match) Object.assign(row, this.patch);
     }
@@ -46682,6 +46686,8 @@ class FakeWorkflowExecutionUpdate {
         if (operator === '=') return row[column] === value;
         if (operator === 'in' && Array.isArray(value)) return value.includes(row[column]);
         if (operator === '<') return Number(row[column]) < Number(value);
+        // TA-P3: markDraftOrigin mit onlyIfUnset (draft_origin_kind IS NULL).
+        if (operator === 'is') return (row[column] ?? null) === value;
         throw new Error(`unexpected workflow execution update operator: ${operator}`);
       });
       if (match) {
