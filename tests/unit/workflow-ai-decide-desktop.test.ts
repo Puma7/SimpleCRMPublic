@@ -288,7 +288,7 @@ describe('ai.decide in der Desktop-Runtime', () => {
       decideNode,
       tag('tJa', 'ja'),
       tag('tNein', 'nein'),
-      tag('tUnsicher', 'unsicher', { runOnEveryInbound: true }),
+      tag('tUnsicher', 'unsicher'),
     ],
     edges: [
       { id: 'e0', source: 't', target: 'dec' },
@@ -302,7 +302,7 @@ describe('ai.decide in der Desktop-Runtime', () => {
     [95, 'ja'],
     [5, 'nein'],
     [50, 'unsicher'],
-  ])('p=%i folgt der Kante %s (ja/nein öffnen das Inbound-Gate)', async (probability, expectedTag) => {
+  ])('p=%i folgt der Kante %s (jeder Ausgang öffnet das Inbound-Gate)', async (probability, expectedTag) => {
     decideMock.mockResolvedValue(decisions(probability));
     const r = await runInbound(threeWay);
     expect(r.status).toBe('ok');
@@ -319,12 +319,14 @@ describe('ai.decide in der Desktop-Runtime', () => {
     expect(addMessageTag).not.toHaveBeenCalled();
     const withError = {
       ...threeWay,
-      nodes: [...threeWay.nodes, tag('tErr', 'fehler', { runOnEveryInbound: true })],
+      // Ohne runOnEveryInbound: auch der Ausgang „KI-Fehler“ öffnet das Gate.
+      nodes: [...threeWay.nodes, tag('tErr', 'fehler')],
       edges: [...threeWay.edges, { id: 'e4', source: 'dec', target: 'tErr', label: 'error' }],
     };
-    await runInbound(withError);
+    const r2 = await runInbound(withError);
     expect(addMessageTag).toHaveBeenCalledTimes(1);
     expect(addMessageTag).toHaveBeenCalledWith(7, 'fehler');
+    expect(r2.log.join(' ')).not.toContain('no_prior_condition');
   });
 
   test('nur unbeschriftete Kante: „ja“ läuft weiter, „nein“/„unsicher“ enden (fail-closed)', async () => {

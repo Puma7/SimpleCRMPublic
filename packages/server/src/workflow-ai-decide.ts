@@ -390,8 +390,9 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
               continuation: { ...continuation, resumeNodeId },
               variables: {
                 ...aiDecideVariables(outcome),
-                // Inbound-Gate: „ja“/„nein“ sind beantwortete Bedingungen und
-                // öffnen nachgelagerte Knoten der Fortsetzung (wie der Desktop).
+                // Inbound-Gate: jeder der vier Ausgänge ist ein bewusst
+                // verdrahteter Zweig (wie ein switch-Fall) und öffnet die
+                // nachgelagerten Knoten der Fortsetzung (wie der Desktop).
                 ...(input.direction === 'inbound' && aiDecidePortTripsInboundGate(port)
                   ? { __inbound_condition_ok: true }
                   : {}),

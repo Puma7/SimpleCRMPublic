@@ -64,11 +64,13 @@ describe('ai.decide Schwellenlogik', () => {
     expect(aiDecideConfidence('ja', null)).toBeNull();
   });
 
-  test('Inbound-Gate: nur ja/nein zählen als erfüllte Bedingung', () => {
+  test('Inbound-Gate: jeder der vier Ausgänge zählt als erfüllte Bedingung', () => {
     expect(aiDecidePortTripsInboundGate('ja')).toBe(true);
     expect(aiDecidePortTripsInboundGate('nein')).toBe(true);
-    expect(aiDecidePortTripsInboundGate('unsicher')).toBe(false);
-    expect(aiDecidePortTripsInboundGate('error')).toBe(false);
+    expect(aiDecidePortTripsInboundGate('unsicher')).toBe(true);
+    expect(aiDecidePortTripsInboundGate('error')).toBe(true);
+    expect(aiDecidePortTripsInboundGate('default')).toBe(false);
+    expect(aiDecidePortTripsInboundGate(null)).toBe(false);
   });
 });
 

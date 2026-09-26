@@ -1883,7 +1883,8 @@ async function walkGraph(
       || (gateRegistryType === 'logic.switch'
         && typeof result.port === 'string'
         && result.port !== 'default')
-      // KI-Entscheidung: „ja“/„nein“ sind beantwortete Bedingungen (Desktop-Parität).
+      // KI-Entscheidung: alle vier Ausgänge (ja, nein, unsicher, KI-Fehler) sind
+      // bewusst verdrahtete Zweige wie ein switch-Fall (Desktop-Parität).
       || (gateRegistryType === 'ai.decide' && aiDecidePortTripsInboundGate(result.port));
     if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
@@ -7989,7 +7990,7 @@ function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBr
 const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
   'email.sender_filter',
   'ai.classify',
-  // KI-Entscheidung verzweigt nur; ihre Ausgänge ja/nein öffnen das Gate.
+  // KI-Entscheidung verzweigt nur; jeder ihrer vier Ausgänge öffnet das Gate.
   'ai.decide',
   // ai.reply_suggestion is the standard "generate draft" step for auto-reply
   // chains; without the allowance the inbound-gate would block it until a

@@ -144,7 +144,7 @@ Der Baustein **„KI-Entscheidung“** beantwortet eine Ja/Nein-Frage zur Mail, 
 
 Ist an **Nein**, **Unsicher** oder **KI-Fehler** nichts angeschlossen, endet der Lauf dort — es gibt keinen Rückfall auf eine unbeschriftete Kante. Im **Ausgangs-Workflow** dienen diese drei Ausgänge nur für Zusatzschritte wie Tags; der Entwurf bleibt immer angehalten. Der Hinweis „Versand blockiert“ zeigt dann die Begründung des Modells oder, bei Entscheidungsmodellen ohne Begründung, „Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen.“ mit der Ja-Wahrscheinlichkeit.
 
-Im **Eingang** verzweigt der Baustein nur; er setzt keine Sperre und überspringt auch als Spam markierte Mails nicht. „Ja“ und „Nein“ zählen als erfüllte Bedingung, danach dürfen auch Aktionen wie „Tag setzen“ laufen. Hinter „Unsicher“ und „KI-Fehler“ brauchen solche Aktionen eine eigene Bedingung (oder im Experten-JSON des Bausteins `runOnEveryInbound: true`).
+Im **Eingang** verzweigt der Baustein nur; er setzt keine Sperre und überspringt auch als Spam markierte Mails nicht. Jeder der vier Ausgänge zählt als erfüllte Bedingung: dahinter dürfen Aktionen wie „Tag setzen“ oder „Spam-Status setzen“ ohne weitere Bedingung laufen, z. B. „Unsicher → Spam prüfen“ oder „KI-Fehler → Tag manuell“.
 
 Ergebnis-Variablen für spätere Schritte: `ai.decide.answer` (ja, nein, unsicher, error), `ai.decide.probability` (Ja-Wahrscheinlichkeit 0–100), `ai.decide.confidence` (Sicherheit der gewählten Antwort), `ai.decide.reason` (Begründung, nur Chat-Modelle), `ai.decide.summary` (ein Satz, z. B. „Entscheidungsmodell: Nein (Ja-Wahrscheinlichkeit 12 %)“) und `ai.decide.model`.
 

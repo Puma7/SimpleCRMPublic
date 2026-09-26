@@ -35,6 +35,7 @@ const ACCOUNT_ID = 801;
 const FOLDER_ID = 811;
 const INBOUND_WORKFLOW_ID = 831;
 const OUTBOUND_WORKFLOW_ID = 832;
+const INBOUND_UNSICHER_WORKFLOW_ID = 833;
 const DECISIONS_KEY = 'or-decisions-secret';
 
 type JobRow = { type: string; payload: JobPayload };
@@ -128,7 +129,9 @@ describe('ai.decide server job (Embedded Postgres)', () => {
         },
         { id: 'tag-ja', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'spam-ja' } } },
         { id: 'tag-nein', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'spam-nein' } } },
-        { id: 'tag-fehler', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-fehler', runOnEveryInbound: true } } },
+        // Ohne runOnEveryInbound: jeder Ausgang von ai.decide öffnet das Inbound-Gate.
+        { id: 'tag-fehler', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-fehler' } } },
+        { id: 'tag-unsicher', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'spam-pruefen' } } },
       ],
       edges: [
         { id: 'edge-1', source: 'trigger-1', target: 'decide' },
@@ -136,6 +139,11 @@ describe('ai.decide server job (Embedded Postgres)', () => {
         { id: 'edge-3', source: 'decide', target: 'tag-nein', label: 'nein' },
         { id: 'edge-4', source: 'decide', target: 'tag-fehler', label: 'error' },
       ],
+    };
+    // Wie inboundGraph, zusätzlich „Unsicher → Spam prüfen“.
+    const inboundUnsicherGraph = {
+      ...inboundGraph,
+      edges: [...inboundGraph.edges, { id: 'edge-5', source: 'decide', target: 'tag-unsicher', label: 'unsicher' }],
     };
     const outboundGraph = {
       version: 1,
@@ -158,6 +166,7 @@ describe('ai.decide server job (Embedded Postgres)', () => {
     for (const [id, trigger, graph] of [
       [INBOUND_WORKFLOW_ID, 'inbound', inboundGraph],
       [OUTBOUND_WORKFLOW_ID, 'outbound', outboundGraph],
+      [INBOUND_UNSICHER_WORKFLOW_ID, 'inbound', inboundUnsicherGraph],
     ] as const) {
       await admin.query(`
         INSERT INTO email_workflows (
@@ -289,11 +298,29 @@ describe('ai.decide server job (Embedded Postgres)', () => {
       'ai.decide.answer': 'error',
       'ai.decide.summary': 'KI-Fehler bei der Entscheidung: Decisions API HTTP 502',
     });
-    // Kein beantworteter Zweig ⇒ kein Inbound-Gate.
-    expect(context.eventVariables.__inbound_condition_ok).toBeUndefined();
+    // Auch der Ausgang „KI-Fehler“ ist ein bewusst verdrahteter Zweig: Gate offen.
+    expect(context.eventVariables.__inbound_condition_ok).toBe(true);
     await createPostgresWorkflowExecutionJobPort({ db })
       .execute(buildWorkflowExecutionJobPlan(continuations[0]!.payload, WORKSPACE_ID));
     expect(await tags(8103)).toEqual(['ki-fehler']);
+  });
+
+  test('eingehend: Aktion hinter „unsicher“ läuft ohne runOnEveryInbound (Gate offen)', async () => {
+    await seedInbound(8106, 'Vielleicht');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.5));
+    const continuations = await runDecision(INBOUND_UNSICHER_WORKFLOW_ID, 8106, 'inbound');
+    expect(continuations).toHaveLength(1);
+    const context = (continuations[0]!.payload as any).context;
+    expect(context.resumeNodeId).toBe('tag-unsicher');
+    expect(context.eventVariables).toMatchObject({ 'ai.decide.answer': 'unsicher', __inbound_condition_ok: true });
+    await createPostgresWorkflowExecutionJobPort({ db })
+      .execute(buildWorkflowExecutionJobPlan(continuations[0]!.payload, WORKSPACE_ID));
+    expect(await tags(8106)).toEqual(['spam-pruefen']);
+    const skipped = await postgres.admin.query(
+      `SELECT 1 FROM email_workflow_run_steps WHERE workspace_id = $1 AND node_id = 'tag-unsicher' AND status = 'skipped'`,
+      [WORKSPACE_ID],
+    );
+    expect(skipped.rows).toEqual([]);
   });
 
   test('eingehend: Kettenstopp eines Geschwisters ⇒ kein Modellaufruf, keine Fortsetzung; Spam wird nicht übersprungen', async () => {

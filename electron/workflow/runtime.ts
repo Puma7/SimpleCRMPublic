@@ -485,8 +485,9 @@ async function walkGraph(
         (regType === 'email.auto_reply' && port === 'approved') ||
         (regType === 'logic.threshold' && port === 'yes') ||
         (regType === 'logic.switch' && port !== 'default') ||
-        // KI-Entscheidung: „ja“ und „nein“ sind beantwortete Bedingungen;
-        // „unsicher“ und KI-Fehler nicht.
+        // KI-Entscheidung: jeder der vier beschrifteten Ausgänge (ja, nein,
+        // unsicher, KI-Fehler) ist ein bewusst verdrahteter Zweig — wie ein
+        // logic.switch-Fall; einen Standard-Ausgang gibt es nicht.
         (regType === 'ai.decide' && aiDecidePortTripsInboundGate(port));
       if (tripped) {
         gate.conditionOk = true;

@@ -187,9 +187,15 @@ export function aiDecideAnswerHoldsOutbound(answer: string): boolean {
   return answer === 'nein' || answer === 'unsicher' || answer === 'error';
 }
 
-/** Zählt dieser Ausgang im Eingang als „erfüllte Bedingung“ (Inbound-Gate)? */
+/**
+ * Zählt dieser Ausgang im Eingang als „erfüllte Bedingung“ (Inbound-Gate)?
+ * Alle vier Ausgänge: jeder ist ein ausdrücklich beschrifteter, bewusst
+ * verdrahteter Zweig nach einer Entscheidung (wie jeder Nicht-default-Fall
+ * von logic.switch); ai.decide hat keinen Standard-Ausgang. So laufen z. B.
+ * „Unsicher → Spam prüfen“ oder „KI-Fehler → Tag manuell“ ohne runOnEveryInbound.
+ */
 export function aiDecidePortTripsInboundGate(port: string | null | undefined): boolean {
-  return port === 'ja' || port === 'nein';
+  return port === 'ja' || port === 'nein' || port === 'unsicher' || port === 'error';
 }
 
 export type AiDecideMailStrings = Readonly<Partial<Record<
