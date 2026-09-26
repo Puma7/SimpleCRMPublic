@@ -379,6 +379,9 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/messages/:messageId/scheduled-send', { PATCH: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/messages/:messageId/approve-draft-send', { POST: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/messages/:messageId/dismiss-draft-approval', { POST: permissionPolicy('mail.draft.edit', messagePath()) });
+  // „Ohne Ausgangsprüfung senden“: sendet den gespeicherten Entwurf wie approve-draft-send
+  // (Supplement im HTTP-Enforcer: mail.draft.edit, Eltern-Triage, Anhangsrechte).
+  assign('/api/v1/email/messages/:messageId/send-skip-outbound-review', { POST: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/threads/:threadId/messages', { GET: permissionPolicy('mail.metadata.read', threadPath()) });
 
   for (const path of [
@@ -441,6 +444,11 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
 function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/workflows/:id/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
   assign('/api/v1/workflows/by-source/:sourceId/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
+  // TA-P5 „Learning notieren“: mit Mail-Bezug nur, wer die Mail lesen darf;
+  // ohne Bezug (oder messageId null) genügt die Anmeldung.
+  assign('/api/v1/ai-learnings/notes', {
+    POST: permissionPolicy('mail.content.read', optionalMessageBody('messageId', { allowNull: true })),
+  });
   assign('/api/v1/email/messages/:messageId/workflow-runs', { GET: permissionPolicy('mail.content.read', messagePath()) });
 
   for (const path of [

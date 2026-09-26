@@ -4,6 +4,17 @@ import { ilikeContainsPattern } from './db/sql-ilike';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  aiDecideAnswerHoldsOutbound,
+  aiDecideDryRunOutcome,
+  aiDecideOutboundBlockReason,
+  aiDecidePortTripsInboundGate,
+  aiDecideVariables,
+  AI_DECIDE_CRITERIA_MAX_CHARS,
+  AI_DECIDE_QUESTION_MAX_CHARS,
+  normalizeAiDecideContextMode,
+  normalizeAiDecideThreshold,
+  type AiDecideOutcome,
+  aiDecideErrorOutcome,
   buildSpamDecision,
   buildFeaturePreview,
   compileUserRegex,
@@ -23,6 +34,7 @@ import {
   normalizeMailboxName,
   normalizeEmailAddress,
   outboundDraftFingerprint,
+  outboundHoldReasonOrFallback,
   outgoing,
   parseGraphDocument,
   parseSenderList,
@@ -82,6 +94,11 @@ import {
   setDraftApprovalPending,
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
+import {
+  interpolateAiDecideField,
+  runServerAiDecision,
+  type WorkflowAiDecideDeps,
+} from './workflow-ai-decide';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { MailAccessService } from './mail-access/types';
 import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
@@ -108,6 +125,9 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
+import { executeServerLearningsDigestNode } from './ai-learnings';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import { markDraftOrigin } from './mail-sent-provenance';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
@@ -366,6 +386,8 @@ type ServerWorkflowRuntimePorts = Readonly<{
   visibilityInvalidation?: WorkflowVisibilityInvalidation;
   aiReviewPreview?: AiReviewPreviewRunner;
   aiDraft?: WorkflowAiDraftNodeDeps;
+  /** KI-Entscheidung in der Versandvorschau (synchron, echter Modellaufruf). */
+  aiDecide?: WorkflowAiDecideDeps;
 }>;
 
 type ServerInboundBranchGate = {
@@ -468,6 +490,8 @@ export function createPostgresWorkflowExecutionJobPort(
     workflowImapActions: options.workflowImapActions,
     aiReviewPreview,
     aiDraft,
+    // Gleiche Abhängigkeiten wie aiDraft (Profil, Secret, Nutzungserfassung).
+    aiDecide: aiDraft,
   };
   return {
     async execute(input) {
@@ -700,6 +724,44 @@ export function createPostgresWorkflowExecutionJobPort(
                 now,
               });
             }
+            return;
+          }
+
+          // Ein Zeitplan-Lauf wurde fuer den damals gespeicherten Ausloeser
+          // eingereiht (jobs/workflow-schedule-tick). Wurde der Workflow bis zum
+          // Start auf einen anderen Ausloeser umgestellt, ist er fuer den
+          // Zeitplan nicht mehr zustaendig — wie deaktiviert behandeln.
+          if (trigger === 'schedule' && !resumeNodeId && workflow.trigger_name !== 'schedule') {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:workflow_scope_changed'],
+              now,
+            });
+            return;
+          }
+
+          // Genau einmal je Zeitpunkt, auch wenn der Taktgeber denselben
+          // Zeitpunkt zweimal einreiht (Einreihung gespeichert, Bestaetigung
+          // verloren ⇒ Anspruch zurueckgenommen ⇒ naechster Takt reiht erneut
+          // ein). Der Anspruch liegt in derselben Transaktion wie der Lauf:
+          // Scheitert der Lauf, faellt er mit zurueck und der Retry desselben
+          // Jobs darf erneut.
+          if (
+            trigger === 'schedule'
+            && !resumeNodeId
+            && input.scheduleSlot !== undefined
+            && !await claimScheduleSlotRun(trx, {
+              workspaceId: input.workspaceId,
+              workflowId: Number(workflow.id),
+              slot: input.scheduleSlot,
+              now,
+            })
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:schedule_slot_already_ran'],
+              now,
+            });
             return;
           }
 
@@ -1792,7 +1854,7 @@ async function walkGraph(
     // Die Ausgangs-Vorschau fuehrt KI-Pruefungen synchron aus; dort deferieren sie nicht.
     const previewRunsReviewSynchronously = input.dryRun
       && input.context.previewOutbound
-      && ['ai.outbound_review', 'ai.review', 'ai_review'].includes(nodeRuntimeType(node));
+      && ['ai.outbound_review', 'ai.review', 'ai_review', 'ai.decide'].includes(nodeRuntimeType(node));
     const loopBodyDeferral = input.insideLoopBody === true
       && !previewRunsReviewSynchronously
       && workflowNodeDefersRun(input.doc, node, 'server');
@@ -1849,7 +1911,10 @@ async function walkGraph(
       || (gateRegistryType === 'logic.threshold' && result.port === 'yes')
       || (gateRegistryType === 'logic.switch'
         && typeof result.port === 'string'
-        && result.port !== 'default');
+        && result.port !== 'default')
+      // KI-Entscheidung: alle vier Ausgänge (ja, nein, unsicher, KI-Fehler) sind
+      // bewusst verdrahtete Zweige wie ein switch-Fall (Desktop-Parität).
+      || (gateRegistryType === 'ai.decide' && aiDecidePortTripsInboundGate(result.port));
     if (trippedInboundGate && input.inboundGate) {
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
@@ -1858,20 +1923,19 @@ async function walkGraph(
     // template branches (tags, notifications) run before finishing blocked.
     // Do NOT follow ports for ordinary status:'error' (e.g. Continuation-Kontext
     // overflow) or port:'blocked' unsupported-node results — those must stop.
+    // Leere Gründe zählen als fehlend (`??` behielt ''): einheitlicher Fallback.
     const pendingBlockReason = result.blocked
-      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      ? outboundHoldReasonOrFallback(result.blockReason?.trim() || result.message)
       : null;
     if (result.blocked && !input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
-      await trx
-        .updateTable('email_messages')
-        .set({
-          outbound_hold: true,
-          outbound_block_reason: pendingBlockReason,
-          updated_at: input.now,
-        })
-        .where('workspace_id', '=', input.context.workspaceId)
-        .where('id', '=', input.context.messageId)
-        .execute();
+      // Endgültiger Block: echter Grund im Banner, Planung eines Workflow-
+      // Versands gelöscht, damit der Entwurf im Posteingang erscheint.
+      await persistOutboundBlockOnDraft(trx, {
+        workspaceId: input.context.workspaceId,
+        messageId: input.context.messageId,
+        reason: pendingBlockReason,
+        now: input.now,
+      });
     }
     if (result.status === 'error') {
       return {
@@ -1884,7 +1948,10 @@ async function walkGraph(
     }
     if (result.blocked) {
       const blockPort = typeof result.port === 'string' ? result.port : '';
-      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      // ai.decide hält den Versand auch über „nein“/„unsicher“ an; diese
+      // Ausgänge laufen wie block/error nur noch für Zusatzschritte.
+      const followBlockPort = blockPort === 'block' || blockPort === 'error'
+        || (nodeRuntimeType(node) === 'ai.decide' && aiDecideAnswerHoldsOutbound(blockPort));
       const outs = outgoing(input.doc.edges, currentId);
       const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
       if (blockEdge) {
@@ -1965,6 +2032,62 @@ function boundedWorkflowLoopItems(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(String(value ?? 50).trim());
   if (!Number.isFinite(parsed)) return 50;
   return Math.max(1, Math.min(MAX_WORKFLOW_LOOP_ITEMS, Math.trunc(parsed)));
+}
+
+/**
+ * Knotenergebnis einer KI-Entscheidung. Im Ausgang hält alles außer „ja“ den
+ * Versand an (blocked + Grund); der Ausgang läuft dann nur für Zusatzschritte.
+ */
+function aiDecideNodeResult(context: ServerWorkflowContext, outcome: AiDecideOutcome): NodeResult {
+  const variables = aiDecideVariables(outcome);
+  const blockReason = context.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
+  return blockReason
+    ? { status: 'ok', port: outcome.answer, blocked: true, blockReason, message: outcome.summary, variables }
+    : { status: 'ok', port: outcome.answer, message: outcome.summary, variables };
+}
+
+/** Rohe Konfigfelder von ai.decide, gekürzt auf die Grenzen des Job-Plans. */
+function aiDecideConfigText(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+async function executePreviewAiDecide(
+  ports: ServerWorkflowRuntimePorts,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<NodeResult> {
+  if (!ports.aiDecide) {
+    return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: 'Server-KI nicht konfiguriert' }));
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: profileId.message }));
+  const scope = { strings: context.strings, variables: context.variables };
+  const outcome = await runServerAiDecision(ports.aiDecide, {
+    workspaceId: context.workspaceId,
+    messageId: context.messageId,
+    actorUserId: context.actorUserId ?? null,
+    ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
+    direction: context.direction,
+    question: interpolateAiDecideField(
+      aiDecideConfigText(config.question, AI_DECIDE_QUESTION_MAX_CHARS),
+      scope,
+      AI_DECIDE_QUESTION_MAX_CHARS,
+    ),
+    yesCriteria: interpolateAiDecideField(
+      aiDecideConfigText(config.yesCriteria, AI_DECIDE_CRITERIA_MAX_CHARS),
+      scope,
+      AI_DECIDE_CRITERIA_MAX_CHARS,
+    ),
+    noCriteria: interpolateAiDecideField(
+      aiDecideConfigText(config.noCriteria, AI_DECIDE_CRITERIA_MAX_CHARS),
+      scope,
+      AI_DECIDE_CRITERIA_MAX_CHARS,
+    ),
+    contextMode: normalizeAiDecideContextMode(config.contextMode),
+    threshold: normalizeAiDecideThreshold(config.threshold),
+    strings: context.strings,
+  });
+  return aiDecideNodeResult(context, outcome);
 }
 
 async function executePreviewOutboundAiReview(
@@ -2170,6 +2293,19 @@ async function executeServerNode(
       .filter(Boolean);
     return { status: 'ok', port: cases.includes(value) ? value : 'default' };
   }
+  if (type === 'ai.decide') {
+    if (dryRun && context.previewOutbound) {
+      // Versandvorschau: echte Entscheidung, sonst übersprange eine dort
+      // erteilte Freigabe die KI-Entscheidung beim eigentlichen Versand.
+      return await executePreviewAiDecide(ports, context, config);
+    }
+    if (dryRun) {
+      // Testlauf: keine KI-Anfrage, Ergebnis „unsicher“.
+      log.push('dry_run:ai.decide');
+      return aiDecideNodeResult(context, aiDecideDryRunOutcome());
+    }
+    return await scheduleAiDecideJob(trx, doc, context, node, config, now);
+  }
   if (dryRun && context.previewOutbound) {
     if (type === 'ai.outbound_review') {
       if (context.direction !== 'outbound') {
@@ -2180,6 +2316,18 @@ async function executeServerNode(
     if (type === 'ai.review' || type === 'ai_review') {
       return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
+  }
+  if (type === 'ai.learnings_digest') {
+    // TA-P5: prüft vorab und reiht den Auswertungs-Job ein; im Probelauf nur die Vorabprüfung.
+    return await executeServerLearningsDigestNode(trx, {
+      workspaceId: context.workspaceId,
+      workflowId: context.workflowId,
+      direction: context.direction,
+      config,
+      provenance: workflowJobProvenance(context),
+      dryRun: Boolean(dryRun),
+      now,
+    });
   }
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
@@ -2266,6 +2414,7 @@ async function executeServerNode(
         variables: context.variables,
         actorUserId: context.actorUserId,
         dryRun: true,
+        workflowId: context.workflowId,
       });
     }
     return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
@@ -2288,8 +2437,7 @@ async function executeServerNode(
     return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
   }
   if (type === 'email.hold_outbound' || type === 'hold_outbound') {
-    const reason = String(config.reason ?? node.data.reason ?? '').trim()
-      || 'Ausgehende Nachricht durch Workflow zurueckgestellt.';
+    const reason = outboundHoldReasonOrFallback(String(config.reason ?? node.data.reason ?? ''));
     return {
       status: 'ok',
       port: 'blocked',
@@ -3907,6 +4055,112 @@ async function scheduleAiReviewDraftJob(
   };
 }
 
+/**
+ * ai.decide als Kindjob (Muster ai.review_draft): jeder Ausgang hat sein
+ * Fortsetzungsziel; der Elternlauf wartet auch, wenn nur ein Nicht-„ja“-Ausgang
+ * verdrahtet ist, und ein Knoten ganz ohne Kante schließt die Kette im Job ab.
+ */
+async function scheduleAiDecideJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const question = aiDecideConfigText(config.question, AI_DECIDE_QUESTION_MAX_CHARS);
+  if (!question) {
+    return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: 'Keine Frage angegeben' }));
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const portResumeTargets = {
+    ja: resolveResumeNodeAfterPort(doc, node.id, 'ja'),
+    nein: resolveResumeNodeAfterPort(doc, node.id, 'nein'),
+    unsicher: resolveResumeNodeAfterPort(doc, node.id, 'unsicher'),
+    error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
+  };
+  const deferAnchor = portResumeTargets.ja
+    || portResumeTargets.nein
+    || portResumeTargets.unsicher
+    || portResumeTargets.error
+    || undefined;
+  const terminalStamp = terminalChainStamp(context, node);
+
+  const yesCriteria = aiDecideConfigText(config.yesCriteria, AI_DECIDE_CRITERIA_MAX_CHARS);
+  const noCriteria = aiDecideConfigText(config.noCriteria, AI_DECIDE_CRITERIA_MAX_CHARS);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    runId: context.runId,
+    // Knoten-Identität für den Graphile-Key: resumeNodeId ist nur der erste
+    // verdrahtete Ausgang.
+    nodeId: node.id,
+    ...workflowJobProvenance(context),
+    ...(deferAnchor ? {} : terminalStamp),
+    direction: context.direction,
+    // Roh (mit Platzhaltern): der Job interpoliert zur Ausführungszeit.
+    question,
+    contextMode: normalizeAiDecideContextMode(config.contextMode),
+    threshold: normalizeAiDecideThreshold(config.threshold),
+    eventStrings: boundedContinuationStrings(context.strings),
+    eventVariables: context.variables,
+    portResumeTargets: Object.fromEntries(
+      Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
+    ),
+  };
+  if (yesCriteria) payload.yesCriteria = yesCriteria;
+  if (noCriteria) payload.noCriteria = noCriteria;
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (deferAnchor) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = deferAnchor;
+    stampBranchKey(payload, context);
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      // Nur Verzögerungsanker — der Job nimmt das Ziel des gewählten Ausgangs.
+      resumeNodeId: deferAnchor,
+      eventStrings: boundedContinuationStrings(context.strings),
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+    // Hat der gewählte Ausgang keine Kante, endet der Zweig im Kindjob.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(context, terminalStamp);
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.decide',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: true,
+    deferred: true,
+    message: `queued_ai_decide:${jobId}`,
+    variables: {
+      'ai.decide.status': 'pending',
+      'ai.decide.job_id': jobId,
+    },
+  };
+}
+
 async function scheduleAiPickCannedJob(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -4021,6 +4275,13 @@ async function createWorkflowComposeDraft(
   if (!draft.ok) {
     return { status: 'error', port: 'error', message: `Entwurf konnte nicht erstellt werden: ${draft.reason}` };
   }
+  // TA-P3: Workflow-Entwurf (Kennzeichnung „gesendet von“).
+  await markDraftOrigin(trx, {
+    workspaceId: context.workspaceId,
+    draftId: Number(draft.message.id),
+    kind: 'workflow',
+    workflowId: context.workflowId,
+  });
   if (context.messageId !== null) {
     await trx
       .updateTable('email_messages')
@@ -5893,6 +6154,17 @@ async function releaseWorkflowOutboundHold(
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', context.messageId)
     .execute();
+  if (!context.actorUserId) {
+    // TA-P3: Workflow-Versand ohne Menschen — Herkunft festhalten, falls leer.
+    // Gibt ein Ausgangs-Workflow die Mail eines Menschen frei, bleibt sie dessen Mail.
+    await markDraftOrigin(trx, {
+      workspaceId: context.workspaceId,
+      draftId: context.messageId,
+      kind: 'workflow',
+      workflowId: context.workflowId,
+      onlyIfUnset: true,
+    });
+  }
 
   // Multi-outbound-workflow safety: if there are OTHER outbound runs against
   // this draft still queued/running, the user has multiple parallel quality
@@ -6162,6 +6434,15 @@ async function sendWorkflowDraft(
       .where('id', '=', draftId)
       .execute();
   }
+
+  // TA-P3: Workflow-Versand — Herkunft festhalten, falls der Entwurf noch keine hat.
+  await markDraftOrigin(trx, {
+    workspaceId: context.workspaceId,
+    draftId,
+    kind: 'workflow',
+    workflowId: context.workflowId,
+    onlyIfUnset: true,
+  });
 
   if (context.direction === 'inbound') {
     await trx
@@ -7776,6 +8057,8 @@ function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBr
 const INBOUND_DIRECT_ALLOWED_WORKFLOW_TYPES = new Set([
   'email.sender_filter',
   'ai.classify',
+  // KI-Entscheidung verzweigt nur; jeder ihrer vier Ausgänge öffnet das Gate.
+  'ai.decide',
   // ai.reply_suggestion is the standard "generate draft" step for auto-reply
   // chains; without the allowance the inbound-gate would block it until a
   // condition fires explicitly. The auto_reply node still gates whether the
@@ -8245,6 +8528,42 @@ function blockedResult(reason: string, existingLog: string[] = []): GraphRunResu
 
 function serverWorkerSourceRow() {
   return { origin: 'server_worker' };
+}
+
+/** sync_info-Schluessel: zuletzt ausgefuehrter Zeitplan-Zeitpunkt je Workflow. */
+export const WORKFLOW_SCHEDULE_RUN_KEY_PREFIX = 'workflow_schedule_run:';
+
+/**
+ * Beansprucht einen Zeitplan-Zeitpunkt fuer genau einen Lauf: monoton, nur ein
+ * spaeterer Zeitpunkt als der gespeicherte gewinnt (ISO/UTC vergleicht als
+ * Text wie als Zeit). Parallele Laeufe warten auf die Zeilensperre und sehen
+ * danach den neuen Stand.
+ */
+async function claimScheduleSlotRun(
+  trx: WorkspaceTransaction,
+  input: { workspaceId: string; workflowId: number; slot: string; now: Date },
+): Promise<boolean> {
+  const claimed = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: `${WORKFLOW_SCHEDULE_RUN_KEY_PREFIX}${input.workflowId}`,
+      value: input.slot,
+      last_updated: input.now,
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'key'])
+      .doUpdateSet({ value: input.slot, last_updated: input.now, updated_at: input.now })
+      .where((eb) => eb.or([
+        eb('sync_info.value', 'is', null),
+        eb('sync_info.value', '<', input.slot),
+      ])))
+    .returning('key')
+    .executeTakeFirst();
+  return claimed !== undefined;
 }
 
 function serverCreatedWorkflowTaskSourceSqliteId(

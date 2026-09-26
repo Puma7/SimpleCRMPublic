@@ -804,9 +804,9 @@ describe('codex review regression guards', () => {
 
     // Jeder deferierte Kindjob stempelt ihn auf die Payload-Oberflaeche —
     // graphileJobKeyForJob sieht die Continuation nicht.
-    // classify, review, transform_text, agent, draft_reply, review_draft,
+    // classify, review, transform_text, agent, draft_reply, review_draft, decide,
     // http_request, forward_copy, dmarc_ingest (pick_canned stempelt inline).
-    expect(execution.match(/stampBranchKey\(payload, context\);/g)).toHaveLength(9);
+    expect(execution.match(/stampBranchKey\(payload, context\);/g)).toHaveLength(10);
     expect(execution).toContain('if (context.branchKey) payload.branchKey = context.branchKey;');
 
     // Ohne Zweig-Identitaet gibt es KEINEN Key: ein doppelter Job ist Arbeit,
@@ -834,7 +834,8 @@ describe('codex review regression guards', () => {
     // (Modellaufruf und Entwurf doppelt) und baut die Barriere zweimal ab.
     expect(graphile).toContain('function graphileDeferredIdentitySuffix(payload: JobPayload): string | null {');
     expect(graphile).toContain('if (!fanOutRunId) return null;');
-    expect(graphile.match(/if \(identity === null\) return undefined;/g)).toHaveLength(11);
+    // + ai.decide (TA-P1)
+    expect(graphile.match(/if \(identity === null\) return undefined;/g)).toHaveLength(12);
     // Der Lauf steht je nach Jobart oben, in der Continuation oder im Kontext.
     expect(graphile).toMatch(
       /graphileFanOutRunId[\s\S]*?nested\(payload\.continuation\)\s*\n\s*\?\? nested\(payload\.context\)/,

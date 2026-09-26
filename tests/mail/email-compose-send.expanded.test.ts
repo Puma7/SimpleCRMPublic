@@ -17,7 +17,11 @@ const mockDbRun = jest.fn();
 const mockClearHold = jest.fn();
 const mockExtractInline = jest.fn();
 const mockPersistLocalComposeAttachments = jest.fn();
+const mockRecordSentProvenance = jest.fn();
 
+jest.mock('../../electron/email/email-sent-provenance', () => ({
+  recordSentProvenance: (...args: unknown[]) => mockRecordSentProvenance(...args),
+}));
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: (...args: unknown[]) => mockGetMessage(...args),
   updateComposeDraft: (...args: unknown[]) => mockUpdateDraft(...args),
@@ -154,6 +158,36 @@ describe('email-compose-send expanded', () => {
       to: 'a@b.de',
     });
     expect(r).toMatchObject({ ok: false, error: 'hold', workflowRunId: null });
+  });
+
+  test('meldet outboundHeld, wenn der Ausgang den Entwurf angehalten hat (TA-P2)', async () => {
+    mockEvaluateOutbound.mockResolvedValueOnce({ allowed: false, reason: 'Preis fehlt', workflowRunId: 7 });
+    mockGetMessage
+      .mockReturnValueOnce(draft())
+      .mockReturnValueOnce({ ...draft(), outbound_hold: 1, outbound_block_reason: 'Preis fehlt' });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+    });
+    expect(r).toEqual({ ok: false, error: 'Preis fehlt', workflowRunId: 7, outboundHeld: true });
+  });
+
+  test('kennzeichnet den Versand: Sitzung ⇒ Mensch, ohne Akteur ⇒ Workflow (TA-P3)', async () => {
+    await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'a@b.de',
+      actor: { userId: 'u1', role: 'user' },
+    });
+    expect(mockRecordSentProvenance).toHaveBeenLastCalledWith(10, { kind: 'human', userId: 'u1' });
+
+    await sendComposeDraft({ accountId: 1, draftMessageId: 10, subject: 'S', bodyText: 'B', to: 'a@b.de' });
+    expect(mockRecordSentProvenance).toHaveBeenLastCalledWith(10, { kind: 'workflow' });
   });
 
   test('sends successfully with reply parent and attachments', async () => {

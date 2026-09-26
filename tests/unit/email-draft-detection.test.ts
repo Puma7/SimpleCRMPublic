@@ -17,7 +17,9 @@ describe('isEditableDraftMessage', () => {
 
   test('erkennt lokale Drafts message-basiert (Broad-Suche ausserhalb der Drafts-View)', () => {
     expect(isEditableDraftMessage(draft)).toBe(true);
-    // Server-Transport liefert outbound_hold nicht — folder_kind genuegt.
+    // Der Server-Transport liefert outbound_hold seit TA-P2 mit (0 = nicht angehalten).
+    expect(isEditableDraftMessage({ uid: -2, folder_kind: 'draft', outbound_hold: 0 })).toBe(true);
+    // Zeilen ohne das Feld (Altbestand, Teilprojektionen) — folder_kind genuegt weiterhin.
     expect(isEditableDraftMessage({ uid: -2, folder_kind: 'draft' })).toBe(true);
   });
 

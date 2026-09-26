@@ -95,6 +95,7 @@ const workflowSelectColumns = [
   'cron_expr',
   'schedule_account_source_sqlite_id',
   'schedule_account_id',
+  'schedule_last_slot_at',
   'account_source_sqlite_id',
   'account_id',
   'override_key',
@@ -679,6 +680,9 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
               cron_expr: values.cronExpr ?? null,
               schedule_account_source_sqlite_id: scheduleAccount?.sourceSqliteId ?? null,
               schedule_account_id: scheduleAccount?.id ?? null,
+              // Ein neuer Zeitplan beginnt jetzt: Zeitpunkte vor dem Anlegen
+              // loest der Taktgeber nicht mehr aus (jobs/workflow-schedule-tick).
+              schedule_last_slot_at: now,
               account_source_sqlite_id: account?.sourceSqliteId ?? null,
               account_id: account?.id ?? null,
               override_key: values.overrideKey ?? null,
@@ -743,11 +747,13 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           // supplying enabled: true — would otherwise each pass against the old safe
           // row and merge into an enabled side-effecting workflow. Applying only while
           // the read values still hold turns that race into a 409.
+          const now = new Date();
           let updateQuery = trx
             .updateTable('email_workflows')
             .set({
               ...mutationToWorkflowPatch(values, scheduleAccount, account),
-              updated_at: new Date(),
+              ...scheduleSlotResetPatch(values, now),
+              updated_at: now,
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
@@ -778,6 +784,12 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
             const expectedOverrideKey = input.expected.overrideKey ?? null;
             updateQuery = updateQuery.where(
               kyselySql<boolean>`override_key is not distinct from ${expectedOverrideKey}`,
+            );
+          }
+          if (input.expected && 'cronExpr' in input.expected) {
+            const expectedCronExpr = input.expected.cronExpr ?? null;
+            updateQuery = updateQuery.where(
+              kyselySql<boolean>`cron_expr is not distinct from ${expectedCronExpr}`,
             );
           }
           const row = await updateQuery
@@ -1119,6 +1131,38 @@ function mutationToWorkflowPatch(
   };
 }
 
+/**
+ * Speichern schaltet einen Zeitplan scharf und verhindert Nachholungen:
+ * der Taktgeber feuert nur Zeitpunkte NACH schedule_last_slot_at und nie bei
+ * NULL (nicht scharf). Die Spalte wird deshalb auf „jetzt" gesetzt — es sei
+ * denn, der gespeicherte Workflow war schon ein SCHARFER aktiver Zeitplan mit
+ * demselben Ausdruck (dann bliebe sonst ein gerade faelliger Zeitpunkt
+ * liegen, nur weil jemand z. B. den Graphen speichert). Ein aktiver, aber
+ * nicht scharfer Zeitplan (Bestand vor 0056, Desktop-Import) wird damit beim
+ * ersten Speichern mit Ausloeser-, Aktiv- oder Zeitplan-Feld scharf; diese
+ * Felder laufen durch die Rechte- und Zeitplan-Pruefung der Route. Die
+ * Bedingung liest die Spalten VOR dem Update (Postgres-SET-Semantik).
+ */
+function scheduleSlotResetPatch(
+  values: WorkflowMutationInput,
+  now: Date,
+): { schedule_last_slot_at?: RawBuilder<Date> } {
+  if (values.triggerName === undefined && values.enabled === undefined && values.cronExpr === undefined) {
+    return {};
+  }
+  const sameCron = values.cronExpr === undefined
+    ? kyselySql<boolean>`true`
+    : kyselySql<boolean>`cron_expr is not distinct from ${values.cronExpr}`;
+  return {
+    schedule_last_slot_at: kyselySql<Date>`case
+      when schedule_last_slot_at is not null
+        and enabled is true and trigger_name = 'schedule' and ${sameCron}
+        then schedule_last_slot_at
+      else ${now}::timestamptz
+    end`,
+  };
+}
+
 function assertJsonObjectLike(value: unknown, label: string): void {
   if (!isJsonObjectLike(value) || !isJsonCompatible(value)) {
     throw new Error(`${label} must be a JSON object or array`);
@@ -1304,6 +1348,7 @@ function mapWorkflowRow(row: Pick<WorkflowRow, typeof workflowSelectColumns[numb
       ? null
       : Number(row.schedule_account_source_sqlite_id),
     scheduleAccountId: row.schedule_account_id === null ? null : Number(row.schedule_account_id),
+    scheduleLastSlotAt: timestampToIsoOrNull(row.schedule_last_slot_at),
     accountSourceSqliteId: row.account_source_sqlite_id === null ? null : Number(row.account_source_sqlite_id),
     accountId: row.account_id === null ? null : Number(row.account_id),
     overrideKey: row.override_key,

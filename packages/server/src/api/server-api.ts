@@ -1,3 +1,4 @@
+import { AI_LEARNINGS_MAIL_ROUTE_INVENTORY, handleAiLearningsRoute } from './ai-learnings-routes';
 import { handleAuthRoute } from './auth-routes';
 import { handleAuthSecurityRoute } from './auth-security-routes';
 import { handleAutomationReadRoute } from './automation-routes';
@@ -89,6 +90,9 @@ export const SERVER_API_ROUTE_REGISTRATIONS: readonly ServerApiRouteRegistration
   mailRoutes('spam-routes', SPAM_MAIL_ROUTE_INVENTORY, handleSpamReadRoute),
   nonMailRoutes('returns-routes', handleReturnsRoute),
   mailRoutes('lock-routes', MAIL_LOCK_ROUTE_INVENTORY, handleLockRoute),
+  // TA-P5: nur die Notiz-Route ist eine Mail-Route (Mail-Bezug → mail.content.read);
+  // der Rest verlangt workflows.manage im Handler.
+  mailRoutes('ai-learnings-routes', AI_LEARNINGS_MAIL_ROUTE_INVENTORY, handleAiLearningsRoute),
 ]);
 
 export const SERVER_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(

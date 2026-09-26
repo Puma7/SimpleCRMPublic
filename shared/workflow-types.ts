@@ -59,7 +59,15 @@ export type WorkflowTemplateDto = {
   description: string;
   trigger: WorkflowTriggerKind;
   graph: import('./email-workflow-graph').WorkflowGraphDocument;
+  /** Empfohlene Priorität; „Vorlage laden“ trägt sie im Editor ein. */
+  priority?: number;
+  /** Cron-Ausdruck einer Zeitplan-Vorlage; „Vorlage laden“ trägt ihn ein. */
+  cronExpr?: string;
 };
 
-/** Minimum minutes between workflow cron fires (UI + server). */
-export const WORKFLOW_CRON_MIN_INTERVAL_MINUTES = 15;
+/**
+ * Minimum minutes between workflow cron fires (UI + server). Eine Quelle fuer
+ * beide Editionen: der Server prueft mit derselben Konstante
+ * (packages/core/src/workflow/cron-schedule.ts).
+ */
+export { WORKFLOW_CRON_MIN_INTERVAL_MINUTES } from '../packages/core/src/workflow/cron-schedule';

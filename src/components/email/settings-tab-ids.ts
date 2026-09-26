@@ -3,6 +3,7 @@ export const SETTINGS_TAB_IDS = [
   "oauthApps",
   "ai",
   "knowledge",
+  "learnings",
   "mailSecurity",
   "tracking",
   "smtpRelay",

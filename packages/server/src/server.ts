@@ -8,6 +8,7 @@ import {
   createFastifyServer,
   type ServerApiPorts,
 } from './api';
+import { createPostgresAiLearningsApiPort, createPostgresAiLearningsDigestPort } from './ai-learnings';
 import {
   assertNoKnownWeakProductionSecrets,
   MASTER_KEY_LOOKS_GUESSABLE_MESSAGE,
@@ -154,6 +155,10 @@ import {
   createPostgresAiDraftReplyPort,
   createPostgresAiReviewDraftPort,
 } from './workflow-ai-draft-nodes';
+import {
+  createAiProfileConnectionTestPort,
+  createPostgresAiDecidePort,
+} from './workflow-ai-decide';
 import { createServerEmailOAuthPort } from './email-oauth';
 import { createPostgresJtlOrderPort } from './jtl-order';
 import { createPostgresJtlSyncPort } from './jtl-sync';
@@ -162,6 +167,7 @@ import {
   createPostgresEmailComposeSenderPort,
   createPostgresEmailOutboundValidationPort,
 } from './mail-compose-send';
+import { createPostgresOutboundReviewSkipPort } from './mail-outbound-review-skip';
 import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresMailAccessPort } from './mail-access/postgres-mail-access-port';
@@ -455,10 +461,19 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       // Workspace einen Job ein, dessen Handler die faelligen Konten sucht —
       // die Auswahl gehoert nicht in den Serverprozess (Begruendung in
       // jobs/mail-sync-scheduler).
+      //
+      // workflow.schedule.tick ist der Zeitplan-Ausloeser: je Minute und
+      // Workspace ein Pruef-Job, der faellige Zeitplan-Workflows genau einmal
+      // einreiht (jobs/workflow-schedule-tick).
       if (apiJobQueue) {
         const maintenanceQueue = apiJobQueue;
         const maintenanceLog = createJobWorkerLogger(serverLogStore);
-        for (const jobType of ['lock.cleanup', 'audit.retention', 'mail.sync.schedule'] as const) {
+        for (const jobType of [
+          'lock.cleanup',
+          'audit.retention',
+          'mail.sync.schedule',
+          'workflow.schedule.tick',
+        ] as const) {
           maintenanceTickers.push(startMaintenanceJobTicker({
             db,
             queue: maintenanceQueue,
@@ -613,6 +628,9 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     aiProfiles: createPostgresAiProfileReadPort({ db: options.db, secrets: options.secrets }),
     aiPrompts: createPostgresAiPromptReadPort({ db: options.db }),
     aiTextTransform: createPostgresAiTextTransformApiPort({ db: options.db, secrets: options.secrets }),
+    ...(options.secrets ? {
+      aiProfileConnectionTest: createAiProfileConnectionTestPort({ db: options.db, secrets: options.secrets }),
+    } : {}),
     automationApiKeys: createPostgresAutomationApiKeyReadPort({ db: options.db, secrets: options.secrets }),
     calendarEntries: createPostgresCalendarEntryPort({ db: options.db }),
     calendarEvents: createPostgresCalendarEventReadPort({ db: options.db }),
@@ -652,6 +670,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       workflowDryRun,
     }),
     emailOutboundValidation,
+    emailOutboundReviewSkip: createPostgresOutboundReviewSkipPort({ db: options.db }),
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
     dmarcReporting: createPostgresDmarcReportingPort({ db: options.db }),
@@ -716,6 +735,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     },
     workflowForwardDedup: createPostgresWorkflowForwardDedupReadPort({ db: options.db }),
     workflowKnowledgeBases: createPostgresWorkflowKnowledgeBaseReadPort({ db: options.db }),
+    aiLearnings: createPostgresAiLearningsApiPort({ db: options.db }),
     workflowKnowledgeChunks: createPostgresWorkflowKnowledgeChunkReadPort({ db: options.db }),
     workflowMessageApplied: createPostgresWorkflowMessageAppliedReadPort({ db: options.db }),
     workflowRuns: createPostgresWorkflowRunReadPort({ db: options.db }),
@@ -1875,6 +1895,11 @@ function buildServerJobHandlers(input: {
           aiReplySuggestion: ports.aiReplySuggestions,
         } : {}),
         ...(db ? {
+          aiLearningsDigest: createPostgresAiLearningsDigestPort({
+            db,
+            ...(secrets ? { secrets } : {}),
+            ...(ports.audit ? { audit: ports.audit } : {}),
+          }),
           aiAgent: createPostgresAiAgentPort({ db, secrets }),
           aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
           aiClassification: createPostgresAiClassificationPort({
@@ -1890,6 +1915,7 @@ function buildServerJobHandlers(input: {
           ...(secrets ? {
             aiDraftReply: createPostgresAiDraftReplyPort({ db, secrets }),
             aiReviewDraft: createPostgresAiReviewDraftPort({ db, secrets }),
+            aiDecide: createPostgresAiDecidePort({ db, secrets }),
           } : {}),
         } : {}),
         ...(db && ports.jobQueue ? {

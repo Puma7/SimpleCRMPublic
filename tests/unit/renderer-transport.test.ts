@@ -6879,34 +6879,14 @@ describe('renderer transport', () => {
           nextCursor: null,
         },
       }))
+      // TA-P5: Speichern ist ein atomarer Server-Aufruf (vorher GET/PATCH/DELETE je Chunk).
       .mockResolvedValueOnce(jsonResponse({
         data: {
-          items: [
-            {
-              id: 91,
-              knowledgeBaseId: 90,
-              title: 'Intro',
-              content: 'Old',
-            },
-            {
-              id: 92,
-              knowledgeBaseId: 90,
-              title: 'Legacy',
-              content: 'Remove me',
-            },
-          ],
-          nextCursor: null,
+          knowledgeBase: { id: 90, name: 'Returns' },
+          chunk: { id: 91, knowledgeBaseId: 90, title: 'Dokument' },
+          removedChunkIds: [92],
         },
-      }))
-      .mockResolvedValueOnce(jsonResponse({
-        data: {
-          id: 91,
-          knowledgeBaseId: 90,
-          title: 'Dokument',
-          content: '# Returns\n',
-        },
-      }))
-      .mockResolvedValueOnce(jsonResponse({ data: { deleted: true } }));
+      }));
     const transport = createHttpRendererTransport({
       baseUrl: 'https://crm.example.com',
       fetchImpl,
@@ -6934,27 +6914,13 @@ describe('renderer transport', () => {
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://crm.example.com/api/v1/workflow-knowledge-chunks?knowledgeBaseId=90&includeContent=true&limit=100',
-      expect.objectContaining({ method: 'GET' }),
-    );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      4,
-      'https://crm.example.com/api/v1/workflow-knowledge-chunks/91',
+      'https://crm.example.com/api/v1/workflow-knowledge-bases/90/document',
       expect.objectContaining({
-        method: 'PATCH',
-        body: JSON.stringify({
-          knowledgeBaseId: 90,
-          title: 'Dokument',
-          content: '# Returns\n',
-          sourcePath: null,
-        }),
+        method: 'POST',
+        body: JSON.stringify({ content: '# Returns\n' }),
       }),
     );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      5,
-      'https://crm.example.com/api/v1/workflow-knowledge-chunks/92',
-      expect.objectContaining({ method: 'DELETE' }),
-    );
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   test('maps workflow run and step channels through source-id server routes', async () => {
@@ -8970,6 +8936,21 @@ describe('renderer transport', () => {
       .filter((channel) => !intentionallyUnsupported.has(channel));
 
     expect(missing).toEqual([]);
+  });
+
+  test('TestAiProfile posts to the profile test-connection route and returns the result', async () => {
+    const result = { ok: true, message: 'Verbindung erfolgreich (Ja-Wahrscheinlichkeit 97 %)', model: 'typesafe/jev-1.13', latencyMs: 120, probability: 97 };
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: result }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.TestAiProfile, 21)).resolves.toEqual(result);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/ai/profiles/21/test-connection',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   test('GetComposeSignature falls back to team member signature when account has none', async () => {

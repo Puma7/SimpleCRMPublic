@@ -19,6 +19,7 @@ import type {
   WorkflowKnowledgeChunkMutationInput,
   WorkflowKnowledgeChunkMutationPortResult,
   WorkflowKnowledgeChunkRecord,
+  WorkflowKnowledgeDocumentSaveResult,
   WorkflowMessageAppliedApiPort,
   WorkflowMessageAppliedListResult,
   WorkflowMessageAppliedRecord,
@@ -748,7 +749,186 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async saveDocument(input): Promise<WorkflowKnowledgeDocumentSaveResult | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => saveWorkflowKnowledgeDocument(trx, input.workspaceId, input.id, input.content, new Date()),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+/** Titel des einen Chunks, der das ganze Markdown-Dokument einer Wissensbasis trägt. */
+export const WORKFLOW_KNOWLEDGE_DOCUMENT_CHUNK_TITLE = 'Dokument';
+export const WORKFLOW_KNOWLEDGE_DOCUMENT_MAX_LENGTH = 100_000;
+
+/** Wie der Renderer-Transport (mergeKnowledgeChunksToMarkdown): Chunks in id-Reihenfolge. */
+export function mergeWorkflowKnowledgeChunks(
+  knowledgeBaseName: string,
+  chunks: readonly { title: string | null; content: string }[],
+): string {
+  if (chunks.length === 0) {
+    return `# ${knowledgeBaseName.trim() || 'Wissensbasis'}\n\nHier steht der Wissenstext für diesen Bereich (Markdown).\n`;
+  }
+  return chunks
+    .map((chunk) => {
+      const title = chunk.title?.trim();
+      if (title && title !== WORKFLOW_KNOWLEDGE_DOCUMENT_CHUNK_TITLE) return `## ${title}\n\n${chunk.content}`;
+      return chunk.content;
+    })
+    .join('\n\n---\n\n');
+}
+
+/** Aktuelles Dokument einer Wissensbasis (TA-P5: Vorschlagsbasis und Konfliktprüfung). */
+export async function loadWorkflowKnowledgeDocument(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  knowledgeBaseId: number,
+): Promise<{ knowledgeBase: WorkflowKnowledgeBaseRecord; content: string } | null> {
+  const base = await trx
+    .selectFrom('workflow_knowledge_bases')
+    .select(workflowKnowledgeBaseSelectColumns)
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', knowledgeBaseId)
+    .executeTakeFirst();
+  if (!base) return null;
+  const chunks = await trx
+    .selectFrom('workflow_knowledge_chunks')
+    .select(['title', 'content'])
+    .where('workspace_id', '=', workspaceId)
+    .where('knowledge_base_id', '=', knowledgeBaseId)
+    .orderBy('id', 'asc')
+    .execute();
+  return {
+    knowledgeBase: mapWorkflowKnowledgeBaseRow(base),
+    content: mergeWorkflowKnowledgeChunks(
+      base.name,
+      chunks.map((chunk) => ({ title: chunk.title, content: String(chunk.content ?? '') })),
+    ),
+  };
+}
+
+/**
+ * Speichert das ganze Dokument atomar: die Wissensbasis-Zeile wird gesperrt,
+ * der erste Chunk wird zum „Dokument“ (oder angelegt), alle übrigen entfallen.
+ * Ersetzt den früheren Renderer-Ablauf aus GET/PATCH/POST/DELETE, bei dem ein
+ * Abbruch mittendrin ein halbes Dokument hinterlassen konnte. null = die
+ * Wissensbasis gibt es nicht.
+ */
+export async function saveWorkflowKnowledgeDocument(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  knowledgeBaseId: number,
+  content: string,
+  now: Date,
+): Promise<WorkflowKnowledgeDocumentSaveResult | null> {
+  const base = await trx
+    .selectFrom('workflow_knowledge_bases')
+    .select(workflowKnowledgeBaseSelectColumns)
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', knowledgeBaseId)
+    .forUpdate()
+    .executeTakeFirst();
+  if (!base) return null;
+  const normalized = `${content.trimEnd()}\n`;
+  const chunks = await trx
+    .selectFrom('workflow_knowledge_chunks')
+    .select(workflowKnowledgeChunkSummaryColumns)
+    .where('workspace_id', '=', workspaceId)
+    .where('knowledge_base_id', '=', knowledgeBaseId)
+    .orderBy('id', 'asc')
+    .execute();
+  const [first, ...rest] = chunks;
+  let chunkRow;
+  if (first) {
+    chunkRow = await trx
+      .updateTable('workflow_knowledge_chunks')
+      .set({
+        title: WORKFLOW_KNOWLEDGE_DOCUMENT_CHUNK_TITLE,
+        content: normalized,
+        source_path: null,
+        embedding_json: null,
+        updated_at: now,
+      })
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', first.id)
+      .returning(workflowKnowledgeChunkDetailColumns)
+      .executeTakeFirstOrThrow();
+  } else {
+    const baseId = Number(base.id);
+    chunkRow = await trx
+      .insertInto('workflow_knowledge_chunks')
+      .values({
+        workspace_id: workspaceId,
+        source_sqlite_id: serverCreatedKnowledgeChunkSourceSqliteId(),
+        knowledge_base_source_sqlite_id: base.source_sqlite_id === null ? -baseId : Number(base.source_sqlite_id),
+        knowledge_base_id: baseId,
+        title: WORKFLOW_KNOWLEDGE_DOCUMENT_CHUNK_TITLE,
+        content: normalized,
+        source_path: null,
+        embedding_json: null,
+        source_row: serverApiSourceRow(),
+        created_at: now,
+        updated_at: now,
+      })
+      .returning(workflowKnowledgeChunkDetailColumns)
+      .executeTakeFirstOrThrow();
+  }
+  if (rest.length > 0) {
+    await trx
+      .deleteFrom('workflow_knowledge_chunks')
+      .where('workspace_id', '=', workspaceId)
+      .where('id', 'in', rest.map((chunk) => Number(chunk.id)))
+      .execute();
+  }
+  const updatedBase = await trx
+    .updateTable('workflow_knowledge_bases')
+    .set({ updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', knowledgeBaseId)
+    .returning(workflowKnowledgeBaseSelectColumns)
+    .executeTakeFirstOrThrow();
+  return {
+    knowledgeBase: mapWorkflowKnowledgeBaseRow(updatedBase),
+    chunk: mapWorkflowKnowledgeChunkRow(chunkRow, false),
+    created: !first,
+    removedChunks: rest.map((chunk) => mapWorkflowKnowledgeChunkRow(chunk, false)),
+  };
+}
+
+/** Legt eine Wissensbasis ohne Benutzer-Sitzung an (TA-P5: eigene „Learnings“-Basis). */
+export async function insertWorkflowKnowledgeBase(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  values: { name: string; description: string | null; knowledgeContext: string | null; content: string },
+  now: Date,
+): Promise<WorkflowKnowledgeBaseRecord> {
+  const row = await trx
+    .insertInto('workflow_knowledge_bases')
+    .values({
+      workspace_id: workspaceId,
+      source_sqlite_id: serverCreatedKnowledgeBaseSourceSqliteId(),
+      name: values.name,
+      description: values.description,
+      account_source_sqlite_id: null,
+      account_id: null,
+      override_key: values.knowledgeContext ? `kb.${values.knowledgeContext}` : null,
+      knowledge_context: values.knowledgeContext,
+      source_row: serverApiSourceRow(),
+      created_at: now,
+      updated_at: now,
+    })
+    .returning(workflowKnowledgeBaseSelectColumns)
+    .executeTakeFirstOrThrow();
+  const record = mapWorkflowKnowledgeBaseRow(row);
+  await saveWorkflowKnowledgeDocument(trx, workspaceId, record.id, values.content, now);
+  return record;
 }
 
 export function createPostgresWorkflowKnowledgeChunkReadPort(

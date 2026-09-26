@@ -418,6 +418,7 @@ const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'ai.review',
   'ai.draft_reply',
   'ai.review_draft',
+  'ai.decide',
   'ai.transform_text',
   'ai.reply_suggestion',
   'workflow.forward_copy',

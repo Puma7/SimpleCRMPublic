@@ -18,6 +18,7 @@ import {
 } from './jobs/policy';
 import type { ServerDatabase } from './db/schema';
 import { isOutboundReviewPendingError } from './mail-compose-send';
+import { OUTBOUND_REVIEW_PENDING_REASON } from './mail-outbound-hold';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -82,7 +83,17 @@ export type ScheduledSendStore = Readonly<{
   /** Atomic: schedule=null, clear claim; failure markers left untouched. When a claimed draft is abandoned (no recipient). */
   releaseClaimedDraft(input: { workspaceId: string; draftId: number }): Promise<void>;
 
-  /** Atomic: restore schedule to claimedSendAt and clear claim. No-op when claimedSendAt is null. For transient/back-off retries. */
+  /**
+   * Atomic: clear claim and failure markers after the outbound review HELD the
+   * draft (banner, inbox, schedule already cleared by the hold). Not a failed
+   * attempt — the decision is with a human now.
+   */
+  releaseHeldDraft(input: { workspaceId: string; draftId: number }): Promise<void>;
+
+  /**
+   * Atomic: restore schedule to claimedSendAt and clear claim. No-op when claimedSendAt is null. For transient/back-off retries.
+   * A draft the outbound review HELD for good in the meantime keeps its cleared schedule.
+   */
   restoreClaimedDraft(input: {
     workspaceId: string;
     draftId: number;
@@ -122,10 +133,12 @@ export function createScheduledSendJobPort(options: ScheduledSendJobPortOptions)
     async processDue(input) {
       const drafts = await options.store.claimDueDrafts(input);
       for (const draft of drafts) {
+        const actorUserId = resolveScheduledSendActor(input, draft);
         await processScheduledDraft({
           store: options.store,
           composeSender: options.composeSender,
-          actorUserId: resolveScheduledSendActor(input, draft),
+          actorUserId,
+          trustedService: actorUserId === SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR,
           workspaceId: input.workspaceId,
           draft,
         });
@@ -156,6 +169,8 @@ async function processScheduledDraft(input: {
   store: ScheduledSendStore;
   composeSender: EmailComposeSenderApiPort;
   actorUserId: string;
+  /** Workflow-Versand ohne menschlichen Akteur (actorUserId ist der Platzhalter 'system'). */
+  trustedService: boolean;
   workspaceId: string;
   draft: ScheduledDraft;
 }): Promise<void> {
@@ -181,6 +196,7 @@ async function processScheduledDraft(input: {
   const result = await input.composeSender.send({
     workspaceId: input.workspaceId,
     actorUserId: input.actorUserId,
+    ...(input.trustedService ? { trustedService: true } : {}),
     values: {
       accountId: draft.accountId,
       draftMessageId: draft.id,
@@ -198,6 +214,14 @@ async function processScheduledDraft(input: {
 
   if (result.ok) {
     await input.store.finalizeSentDraft({
+      workspaceId: input.workspaceId,
+      draftId: draft.id,
+    });
+    return;
+  }
+
+  if (result.outboundHeld) {
+    await input.store.releaseHeldDraft({
       workspaceId: input.workspaceId,
       draftId: draft.id,
     });
@@ -233,7 +257,8 @@ async function processScheduledDraft(input: {
   });
 }
 
-function recipientFieldFromJson(value: unknown): string {
+/** Gespeichertes Empfänger-JSON → Feldwert „Name <adresse>, …“ (auch für „Ohne Ausgangsprüfung senden“). */
+export function recipientFieldFromJson(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
   let parsed: unknown = value;
   if (typeof value === 'string') {
@@ -266,7 +291,7 @@ function scheduledAttachmentPathsPayload(value: unknown): { attachmentPaths?: re
   return paths.length > 0 ? { attachmentPaths: paths } : {};
 }
 
-function parseDraftAttachmentPaths(value: unknown): readonly string[] {
+export function parseDraftAttachmentPaths(value: unknown): readonly string[] {
   if (value === null || value === undefined || value === '') return [];
   let parsed: unknown = value;
   if (typeof value === 'string') {
@@ -546,12 +571,31 @@ function createPostgresScheduledSendStore(
         },
       );
     },
+    async releaseHeldDraft(input) {
+      await withTx(
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          await deleteClaimTx(trx, input.workspaceId, input.draftId);
+          await upsertSyncInfoTx(trx, input.workspaceId, {
+            [scheduledSendFailuresKey(input.draftId)]: '0',
+            [scheduledSendLastErrorKey(input.draftId)]: '',
+            [scheduledSendStatusKey(input.draftId)]: '',
+          });
+        },
+      );
+    },
     async restoreClaimedDraft(input) {
       if (input.claimedSendAt === null) return;
       await withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          await updateScheduleTx(trx, input.workspaceId, input.draftId, input.claimedSendAt);
+          // Ein Ausgangs-Workflow kann den Entwurf zwischen dem Halten („Prüfung
+          // läuft“) und diesem Zurücksetzen endgültig angehalten haben; der
+          // Block hat die Planung bewusst gelöscht und darf nicht überschrieben
+          // werden, sonst hinge der Entwurf unsichtbar geplant.
+          if (!(await isFinallyHeldTx(trx, input.workspaceId, input.draftId))) {
+            await updateScheduleTx(trx, input.workspaceId, input.draftId, input.claimedSendAt);
+          }
           await deleteClaimTx(trx, input.workspaceId, input.draftId);
         },
       );
@@ -622,6 +666,22 @@ async function updateScheduleTx(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', draftId)
     .execute();
+}
+
+/** Endgültig vom Ausgang angehalten (nicht der Zwischenzustand „Prüfung läuft“). */
+async function isFinallyHeldTx(
+  trx: Kysely<ServerDatabase>,
+  workspaceId: string,
+  draftId: number,
+): Promise<boolean> {
+  const row = await trx
+    .selectFrom('email_messages')
+    .select(['outbound_hold', 'outbound_block_reason'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .forUpdate()
+    .executeTakeFirst();
+  return row?.outbound_hold === true && row.outbound_block_reason !== OUTBOUND_REVIEW_PENDING_REASON;
 }
 
 async function deleteClaimTx(

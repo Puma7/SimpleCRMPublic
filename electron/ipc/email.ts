@@ -200,7 +200,7 @@ import {
   getAccountMailSettings,
   setAccountMailSettings,
 } from '../email/account-mail-settings-store';
-import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
+import { getAiSettings, setAiSettings, runChatCompletion, testAiProfileConnection } from '../email/email-openai';
 import {
   getEmailAiCustomerTemplateContext,
   type EmailAiCustomerTemplateContext,
@@ -928,6 +928,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               ? recipientJsonFromField(payload.bcc)
               : null
             : undefined;
+        // TA-P3: Inhalt vor dem Speichern festhalten (nur bei KI-/Workflow-Herkunft).
+        const sentProvenance = await import('../email/email-sent-provenance.js');
+        const originBefore = sentProvenance.readDraftOriginContent(payload.messageId);
         updateComposeDraft(payload.messageId, {
           accountId: payload.accountId,
           subject: payload.subject,
@@ -939,6 +942,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftAttachmentPaths: payload.draftAttachmentPaths,
           replyParentMessageId: replyParentMessageIdForCaller(event, payload.replyParentMessageId),
         });
+        // Ein Mensch hat einen KI-/Workflow-Entwurf tatsächlich geändert (kein
+        // „KI · freigegeben“ mehr); bloßes Speichern ohne Änderung zählt nicht.
+        sentProvenance.markDraftOriginEditedIfChanged(payload.messageId, originBefore);
         if (payload.markReplyParentDone !== undefined) {
           const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
           setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);
@@ -1003,7 +1009,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessagesByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1031,7 +1037,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessageIdsByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1575,6 +1581,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           error: r.error,
           workflowRunId: 'workflowRunId' in r ? r.workflowRunId ?? null : null,
         };
+      },
+      { logger, accountAccess: 'rw' },
+    ),
+  );
+
+  // „Ohne Ausgangsprüfung senden“ (TA-P2): Senderechte wie SendCompose (rw am
+  // Konto des Entwurfs), die Rolle laut Einstellung prüft das Modul selbst.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SendDraftSkipOutboundReview,
+      async (event: IpcMainInvokeEvent, payload: { draftId: number }) => {
+        const draftId = Number(payload?.draftId);
+        if (!Number.isFinite(draftId) || draftId <= 0) {
+          return { success: false as const, error: 'Ungültige Entwurfs-ID' };
+        }
+        const session = requireAuthSession(event);
+        const { sendDraftSkippingOutboundReview } = await import('../email/email-outbound-review-skip.js');
+        return sendDraftSkippingOutboundReview(draftId, { userId: session.userId, role: session.role });
       },
       { logger, accountAccess: 'rw' },
     ),
@@ -2161,6 +2185,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await clearAiProfileApiKey(row.keytar_account);
         return { success: true as const };
       },
+      { logger },
+    ),
+  );
+
+  // „Verbindung testen“: gleiche Rechte wie das Bearbeiten der KI-Profile.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.TestAiProfile,
+      async (_event: IpcMainInvokeEvent, profileId: number) => testAiProfileConnection(profileId),
       { logger },
     ),
   );

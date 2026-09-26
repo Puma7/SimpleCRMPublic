@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import {
+  AI_DECISIONS_PRESET_HINT,
   AI_PROVIDER_PRESETS,
   AI_PROVIDER_PRESET_IDS,
+  isAiDecisionsPresetId,
   type AiProviderPresetId,
 } from "@shared/ai-provider-presets"
 import { toast } from "sonner"
@@ -48,6 +50,15 @@ type ProviderPreset = {
   defaultEmbeddingModel?: string
 }
 
+/** Antwort von email:test-ai-profile bzw. POST /ai/profiles/:id/test-connection. */
+type AiProfileConnectionTest = {
+  ok: boolean
+  message: string
+  model: string
+  latencyMs: number
+  probability?: number
+}
+
 function urlOrigin(value: string): string {
   try {
     return new URL(value.trim()).origin
@@ -78,6 +89,8 @@ export function AiPanel() {
   )
   const [apiKey, setApiKey] = useState("")
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<AiProfileConnectionTest | null>(null)
   const serverClientMode = getRendererTransport().kind === "http"
   // Server edition rejects loopback Ollama URLs; hide that preset in HTTP mode.
   const presetIds = serverClientMode
@@ -97,7 +110,8 @@ export function AiPanel() {
       }
       setBaseUrl(preset.baseUrl)
       setModel(preset.defaultModel)
-      if (preset.defaultEmbeddingModel) {
+      // "" leert das Feld bewusst (Entscheidungsmodelle haben kein Embedding).
+      if (preset.defaultEmbeddingModel !== undefined) {
         setEmbeddingModel(preset.defaultEmbeddingModel)
       }
     },
@@ -157,7 +171,10 @@ export function AiPanel() {
     || urlOrigin(baseUrl) !== urlOrigin(selectedProfile.baseUrl)
   )
 
+  const decisionsPreset = isAiDecisionsPresetId(provider)
+
   const selectProfile = (p: AiProfile) => {
+    setTestResult(null)
     setSelectedId(p.id)
     setLabel(p.label)
     setProvider(p.provider as AiProviderPresetId)
@@ -222,8 +239,27 @@ export function AiPanel() {
     }
   }
 
+  // Prüft das GESPEICHERTE Profil (Key liegt nur im Schlüsselbund bzw. auf dem Server).
+  const testConnection = async () => {
+    if (!canManageAiProfiles || selectedId == null || testing) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await invokeRenderer(IPCChannels.Email.TestAiProfile, selectedId) as AiProfileConnectionTest
+      setTestResult(result)
+      if (result.ok) toast.success(result.message)
+      else toast.error(`Verbindungstest fehlgeschlagen: ${result.message}`)
+    } catch (e) {
+      console.error(e)
+      toast.error("Verbindungstest konnte nicht ausgeführt werden.")
+    } finally {
+      setTesting(false)
+    }
+  }
+
   const addNew = () => {
     if (!canManageAiProfiles) return
+    setTestResult(null)
     setSelectedId(null)
     setLabel("Neues Profil")
     setApiKey("")
@@ -323,9 +359,14 @@ export function AiPanel() {
             OpenAI, Open Router usw. füllen Base-URL und Standardmodelle vor. Bei „frei“ alles
             manuell eintragen.
           </p>
+          {decisionsPreset ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="ai-decisions-preset-hint">
+              {AI_DECISIONS_PRESET_HINT}
+            </p>
+          ) : null}
         </div>
         <div className="space-y-1.5">
-          <Label>Base URL (OpenAI-kompatibel)</Label>
+          <Label>{decisionsPreset ? "Base URL" : "Base URL (OpenAI-kompatibel)"}</Label>
           <Input
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
@@ -333,7 +374,7 @@ export function AiPanel() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>Chat-Modell</Label>
+          <Label>{decisionsPreset ? "Entscheidungsmodell" : "Chat-Modell"}</Label>
           <Input
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -395,6 +436,16 @@ export function AiPanel() {
               <Button
                 type="button"
                 variant="outline"
+                disabled={testing}
+                onClick={() => void testConnection()}
+              >
+                {testing ? "Teste…" : "Verbindung testen"}
+              </Button>
+            ) : null}
+            {selectedId != null ? (
+              <Button
+                type="button"
+                variant="outline"
                 onClick={() =>
                   void invokeRenderer(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
                     .then(() => toast.success("API-Key des Profils entfernt"))
@@ -421,6 +472,27 @@ export function AiPanel() {
               </Button>
             ) : null}
           </div>
+        ) : null}
+        {canManageAiProfiles && selectedId != null ? (
+          testResult ? (
+            <p
+              role="status"
+              className={
+                testResult.ok
+                  ? "text-xs text-green-700 dark:text-green-400"
+                  : "text-xs text-destructive"
+              }
+            >
+              {testResult.ok ? "Verbindung OK" : "Verbindung fehlgeschlagen"}: {testResult.message}
+              {testResult.model ? ` · Modell ${testResult.model}` : ""}
+              {` · ${testResult.latencyMs} ms`}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              „Verbindung testen“ prüft das gespeicherte Profil mit einer kurzen Anfrage — erst
+              speichern, dann testen.
+            </p>
+          )
         ) : null}
       </div>
     </div>

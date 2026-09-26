@@ -155,24 +155,30 @@ function syncChunksFromDocument(
   content: string,
   title: string,
 ): void {
-  getDb()
-    .prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
-    .run(knowledgeBaseId);
+  const db = getDb();
   const capped = content.slice(0, 500_000);
-  const r = getDb()
-    .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
-       (knowledge_base_id, title, content, source_path, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
-      knowledgeBaseId,
-      title.trim() || 'Dokument',
-      capped,
-      knowledgeMarkdownPath(knowledgeBaseId),
-      new Date().toISOString(),
-    );
-  const id = Number(r.lastInsertRowid);
+  // Löschen und Neuanlegen als Einheit: scheitert das Einfügen, bleibt der
+  // bisherige Suchindex stehen, statt die Wissensbasis für alle KI-Bausteine
+  // leer erscheinen zu lassen.
+  const replaceChunks = db.transaction((): number => {
+    db.prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
+      .run(knowledgeBaseId);
+    const r = db
+      .prepare(
+        `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
+         (knowledge_base_id, title, content, source_path, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        knowledgeBaseId,
+        title.trim() || 'Dokument',
+        capped,
+        knowledgeMarkdownPath(knowledgeBaseId),
+        new Date().toISOString(),
+      );
+    return Number(r.lastInsertRowid);
+  });
+  const id = replaceChunks();
   void storeEmbedding(id, capped.slice(0, 8000));
 }
 
@@ -366,7 +372,11 @@ export async function searchKnowledgeForWorkflow(
 ): Promise<KnowledgeChunkRow[]> {
   const kbIds = new Set<number>();
   if (explicitKbId != null && explicitKbId > 0) kbIds.add(explicitKbId);
-  for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction)) kbIds.add(id);
+  // Eine explizit gewählte Wissensbasis ergänzt die Kontext-Wissensbasen der
+  // Richtung — die Learnings eingeschlossen — statt sie zu ersetzen (wie Server).
+  for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction)) {
+    kbIds.add(id);
+  }
   const merged: KnowledgeChunkRow[] = [];
   const perKb = Math.max(1, Math.ceil(limit / Math.max(1, kbIds.size)));
   for (const kbId of kbIds) {

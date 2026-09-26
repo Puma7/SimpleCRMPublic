@@ -20,6 +20,11 @@ import {
   nodeRequestsChainStop,
 } from '../../packages/core/src/workflow/node-chain-stop';
 import { workflowNodeDefersRun } from '../../packages/core/src/workflow/graph-validate';
+import {
+  aiDecideAnswerHoldsOutbound,
+  aiDecidePortTripsInboundGate,
+} from '../../packages/core/src/workflow/ai-decide';
+import { outboundHoldReasonOrFallback } from '../../packages/core/src/email/outbound-review-parse';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -386,8 +391,9 @@ async function walkGraph(
     // Hold as side effect: follow only explicit block/error ports so template
     // branches still run, then finish blocked. Ordinary errors and port
     // 'blocked' (unsupported) must terminate without walking further edges.
+    // Leere Gründe zählen als fehlend (`??` behielt ''): einheitlicher Fallback.
     const pendingBlockReason = result.blocked
-      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      ? outboundHoldReasonOrFallback(result.blockReason?.trim() || result.message)
       : null;
     if (result.status === 'error') {
       return {
@@ -399,7 +405,10 @@ async function walkGraph(
     }
     if (result.blocked) {
       const blockPort = typeof result.port === 'string' ? result.port : '';
-      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      // ai.decide hält den Versand auch über „nein“/„unsicher“ an; diese
+      // Ausgänge laufen wie block/error nur noch für Zusatzschritte.
+      const followBlockPort = blockPort === 'block' || blockPort === 'error'
+        || (regType === 'ai.decide' && aiDecideAnswerHoldsOutbound(blockPort));
       const outs = outgoing(doc.edges, currentId);
       const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
       if (blockEdge) {
@@ -457,6 +466,10 @@ async function walkGraph(
       port = String(result.port ?? 'default');
     } else if (regType === 'email.auto_reply') {
       port = String(result.port ?? 'blocked');
+    } else if (regType === 'ai.decide') {
+      // Eigener Zweig: der Ausgang „error“ (KI-Fehler) darf nicht wie bei
+      // anderen Knoten auf „no“ umgeschrieben werden — das träfe eine „nein“-Kante.
+      port = String(result.port ?? 'error');
     } else if (result.port === 'error') {
       port = 'no';
     } else if (result.port) {
@@ -473,7 +486,11 @@ async function walkGraph(
         (node.type === 'condition' && port === 'yes') ||
         (regType === 'email.auto_reply' && port === 'approved') ||
         (regType === 'logic.threshold' && port === 'yes') ||
-        (regType === 'logic.switch' && port !== 'default');
+        (regType === 'logic.switch' && port !== 'default') ||
+        // KI-Entscheidung: jeder der vier beschrifteten Ausgänge (ja, nein,
+        // unsicher, KI-Fehler) ist ein bewusst verdrahteter Zweig — wie ein
+        // logic.switch-Fall; einen Standard-Ausgang gibt es nicht.
+        (regType === 'ai.decide' && aiDecidePortTripsInboundGate(port));
       if (tripped) {
         gate.conditionOk = true;
         ctx.variables.__inbound_condition_ok = true;

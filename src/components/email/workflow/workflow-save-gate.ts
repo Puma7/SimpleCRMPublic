@@ -54,10 +54,18 @@ export function decideWorkflowSaveGate(
     hasSideEffects: boolean
     /** Der zuletzt gespeicherte Graph (Baseline) hat solche Knoten. */
     baselineHasSideEffects: boolean
+    /**
+     * Server: aktiver Zeitplan, der noch nicht scharf ist (Bestand vor dem
+     * Update, Desktop-Import). Erst ein Speichern mit den
+     * ausfuehrungsrelevanten Feldern schaltet ihn scharf — das ist fachlich
+     * ein Aktivieren und zaehlt deshalb als Aenderung (samt manage-Gate).
+     */
+    armsSchedule?: boolean
   },
 ): WorkflowSaveGateDecision {
   const executionChanged =
-    !baseline
+    options.armsSchedule === true
+    || !baseline
     || baseline.graphJson !== next.graphJson
     || baseline.enabled !== next.enabled
     || baseline.cronExpr !== next.cronExpr

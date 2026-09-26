@@ -16,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  KNOWLEDGE_CONTEXTS,
+  ACCOUNT_KNOWLEDGE_SLOT_CONTEXTS,
   KNOWLEDGE_CONTEXT_LABELS,
   type KnowledgeContext,
 } from "@shared/knowledge-context"
@@ -330,7 +330,7 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
         )}
       </div>
       <div className="space-y-3">
-        {KNOWLEDGE_CONTEXTS.map((context) => {
+        {ACCOUNT_KNOWLEDGE_SLOT_CONTEXTS.map((context) => {
           const assigned = slotKb(context)
           const fallback = globalFallback(context)
           const active = assigned ?? fallback

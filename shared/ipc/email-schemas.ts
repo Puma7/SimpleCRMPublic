@@ -4,6 +4,7 @@ import { messageListFilterSchema } from '../email-list-filters';
 import { messageDoneFilterSchema } from '../email-done-filter';
 import { messageSearchScopeSchema } from '../email-search-scope';
 import { compileWorkflowGraphPayloadSchema } from './workflow-graph-schema';
+import { KNOWLEDGE_CONTEXTS } from '../knowledge-context';
 
 type SchemaEntry = {
   payload: z.ZodTypeAny;
@@ -35,6 +36,7 @@ const accountOverrideScopePayloadSchema = z
 const accountMailViewSchema = z.enum([
   'inbox',
   'sent',
+  'sent_ai',
   'archived',
   'drafts',
   'scheduled_send',
@@ -1105,6 +1107,21 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.SendDraftSkipOutboundReview, {
+    payload: z.object({ draftId: positiveInt }),
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        warning: z.string().optional(),
+        recoveredSentAppend: z.literal(true).optional(),
+      }),
+      z.object({
+        success: z.literal(false),
+        error: z.string().optional(),
+        workflowRunId: z.number().int().positive().nullable().optional(),
+      }),
+    ]),
+  });
   set(IPCChannels.Email.ListConversationLocks, {
     payload: z.object({
       messageIds: z.array(positiveInt).max(500),
@@ -1434,6 +1451,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   const aiProviderPresetIdSchema = z.enum([
     'openai',
     'openrouter',
+    'openrouter_decisions',
     'anthropic',
     'google',
     'deepseek',
@@ -1503,6 +1521,16 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.ClearAiProfileApiKey, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.TestAiProfile, {
+    payload: positiveInt,
+    result: z.object({
+      ok: z.boolean(),
+      message: z.string(),
+      model: z.string(),
+      latencyMs: z.number().int().nonnegative(),
+      probability: z.number().int().min(0).max(100).optional(),
+    }),
+  });
 
   // --- Team ---
   set(IPCChannels.Email.ListTeamMembers, { payload: voidPayload, result: recordArray });
@@ -1646,6 +1674,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   // Tageslimit der Auto-Antwort wie auf dem Server: Ganzzahl 1..50.
   const autoReplyMaxPerSenderPerDay = z.number().int().min(1).max(50);
+  // „Ohne Ausgangsprüfung senden“: alle | nur Owner/Admin | niemand.
+  const outboundReviewSkipPolicySchema = z.enum(['all', 'admins', 'none']);
   set(IPCChannels.Email.GetWorkflowAutomationSettings, {
     payload: voidPayload,
     result: z.object({
@@ -1656,6 +1686,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       spamScoreThreshold: z.string(),
       autoReplyEnabled: z.boolean(),
       autoReplyMaxPerSenderPerDay,
+      outboundReviewSkipPolicy: outboundReviewSkipPolicySchema,
     }),
   });
   set(IPCChannels.Email.SetWorkflowAutomationSettings, {
@@ -1667,6 +1698,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       spamScoreThreshold: z.string().optional(),
       autoReplyEnabled: z.boolean().optional(),
       autoReplyMaxPerSenderPerDay: autoReplyMaxPerSenderPerDay.optional(),
+      outboundReviewSkipPolicy: outboundReviewSkipPolicySchema.optional(),
     }),
     result: standardResult,
   });
@@ -1675,7 +1707,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       name: nonEmptyString,
       description: z.string().nullable().optional(),
-      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      knowledgeContext: z.enum(KNOWLEDGE_CONTEXTS).nullable().optional(),
       ...accountOverrideMutationFields,
     }),
     result: z.union([
@@ -1688,7 +1720,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       id: positiveInt,
       name: nonEmptyString.optional(),
       description: z.string().nullable().optional(),
-      knowledgeContext: z.enum(['inbound', 'outbound', 'general']).nullable().optional(),
+      knowledgeContext: z.enum(KNOWLEDGE_CONTEXTS).nullable().optional(),
       ...accountOverrideMutationFields,
     }),
     result: standardResult,

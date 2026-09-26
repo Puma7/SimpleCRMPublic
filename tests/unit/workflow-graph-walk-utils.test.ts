@@ -1,6 +1,7 @@
 import {
   pickEdge,
   resolveResumeNodeAfter,
+  resolveResumeNodeAfterPort,
   type WorkflowGraphDocument,
 } from '../../packages/core/src/workflow';
 
@@ -44,6 +45,37 @@ describe('pickEdge (condition branches)', () => {
     const edges = [{ id: 'e1', source: 'c_amz', target: 'a_amz_tag', label: 'ja' }];
     expect(pickEdge(edges, 'no')).toBeUndefined();
     expect(pickEdge(edges, 'yes')?.target).toBe('a_amz_tag');
+  });
+});
+
+describe('pickEdge (ai.decide)', () => {
+  const defaultEdge = { id: 'e0', source: 'd', target: 'next' };
+  it('lets ja fall back to the unlabelled edge', () => {
+    expect(pickEdge([defaultEdge], 'ja')?.target).toBe('next');
+    expect(pickEdge([defaultEdge, { id: 'e1', source: 'd', target: 'yes-target', label: 'ja' }], 'ja')?.target)
+      .toBe('yes-target');
+  });
+
+  it('keeps nein and unsicher fail-closed (no fallback to the unlabelled edge)', () => {
+    expect(pickEdge([defaultEdge], 'nein')).toBeUndefined();
+    expect(pickEdge([defaultEdge], 'unsicher')).toBeUndefined();
+    expect(pickEdge([defaultEdge], 'error')).toBeUndefined();
+    const edges = [defaultEdge, { id: 'e2', source: 'd', target: 'tag', label: 'Unsicher' }];
+    expect(pickEdge(edges, 'unsicher')?.target).toBe('tag');
+  });
+
+  it('resolves the resume target per port like the server scheduler', () => {
+    const doc = graph(
+      [
+        { id: 'd', type: 'registry', data: { nodeType: 'ai.decide' } },
+        { id: 'next', type: 'registry', data: { nodeType: 'email.tag' } },
+      ],
+      [{ id: 'e0', source: 'd', target: 'next' }],
+    );
+    expect(resolveResumeNodeAfterPort(doc, 'd', 'ja')).toBe('next');
+    expect(resolveResumeNodeAfterPort(doc, 'd', 'nein')).toBeNull();
+    expect(resolveResumeNodeAfterPort(doc, 'd', 'unsicher')).toBeNull();
+    expect(resolveResumeNodeAfterPort(doc, 'd', 'error')).toBeNull();
   });
 });
 

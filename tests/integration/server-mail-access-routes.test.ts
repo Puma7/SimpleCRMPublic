@@ -736,6 +736,10 @@ describe('server mailbox ACL migration', () => {
     const authservIdMigration = serverMigrations.find((candidate) => candidate.id === '0054_email_account_trusted_authserv_id');
     expect(authservIdMigration).toBeDefined();
     await applyStatements(authservIdMigration!.upSql);
+    // Message lists and draft mutations select the sent-by provenance (0055, TA-P3).
+    const sentProvenanceMigration = serverMigrations.find((candidate) => candidate.id === '0055_email_message_sent_provenance');
+    expect(sentProvenanceMigration).toBeDefined();
+    await applyStatements(sentProvenanceMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');

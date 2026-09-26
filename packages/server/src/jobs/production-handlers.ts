@@ -21,6 +21,7 @@ import type {
   AiReviewDraftJobPlan,
   AiReviewDraftJobPort,
 } from '../workflow-ai-draft-nodes';
+import type { AiDecideJobPlan, AiDecideJobPort } from '../workflow-ai-decide';
 import type {
   WorkflowHttpMethod,
   WorkflowHttpRequestJobPlan,
@@ -34,6 +35,7 @@ import type {
   WorkflowDmarcIngestJobPlan,
   WorkflowDmarcIngestJobPort,
 } from '../dmarc-ingest';
+import { buildAiLearningsDigestJobPlan, type AiLearningsDigestJobPort } from '../ai-learnings';
 
 export type MailSyncProtocol = 'imap' | 'pop3';
 
@@ -101,6 +103,11 @@ export type WorkflowExecutionJobPlan = Readonly<{
   actorUserId?: string;
   trustedService?: boolean;
   manualAdminExecute?: boolean;
+  /**
+   * Zeitpunkt eines Zeitplan-Laufs aus dem Taktgeber (ISO, UTC). Der Lauf
+   * beansprucht ihn genau einmal; „Jetzt ausfuehren" setzt ihn nie.
+   */
+  scheduleSlot?: string;
   context: JobPayload;
 }>;
 
@@ -161,11 +168,13 @@ export type ProductionJobHandlersOptions = Readonly<{
   aiReview?: AiReviewJobPort;
   aiDraftReply?: AiDraftReplyJobPort;
   aiReviewDraft?: AiReviewDraftJobPort;
+  aiDecide?: AiDecideJobPort;
   aiTransformText?: AiTransformTextJobPort;
   workflowExecution?: WorkflowExecutionJobPort;
   workflowHttpRequest?: WorkflowHttpRequestPort;
   workflowForwardCopy?: WorkflowForwardCopyPort;
   workflowDmarcIngest?: WorkflowDmarcIngestPort;
+  aiLearningsDigest?: AiLearningsDigestJobPort;
   now?: () => Date;
 }>;
 
@@ -227,6 +236,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
       if (!options.aiReviewDraft) throw new Error('AI review-draft job port is not configured');
       await options.aiReviewDraft.reviewDraft(buildAiReviewDraftJobPlan(job.payload, job.workspaceId));
     },
+    'ai.decide': async (job) => {
+      if (!options.aiDecide) throw new Error('AI decide job port is not configured');
+      await options.aiDecide.decide(buildAiDecideJobPlan(job.payload, job.workspaceId));
+    },
     'ai.transform_text': async (job) => {
       if (!options.aiTransformText) throw new Error('AI transform text job port is not configured');
       await options.aiTransformText.transformText(buildAiTransformTextJobPlan(job.payload, job.workspaceId));
@@ -250,6 +263,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'workflow.dmarc_ingest': async (job) => {
       if (!options.workflowDmarcIngest) throw new Error('workflow DMARC ingest job port is not configured');
       await options.workflowDmarcIngest.ingest(buildWorkflowDmarcIngestJobPlan(job.payload, job.workspaceId));
+    },
+    'learnings.digest': async (job) => {
+      if (!options.aiLearningsDigest) throw new Error('learnings digest job port is not configured');
+      await options.aiLearningsDigest.digest(buildAiLearningsDigestJobPlan(job.payload, job.workspaceId));
     },
   };
 }
@@ -499,6 +516,48 @@ export function buildAiReviewDraftJobPlan(
   };
 }
 
+/** Längen wie der Scheduler (packages/core AI_DECIDE_*_MAX_CHARS), mit Luft für Leerraum. */
+const MAX_AI_DECIDE_QUESTION_LENGTH = 4_000;
+const MAX_AI_DECIDE_CRITERIA_LENGTH = 2_000;
+
+export function buildAiDecideJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiDecideJobPlan {
+  const contextMode = payload.contextMode === 'metadata' ? 'metadata' : 'full';
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalPositiveInteger(payload, 'runId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalString(payload, 'direction', 40),
+    question: requiredStringValue(payload, 'question', MAX_AI_DECIDE_QUESTION_LENGTH),
+    ...optionalString(payload, 'yesCriteria', MAX_AI_DECIDE_CRITERIA_LENGTH),
+    ...optionalString(payload, 'noCriteria', MAX_AI_DECIDE_CRITERIA_LENGTH),
+    contextMode,
+    threshold: optionalInteger(payload, 'threshold', 80, 50, 99),
+    ...optionalPositiveInteger(payload, 'profileId'),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
+    ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
+      ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
+  };
+}
+
 export function buildAiTransformTextJobPlan(
   payload: JobPayload,
   jobWorkspaceId: string,
@@ -549,6 +608,7 @@ export function buildWorkflowExecutionJobPlan(
     ...optionalString(payload, 'actorUserId'),
     ...optionalTrustedService(payload),
     ...optionalManualAdminExecute(payload),
+    ...optionalScheduleSlot(payload),
     context: optionalContext(payload, 'context'),
   };
 }
@@ -855,6 +915,14 @@ function optionalTrustedService(payload: JobPayload): { trustedService?: true } 
 
 function optionalManualAdminExecute(payload: JobPayload): { manualAdminExecute?: true } {
   return payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] === true ? { manualAdminExecute: true } : {};
+}
+
+/** Nur Zeitplan-Laeufe tragen ihn; normiert auf ISO/UTC fuer den Vergleich. */
+function optionalScheduleSlot(payload: JobPayload): { scheduleSlot?: string } {
+  if (payload.triggerName !== 'schedule' || typeof payload.scheduleSlot !== 'string') return {};
+  const slot = new Date(payload.scheduleSlot);
+  if (Number.isNaN(slot.getTime())) throw new Error('scheduleSlot must be an ISO timestamp');
+  return { scheduleSlot: slot.toISOString() };
 }
 
 function optionalDate(payload: JobPayload, key: string, fallback: Date): Date {

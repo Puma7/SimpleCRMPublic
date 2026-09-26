@@ -409,7 +409,7 @@ type ActionFieldProps = FieldProps & {
 function TriggerFields({ node, patch }: FieldProps) {
   const d = node.data as { kind?: string }
   // Jede Edition bietet nur Trigger an, die sie auch auslöst: Relay nur der
-  // Server, Zeitplan/CRM-Ereignisse/Entwurf erstellt nur der Desktop — analog
+  // Server, CRM-Ereignisse/Entwurf erstellt nur der Desktop — analog
   // zum runtime-Filter des Knoten-Katalogs (use-workflow-node-catalog.ts). Ein
   // bereits gesetzter Wert bleibt sichtbar, damit importierte Graphen nicht
   // kaputtgehen.

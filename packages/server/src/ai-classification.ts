@@ -31,6 +31,8 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import { markDraftOrigin, workflowIdFromAiJob } from './mail-sent-provenance';
 import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
@@ -963,6 +965,13 @@ export function createPostgresAiAgentPort(
                 });
                 if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
                 continuationVariables['draft.id'] = draft.message.id;
+                // TA-P3: KI-Entwurf (Kennzeichnung „gesendet von“).
+                await markDraftOrigin(trx, {
+                  workspaceId: input.workspaceId,
+                  draftId: Number(draft.message.id),
+                  kind: 'ai',
+                  workflowId: workflowIdFromAiJob(input),
+                });
                 // P2-9: snapshot the AI draft so feedback learning can measure how
                 // much a human edits it before sending.
                 await trx
@@ -1177,6 +1186,13 @@ export function createPostgresAiPickCannedPort(
                 });
                 if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
                 continuationVariables['draft.id'] = draft.message.id;
+                // TA-P3: KI-Entwurf (Kennzeichnung „gesendet von“).
+                await markDraftOrigin(trx, {
+                  workspaceId: input.workspaceId,
+                  draftId: Number(draft.message.id),
+                  kind: 'ai',
+                  workflowId: workflowIdFromAiJob(input),
+                });
                 await trx
                   .updateTable('email_messages')
                   .set({
@@ -1686,16 +1702,14 @@ async function persistAiReviewBlock(
 ): Promise<void> {
   if (input.messageId === undefined) return;
   if (input.direction === 'outbound') {
-    await trx
-      .updateTable('email_messages')
-      .set({
-        outbound_hold: true,
-        outbound_block_reason: reason,
-        updated_at: now,
-      })
-      .where('workspace_id', '=', input.workspaceId)
-      .where('id', '=', input.messageId)
-      .execute();
+    // Endgültiger Block der KI-Prüfung: echter Grund im Banner, Planung eines
+    // Workflow-Versands gelöscht (Entwurf erscheint im Posteingang).
+    await persistOutboundBlockOnDraft(trx, {
+      workspaceId: input.workspaceId,
+      messageId: input.messageId,
+      reason,
+      now,
+    });
     return;
   }
 

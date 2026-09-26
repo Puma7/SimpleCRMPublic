@@ -193,7 +193,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Zusätzlich durch Ausgangs-Workflows prüfen',
         help:
           'Aus (Standard): die Antwort geht direkt raus. Ein: die Antwort durchläuft vor dem Versand ' +
-          'die Ausgangs-Workflows (z. B. „KI-Ausgangsprüfung“) — wirkt nur, wenn ein Ausgangs-Workflow aktiv ist.',
+          'die Ausgangs-Workflows (z. B. „KI-Ausgangsprüfung“) — wirkt nur, wenn ein Ausgangs-Workflow aktiv ist. ' +
+          'Hält ein Ausgangs-Workflow sie an, liegt der Entwurf mit dem Grund im Posteingang und wird nicht automatisch erneut versendet.',
       },
       {
         key: 'draftId',
@@ -355,7 +356,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Grund der Sperre',
         help:
           'Wird als Hinweis-Banner an der Mail angezeigt, damit klar ist, warum sie nicht rausgeht. ' +
-          'Leer = „Workflow“. Platzhalter wie {{ai.class}} werden beim Ausführen ersetzt.',
+          'Leer = „Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.“ ' +
+          'Platzhalter wie {{ai.class}} werden beim Ausführen ersetzt.',
         example: 'Verdacht auf Zahlungsdaten im Text',
         placeholder: 'z. B. Manueller Versand-Stopp nach 17 Uhr',
         interpolate: true,
@@ -710,7 +712,9 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         label: 'Auf dem Mail-Server in den Spam-Ordner verschieben',
         help:
           'Ein: die Mail wird zusätzlich auf dem IMAP-Server in den Ordner „Spam“ verschoben — ' +
-          'dann sieht sie auch das Handy-Postfach als Spam. Wirkt nur beim Markieren als Spam, nicht beim Entfernen.',
+          'dann sieht sie auch das Handy-Postfach als Spam. Wirkt nur beim Markieren als Spam, nicht beim Entfernen. ' +
+          'Scheitert das Verschieben (POP3-Konto, kein Ordner „Spam“, Server nicht erreichbar), bleibt die Mail ' +
+          'trotzdem als Spam markiert; die Lauf-Historie nennt den Grund.',
       },
       {
         key: 'train',

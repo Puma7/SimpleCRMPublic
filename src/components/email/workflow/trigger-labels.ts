@@ -20,13 +20,13 @@ export function workflowTriggerLabel(kind: string | undefined): string {
 }
 
 /**
- * Trigger, die nur die Desktop-Runtime auslöst (Cron-Scheduler,
- * CRM-/Aufgaben-/Termin-Ereignisse, Entwurf erstellt). Der Server reiht
- * Workflows nur für inbound, outbound, manual, relay und webhook.incoming ein.
+ * Trigger, die nur die Desktop-Runtime auslöst (CRM-/Aufgaben-/Termin-
+ * Ereignisse, Entwurf erstellt). Der Server reiht Workflows für inbound,
+ * outbound, manual, relay, webhook.incoming und schedule (Zeitplan) ein.
+ * Spiegel von packages/core/src/workflow/trigger-utils.ts.
  */
 export const DESKTOP_ONLY_WORKFLOW_TRIGGERS: ReadonlySet<string> = new Set([
   "draft_created",
-  "schedule",
   "crm.deal_stage_changed",
   "task.due",
   "calendar.event_start",

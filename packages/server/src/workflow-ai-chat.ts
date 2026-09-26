@@ -20,6 +20,8 @@ const aiProfileColumns = [
   'sort_order',
 ] as const;
 
+export type WorkflowAiProfileRow = AiProfileRow;
+
 type AiProfileRow = Pick<
   import('kysely').Selectable<EmailAiProfilesTable>,
   typeof aiProfileColumns[number]
@@ -33,6 +35,45 @@ export type WorkflowAiChatDeps = Readonly<{
   fetchImpl?: typeof fetch;
 }>;
 
+export type WorkflowAiProfileRuntime = Readonly<{
+  profile: AiProfileRow;
+  apiKey: string;
+}>;
+
+/** Profil (explizit, sonst Standard) samt API-Schlüssel; wirft mit deutscher Meldung. */
+export async function resolveWorkflowAiProfileRuntime(
+  deps: WorkflowAiChatDeps,
+  workspaceId: string,
+  profileId: number | undefined,
+): Promise<WorkflowAiProfileRuntime> {
+  const profile = await withWorkspaceTransaction(
+    deps.db,
+    { workspaceId, role: 'system' },
+    async (trx) => selectAiProfile(trx, workspaceId, profileId),
+    { applySession: deps.applyWorkspaceSession },
+  );
+  if (!profile) throw new Error('KI-Profil nicht gefunden');
+
+  const apiKey = await readProfileApiKey(deps.secrets, workspaceId, profile);
+  if (!apiKey) throw new Error('Kein KI-API-Schlüssel konfiguriert');
+  return { profile, apiKey };
+}
+
+/** Budget-Sperre (standardmäßig aus): wirft, wenn das Hard-Limit erreicht ist. */
+export async function assertWorkflowAiBudget(deps: WorkflowAiChatDeps, workspaceId: string): Promise<void> {
+  const budgetLimits = readAiBudgetLimitsFromEnv();
+  if (budgetLimits.hardLimitMicroUsd != null || budgetLimits.softLimitMicroUsd != null) {
+    const budget = await evaluateAiBudgetSafe(
+      { db: deps.db, applyWorkspaceSession: deps.applyWorkspaceSession, now: deps.now },
+      workspaceId,
+      budgetLimits,
+    );
+    if (budget.decision === 'block') {
+      throw new Error(`AI budget exceeded for workspace ${workspaceId}`);
+    }
+  }
+}
+
 export async function runWorkflowTrackedChatCompletion(
   deps: WorkflowAiChatDeps,
   input: Readonly<{
@@ -45,28 +86,8 @@ export async function runWorkflowTrackedChatCompletion(
     user: string;
   }>,
 ): Promise<string> {
-  const profile = await withWorkspaceTransaction(
-    deps.db,
-    { workspaceId: input.workspaceId, role: 'system' },
-    async (trx) => selectAiProfile(trx, input.workspaceId, input.profileId),
-    { applySession: deps.applyWorkspaceSession },
-  );
-  if (!profile) throw new Error('KI-Profil nicht gefunden');
-
-  const apiKey = await readProfileApiKey(deps.secrets, input.workspaceId, profile);
-  if (!apiKey) throw new Error('Kein KI-API-Schlüssel konfiguriert');
-
-  const budgetLimits = readAiBudgetLimitsFromEnv();
-  if (budgetLimits.hardLimitMicroUsd != null || budgetLimits.softLimitMicroUsd != null) {
-    const budget = await evaluateAiBudgetSafe(
-      { db: deps.db, applyWorkspaceSession: deps.applyWorkspaceSession, now: deps.now },
-      input.workspaceId,
-      budgetLimits,
-    );
-    if (budget.decision === 'block') {
-      throw new Error(`AI budget exceeded for workspace ${input.workspaceId}`);
-    }
-  }
+  const { profile, apiKey } = await resolveWorkflowAiProfileRuntime(deps, input.workspaceId, input.profileId);
+  await assertWorkflowAiBudget(deps, input.workspaceId);
 
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   if (!fetchImpl) throw new Error('fetch is not available for workflow AI');

@@ -92,6 +92,8 @@ export type ServerDatabase = {
   automation_api_keys: AutomationApiKeysTable;
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
+  ai_learning_candidates: AiLearningCandidatesTable;
+  ai_learning_digests: AiLearningDigestsTable;
   return_reasons: ReturnReasonsTable;
   returns: ReturnsTable;
   return_items: ReturnItemsTable;
@@ -107,6 +109,46 @@ export type AiReplyFeedbackTable = {
   sent_len: number;
   changed_ratio: number;
   created_at: TimestampColumn;
+};
+
+/** TA-P5: bereinigte Learnings-Rohdaten (Migration 0057). */
+export type AiLearningCandidatesTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  kind: 'draft_edit' | 'human_reply' | 'note';
+  account_id: number | null;
+  source_message_id: number | null;
+  sent_message_id: number | null;
+  question_text: string | null;
+  ai_text: string | null;
+  human_text: string | null;
+  note_text: string | null;
+  created_by_user_id: string | null;
+  created_at: TimestampColumn;
+  digest_id: number | null;
+  processed_at: TimestampColumn | null;
+};
+
+/** TA-P5: Vorschläge für eine neue Wissensbasis-Fassung (Migration 0057). */
+export type AiLearningDigestsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  knowledge_base_id: number;
+  status: 'pending' | 'accepted' | 'rejected' | 'failed';
+  trigger: 'manual' | 'workflow';
+  requested_by_user_id: string | null;
+  workflow_id: number | null;
+  period_from: TimestampColumn | null;
+  period_to: TimestampColumn;
+  candidate_count: number;
+  base_content: string;
+  proposed_content: string;
+  summary: string;
+  operations_json: JsonColumn;
+  error: string | null;
+  created_at: TimestampColumn;
+  decided_by_user_id: string | null;
+  decided_at: TimestampColumn | null;
 };
 
 export type EmailAutoReplyReservationsTable = {
@@ -790,6 +832,18 @@ export type EmailMessagesTable = {
   approval_state: string | null;
   approval_reason: string | null;
   auto_submitted: ColumnType<number, number | undefined, number>;
+  /** Teilautomatisierung P3: Entwurf von einem KI-/Workflow-Knoten angelegt ('ai' | 'workflow'). */
+  draft_origin_kind: string | null;
+  draft_origin_workflow_id: number | null;
+  /** Ein Mensch hat den Inhalt eines solchen Entwurfs geändert. */
+  draft_origin_edited: ColumnType<boolean, boolean | undefined, boolean>;
+  /** Beim Versand bestimmt: 'human' | 'ai_auto' | 'ai_approved' | 'workflow' | 'relay'. */
+  sent_by_kind: string | null;
+  sent_by_user_id: string | null;
+  sent_by_workflow_id: number | null;
+  /** Schnappschuss des Namens (Nutzer, „Workflow „…““, Relay-Client). */
+  sent_by_label: string | null;
+  sent_outbound_review_skipped: ColumnType<boolean, boolean | undefined, boolean>;
   pop3_uidl: string | null;
   raw_headers: string | null;
   raw_rfc822_b64: string | null;
@@ -1192,6 +1246,12 @@ export type EmailWorkflowsTable = SourceImportedTable & {
   cron_expr: string | null;
   schedule_account_source_sqlite_id: number | null;
   schedule_account_id: number | null;
+  /**
+   * Zuletzt ausgeloester (oder beim Speichern als erledigt markierter)
+   * Zeitplan-Zeitpunkt; Anspruch des Server-Taktgebers per bedingtem UPDATE
+   * (Migration 0056, jobs/workflow-schedule-tick.ts).
+   */
+  schedule_last_slot_at: TimestampColumn | null;
   account_source_sqlite_id: number | null;
   account_id: number | null;
   override_key: string | null;

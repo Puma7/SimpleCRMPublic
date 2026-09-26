@@ -19,6 +19,7 @@ import {
   parseOutboundApprovalMarker,
   replaceTags,
   resolveConfiguredSmtpHost,
+  type SentProvenance,
   SMTP_HOST_MISSING_ERROR,
   stripHtmlTagsToText,
 } from '@simplecrm/core';
@@ -32,7 +33,8 @@ import type {
   EmailOutboundValidationInput,
   PgpMessageCryptoApiPort,
 } from './api';
-import type { WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
+import type { JobPayload, WorkflowExecutionDryRunResult, WorkflowExecutionJobPlan } from './jobs';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 import { resolveAttachmentStoragePath, type PostgresSecretPort, type SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
 import {
@@ -41,6 +43,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
+import { collectSentLearningCandidateSafe } from './ai-learnings';
 import { removeComposeDraftAttachmentDirectory } from './compose-draft-attachment-files';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
@@ -57,6 +60,12 @@ import {
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
+import {
+  clearOutboundHoldFingerprints,
+  OUTBOUND_REVIEW_PENDING_REASON,
+  persistOutboundBlockOnDraft,
+} from './mail-outbound-hold';
+import { recordSentProvenance, type ComposeSentByActor } from './mail-sent-provenance';
 
 export {
   OUTBOUND_REVIEW_APPROVED_PREFIX,
@@ -117,8 +126,7 @@ const COMPOSE_MARK_PARENT_DONE_PREFIX = 'compose_mark_parent_done:';
  *  so the scheduled-send cron doesn't loop through the review again. */
 const OUTBOUND_REVIEW_APPROVED_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_OUTBOUND_WORKFLOWS_PER_SEND = 50;
-const OUTBOUND_REVIEW_REASON =
-  'Ausgangspruefung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
+const OUTBOUND_REVIEW_REASON = OUTBOUND_REVIEW_PENDING_REASON;
 const MAX_OUTBOUND_CONTEXT_TEXT = 20_000;
 
 export function isOutboundReviewPendingError(error: string): boolean {
@@ -249,6 +257,16 @@ export type ComposeSenderStore = Readonly<{
     messageId: number;
     sentImapSyncFailed: boolean;
   }): Promise<void>;
+  /**
+   * TA-P3: Kennzeichnung „gesendet von“ — unmittelbar vor markDraftAsSent,
+   * solange Freigabe- und Übersprung-Marker noch stehen. Optional für Stores
+   * ohne diese Spalten (Tests, Fremd-Implementierungen).
+   */
+  recordSentProvenance?(input: {
+    workspaceId: string;
+    messageId: number;
+    sentBy: ComposeSentByActor;
+  }): Promise<SentProvenance | null>;
   markMessageDone(input: {
     workspaceId: string;
     messageId: number;
@@ -269,11 +287,13 @@ export type ComposeOutboundReviewInput = Readonly<{
   inReplyToMessageId?: number | null;
   attachmentCount: number;
   attachmentPaths?: readonly string[];
+  /** Workflow-Versand ohne menschlichen Akteur: Ausgangs-Workflows laufen als Dienst. */
+  trustedService?: boolean;
 }>;
 
 export type ComposeOutboundReviewResult =
   | { allowed: true }
-  | { allowed: false; error: string; workflowRunId?: number | null };
+  | { allowed: false; error: string; workflowRunId?: number | null; held?: true };
 
 export type ComposeOutboundReviewPort = Readonly<{
   review(input: ComposeOutboundReviewInput): Promise<ComposeOutboundReviewResult>;
@@ -333,6 +353,11 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         return { ok: false, error: 'Versand laeuft bereits fuer diesen Entwurf.' };
       }
 
+      // TA-P3: Workflow ohne Menschen (Trusted Service; die Workflow-Weiterleitung
+      // mit Ausgangsprüfung sendet mit dem Platzhalter 'system') oder der Nutzer.
+      const sentBy: ComposeSentByActor = input.trustedService || input.actorUserId === 'system'
+        ? { kind: 'workflow' }
+        : { kind: 'human', userId: input.actorUserId };
       try {
         const storedState = await readStoredSmtpState(
           options.store,
@@ -346,6 +371,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           tracking,
           workspaceId: input.workspaceId,
           draftMessageId: values.draftMessageId,
+          sentBy,
         });
         if (recovered) return recovered;
 
@@ -483,12 +509,14 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(values.inReplyToMessageId === undefined ? {} : { inReplyToMessageId: values.inReplyToMessageId }),
             attachmentCount: attachments.length,
             ...(values.attachmentPaths === undefined ? {} : { attachmentPaths: values.attachmentPaths }),
+            ...(input.trustedService ? { trustedService: true } : {}),
           });
           if (!review.allowed) {
             return {
               ok: false,
               error: review.error,
               ...(review.workflowRunId === undefined ? {} : { workflowRunId: review.workflowRunId }),
+              ...(review.held ? { outboundHeld: true } : {}),
             };
           }
         }
@@ -593,6 +621,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             tracking,
             workspaceId: input.workspaceId,
             draftMessageId: values.draftMessageId,
+            sentBy,
           }) ?? {
             ok: false,
             error: 'SMTP-Versandstatus ist unklar; automatischer Wiederholungsversand wurde blockiert.',
@@ -684,6 +713,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           markReplyParentDone: values.markReplyParentDone,
           recovered: false,
           sentImapSyncFailed: sentCopy.sentImapSyncFailed,
+          sentBy,
         });
         return {
           ok: true,
@@ -943,6 +973,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
               workflowDryRun: options.workflowDryRun,
               workspaceId: input.workspaceId,
               actorUserId: input.actorUserId,
+              trustedService: input.trustedService === true,
               draftMessageId: input.draftMessageId,
               subject: input.subject,
               bodyText: input.bodyText,
@@ -956,7 +987,18 @@ export function createPostgresComposeOutboundReviewPort(options: {
               workflows,
             });
             if (!dryRun.allowed) {
-              return { allowed: false, error: dryRun.reason };
+              // Synchroner Block (auch ai.decide, das hier die KI fragt) oder
+              // Workflow-Fehler: der Entwurf bleibt wie auf dem Desktop endgültig
+              // angehalten — Hinweis mit Grund im Posteingang, Planung gelöscht —,
+              // gleich ob ein Mensch sendet oder der geplante Versand. Die
+              // Antwort bleibt ein Fehler mit Grund.
+              const reason = await persistOutboundBlockOnDraft(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.draftMessageId,
+                reason: dryRun.reason,
+                now,
+              });
+              return { allowed: false, error: reason, held: true };
             }
           }
 
@@ -1358,7 +1400,21 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
         },
       );
     },
+    async recordSentProvenance(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => recordSentProvenance(trx, {
+          workspaceId: input.workspaceId,
+          messageId: input.messageId,
+          sentBy: input.sentBy,
+          now: options.now?.() ?? new Date(),
+        }),
+      );
+    },
     async markDraftAsSent(input) {
+      // TA-P5: Learning sammeln, bevor der KI-Schnappschuss unten genullt wird (best effort).
+      await collectSentLearningCandidateSafe({ db: options.db, now: options.now }, input);
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -1439,6 +1495,11 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
             .where('workspace_id', '=', input.workspaceId)
             .where('key', '=', outboundReviewApprovedKey(input.messageId))
             .execute();
+          // Ebenso der Fingerprint eines früheren Anhaltens (TA-P2).
+          await clearOutboundHoldFingerprints(trx, {
+            workspaceId: input.workspaceId,
+            messageIds: [input.messageId],
+          });
 
           if (feedback) {
             try {
@@ -1604,7 +1665,24 @@ async function finalizeSentDraft(input: {
   markReplyParentDone: boolean | undefined;
   recovered: boolean;
   sentImapSyncFailed: boolean;
+  sentBy: ComposeSentByActor;
 }): Promise<void> {
+  // Best effort wie auf dem Desktop: SMTP ist durch — ein Fehler hier darf den
+  // Übergang zu 'sent' nicht verhindern; es fehlt dann nur die Kennzeichnung
+  // (und damit auch ein Learning, das nur bei sent_by_kind 'human' entsteht).
+  try {
+    await input.store.recordSentProvenance?.({
+      workspaceId: input.workspaceId,
+      messageId: input.draftMessageId,
+      sentBy: input.sentBy,
+    });
+  } catch (error) {
+    console.warn(
+      `[mail] Kennzeichnung „gesendet von“ fehlgeschlagen (Entwurf ${input.draftMessageId}): `
+      + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  // TA-P5: markDraftAsSent sammelt das Learning und liest dafür sent_by_kind.
   await input.store.markDraftAsSent({
     workspaceId: input.workspaceId,
     messageId: input.draftMessageId,
@@ -1930,6 +2008,7 @@ async function evaluateComposeOutboundDryRun(input: {
   workflowDryRun: (plan: WorkflowExecutionJobPlan) => Promise<WorkflowExecutionDryRunResult>;
   workspaceId: string;
   actorUserId: string;
+  trustedService: boolean;
   draftMessageId: number;
   subject: string;
   bodyText: string;
@@ -1949,7 +2028,7 @@ async function evaluateComposeOutboundDryRun(input: {
       workflowId: Number(workflow.id),
       messageId: input.draftMessageId,
       triggerName: 'outbound',
-      actorUserId: input.actorUserId,
+      ...(input.trustedService ? { trustedService: true } : { actorUserId: input.actorUserId }),
       context: {
         outbound: {
           messageId: input.draftMessageId,
@@ -2008,13 +2087,16 @@ function outboundWorkflowJobPayload(
   workflowId: number,
   runId: number,
 ): Record<string, unknown> {
-  return {
+  const payload: Record<string, unknown> = {
     workspaceId: input.workspaceId,
     workflowId,
     messageId: input.draftMessageId,
     runId,
     triggerName: 'outbound',
-    actorUserId: input.actorUserId,
+    // Workflow-Versand ohne Mensch: als Dienst (Trusted-Service-Marker). Der
+    // Platzhalter 'system' als actorUserId scheiterte im Job-Enforcer an der
+    // Nutzerauflösung — die Ausgangs-Workflows liefen dann nie.
+    ...(input.trustedService ? {} : { actorUserId: input.actorUserId }),
     context: {
       outbound: {
         messageId: input.draftMessageId,
@@ -2031,6 +2113,7 @@ function outboundWorkflowJobPayload(
       source: 'server_compose_outbound_review',
     },
   };
+  return input.trustedService ? buildTrustedServiceJobPayload(payload as JobPayload) : payload;
 }
 
 function truncateContextText(value: string): string {
@@ -2318,6 +2401,7 @@ async function recoverStoredSmtpState(input: {
   tracking?: Pick<EmailTrackingService, 'recordSmtpAccepted'>;
   workspaceId: string;
   draftMessageId: number;
+  sentBy: ComposeSentByActor;
 }): Promise<EmailComposeSendResult | null> {
   if (input.state.kind === 'none') return null;
   if (input.state.kind === 'outbox') {
@@ -2382,6 +2466,7 @@ async function recoverStoredSmtpState(input: {
     markReplyParentDone: input.state.snapshot.markReplyParentDone ?? undefined,
     recovered: true,
     sentImapSyncFailed: sentCopy.sentImapSyncFailed,
+    sentBy: input.sentBy,
   });
   return {
     ok: true,

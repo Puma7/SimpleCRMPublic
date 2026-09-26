@@ -183,9 +183,10 @@ describe('Vorlage "KI-Antwort mit Gegenprüfung" (inbound-ai-two-stage-reply)', 
     expect(String(draftInput.bodyText)).toContain('Mit freundlichen Grüßen');
     expect(mockUpdateComposeDraft).toHaveBeenCalledWith(42, { replyParentMessageId: 7 });
 
-    // Versand eingeplant + Anti-Loop-Buchhaltung; keine Freigabe-Markierung
+    // Versand eingeplant + Anti-Loop-Buchhaltung; keine Freigabe-Markierung.
+    // TA-P2: die Vorlage schickt die Antwort durch die Ausgangs-Workflows.
     expect(mockPrepareDraftForWorkflowSend).toHaveBeenCalledWith(42, {
-      runOutboundReview: false,
+      runOutboundReview: true,
       dryRun: false,
     });
     expect(mockTryReserveAutoReplySlot).toHaveBeenCalledWith(1, 'kunde@firma.de', 7);
@@ -258,8 +259,9 @@ describe('Vorlage "KI antwortet mit Textbaustein" (inbound-ai-auto-reply)', () =
     // Baustein-Platzhalter gefüllt ({{customer.name}} aus CRM-Verknüpfung)
     const draftInput = mockCreateComposeDraft.mock.calls[0]![0] as Record<string, unknown>;
     expect(String(draftInput.bodyText)).toContain('Meier GmbH');
+    // TA-P2: die Vorlage schickt die Antwort durch die Ausgangs-Workflows.
     expect(mockPrepareDraftForWorkflowSend).toHaveBeenCalledWith(42, {
-      runOutboundReview: false,
+      runOutboundReview: true,
       dryRun: false,
     });
   });

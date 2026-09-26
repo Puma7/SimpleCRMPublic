@@ -30,6 +30,7 @@ import { listAiPrompts } from './email-crm-store';
 import { addressesFromRecipientJson } from './email-parse-utils';
 import { runChatCompletion } from './email-openai';
 import { getLatestWorkflowRunForMessage } from '../workflow/run-steps';
+import { outboundHoldReasonOrFallback } from '../../packages/core/src/email/outbound-review-parse';
 
 export type OutboundDraftPayload = {
   messageId: number;
@@ -144,7 +145,7 @@ async function executeInboundStep(
       log.push(`${p}archive`);
       return true;
     case 'hold_outbound':
-      if (!dryRun) setOutboundHold(messageId, true, step.reason);
+      if (!dryRun) setOutboundHold(messageId, true, outboundHoldReasonOrFallback(step.reason));
       log.push(`${p}hold_outbound:${step.reason}`);
       return true;
     case 'set_category':
@@ -263,7 +264,7 @@ async function executeOutboundStep(
 ): Promise<'continue' | 'stop' | 'blocked'> {
   // Im Dry-Run (Ausgangs-Vorschau, Test) nur das Urteil liefern, den Entwurf nicht sperren.
   if (step.type === 'hold_outbound') {
-    if (!dryRun) setOutboundHold(messageId, true, step.reason);
+    if (!dryRun) setOutboundHold(messageId, true, outboundHoldReasonOrFallback(step.reason));
     log.push(`${dryRun ? 'dry_run:' : ''}hold_outbound:${step.reason}`);
     return 'blocked';
   }
@@ -539,9 +540,7 @@ export async function evaluateOutboundWorkflows(
         previewOutbound: dryRun,
       });
       if (r.blocked) {
-        const reason =
-          r.blockReason ||
-          'Ausgehende Nachricht durch Workflow zurückgestellt. Bitte Text prüfen.';
+        const reason = outboundHoldReasonOrFallback(r.blockReason);
         if (!dryRun && draftSideEffects) {
           const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
@@ -551,7 +550,7 @@ export async function evaluateOutboundWorkflows(
       if (!dryRun && draftSideEffects) {
         const checkHold = getEmailMessageById(payload.messageId);
         if (checkHold?.outbound_hold) {
-          const reason = checkHold.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+          const reason = outboundHoldReasonOrFallback(checkHold.outbound_block_reason);
           const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
           returnOutboundDraftToInbox(payload.messageId, reason, { payload });
           return {
@@ -594,7 +593,7 @@ export async function evaluateOutboundWorkflows(
   if (!dryRun && draftSideEffects) {
     const after = getEmailMessageById(payload.messageId);
     if (after?.outbound_hold) {
-      const reason = after.outbound_block_reason || 'Ausgehende Nachricht zurückgestellt.';
+      const reason = outboundHoldReasonOrFallback(after.outbound_block_reason);
       const { returnOutboundDraftToInbox } = await import('./email-outbound-review.js');
       returnOutboundDraftToInbox(payload.messageId, reason, { payload });
       return {

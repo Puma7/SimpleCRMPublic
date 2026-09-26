@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useState } from "react"
-import { Archive, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Timer, Trash2 } from "lucide-react"
+import { Archive, Bot, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Timer, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -39,11 +39,15 @@ const FOLDERS: {
   id: MailView
   label: string
   icon: typeof Inbox
-  countKey: keyof MailFolderCounts
+  countKey?: keyof MailFolderCounts
+  /** Unteransicht (eingerückt), z. B. „Gesendet (KI)“ unter „Gesendet“. */
+  nested?: boolean
 }[] = [
   { id: "inbox", label: "Posteingang", icon: Inbox, countKey: "inbox" },
   { id: "snoozed", label: "Zurückgestellt", icon: Clock, countKey: "snoozed" },
   { id: "sent", label: "Gesendet", icon: Send, countKey: "sentFailed" },
+  // TA-P3: gesendete Mails von KI oder Automatik; „Gesendet“ zeigt weiterhin alle.
+  { id: "sent_ai", label: "Gesendet (KI)", icon: Bot, nested: true },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
   { id: "scheduled_send", label: "Späterer Versand", icon: Timer, countKey: "scheduledSend" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
@@ -182,7 +186,7 @@ export function MailSidebar({
 
       <ScrollArea className="flex-1">
         <div className="space-y-0.5 p-1.5">
-          {FOLDERS.map(({ id, label, icon: Icon, countKey }) => {
+          {FOLDERS.map(({ id, label, icon: Icon, countKey, nested }) => {
             const total = countKey ? counts[countKey] : 0
             const badge = total > 0 ? total : null
             const folderTitle =
@@ -235,6 +239,7 @@ export function MailSidebar({
                 }
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-muted",
+                  nested && "pl-6",
                   mailView === id && categoryFilterId === null && "bg-muted font-medium",
                   dropTarget === id && "ring-2 ring-primary ring-offset-1",
                 )}

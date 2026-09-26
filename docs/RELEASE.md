@@ -7,6 +7,10 @@ How a desktop release is built and published by `.github/workflows/release.yml`.
 Pushing a tag `v*` starts the workflow. The tag must equal `v` + the `version` in
 `package.json`; both build jobs stop otherwise.
 
+Before tagging: set `version` in the root `package.json`, add a `## [x.y.z]`
+section to `CHANGELOG.md` (it becomes the release notes), merge to `main`, then
+tag that merge commit.
+
 ## Jobs
 
 | Job | Token | What it does |

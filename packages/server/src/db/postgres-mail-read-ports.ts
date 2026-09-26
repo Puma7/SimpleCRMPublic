@@ -2,7 +2,9 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 import {
+  SENT_AI_VIEW_KINDS,
   buildFeaturePreview,
+  draftContentChanged,
   buildSpamDecision,
   evaluatePreWorkflowMailSecurity,
   evaluateSenderFilterFromLists,
@@ -102,6 +104,7 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
 import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
@@ -218,6 +221,11 @@ const emailMessageSummaryColumns = [
   'reply_parent_message_id',
   'approval_state',
   'approval_reason',
+  'outbound_hold',
+  'outbound_block_reason',
+  'sent_by_kind',
+  'sent_by_label',
+  'sent_outbound_review_skipped',
   'tracking_override',
   'updated_at',
 ] as const;
@@ -1356,6 +1364,31 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             || input.values.bccJson !== undefined
             || input.values.draftAttachmentPaths !== undefined
             || accountMove !== undefined;
+          // TA-P3: Das Entwurfsfenster speichert immer alle Felder — nur ein echter
+          // Unterschied macht aus „KI · freigegeben“ einen Versand „Mensch“.
+          const storedAttachmentPaths = composeDraftAttachmentPathsFromStored(current.draft_attachment_paths_json);
+          const originContentChanged = contentEdited && draftContentChanged(
+            {
+              subject: current.subject,
+              bodyText: current.body_text,
+              bodyHtml: current.body_html,
+              to: current.to_json,
+              cc: current.cc_json,
+              bcc: current.bcc_json,
+              attachmentPaths: storedAttachmentPaths,
+              accountId: current.account_id,
+            },
+            {
+              subject: input.values.subject ?? current.subject,
+              bodyText,
+              bodyHtml: input.values.bodyHtml === undefined ? current.body_html : input.values.bodyHtml,
+              to: input.values.toJson === undefined ? current.to_json : input.values.toJson,
+              cc: input.values.ccJson === undefined ? current.cc_json : input.values.ccJson,
+              bcc: input.values.bccJson === undefined ? current.bcc_json : input.values.bccJson,
+              attachmentPaths: input.values.draftAttachmentPaths ?? storedAttachmentPaths,
+              accountId: accountMove?.account_id ?? current.account_id,
+            },
+          );
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
@@ -1394,6 +1427,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                   approval_state: null,
                   approval_reason: null,
                   auto_submitted: 0,
+                }
+                : {}),
+              // TA-P3: ein Mensch hat einen KI-/Workflow-Entwurf bearbeitet
+              // (Versand dann „Mensch“ statt „KI · freigegeben“).
+              ...(originContentChanged
+                ? {
+                  draft_origin_edited: kyselySql<boolean>`(email_messages.draft_origin_edited OR email_messages.draft_origin_kind IS NOT NULL)`,
                 }
                 : {}),
               updated_at: new Date(),
@@ -2906,7 +2946,10 @@ async function deleteLocalDraftRows(
     .where('id', 'in', draftIds)
     .returning('id')
     .execute();
-  return { ok: true, count: rows.length, deletedIds: rows.map((row: { id: unknown }) => Number(row.id)) };
+  const deletedIds = rows.map((row: { id: unknown }) => Number(row.id));
+  // TA-P2: Fingerprint eines angehaltenen Entwurfs mit aufräumen.
+  await clearOutboundHoldFingerprints(trx, { workspaceId: input.workspaceId, messageIds: deletedIds });
+  return { ok: true, count: rows.length, deletedIds };
 }
 
 async function bulkSetSpamStatusRows(
@@ -3604,6 +3647,13 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
   }
   if (view === 'sent') {
     return query.where('folder_kind', '=', 'sent').where('is_spam', '=', false);
+  }
+  if (view === 'sent_ai') {
+    // TA-P3: „Gesendet (KI)“ — automatisch oder aus KI-Entwurf versendet.
+    return query
+      .where('folder_kind', '=', 'sent')
+      .where('is_spam', '=', false)
+      .where('sent_by_kind', 'in', [...SENT_AI_VIEW_KINDS]);
   }
   if (view === 'archived') {
     return query
@@ -5697,6 +5747,15 @@ function mapEmailMessageRow(
     // approval_reason summarizes AI review of customer + draft content — redact for
     // metadata-only callers (content_readable===false), same boundary as snippet/body.
     approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
+    // Ausgangsprüfung: angehaltene Entwürfe zeigen Banner und Listen-Kennzeichen.
+    // Der Grund stammt aus Workflows/KI-Prüfung über den Entwurfsinhalt — wie
+    // approval_reason für metadata-only Aufrufer geschwärzt.
+    outboundHold: row.outbound_hold === true,
+    outboundBlockReason: row.content_readable === false ? null : (row.outbound_block_reason ?? null),
+    // TA-P3: Kennzeichnung „gesendet von“ (Metadaten: Art, Name, übersprungene Prüfung).
+    sentByKind: row.sent_by_kind ?? null,
+    sentByLabel: row.sent_by_label ?? null,
+    sentOutboundReviewSkipped: row.sent_outbound_review_skipped === true,
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

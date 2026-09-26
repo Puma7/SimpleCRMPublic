@@ -21,6 +21,13 @@ import {
 } from "@/services/transport"
 import { AutomationMiscSettingsSection } from "./automation-misc-settings-section"
 import { AutoReplySettingsSection } from "./auto-reply-settings-section"
+import { WorkflowScheduleTimezoneSection } from "./workflow-schedule-timezone-section"
+import { normalizeWorkflowScheduleTimeZone } from "../../../../packages/core/src/workflow/cron-schedule"
+import { OutboundReviewSkipSettingsSection } from "./outbound-review-skip-settings-section"
+import {
+  parseOutboundReviewSkipPolicy,
+  type OutboundReviewSkipPolicy,
+} from "../../../../packages/core/src/email/outbound-review-skip"
 import { hasLocalIpc, invokeIpc } from "../types"
 
 type ServerAutomationApiKey = {
@@ -58,6 +65,11 @@ export function AutomationPanel() {
   // null = Backend bietet das Tageslimit nicht an (die Server-Edition setzt
   // es noch nicht durch) → Feld ausblenden und beim Speichern weglassen.
   const [autoReplyMaxPerDay, setAutoReplyMaxPerDay] = useState<string | null>("1")
+  // null = Backend kennt keine Workspace-Zeitzone (Desktop: Zeitzone des
+  // Rechners) → Feld ausblenden und beim Speichern weglassen.
+  const [scheduleTimezone, setScheduleTimezone] = useState<string | null>(null)
+  const [outboundReviewSkipPolicy, setOutboundReviewSkipPolicy] =
+    useState<OutboundReviewSkipPolicy>("all")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -68,6 +80,7 @@ export function AutomationPanel() {
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null)
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [savingWorkflowOpts, setSavingWorkflowOpts] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -83,8 +96,11 @@ export function AutomationPanel() {
         httpAllowlist: string
         autoReplyEnabled: boolean
         autoReplyMaxPerSenderPerDay?: number
+        scheduleTimezone?: string
+        outboundReviewSkipPolicy?: string
       }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
+      setOutboundReviewSkipPolicy(parseOutboundReviewSkipPolicy(wf.outboundReviewSkipPolicy))
       setHttpAllowlist(wf.httpAllowlist)
       setAutoReplyEnabled(wf.autoReplyEnabled === true)
       setAutoReplyMaxPerDay(
@@ -92,6 +108,7 @@ export function AutomationPanel() {
           ? String(wf.autoReplyMaxPerSenderPerDay)
           : null,
       )
+      setScheduleTimezone(typeof wf.scheduleTimezone === "string" ? wf.scheduleTimezone : null)
 
       if (serverClientMode && canManage) {
         const api = await invokeRenderer(
@@ -136,19 +153,50 @@ export function AutomationPanel() {
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
+    if (savingWorkflowOpts) return
     const payload: {
       imapDeleteOptIn: boolean
       httpAllowlist: string
       autoReplyEnabled: boolean
       autoReplyMaxPerSenderPerDay?: number
-    } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled }
+      scheduleTimezone?: string
+      outboundReviewSkipPolicy: OutboundReviewSkipPolicy
+    } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled, outboundReviewSkipPolicy }
+    if (scheduleTimezone !== null) {
+      // Dieselbe Pruefung wie der Server (IANA-Name, kanonische Schreibweise).
+      const zone = normalizeWorkflowScheduleTimeZone(scheduleTimezone)
+      if (!zone) {
+        toast.error(`Unbekannte Zeitzone „${scheduleTimezone.trim()}“ — bitte z. B. Europe/Berlin angeben.`)
+        return
+      }
+      payload.scheduleTimezone = zone
+      setScheduleTimezone(zone)
+    }
     if (autoReplyMaxPerDay !== null) {
       const maxPerDay = Math.min(50, Math.max(1, parseInt(autoReplyMaxPerDay, 10) || 1))
       payload.autoReplyMaxPerSenderPerDay = maxPerDay
       setAutoReplyMaxPerDay(String(maxPerDay))
     }
-    await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, payload)
-    toast.success("Workflow-Optionen gespeichert.")
+    // Server: Ablehnung kommt als Ausnahme (HTTP-Fehler); Desktop: als
+    // { success: false, error }. Beides ist kein „gespeichert“.
+    setSavingWorkflowOpts(true)
+    try {
+      const result = (await invokeRenderer(IPCChannels.Email.SetWorkflowAutomationSettings, payload)) as
+        | { success?: boolean; error?: string }
+        | undefined
+      if (result?.success === false) {
+        toast.error(`Workflow-Optionen nicht gespeichert: ${result.error ?? "unbekannter Fehler"}`)
+        return
+      }
+      toast.success("Workflow-Optionen gespeichert.")
+    } catch (error) {
+      console.error("Workflow options save failed:", error)
+      toast.error(
+        `Workflow-Optionen nicht gespeichert: ${error instanceof Error && error.message ? error.message : "unbekannter Fehler"}`,
+      )
+    } finally {
+      setSavingWorkflowOpts(false)
+    }
   }
 
   const saveApiOpts = async () => {
@@ -472,7 +520,8 @@ export function AutomationPanel() {
         <div>
           <h3 className="text-base font-semibold">Workflow-Automatisierung (intern)</h3>
           <p className="text-sm text-muted-foreground">
-            IMAP-Löschung und HTTP-Knoten. Absender-Listen, mailauth, Rspamd und Spam-Schwellen:{" "}
+            IMAP-Löschung, HTTP-Knoten{serverClientMode ? " und Zeitzone der Zeitplan-Workflows" : ""}.
+            Absender-Listen, mailauth, Rspamd und Spam-Schwellen:{" "}
             <strong>Einstellungen → Mail-Sicherheit</strong>.
           </p>
         </div>
@@ -488,6 +537,12 @@ export function AutomationPanel() {
           onEnabledChange={setAutoReplyEnabled}
           maxPerDay={autoReplyMaxPerDay}
           onMaxPerDayChange={setAutoReplyMaxPerDay}
+          disabled={loading || !canEditWorkflowOptions}
+        />
+
+        <OutboundReviewSkipSettingsSection
+          policy={outboundReviewSkipPolicy}
+          onPolicyChange={setOutboundReviewSkipPolicy}
           disabled={loading || !canEditWorkflowOptions}
         />
 
@@ -522,12 +577,20 @@ export function AutomationPanel() {
           />
         </div>
 
+        {scheduleTimezone !== null ? (
+          <WorkflowScheduleTimezoneSection
+            value={scheduleTimezone}
+            onChange={setScheduleTimezone}
+            disabled={loading || !canEditWorkflowOptions}
+          />
+        ) : null}
+
         <Button
           type="button"
           onClick={() => void saveWorkflowOpts()}
-          disabled={loading || !canEditWorkflowOptions}
+          disabled={loading || savingWorkflowOpts || !canEditWorkflowOptions}
         >
-          Workflow-Optionen speichern
+          {savingWorkflowOpts ? "Speichern…" : "Workflow-Optionen speichern"}
         </Button>
       </section>
 

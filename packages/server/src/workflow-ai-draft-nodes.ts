@@ -16,6 +16,7 @@ import {
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { ServerDatabase } from './db/schema';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { markDraftOrigin, workflowIdFromAiJob } from './mail-sent-provenance';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -76,6 +77,8 @@ export async function executeWorkflowAiDraftReply(
     variables: Record<string, string | number | boolean | null>;
     actorUserId?: string | null;
     dryRun?: boolean;
+    /** TA-P3: Workflow, der den KI-Entwurf anlegt (Kennzeichnung „gesendet von“). */
+    workflowId?: number | null;
   },
 ): Promise<NodeResult> {
   const message = await trx
@@ -256,6 +259,12 @@ export async function executeWorkflowAiDraftReply(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', Number(draft.message.id))
     .execute();
+  await markDraftOrigin(trx, {
+    workspaceId: input.workspaceId,
+    draftId: Number(draft.message.id),
+    kind: 'ai',
+    workflowId: input.workflowId ?? null,
+  });
 
   return {
     status: 'ok',
@@ -1157,6 +1166,13 @@ export function createPostgresAiDraftReplyPort(
               .where('workspace_id', '=', input.workspaceId)
               .where('id', '=', draftId)
               .execute();
+            // TA-P3: KI-Entwurf (Kennzeichnung „gesendet von“).
+            await markDraftOrigin(trx, {
+              workspaceId: input.workspaceId,
+              draftId,
+              kind: 'ai',
+              workflowId: workflowIdFromAiJob(input),
+            });
 
             await trx
               .insertInto('sync_info')

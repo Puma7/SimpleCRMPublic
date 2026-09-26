@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import DOMPurify from "dompurify"
@@ -59,6 +59,10 @@ import {
 import { resolveComposeAccountId } from "@shared/mail-account-scope"
 import { buildReplyAllRecipients, primaryReplyRecipient } from "@shared/email-reply-addresses"
 import { parseDraftAttachmentPathsJson } from "@shared/compose-draft-attachments"
+import {
+  outboundHoldContentEquals,
+  type OutboundHoldContentInput,
+} from "../../../packages/core/src/email/outbound-review-skip"
 import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   buildReplyComposeHtml,
@@ -140,6 +144,8 @@ import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useAuth } from "@/components/auth/auth-context"
 import { resolveComposeTeamMemberId } from "@shared/compose-sender-identity"
 import { prepareScheduledSend, scheduledSendPgpBlockReason } from "@shared/compose-scheduled-send"
+import { OutboundReviewSkipButton } from "./outbound-review-skip-button"
+import { useOutboundReviewSkipAllowed } from "./hooks/use-outbound-review-skip"
 
 type Props = {
   accounts: EmailAccount[]
@@ -266,6 +272,23 @@ export function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   }
 }
 
+/** Inhalt eines angehaltenen Entwurfs beim Öffnen (Vergleich für „Ohne Ausgangsprüfung senden“). */
+function heldComposeContentAtOpen(
+  message: EmailMessage,
+  hydrated: ReturnType<typeof hydrateComposeFieldsFromDraftMessage>,
+): OutboundHoldContentInput | null {
+  if ((message.outbound_hold ?? 0) <= 0) return null
+  return {
+    accountId: message.account_id,
+    subject: message.subject ?? "",
+    bodyHtml: mergeEditorAndSignature(hydrated.editorHtml, hydrated.signatureHtml, hydrated.quotedHtml),
+    to: recipientFieldFromJson(message.to_json),
+    cc: recipientFieldFromJson(message.cc_json),
+    bcc: recipientFieldFromJson(message.bcc_json ?? null),
+    attachments: hydrated.attachmentPaths,
+  }
+}
+
 function sanitizeComposeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
 }
@@ -358,6 +381,12 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [assigningIdentity, setAssigningIdentity] = useState(false)
   const [quotedHtml, setQuotedHtml] = useState("")
   const [sending, setSending] = useState(false)
+  // Geöffneter Entwurf ist vom Ausgang angehalten → „Ohne Ausgangsprüfung senden“.
+  const [draftHeld, setDraftHeld] = useState(false)
+  const outboundReviewSkipAllowed = useOutboundReviewSkipAllowed(draftHeld)
+  // Review B3: „Ohne Ausgangsprüfung senden“ gilt nur dem angehaltenen Inhalt —
+  // Stand beim Öffnen, damit der Knopf nach einer Änderung verschwindet.
+  const [heldContentAtOpen, setHeldContentAtOpen] = useState<OutboundHoldContentInput | null>(null)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
   const scheduledSendPgpBlock = scheduledSendPgpBlockReason({ pgpEncrypt, pgpSign })
@@ -515,6 +544,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     const sessionKey = buildComposeSessionKey(composeIntent, accountIdAtOpen)
     if (initialisedDraftKeyRef.current === draftInitKey) return
     setComposeAccountId(accountIdAtOpen)
+    setDraftHeld(false)
+    setHeldContentAtOpen(null)
     let cancelled = false
     setDraftBootstrapping(true)
     void (async () => {
@@ -532,6 +563,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           }
           initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
+          setDraftHeld((existing.outbound_hold ?? 0) > 0)
           setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
             assignedTo: existing.assigned_to,
             userId: user?.id,
@@ -539,6 +571,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             displayName: user?.displayName,
           }))
           const hydrated = hydrateComposeFieldsFromDraftMessage(existing)
+          setHeldContentAtOpen(heldComposeContentAtOpen(existing, hydrated))
           setSignatureManuallyEdited(true)
           setReplyToId(hydrated.replyToId)
           setTo(recipientFieldFromJson(existing.to_json))
@@ -583,6 +616,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             initialisedDraftKeyRef.current = draftInitKey
             setDraftId(session.draftId)
             setComposeAccountId(resumed.account_id)
+            setDraftHeld((resumed.outbound_hold ?? 0) > 0)
             setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
               assignedTo: resumed.assigned_to,
               userId: user?.id,
@@ -590,6 +624,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               displayName: user?.displayName,
             }))
             const hydrated = hydrateComposeFieldsFromDraftMessage(resumed)
+            setHeldContentAtOpen(heldComposeContentAtOpen(resumed, hydrated))
             setSignatureManuallyEdited(true)
             setReplyToId(hydrated.replyToId)
             setTo(recipientFieldFromJson(resumed.to_json))
@@ -839,6 +874,22 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   }, [editorHtml, signatureHtml, quotedHtml])
 
   const getEditorHtml = getFullComposeHtml
+
+  // Unverändert gegenüber dem Stand beim Öffnen (Formatierung des Editors zählt
+  // nicht, siehe normalizeOutboundHoldContent)? Der Server prüft zusätzlich
+  // gegen den beim Anhalten gespeicherten Inhalt.
+  const heldContentUnchanged = useMemo(() => (
+    heldContentAtOpen !== null
+    && outboundHoldContentEquals(heldContentAtOpen, {
+      accountId: composeAccountId,
+      subject,
+      bodyHtml: mergeEditorAndSignature(editorHtml, signatureHtml, quotedHtml),
+      to,
+      cc,
+      bcc,
+      attachments: attachmentPaths,
+    })
+  ), [heldContentAtOpen, composeAccountId, subject, editorHtml, signatureHtml, quotedHtml, to, cc, bcc, attachmentPaths])
 
   const reloadComposeSignature = useCallback(async (
     teamMemberId = composeTeamMemberId,
@@ -2365,6 +2416,24 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               >
                 Später senden
               </Button>
+              {draftHeld && outboundReviewSkipAllowed && draftId != null && !heldContentUnchanged ? (
+                <span className="text-xs text-muted-foreground">
+                  Nach dem Anhalten geändert – „Senden“ prüft den neuen Inhalt.
+                </span>
+              ) : null}
+              {draftHeld && outboundReviewSkipAllowed && draftId != null && heldContentUnchanged ? (
+                <OutboundReviewSkipButton
+                  draftId={draftId}
+                  size="default"
+                  disabled={sending || draftBootstrapping || uploadingAttachment}
+                  // Erst die Änderungen im Fenster speichern, dann den gespeicherten Stand senden.
+                  beforeSend={async () => Boolean(await saveDraft({ silent: true }))}
+                  onSent={async () => {
+                    const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                    await finishComposeClose(contextId)
+                  }}
+                />
+              ) : null}
               <Button
                 type="button"
                 onClick={() => void handleSend()}

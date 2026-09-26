@@ -50,6 +50,13 @@ overrides:
   "yaml@2": 2.8.3
 
 allowBuilds:
+  # embedded-postgres (Integrationstests) stellt per postinstall die Symlinks
+  # seiner Postgres-Binaries wieder her. pnpm 11 bricht die Installation ab,
+  # wenn ein Build-Skript nicht freigegeben ist - deshalb alle Plattformen, auf
+  # denen gebaut oder entwickelt wird (auch der macOS-Release-Job).
+  "@embedded-postgres/darwin-arm64": true
+  "@embedded-postgres/darwin-x64": true
+  "@embedded-postgres/linux-arm64": true
   "@embedded-postgres/linux-x64": true
   "@embedded-postgres/windows-x64": true
   "@parcel/watcher": true

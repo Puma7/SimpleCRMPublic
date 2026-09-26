@@ -223,6 +223,8 @@ describe('email-ai-profiles', () => {
     expect(resolved.profileId).toBe(3);
     expect(resolved.apiKey).toBe('profile-key');
     expect(resolved.embeddingModel).toBe('emb-model');
+    // Der Profil-Typ entscheidet über Chat- oder Decisions-Aufruf.
+    expect(resolved.provider).toBe('openai');
   });
 
   // C-A16: Ein Profil mit gespeichertem Key liess sich ohne neuen Key auf einen anderen Host umstellen.

@@ -339,6 +339,40 @@ describe('email.mark_spam', () => {
     expect(r.variables).toMatchObject({ 'email.is_spam': true, 'spam.status': 'spam' });
   });
 
+  // TA-P6: Wie auf dem Server ist das Verschieben nur ein Zusatz. Scheitert es
+  // (POP3-Konto, kein Ordner „Spam“, IMAP-Fehler), bleibt die Mail als Spam
+  // markiert, die Kette stoppt wie konfiguriert und der Grund steht im Schritt.
+  test('scheitert nur das Verschieben, bleibt die Mail Spam und der Knoten endet nicht mit Fehler', async () => {
+    (moveImapMessage as jest.Mock).mockRejectedValueOnce(
+      new Error('POP3- oder Entwurfs-Nachrichten können nicht per IMAP verschoben werden'),
+    );
+    const r = await node.execute(
+      ctx(),
+      { spam: true, tag: 'ki-spam', moveImap: true, stopFurtherWorkflows: true },
+      'n1',
+    );
+    expect(setMessageSpam).toHaveBeenCalledWith(7, true, { train: false, source: 'workflow' });
+    expect(addMessageTag).toHaveBeenCalledWith(7, 'ki-spam');
+    expect(r).toEqual({
+      status: 'ok',
+      variables: { 'email.is_spam': true, 'spam.status': 'spam' },
+      stop: true,
+      inboundChainStop: true,
+      message:
+        'imap_spam_move_failed: POP3- oder Entwurfs-Nachrichten können nicht per IMAP verschoben werden',
+    });
+  });
+
+  test('gescheitertes Verschieben ohne stopFurtherWorkflows: Graph läuft weiter, Grund im Schritt', async () => {
+    (moveImapMessage as jest.Mock).mockRejectedValueOnce(new Error('Mailbox doesn’t exist: Spam'));
+    const r = await node.execute(ctx(), { spam: true, moveImap: true }, 'n1');
+    expect(r).toEqual({
+      status: 'ok',
+      variables: { 'email.is_spam': true, 'spam.status': 'spam' },
+      message: 'imap_spam_move_failed: Mailbox doesn’t exist: Spam',
+    });
+  });
+
   test('spam=false verschiebt trotz moveImap=true nicht', async () => {
     const r = await node.execute(ctx(), { spam: false, moveImap: true, tag: '' }, 'n1');
     expect(setMessageSpam).toHaveBeenCalledWith(7, false, { train: false, source: 'workflow' });

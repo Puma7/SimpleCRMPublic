@@ -70,7 +70,8 @@ jest.mock('../../electron/sqlite-service', () => {
       return { changes: 0 };
     },
   }));
-  return { getDb: () => ({ prepare }) };
+  const transaction = (fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args);
+  return { getDb: () => ({ prepare, transaction }) };
 });
 
 jest.mock('../../electron/email/email-openai', () => ({

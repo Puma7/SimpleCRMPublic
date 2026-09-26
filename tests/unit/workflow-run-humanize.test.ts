@@ -65,6 +65,14 @@ describe('humanizeWorkflowStepMessage', () => {
     expect(result).toContain('Timeout beim IMAP-Server');
   });
 
+  // TA-P6: Scheitert beim Knoten „Als Spam markieren“ nur das Verschieben.
+  it('erklärt imap_spam_move_failed: und hängt den Grund an', () => {
+    const result = humanizeWorkflowStepMessage('imap_spam_move_failed: Mailbox doesn’t exist: Spam');
+    expect(result).toBe(
+      'Als Spam markiert – das Verschieben in den Spam-Ordner auf dem Mail-Server ist fehlgeschlagen, die Mail bleibt in SimpleCRM als Spam markiert. (Mailbox doesn’t exist: Spam)',
+    );
+  });
+
   it('hängt bei review_error: das Detail an', () => {
     const result = humanizeWorkflowStepMessage('review_error:Provider nicht erreichbar');
     expect(result).toContain('manuelle Freigabe');
@@ -126,6 +134,9 @@ describe('humanizeWorkflowPort', () => {
     ['hold', 'Prüfen (wartet auf Freigabe)'],
     ['yes', 'Ja'],
     ['no', 'Nein'],
+    ['ja', 'Ja'],
+    ['nein', 'Nein'],
+    ['unsicher', 'Unsicher'],
     ['each', 'Je Element'],
     ['done', 'Fertig'],
     ['pass', 'Bestanden'],

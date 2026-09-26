@@ -52,6 +52,9 @@ import { emailAccountSyncScheduleMigration } from './0051_email_account_sync_sch
 import { jtlKeyUniquenessMigration } from './0052_jtl_key_uniqueness';
 import { taskAssignmentScopeOrphanBackfillMigration } from './0053_task_assignment_scope_orphan_backfill';
 import { emailAccountTrustedAuthservIdMigration } from './0054_email_account_trusted_authserv_id';
+import { emailMessageSentProvenanceMigration } from './0055_email_message_sent_provenance';
+import { emailWorkflowScheduleStateMigration } from './0056_email_workflow_schedule_state';
+import { aiLearningsMigration } from './0057_ai_learnings';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -110,6 +113,9 @@ export const serverMigrations: readonly SqlMigration[] = [
   jtlKeyUniquenessMigration,
   taskAssignmentScopeOrphanBackfillMigration,
   emailAccountTrustedAuthservIdMigration,
+  emailMessageSentProvenanceMigration,
+  emailWorkflowScheduleStateMigration,
+  aiLearningsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

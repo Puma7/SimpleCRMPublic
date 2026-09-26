@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/tooltip"
 import { scrollToMetadataConversationSection } from "@/lib/scroll-metadata-conversation"
 import { MessageAddressesBlock } from "./message-addresses-block"
+import { LearningNoteButton } from "./learning-note-button"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import { getTranslationSettings } from "@/lib/translation-settings"
 import {
@@ -103,6 +104,8 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
 import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
+import { OutboundHoldBanner } from "./outbound-hold-banner"
+import { SentProvenanceLine } from "./sent-provenance"
 
 type Props = {
   accounts: EmailAccount[]
@@ -1124,6 +1127,7 @@ export function MessageViewer(props: Props) {
                   <Code2 className="h-4 w-4" />
                   <span className="hidden lg:inline">Rohdaten</span>
                 </Button>
+                <LearningNoteButton messageId={selectedMessage.id} />
               </>
             ) : null}
           </div>
@@ -1251,47 +1255,18 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.subject || "(Ohne Betreff)"}
                   </h2>
                   {isOutboundHeld ? (
-                    <div
-                      role="alert"
-                      className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
-                    >
-                      <p className="font-semibold">Ausgangsprüfung — Versand blockiert</p>
-                      <p className="mt-1 text-[13px] leading-snug">
-                        {selectedMessage.outbound_block_reason ||
-                          "Die E-Mail entspricht nicht den Prüfkriterien. Bitte korrigieren und erneut senden."}
-                      </p>
-                      {/* Die Run-Endpunkte verlangen workflows.view; ohne die Stufe
-                          endet der sichtbare Diagnosepfad garantiert im 403. */}
-                      {canViewWorkflows ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="mt-2 h-7 text-xs"
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              const run = await invokeRenderer(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
-                                messageId: selectedMessage.id,
-                              }) as {
-                                id: number
-                              } | null
-                              if (run?.id) {
-                                setWorkflowRunDetailId(run.id)
-                                setWorkflowRunDetailOpen(true)
-                              } else {
-                                toast.info("Kein Workflow-Lauf für diese Nachricht gefunden.")
-                              }
-                            } catch {
-                              toast.error("Workflow-Details konnten nicht geladen werden.")
-                            }
-                          })()
-                        }}
-                      >
-                        Workflow-Details ansehen
-                      </Button>
-                      ) : null}
-                    </div>
+                    <OutboundHoldBanner
+                      message={selectedMessage}
+                      canViewWorkflows={canViewWorkflows}
+                      onShowWorkflowRun={(runId) => {
+                        setWorkflowRunDetailId(runId)
+                        setWorkflowRunDetailOpen(true)
+                      }}
+                      onSent={async () => {
+                        // Gesendet: der Entwurf verlässt den Posteingang.
+                        await advanceSelectionAfterMessageRemoved(selectedMessage.id)
+                      }}
+                    />
                   ) : null}
                   {isAwaitingApproval ? (
                     <div
@@ -1433,6 +1408,8 @@ export function MessageViewer(props: Props) {
                     }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
                   }}
                 />
+
+                <SentProvenanceLine message={selectedMessage} />
 
                 {selectedMessage.pgp_status === "encrypted_unread" ||
                 bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (

@@ -6,6 +6,7 @@ import { withWorkspaceTransaction, type WorkspaceSessionApplier } from '../db/wo
 import { buildTrustedServiceJobPayload } from './policy';
 import type { EnqueueJobInput } from './types';
 import { DEFAULT_MAIL_SYNC_SCHEDULE_INTERVAL_MS } from './mail-sync-scheduler';
+import { DEFAULT_WORKFLOW_SCHEDULE_TICK_INTERVAL_MS } from './workflow-schedule-tick';
 
 /**
  * Taktgeber fuer die Wartungsjobs.
@@ -43,7 +44,11 @@ export const DEFAULT_AUDIT_RETENTION_INTERVAL_MS = 24 * 60 * 60_000;
 /** Nicht sofort beim Start: erst hochfahren lassen, dann aufraeumen. */
 export const DEFAULT_MAINTENANCE_INITIAL_DELAY_MS = 60_000;
 
-export type MaintenanceTickerJobType = 'lock.cleanup' | 'audit.retention' | 'mail.sync.schedule';
+export type MaintenanceTickerJobType =
+  | 'lock.cleanup'
+  | 'audit.retention'
+  | 'mail.sync.schedule'
+  | 'workflow.schedule.tick';
 
 export type MaintenanceTickerQueue = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<unknown>;
@@ -114,6 +119,10 @@ function defaultIntervalFor(jobType: MaintenanceTickerJobType): number {
   // (DEFAULT_MAIL_SYNC_INTERVAL_MS). Haeufiges Nachsehen macht die Verzoegerung
   // vorhersehbar, statt sie auf ein ganzes Sync-Intervall aufzurunden.
   if (jobType === 'mail.sync.schedule') return DEFAULT_MAIL_SYNC_SCHEDULE_INTERVAL_MS;
+  // Zeitplan-Workflows: minuetlich nachsehen, welcher Zeitpunkt faellig ist.
+  // Ein verpasster Takt holt den Zeitpunkt nach, solange er hoechstens
+  // WORKFLOW_SCHEDULE_CATCH_UP_MINUTES alt ist (jobs/workflow-schedule-tick).
+  if (jobType === 'workflow.schedule.tick') return DEFAULT_WORKFLOW_SCHEDULE_TICK_INTERVAL_MS;
   return DEFAULT_LOCK_CLEANUP_INTERVAL_MS;
 }
 

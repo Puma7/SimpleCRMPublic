@@ -10,6 +10,7 @@ import {
   getEmailAccountById,
 } from '../../email/email-store';
 import { chainStopFlagEnabled } from '@simplecrm/core';
+import { outboundHoldReasonOrFallback } from '../../../packages/core/src/email/outbound-review-parse';
 import { evaluateSenderFilter } from '../sender-filter';
 import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
 import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
@@ -101,7 +102,8 @@ export function registerEmailNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const id = ctx.messageId ?? ctx.outbound?.messageId;
       if (id == null) return { status: 'error', message: 'Keine Nachricht/Entwurf' };
-      const reason = String(config.reason ?? 'Workflow');
+      // Leerer Grund (Standard): einheitlicher Hinweis statt leerem Banner.
+      const reason = outboundHoldReasonOrFallback(String(config.reason ?? ''));
       if (!ctx.dryRun) setOutboundHold(id, true, reason);
       return { status: 'ok', blocked: true, blockReason: reason };
     },
@@ -206,6 +208,8 @@ export function registerEmailNodes(register: Reg): void {
         ...(toJson ? { toJson } : {}),
       });
       updateComposeDraft(id, { replyParentMessageId: messageId });
+      const { markDraftOrigin } = await import('../../email/email-sent-provenance.js');
+      markDraftOrigin(id, 'workflow', ctx.workflowId);
       return { status: 'ok', variables: { 'draft.id': id } };
     },
   });
@@ -343,25 +347,35 @@ export function registerEmailNodes(register: Reg): void {
       const { row, messageId } = requireMessage(ctx);
       const spam = config.spam !== false;
       const tag = String(config.tag ?? 'auto-spam').trim();
+      let moveError: string | null = null;
       if (!ctx.dryRun) {
         setMessageSpam(messageId, spam, { train: config.train === true, source: 'workflow' });
         if (tag) addMessageTag(messageId, tag);
         if (config.moveImap === true && spam) {
-          const { moveImapMessage } = await import('../../email/email-imap-move.js');
-          await moveImapMessage(row, 'Spam');
+          // Das Verschieben ist nur ein Zusatz (Parität zum Server, der es nach
+          // dem Commit versucht und ein Scheitern übergeht): POP3-Konto, kein
+          // Ordner „Spam“ oder IMAP-Fehler lassen die Mail als Spam markiert
+          // und beenden den Knoten nicht mit Fehler — sonst liefe die
+          // Inbound-Kette trotz stopFurtherWorkflows weiter.
+          try {
+            const { moveImapMessage } = await import('../../email/email-imap-move.js');
+            await moveImapMessage(row, 'Spam');
+          } catch (e) {
+            moveError = e instanceof Error ? e.message : String(e);
+          }
         }
       }
+      const stopsChain = chainStopFlagEnabled(config.stopFurtherWorkflows) && spam;
       return {
         status: 'ok',
         variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
         // Opt-in: gespeicherte Graphen ohne dieses Feld laufen unverändert weiter.
-        ...(chainStopFlagEnabled(config.stopFurtherWorkflows) && spam
-          ? {
-            stop: true,
-            inboundChainStop: true,
-            message: 'stop_further_workflows:mark_spam',
-          }
-          : {}),
+        ...(stopsChain ? { stop: true, inboundChainStop: true } : {}),
+        ...(moveError !== null
+          ? { message: `imap_spam_move_failed: ${moveError}` }
+          : stopsChain
+            ? { message: 'stop_further_workflows:mark_spam' }
+            : {}),
       };
     },
   });
@@ -599,6 +613,11 @@ export function registerEmailNodes(register: Reg): void {
         dryRun: ctx.dryRun,
       });
       if (!prep.ok) return { status: 'error', message: prep.message };
+      if (!ctx.dryRun) {
+        // TA-P3: Workflow-Versand — Herkunft festhalten, falls der Entwurf noch keine hat.
+        const { markDraftOrigin } = await import('../../email/email-sent-provenance.js');
+        markDraftOrigin(draftId, 'workflow', ctx.workflowId, { onlyIfUnset: true });
+      }
 
       if (ctx.direction === 'inbound' && !ctx.dryRun) {
         // RFC-3834-Marker NACH prep stempeln: prep normalisiert per

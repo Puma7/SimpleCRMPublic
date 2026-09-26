@@ -38,6 +38,7 @@ export type SettingsTab =
   | "ai"
   | "accountMail"
   | "knowledge"
+  | "learnings"
   | "mailSecurity"
   | "tracking"
   | "smtpRelay"
@@ -208,6 +209,7 @@ function writeLS(key: string, value: unknown): void {
 const VALID_MAIL_VIEWS: MailView[] = [
   "inbox",
   "sent",
+  "sent_ai",
   "archived",
   "drafts",
   "scheduled_send",
@@ -244,6 +246,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "ai",
   "accountMail",
   "knowledge",
+  "learnings",
   "mailSecurity",
   "tracking",
   "smtpRelay",

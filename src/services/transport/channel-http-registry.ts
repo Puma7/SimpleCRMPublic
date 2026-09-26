@@ -376,6 +376,11 @@ type EmailMessageRecord = {
   updatedAt?: string | null
   approvalState?: string | null
   approvalReason?: string | null
+  outboundHold?: boolean | number | null
+  outboundBlockReason?: string | null
+  sentByKind?: string | null
+  sentByLabel?: string | null
+  sentOutboundReviewSkipped?: boolean | number | null
 }
 
 type EmailThreadRecord = {
@@ -679,6 +684,8 @@ type WorkflowRecord = {
   cronExpr?: string | null
   scheduleAccountSourceSqliteId?: number | null
   scheduleAccountId?: number | null
+  /** Server: null = Zeitplan nicht scharf (Migration 0056). */
+  scheduleLastSlotAt?: string | null
   accountSourceSqliteId?: number | null
   accountId?: number | null
   overrideKey?: string | null
@@ -696,6 +703,8 @@ type WorkflowTemplateRecord = {
   description: string
   trigger: string
   graph: unknown
+  priority?: number
+  cronExpr?: string
 }
 
 type WorkflowNodeCatalogRecord = {
@@ -2639,6 +2648,22 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }>(body),
     }
   }],
+  [IPCChannels.Email.SendDraftSkipOutboundReview, ([payload]) => {
+    const input = objectPayload(payload, "outbound review skip payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/send-skip-outbound-review`,
+      // Antwort wie compose/send; 403/409 (Rolle, nicht angehalten, nach dem Anhalten
+      // geändert) wirft der Transport mit der Meldung des Servers.
+      transform: (body) => dataBody<{
+        success: boolean
+        error?: string
+        warning?: string
+        recoveredSentAppend?: true
+        workflowRunId?: number | null
+      }>(body),
+    }
+  }],
   [IPCChannels.Email.ListConversationLocks, ([payload]) => {
     const input = objectPayload(payload, "email conversation lock list payload")
     const messageIds = positiveIdArray(input.messageIds, "email message ids", 500)
@@ -3290,6 +3315,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       // Fehlt serverseitig, solange das Tageslimit dort nicht durchgesetzt
       // wird — das Automatisierungs-Panel blendet das Feld dann aus.
       autoReplyMaxPerSenderPerDay?: number
+      // Zeitzone der Zeitplan-Workflows (nur Server; der Desktop nutzt die
+      // Zeitzone des Rechners und liefert das Feld nicht).
+      scheduleTimezone?: string
+      /** „Ohne Ausgangsprüfung senden“: all | admins | none (Standard all). */
+      outboundReviewSkipPolicy?: "all" | "admins" | "none"
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({
@@ -3605,53 +3635,103 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }
     },
   })],
+  // TA-P5: ein atomarer Server-Aufruf statt GET/PATCH/POST/DELETE über mehrere Chunks.
   [IPCChannels.Email.SaveKnowledgeBaseDocument, ([payload]) => {
     const input = objectPayload(payload, "workflow knowledge base document payload")
     const knowledgeBaseId = positiveId(input.knowledgeBaseId, "workflow knowledge base id")
     const content = normalizeKnowledgeMarkdownContent(knowledgeMarkdownContent(input.content))
     return {
+      method: "POST",
+      path: `/api/v1/workflow-knowledge-bases/${knowledgeBaseId}/document`,
+      body: { content },
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.GetLearningsOverview, () => ({
+    method: "GET",
+    path: "/api/v1/ai-learnings/overview",
+    transform: (body) => dataBody(body),
+  })],
+  [IPCChannels.Email.SaveLearningsSettings, ([payload]) => ({
+    method: "PATCH",
+    path: "/api/v1/ai-learnings/settings",
+    body: learningsSettingsBody(objectPayload(payload, "learnings settings payload")),
+    transform: (body) => ({ success: true, settings: dataBody(body) }),
+  })],
+  [IPCChannels.Email.ListLearningCandidates, ([payload]) => {
+    const input = objectPayload(payload, "learnings candidate list payload")
+    return {
       method: "GET",
-      path: "/api/v1/workflow-knowledge-chunks",
-      query: { knowledgeBaseId, includeContent: true, limit: DEFAULT_LIST_LIMIT },
-      transform: async (body, context) => {
-        const chunks = await collectWorkflowKnowledgeChunksFromFirstPage(
-          body,
-          context,
-          knowledgeBaseId,
-          true,
-        )
-        const [documentChunk, ...obsoleteChunks] = chunks
-        if (documentChunk) {
-          await context.fetchJson({
-            method: "PATCH",
-            path: `/api/v1/workflow-knowledge-chunks/${positiveId(documentChunk.id, "workflow knowledge chunk id")}`,
-            body: {
-              knowledgeBaseId,
-              title: "Dokument",
-              content,
-              sourcePath: null,
-            },
-          })
-        } else {
-          await context.fetchJson({
-            method: "POST",
-            path: "/api/v1/workflow-knowledge-chunks",
-            body: {
-              knowledgeBaseId,
-              title: "Dokument",
-              content,
-              sourcePath: null,
-            },
-          })
-        }
-        for (const chunk of obsoleteChunks) {
-          await context.fetchJson({
-            method: "DELETE",
-            path: `/api/v1/workflow-knowledge-chunks/${positiveId(chunk.id, "workflow knowledge chunk id")}`,
-          })
-        }
-        return { success: true }
+      path: "/api/v1/ai-learnings/candidates",
+      query: {
+        ...(typeof input.kind === "string" ? { kind: input.kind } : {}),
+        limit: typeof input.limit === "number" ? input.limit : 100,
       },
+      transform: (body) => listItems(body),
+    }
+  }],
+  [IPCChannels.Email.DeleteLearningCandidate, ([payload]) => {
+    const input = objectPayload(payload, "learnings candidate delete payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/ai-learnings/candidates/${positiveId(input.id, "learning candidate id")}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.RunLearningsDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest payload")
+    return {
+      method: "POST",
+      path: "/api/v1/ai-learnings/digests",
+      body: {
+        ...(typeof input.period === "string" ? { period: input.period } : {}),
+        ...(input.knowledgeBaseId ? { knowledgeBaseId: positiveId(input.knowledgeBaseId, "knowledge base id") } : {}),
+        ...(input.profileId ? { profileId: positiveId(input.profileId, "ai profile id") } : {}),
+        ...(typeof input.minCandidates === "number" ? { minCandidates: input.minCandidates } : {}),
+      },
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Email.ListLearningDigests, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/ai-learnings/digests",
+      query: { limit: typeof input.limit === "number" ? input.limit : 20 },
+      transform: (body) => listItems(body),
+    }
+  }],
+  [IPCChannels.Email.GetLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest payload")
+    return {
+      method: "GET",
+      path: `/api/v1/ai-learnings/digests/${positiveId(input.id, "learning digest id")}`,
+      transform: (body) => dataBody(body),
+    }
+  }],
+  [IPCChannels.Email.AcceptLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest accept payload")
+    const id = positiveId(input.id, "learning digest id")
+    if (typeof input.content !== "string") throw new Error("Invalid learnings digest content")
+    return learningDecisionSpec(`/api/v1/ai-learnings/digests/${id}/accept`, {
+      content: input.content,
+      ...(input.confirmOverwrite === true ? { confirmOverwrite: true } : {}),
+    })
+  }],
+  [IPCChannels.Email.RejectLearningDigest, ([payload]) => {
+    const input = objectPayload(payload, "learnings digest reject payload")
+    return learningDecisionSpec(`/api/v1/ai-learnings/digests/${positiveId(input.id, "learning digest id")}/reject`, {})
+  }],
+  [IPCChannels.Email.AddLearningNote, ([payload]) => {
+    const input = objectPayload(payload, "learning note payload")
+    return {
+      method: "POST",
+      path: "/api/v1/ai-learnings/notes",
+      body: {
+        text: typeof input.text === "string" ? input.text : "",
+        ...(input.messageId ? { messageId: positiveId(input.messageId, "email message id") } : {}),
+      },
+      transform: (body) => ({ success: true, candidate: dataBody(body) }),
     }
   }],
 
@@ -4234,6 +4314,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/ai/profiles/${positiveId(id, "email ai profile id")}`,
     body: { apiKey: null },
     transform: () => ({ success: true }),
+  })],
+  [IPCChannels.Email.TestAiProfile, ([id]) => ({
+    method: "POST",
+    path: `/api/v1/ai/profiles/${positiveId(id, "email ai profile id")}/test-connection`,
+    body: {},
+    transform: (body) => dataBody<{
+      ok: boolean
+      message: string
+      model: string
+      latencyMs: number
+      probability?: number
+    }>(body),
   })],
   [IPCChannels.Email.ListAiPrompts, ([payload]) => ({
     method: "GET",
@@ -5711,6 +5803,13 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     reply_parent_message_id: record.replyParentMessageId ?? null,
     approval_state: record.approvalState ?? null,
     approval_reason: record.approvalReason ?? null,
+    // Hinweis „Versand blockiert“ und Listen-Kennzeichen brauchen beide Felder.
+    outbound_hold: record.outboundHold ? 1 : 0,
+    outbound_block_reason: record.outboundBlockReason ?? null,
+    // Kennzeichnung „gesendet von“ (Teilautomatisierung P3).
+    sent_by_kind: record.sentByKind ?? null,
+    sent_by_label: record.sentByLabel ?? null,
+    sent_outbound_review_skipped: record.sentOutboundReviewSkipped ? 1 : 0,
     updated_at: record.updatedAt ?? undefined,
     remote_content_policy: record.remoteContentPolicy ?? undefined,
     read_receipt_requested: record.readReceiptRequested ? 1 : 0,
@@ -6319,6 +6418,9 @@ function mapWorkflowRecord(record: WorkflowRecord) {
     cron_expr: record.cronExpr ?? null,
     schedule_account_id: record.scheduleAccountSourceSqliteId ?? record.scheduleAccountId ?? null,
     schedule_account_source_sqlite_id: record.scheduleAccountSourceSqliteId ?? undefined,
+    // Nur der Server kennt den Zustand; fehlt er (aeltere API), bleibt das Feld
+    // weg und der Editor zeigt keinen Hinweis.
+    ...(record.scheduleLastSlotAt === undefined ? {} : { schedule_last_slot_at: record.scheduleLastSlotAt }),
     account_id: record.accountSourceSqliteId ?? record.accountId ?? null,
     ...(record.accountSourceSqliteId == null ? {} : { account_source_sqlite_id: record.accountSourceSqliteId }),
     override_key: record.overrideKey ?? null,
@@ -6563,6 +6665,53 @@ function knowledgeDocumentFileName(record: WorkflowKnowledgeBaseRecord): string 
     .replace(/[^a-z0-9]+/gi, "-")
     .replace(/^-+|-+$/g, "")
   return `${record.id}-${slug || "wissensbasis"}.md`
+}
+
+function learningsSettingsBody(input: Record<string, any>): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+  if (typeof input.collectEnabled === "boolean") body.collectEnabled = input.collectEnabled
+  for (const key of ["targetKnowledgeBaseId", "profileId"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue
+    body[key] = input[key] == null ? null : positiveId(input[key], key)
+  }
+  return body
+}
+
+const LEARNING_DECISION_ERROR_CODES: Record<string, string> = {
+  ai_learning_digest_not_found: "not_found",
+  ai_learning_digest_not_pending: "not_pending",
+  workflow_knowledge_base_not_found: "knowledge_base_missing",
+  knowledge_base_changed: "knowledge_base_changed",
+  invalid_content: "content_invalid",
+}
+
+/**
+ * Übernehmen/Verwerfen liefern wie der Desktop `{ success: false, code }` statt
+ * einer Ausnahme, damit die Oberfläche die Konfliktwarnung zeigen kann. Die
+ * Übersicht dient als leichter Einstiegsaufruf; die Entscheidung läuft im transform.
+ */
+function learningDecisionSpec(path: string, body: Record<string, unknown>): HttpInvocationSpec {
+  return {
+    method: "GET",
+    path: "/api/v1/ai-learnings/overview",
+    transform: async (_overview, context) => {
+      try {
+        const decided = await context.fetchJson({ method: "POST", path, body })
+        return { success: true, digest: dataBody(decided) }
+      } catch (error) {
+        if (error instanceof RendererTransportError && error.code && LEARNING_DECISION_ERROR_CODES[error.code]) {
+          const details = isRecord(error.details) ? error.details : {}
+          return {
+            success: false,
+            code: LEARNING_DECISION_ERROR_CODES[error.code],
+            error: error.message,
+            ...(typeof details.currentContent === "string" ? { currentContent: details.currentContent } : {}),
+          }
+        }
+        throw error
+      }
+    },
+  }
 }
 
 function knowledgeMarkdownContent(value: unknown): string {
@@ -6818,17 +6967,18 @@ function optionalPositiveQueryId(value: unknown, label: string): number | undefi
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
+    || value === "sent_ai"
     || value === "archived"
     || value === "drafts"
     || value === "scheduled_send"
@@ -7009,7 +7159,17 @@ function mapWorkflowAutomationSettingsPayload(value: unknown): Record<string, un
     spamScoreThreshold: input.spamScoreThreshold === undefined ? undefined : boundedNumberText(input.spamScoreThreshold, "workflow spam score threshold", 1, 100, true),
     autoReplyEnabled: optionalBoolean(input.autoReplyEnabled, "workflow auto reply enabled"),
     autoReplyMaxPerSenderPerDay: input.autoReplyMaxPerSenderPerDay === undefined ? undefined : boundedNumber(input.autoReplyMaxPerSenderPerDay, "workflow auto reply max per sender per day", 1, 50, true),
+    // Gueltigkeit (IANA-Name) prueft der Server; hier nur Form und Laenge.
+    scheduleTimezone: input.scheduleTimezone === undefined ? undefined : optionalTrimmedText(input.scheduleTimezone, "workflow schedule timezone", 64),
+    outboundReviewSkipPolicy: input.outboundReviewSkipPolicy === undefined
+      ? undefined
+      : outboundReviewSkipPolicyValue(input.outboundReviewSkipPolicy),
   })
+}
+
+function outboundReviewSkipPolicyValue(value: unknown): "all" | "admins" | "none" {
+  if (value === "all" || value === "admins" || value === "none") return value
+  throw new Error("outbound review skip policy muss all, admins oder none sein")
 }
 
 function mapMailSecuritySettingsPayload(value: unknown): Record<string, unknown> {

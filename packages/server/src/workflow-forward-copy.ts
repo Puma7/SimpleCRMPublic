@@ -14,6 +14,7 @@ import {
 
 import type { EmailComposeSenderApiPort, EmailOAuthProvider } from './api';
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
+import { markDraftOrigin } from './mail-sent-provenance';
 import {
   createPostgresComposeDraftInTransaction,
   resolveAttachmentStoragePath,
@@ -96,7 +97,10 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
   readAttachmentFile?: (path: string) => Promise<Buffer>;
   /** Required for runOutboundReview=true (forward via real outbound review). */
   composeSender?: EmailComposeSenderApiPort;
-  /** Actor user for review-pipeline audits. */
+  /**
+   * Fester Akteur für die Ausgangsprüfung (Tests); sonst der Akteur des Jobs,
+   * ohne Akteur als Trusted Service.
+   */
   actorUserId?: string;
   /** Injectable draft creator; defaults to the postgres compose draft helper. */
   createDraft?: (input: {
@@ -106,6 +110,8 @@ export type PostgresWorkflowForwardCopyPortOptions = Readonly<{
     bodyText: string;
     recipients: readonly string[];
     attachmentPaths?: readonly string[];
+    /** TA-P3: Workflow der Weiterleitung (Herkunft des Entwurfs). */
+    workflowId?: number;
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
 }>;
 
@@ -172,19 +178,31 @@ export function createPostgresWorkflowForwardCopyPort(
     const draft = await withWorkspaceTransaction(
       options.db,
       { workspaceId: draftInput.workspaceId, role: 'system' },
-      async (trx) => createPostgresComposeDraftInTransaction(trx, {
-        workspaceId: draftInput.workspaceId,
-        accountId: draftInput.accountId,
-        values: {
+      async (trx) => {
+        const created = await createPostgresComposeDraftInTransaction(trx, {
+          workspaceId: draftInput.workspaceId,
           accountId: draftInput.accountId,
-          subject: draftInput.subject,
-          bodyText: draftInput.bodyText,
-          toJson: { value: draftInput.recipients.map((address) => ({ address })) },
-          ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
-            ? { draftAttachmentPaths: draftInput.attachmentPaths }
-            : {}),
-        },
-      }),
+          values: {
+            accountId: draftInput.accountId,
+            subject: draftInput.subject,
+            bodyText: draftInput.bodyText,
+            toJson: { value: draftInput.recipients.map((address) => ({ address })) },
+            ...(draftInput.attachmentPaths && draftInput.attachmentPaths.length > 0
+              ? { draftAttachmentPaths: draftInput.attachmentPaths }
+              : {}),
+          },
+        });
+        if (created.ok) {
+          // TA-P3: Weiterleitung eines Workflows (Kennzeichnung „gesendet von“).
+          await markDraftOrigin(trx, {
+            workspaceId: draftInput.workspaceId,
+            draftId: Number(created.message.id),
+            kind: 'workflow',
+            workflowId: draftInput.workflowId ?? null,
+          });
+        }
+        return created;
+      },
       { applySession: options.applyWorkspaceSession },
     );
     return draft.ok ? { ok: true as const, draftMessageId: draft.message.id } : { ok: false as const, reason: draft.reason };
@@ -296,7 +314,10 @@ export function createPostgresWorkflowForwardCopyPort(
           db: options.db,
           composeSender: options.composeSender,
           applyWorkspaceSession: options.applyWorkspaceSession,
-          actorUserId: options.actorUserId ?? 'system',
+          // Akteur des Workflow-Laufs (von Hand gestartet) oder — ohne Menschen —
+          // als Dienst. Der frühere Platzhalter 'system' als actorUserId ließ
+          // die Prüf-Jobs der Ausgangs-Workflows im Job-Enforcer scheitern.
+          actorUserId: input.actorUserId ?? options.actorUserId ?? null,
           createDraft,
           now: now(),
         });
@@ -766,7 +787,8 @@ async function forwardViaOutboundReview(args: {
   db: Kysely<ServerDatabase>;
   composeSender: EmailComposeSenderApiPort;
   applyWorkspaceSession: WorkspaceSessionApplier | undefined;
-  actorUserId: string;
+  /** null: Workflow ohne menschlichen Akteur — Versand als Trusted Service. */
+  actorUserId: string | null;
   createDraft: (input: {
     workspaceId: string;
     accountId: number;
@@ -777,6 +799,7 @@ async function forwardViaOutboundReview(args: {
      *  picks the attachments up later (the scheduled-send worker reads them
      *  back from the draft, not from this call's args). */
     attachmentPaths?: readonly string[];
+    workflowId?: number;
   }) => Promise<{ ok: true; draftMessageId: number } | { ok: false; reason: string }>;
   now: Date;
 }): Promise<ForwardReviewResult> {
@@ -800,6 +823,7 @@ async function forwardViaOutboundReview(args: {
     bodyText: prepared.bodyText,
     recipients: prepared.recipients,
     attachmentPaths: forwardedAttachmentPaths,
+    workflowId: input.workflowId,
   });
   if (!draftResult.ok) {
     return {
@@ -836,7 +860,10 @@ async function forwardViaOutboundReview(args: {
   //     result). The pipeline then drives approval + send.
   const sendResult = await args.composeSender.send({
     workspaceId: input.workspaceId,
-    actorUserId: args.actorUserId,
+    ...(args.actorUserId
+      ? { actorUserId: args.actorUserId }
+      // Wie der geplante Versand eines Workflows: Platzhalter plus Dienst-Marker.
+      : { actorUserId: 'system', trustedService: true }),
     values: {
       accountId: prepared.account.id,
       draftMessageId: draftResult.draftMessageId,

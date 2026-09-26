@@ -78,6 +78,50 @@ describe('sqlite fresh install integration', () => {
     expect(columnExists(EMAIL_MESSAGES_TABLE, 'sent_imap_sync_failed')).toBe(true);
   });
 
+  test('TA-P5: Learnings-Tabellen und ai_suggestion_snapshot existieren (auch nach Upgrade)', () => {
+    expect(tableExists('ai_learning_candidates')).toBe(true);
+    expect(tableExists('ai_learning_digests')).toBe(true);
+    expect(columnExists(EMAIL_MESSAGES_TABLE, 'ai_suggestion_snapshot')).toBe(true);
+    expect(indexExists('idx_ai_learning_digests_one_pending')).toBe(true);
+    expect(indexExists('idx_ai_learning_candidates_sent')).toBe(true);
+
+    db.exec('DROP TABLE ai_learning_candidates');
+    db.exec('DROP TABLE ai_learning_digests');
+    db.close();
+    process.env.SIMPLECRM_MAIL_TEST_USERDATA = tmpDir;
+    try {
+      initializeDatabase();
+      const upgraded = getDb();
+      const names = (upgraded.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index')").all() as { name: string }[])
+        .map((row) => row.name);
+      expect(names).toEqual(expect.arrayContaining([
+        'ai_learning_candidates',
+        'ai_learning_digests',
+        'idx_ai_learning_digests_one_pending',
+        'idx_ai_learning_candidates_sent',
+      ]));
+    } finally {
+      closeDatabase();
+      delete process.env.SIMPLECRM_MAIL_TEST_USERDATA;
+    }
+  });
+
+  test('email_messages has the sent-by provenance columns (TA-P3)', () => {
+    for (const column of [
+      'draft_origin_kind',
+      'draft_origin_workflow_id',
+      'draft_origin_edited',
+      'sent_by_kind',
+      'sent_by_user_id',
+      'sent_by_workflow_id',
+      'sent_by_label',
+      'sent_outbound_review_skipped',
+    ]) {
+      expect(columnExists(EMAIL_MESSAGES_TABLE, column)).toBe(true);
+    }
+    expect(indexExists('idx_email_messages_sent_by_kind')).toBe(true);
+  });
+
   test('FTS index and search version sync_info exist', () => {
     expect(tableExists(EMAIL_MESSAGES_FTS_TABLE)).toBe(true);
     const version = db

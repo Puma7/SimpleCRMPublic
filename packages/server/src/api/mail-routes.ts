@@ -15,6 +15,7 @@ import type {
   EmailComposeAttachmentUploadResult,
   EmailComposeDraftMutationResult,
   EmailComposeSendInput,
+  EmailComposeSendResult,
   EmailDiagnosticsReport,
   EmailMessageListResult,
   EmailMailFolderCounts,
@@ -52,7 +53,14 @@ import {
 import { MailAccessDeniedError } from '../mail-access/service';
 import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 import type { MailAccessActor } from '../mail-access/types';
-import { emailAddressForDelivery, normalizeTrustedAuthservIdSetting } from '@simplecrm/core';
+import {
+  emailAddressForDelivery,
+  normalizeTrustedAuthservIdSetting,
+  OUTBOUND_REVIEW_SKIP_FORBIDDEN_MESSAGE,
+  OUTBOUND_REVIEW_SKIP_CHANGED_MESSAGE,
+  OUTBOUND_REVIEW_SKIP_NOT_HELD_MESSAGE,
+  outboundReviewSkipAllowedForRole,
+} from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { mailSyncJobTypeForProtocol } from '../jobs/mail-sync-scheduler';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
@@ -289,6 +297,7 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   mailRoute('/api/v1/email/messages/:messageId/scheduled-send', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/approve-draft-send', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/approve-draft-send$/, (req, ports, params) => handleApproveDraftSend(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/dismiss-draft-approval', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/dismiss-draft-approval$/, (req, ports, params) => handleDismissDraftApproval(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/send-skip-outbound-review', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/send-skip-outbound-review$/, (req, ports, params) => handleSendDraftSkipOutboundReview(req, ports, params[0])),
   mailRoute('/api/v1/email/threads/:threadId/messages', ['GET'], /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, (req, ports, params) => handleThreadMessageList(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/spam-decision', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/spam-status', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/, (req, ports, params) => handleMessageSpamStatusMutation(req, ports, params[0])),
@@ -1066,6 +1075,16 @@ async function handleComposeSend(req: ApiRequest, ports: ServerApiPorts): Promis
     actorUserId: principal.userId,
     values: parsed.values,
   });
+  return composeSendResponse(ports, principal, result, 'compose_send');
+}
+
+/** Antwort + Audit/Event nach einem Versand über composeSender.send (Compose, ohne Ausgangsprüfung). */
+async function composeSendResponse(
+  ports: ServerApiPorts,
+  principal: { userId: string; workspaceId: string },
+  result: EmailComposeSendResult,
+  source: 'compose_send' | 'send_skip_outbound_review',
+): Promise<ApiResponse> {
   if (!result.ok) {
     return data(200, {
       success: false,
@@ -1085,6 +1104,7 @@ async function handleComposeSend(req: ApiRequest, ports: ServerApiPorts): Promis
       accountId: result.accountId,
       recoveredSentAppend: result.recoveredSentAppend === true,
       hasWarning: Boolean(result.warning),
+      ...(source === 'send_skip_outbound_review' ? { outboundReviewSkipped: true } : {}),
     },
   });
   await ports.events?.publish({
@@ -1098,7 +1118,7 @@ async function handleComposeSend(req: ApiRequest, ports: ServerApiPorts): Promis
       id: result.messageId,
       accountId: result.accountId,
       fields: ['folderKind', 'outboundHold', 'scheduledSendAt', 'sentImapSyncFailed'],
-      source: 'compose_send',
+      source,
       recoveredSentAppend: result.recoveredSentAppend === true,
     },
   });
@@ -1107,6 +1127,62 @@ async function handleComposeSend(req: ApiRequest, ports: ServerApiPorts): Promis
     ...(result.warning ? { warning: result.warning } : {}),
     ...(result.recoveredSentAppend ? { recoveredSentAppend: true } : {}),
   });
+}
+
+/**
+ * „Ohne Ausgangsprüfung senden“ (TA-P2): Die Mail-ACL (mail.send + mail.draft.edit
+ * am Entwurf, Eltern-/Anhangsrechte wie approve-draft-send) prüft der
+ * HTTP-Enforcer; hier folgen Rolle laut Einstellung, Freigabe-Marker für den
+ * aktuellen Inhalt und der synchrone Versand über den normalen Sendepfad.
+ */
+async function handleSendDraftSkipOutboundReview(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const messageId = positiveIntFromPath(rawId);
+  if (messageId === null) return error(400, 'invalid_email_message_id', 'email message id muss eine positive Ganzzahl sein');
+  if (!ports.emailOutboundReviewSkip || !ports.emailComposeSender) {
+    return error(503, 'email_compose_send_unavailable', 'Email compose-send API nicht konfiguriert');
+  }
+  const policy = await ports.emailOutboundReviewSkip.readPolicy({ workspaceId: principal.workspaceId });
+  if (!outboundReviewSkipAllowedForRole(policy, principal.role)) {
+    return error(403, 'outbound_review_skip_forbidden', OUTBOUND_REVIEW_SKIP_FORBIDDEN_MESSAGE);
+  }
+  const prepared = await ports.emailOutboundReviewSkip.prepare({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    messageId,
+  });
+  if (!prepared.ok) {
+    if (prepared.reason === 'not_held') {
+      return error(409, 'email_draft_not_held', OUTBOUND_REVIEW_SKIP_NOT_HELD_MESSAGE);
+    }
+    if (prepared.reason === 'changed_since_hold') {
+      // Nur der unveränderte, angehaltene Inhalt darf ohne Prüfung raus.
+      return error(409, 'email_draft_changed_since_hold', OUTBOUND_REVIEW_SKIP_CHANGED_MESSAGE);
+    }
+    return error(404, 'email_draft_not_found', 'Entwurf nicht gefunden');
+  }
+  // Protokolliert wird das Überspringen selbst: ab hier gilt die Freigabe
+  // für diesen Inhalt, auch wenn der Versand danach scheitert.
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'email_message.outbound_review_skipped',
+    entityType: 'email_message',
+    entityId: String(messageId),
+    metadata: { draftId: messageId, accountId: prepared.values.accountId },
+  });
+  const result = await ports.emailComposeSender.send({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    values: prepared.values,
+  });
+  return composeSendResponse(ports, principal, result, 'send_skip_outbound_review');
 }
 
 async function handleComposeAttachmentUpload(
@@ -3355,6 +3431,16 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     // Approval fields must also pass through — otherwise Freigabe UI is invisible.
     approvalState: message.approvalState ?? null,
     approvalReason: message.approvalReason ?? null,
+    // Ohne diese Felder zeigt die Server-Oberfläche angehaltene Entwürfe nicht als
+    // angehalten (kein „Versand blockiert“-Hinweis, kein Listen-Kennzeichen).
+    ...(message.outboundHold === undefined ? {} : { outboundHold: message.outboundHold }),
+    ...(message.outboundBlockReason === undefined ? {} : { outboundBlockReason: message.outboundBlockReason }),
+    // TA-P3: Kennzeichen „gesendet von“ in Liste und Leseansicht.
+    ...(message.sentByKind === undefined ? {} : { sentByKind: message.sentByKind }),
+    ...(message.sentByLabel === undefined ? {} : { sentByLabel: message.sentByLabel }),
+    ...(message.sentOutboundReviewSkipped === undefined
+      ? {}
+      : { sentOutboundReviewSkipped: message.sentOutboundReviewSkipped }),
     ...(message.threadMessageCount === undefined ? {} : { threadMessageCount: message.threadMessageCount }),
     ...(message.trackingOverride === undefined ? {} : { trackingOverride: message.trackingOverride }),
     ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),
@@ -5550,7 +5636,7 @@ function textIdFromPath(value: string | undefined, maxLength: number): string | 
 
 function parseOptionalMessageView(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

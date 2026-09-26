@@ -41,6 +41,19 @@ describe.each([
     expect(findLoopBodyDeferring(doc, { edition: 'desktop' })).toEqual([]);
   });
 
+  test('flags ai.decide in the each branch on the server (always a background job)', () => {
+    const doc = graph(
+      [trigger, loop, registry('dec', 'ai.decide', { question: 'Spam?' })],
+      [
+        { id: 'e1', source: 't', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'dec', label: 'each' },
+      ],
+    );
+    expect(findLoopBodyDeferring(doc, { edition: 'server' })).toEqual(['dec']);
+    // Auf dem Desktop läuft die KI-Entscheidung synchron.
+    expect(findLoopBodyDeferring(doc, { edition: 'desktop' })).toEqual([]);
+  });
+
   test('accepts an HTTP request without a follow-up and nodes behind the done edge', () => {
     const doc = graph(
       [

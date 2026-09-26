@@ -1,4 +1,7 @@
+export * from './ai-decide';
+export * from './ai-decisions-api';
 export * from './ai-score';
+export * from './cron-schedule';
 export * from './export-import';
 export * from './graph-compile';
 export * from './graph-presets';
@@ -13,4 +16,5 @@ export * from './node-catalog';
 export * from './node-chain-stop';
 export * from './sender-filter';
 export * from './templates';
+export * from './templates-partial-automation';
 export * from './trigger-utils';

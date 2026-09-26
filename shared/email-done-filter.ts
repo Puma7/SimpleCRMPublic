@@ -10,6 +10,7 @@ export const DEFAULT_MESSAGE_DONE_FILTER: MessageDoneFilter = 'open';
 type MailViewForDone =
   | 'inbox'
   | 'sent'
+  | 'sent_ai'
   | 'archived'
   | 'drafts'
   | 'scheduled_send'

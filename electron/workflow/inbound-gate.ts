@@ -4,6 +4,9 @@ import { LEGACY_ACTION_MAP } from './registry';
 const INBOUND_DIRECT_ALLOWED_REGISTRY = new Set([
   'email.sender_filter',
   'ai.classify',
+  // KI-Entscheidung verzweigt nur (wie ai.classify); jeder ihrer vier Ausgänge
+  // öffnet das Gate für nachgelagerte Knoten (runtime.ts).
+  'ai.decide',
   'ai.reply_suggestion',
   'email.auto_reply',
 ]);

@@ -59,6 +59,9 @@ export const EMAIL_SPAM_LIST_ENTRIES_TABLE = 'email_spam_list_entries';
 export const EMAIL_SPAM_LEARNING_EVENTS_TABLE = 'email_spam_learning_events';
 export const EMAIL_SPAM_FEATURE_STATS_TABLE = 'email_spam_feature_stats';
 export const EMAIL_SPAM_DECISIONS_TABLE = 'email_spam_decisions';
+/** TA-P5 Learnings (Server-Gegenstück: Migration 0057_ai_learnings). */
+export const AI_LEARNING_CANDIDATES_TABLE = 'ai_learning_candidates';
+export const AI_LEARNING_DIGESTS_TABLE = 'ai_learning_digests';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -745,6 +748,69 @@ export const createWorkflowKnowledgeChunksTable = `
     FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
   );
 `;
+
+/**
+ * TA-P5: Vorschläge für eine neue Wissensbasis-Fassung. Höchstens ein offener
+ * Vorschlag je Wissensbasis (partieller Unique-Index in AI_LEARNINGS_INDEXES).
+ */
+export const createAiLearningDigestsTable = `
+  CREATE TABLE IF NOT EXISTS ${AI_LEARNING_DIGESTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    knowledge_base_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'failed')),
+    trigger TEXT NOT NULL CHECK (trigger IN ('manual', 'workflow')),
+    requested_by_user_id TEXT,
+    workflow_id INTEGER,
+    period_from TEXT,
+    period_to TEXT NOT NULL,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    base_content TEXT NOT NULL DEFAULT '',
+    proposed_content TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    operations_json TEXT NOT NULL DEFAULT '[]',
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    decided_by_user_id TEXT,
+    decided_at TEXT,
+    FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+/**
+ * TA-P5: bereinigte Learnings-Rohdaten (ohne Zitat/Signatur, personenbezogene
+ * Daten ersetzt). Verarbeitete werden nach der Entscheidung gelöscht,
+ * unverarbeitete nach 90 Tagen.
+ */
+export const createAiLearningCandidatesTable = `
+  CREATE TABLE IF NOT EXISTS ${AI_LEARNING_CANDIDATES_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('draft_edit', 'human_reply', 'note')),
+    account_id INTEGER,
+    source_message_id INTEGER,
+    sent_message_id INTEGER,
+    question_text TEXT,
+    ai_text TEXT,
+    human_text TEXT,
+    note_text TEXT,
+    created_by_user_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    digest_id INTEGER,
+    processed_at TEXT,
+    FOREIGN KEY (account_id) REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (sent_message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL,
+    FOREIGN KEY (digest_id) REFERENCES ${AI_LEARNING_DIGESTS_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const AI_LEARNINGS_INDEXES: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_ai_learning_digests_created ON ${AI_LEARNING_DIGESTS_TABLE}(created_at);`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_digests_one_pending ON ${AI_LEARNING_DIGESTS_TABLE}(knowledge_base_id) WHERE status = 'pending';`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_open ON ${AI_LEARNING_CANDIDATES_TABLE}(processed_at, created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_digest ON ${AI_LEARNING_CANDIDATES_TABLE}(digest_id);`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_sent ON ${AI_LEARNING_CANDIDATES_TABLE}(sent_message_id) WHERE sent_message_id IS NOT NULL;`,
+];
 
 export const createEmailWorkflowVersionsTable = `
   CREATE TABLE IF NOT EXISTS ${EMAIL_WORKFLOW_VERSIONS_TABLE} (

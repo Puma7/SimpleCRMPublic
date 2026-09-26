@@ -294,7 +294,9 @@ const TRIGGER_DESCRIPTIONS: Record<string, React.ReactNode> = {
   schedule: (
     <>
       Startet regelmäßig nach Zeitplan (Cron-Ausdruck) — ganz ohne Mail, z.&nbsp;B. für tägliche
-      Berichte oder Aufräum-Läufe. Frühestens alle 15 Minuten.
+      Berichte oder Aufräum-Läufe. Frühestens alle 15 Minuten. Im Servermodus gilt die Zeitzone aus
+      Einstellungen → Automatisierung (Standard Europe/Berlin); Variablen:{" "}
+      <code>schedule.slot</code>, <code>schedule.fired_at</code>, <code>schedule.sync_log</code>.
     </>
   ),
   manual: (
@@ -532,7 +534,8 @@ function BestPracticesReference() {
       </Section>
       <Section title="4. Ausgangsprüfung sauber freigeben">
         Outbound-Workflows mit <code>ai.outbound_review</code> brauchen einen{" "}
-        <code>email.release_outbound</code>-Knoten am OK-Ausgang. Mit <code>autoSend=true</code>{" "}
+        <code>email.release_outbound</code>-Knoten am OK-Ausgang, mit <code>ai.decide</code>{" "}
+        am Ja-Ausgang. Mit <code>autoSend=true</code>{" "}
         verschickt der Scheduled-Send-Worker den Entwurf sofort.
       </Section>
       <Section title="5. Weiterleitungen mit Loop-Schutz">

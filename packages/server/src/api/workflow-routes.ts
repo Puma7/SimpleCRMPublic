@@ -1,10 +1,13 @@
 import {
+  AI_DECISIONS_PROVIDER_ID,
   compileGraphToDefinition,
   definitionToJson,
   describeUnsupportedWorkflowRegex,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  isAiDecisionsProvider,
   isServerWorkflowTrigger,
+  validateWorkflowScheduleCron,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
@@ -52,6 +55,7 @@ import { rejectUnlessWorkflowMessageReadable } from '../mail-access/workflow-mes
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
 import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from '../jobs/policy';
+import { buildScheduleWorkflowContext } from '../jobs/workflow-schedule-tick';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -174,6 +178,11 @@ export async function handleWorkflowReadRoute(
 
   if (req.path === '/api/v1/workflows/compile-graph') {
     return handleWorkflowGraphCompileRoute(req);
+  }
+
+  const aiProfileTestMatch = /^\/api\/v1\/ai\/profiles\/([^/]+)\/test-connection$/.exec(req.path);
+  if (aiProfileTestMatch) {
+    return handleAiProfileConnectionTest(req, ports, aiProfileTestMatch[1]);
   }
 
   const aiProfileMatch = /^\/api\/v1\/ai\/profiles(?:\/([^/]+))?$/.exec(req.path);
@@ -549,6 +558,16 @@ async function handleWorkflowExecute(
   }
 
   const dryRun = parsed.values.dryRun !== false;
+  // „Jetzt ausfuehren" eines Zeitplan-Workflows laeuft als Zeitplan: derselbe
+  // Ausloeser-Knoten und dieselben Variablen (schedule.*, email.account_id)
+  // wie beim Taktgeber (jobs/workflow-schedule-tick). Mit Test-Nachricht
+  // bleibt es beim manuellen Lauf auf dieser Nachricht. Rechte unveraendert.
+  const scheduleRun = workflow.triggerName === 'schedule' && messageId === undefined;
+  const firedAt = new Date();
+  const runTriggerName = scheduleRun ? 'schedule' : 'manual';
+  const runContext = scheduleRun
+    ? buildScheduleWorkflowContext({ firedAt, slot: firedAt, scheduleAccountId: workflow.scheduleAccountId })
+    : {};
 
   // Interim escalation guard: server workflow runs execute under a system role
   // with no per-node ACL, so a live run whose graph contains a writing node
@@ -573,9 +592,9 @@ async function handleWorkflowExecute(
       workspaceId: principal.workspaceId,
       workflowId: workflow.id,
       ...(messageId === undefined ? {} : { messageId }),
-      triggerName: 'manual',
+      triggerName: runTriggerName,
       actorUserId: principal.userId,
-      context: {},
+      context: runContext,
     });
     return data(result.success ? 200 : 409, {
       ...result,
@@ -591,9 +610,9 @@ async function handleWorkflowExecute(
       workspaceId: principal.workspaceId,
       workflowId: workflow.id,
       ...(messageId === undefined ? {} : { messageId }),
-      triggerName: 'manual',
+      triggerName: runTriggerName,
       actorUserId: principal.userId,
-      context: {},
+      context: runContext,
       // Mark this manual live execution (the only workflow.execute producer that
       // required owner/admin at enqueue) so the worker re-verifies current owner/admin
       // for its side-effecting graph — catching a demotion between here and execution.
@@ -793,6 +812,16 @@ async function handleUpdateAiProfile(
   if (parsed.values.baseUrl !== undefined || parsed.values.provider !== undefined) {
     const current = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
     if (!current) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+    // „Nur https“ für Entscheidungsmodelle gegen die effektiven Werte (gespeichert
+    // + Änderung): sonst ließe sich per PATCH nur baseUrl bzw. nur provider ein
+    // Entscheidungsmodell mit http-Adresse herstellen (Review B6).
+    const effectiveProvider = parsed.values.provider ?? current.provider;
+    const effectiveBaseUrl = parsed.values.baseUrl ?? current.baseUrl;
+    if (isAiDecisionsProvider(effectiveProvider) && !/^https:\/\//i.test(effectiveBaseUrl)) {
+      return error(400, 'validation_error', 'AI profile payload ist ungueltig', {
+        fields: [{ field: 'baseUrl', message: 'Entscheidungsmodelle (Decisions API) nur ueber https' }],
+      });
+    }
     if (aiProfileMoveNeedsNewApiKey(current, parsed.values)) {
       return error(
         400,
@@ -844,6 +873,55 @@ async function handleDeleteAiProfile(
   await auditAiProfile(ports, principal, 'ai_profile.deleted', profile.profile, { label: profile.profile.label });
   await publishAiProfile(ports, principal.workspaceId, 'ai_profile.deleted', profile.profile, principal.userId);
   return data(200, { deleted: true, aiProfile: sanitizeAiProfile(profile.profile) });
+}
+
+/**
+ * „Verbindung testen“: schickt den gespeicherten Key an den Profil-Host —
+ * deshalb dieselben Rechte wie Anlegen/Ändern/Löschen (workflows.manage) und
+ * ein Audit-Eintrag. Die Antwort enthält nie den Key.
+ */
+async function handleAiProfileConnectionTest(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
+  const id = positiveIntFromPath(rawId);
+  if (id === null) return error(400, 'invalid_ai_profile_id', 'AI profile id muss eine positive Ganzzahl sein');
+  if (!ports.aiProfiles || !ports.aiProfileConnectionTest) {
+    return error(503, 'ai_profile_test_unavailable', 'KI-Verbindungstest nicht konfiguriert');
+  }
+  const profile = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
+  if (!profile) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+
+  const result = await ports.aiProfileConnectionTest.test({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    profileId: id,
+  });
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'ai_profile.connection_tested',
+    entityType: 'ai_profile',
+    entityId: String(profile.id),
+    metadata: {
+      id: profile.id,
+      provider: profile.provider,
+      model: result.model || profile.model,
+      ok: result.ok,
+      latencyMs: result.latencyMs,
+    },
+  });
+  return data(200, result);
 }
 
 function aiProfileMutationError(code: 'secret_port_unavailable'): ApiResponse {
@@ -1069,10 +1147,10 @@ function rejectUnlessOverrideKeyManage(
 }
 
 /**
- * Der Server reiht Workflows nur fuer inbound, outbound, manual, relay und
- * webhook.incoming ein. Desktop-Trigger (Zeitplan, Entwurf, CRM-Ereignisse)
- * liessen sich speichern und aktivieren, liefen aber nie — deshalb 400 statt
- * stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
+ * Der Server reiht Workflows fuer inbound, outbound, manual, relay,
+ * webhook.incoming und schedule ein. Desktop-Trigger (Entwurf,
+ * CRM-Ereignisse) liessen sich speichern und aktivieren, liefen aber nie —
+ * deshalb 400 statt stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
  */
 function unsupportedTriggerError(triggerName: string): ApiResponse {
   return error(
@@ -1080,6 +1158,35 @@ function unsupportedTriggerError(triggerName: string): ApiResponse {
     'unsupported_trigger',
     `Ausloeser "${triggerName}" gibt es nur in der Desktop-Edition; der Server loest ihn nie aus`,
   );
+}
+
+/**
+ * Ein AKTIVER Zeitplan-Workflow braucht einen Ausdruck, den der Server-
+ * Taktgeber auch ausfuehrt: genau 5 Felder, Mindestabstand 15 Minuten,
+ * mindestens ein moeglicher Termin (validateWorkflowScheduleCron, dieselbe
+ * Pruefung wie im Editor). Ohne diese Schranke liesse sich ein Zeitplan
+ * aktivieren, der nie laeuft oder minuetlich feuert.
+ *
+ * Deaktivierte Zeitplaene bleiben frei: ein vom Desktop importierter Workflow
+ * (Sekundenfeld) muss sich erst speichern lassen, um ihn danach zu
+ * korrigieren. Geprueft wird beim Aktivieren.
+ */
+function scheduleWorkflowError(input: Readonly<{
+  triggerName: string | undefined;
+  enabled: boolean | undefined;
+  cronExpr: string | null | undefined;
+}>): ApiResponse | null {
+  if (input.triggerName !== 'schedule' || input.enabled === false) return null;
+  const cronExpr = typeof input.cronExpr === 'string' ? input.cronExpr.trim() : '';
+  if (!cronExpr) {
+    return error(
+      400,
+      'invalid_schedule',
+      'Aktive Zeitplan-Workflows brauchen einen Cron-Ausdruck (z. B. „0 6 * * 1“)',
+    );
+  }
+  const problem = validateWorkflowScheduleCron(cronExpr);
+  return problem ? error(400, 'invalid_schedule', `Ungültiger Zeitplan: ${problem}`) : null;
 }
 
 async function handleCreateWorkflow(
@@ -1100,6 +1207,12 @@ async function handleCreateWorkflow(
   if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
     return unsupportedTriggerError(parsed.values.triggerName);
   }
+  const scheduleError = scheduleWorkflowError({
+    triggerName: parsed.values.triggerName,
+    enabled: parsed.values.enabled ?? true,
+    cronExpr: parsed.values.cronExpr,
+  });
+  if (scheduleError) return scheduleError;
 
   // New workflows default to enabled=true (postgres-workflow-read-ports), so an
   // outbound workflow is live immediately — validate its effective state.
@@ -1198,6 +1311,7 @@ async function handleUpdateWorkflow(
     executionMode?: string | null;
     overrideKey?: string | null;
     priority?: number;
+    cronExpr?: string | null;
   } | undefined;
   if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
@@ -1245,6 +1359,27 @@ async function handleUpdateWorkflow(
         && !isServerWorkflowTrigger(existing.triggerName)
       ) {
         return unsupportedTriggerError(existing.triggerName);
+      }
+      // Zeitplan im EFFEKTIVEN Zustand pruefen: Aktivieren eines gespeicherten
+      // Zeitplans, Umstellen auf schedule und ein neuer Ausdruck laufen alle
+      // hier durch.
+      const effectiveTriggerName = parsed.values.triggerName ?? existing?.triggerName;
+      const effectiveEnabled = parsed.values.enabled ?? existing?.enabled;
+      const scheduleError = scheduleWorkflowError({
+        triggerName: effectiveTriggerName,
+        enabled: effectiveEnabled,
+        cronExpr: parsed.values.cronExpr !== undefined ? parsed.values.cronExpr : existing?.cronExpr ?? null,
+      });
+      if (scheduleError) return scheduleError;
+      // Geprueft wurde dann der GESPEICHERTE Ausdruck — er muss beim Write noch
+      // derselbe sein, sonst waere ein parallel gesetzter Ausdruck ungeprueft aktiv.
+      if (
+        existing
+        && parsed.values.cronExpr === undefined
+        && effectiveTriggerName === 'schedule'
+        && effectiveEnabled !== false
+      ) {
+        expectedState = { ...(expectedState ?? {}), cronExpr: existing.cronExpr ?? null };
       }
       const trap = outboundWorkflowGuardError({
         graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
@@ -1594,6 +1729,7 @@ function sanitizeWorkflow(workflow: WorkflowRecord): WorkflowRecord {
     cronExpr: workflow.cronExpr,
     scheduleAccountSourceSqliteId: workflow.scheduleAccountSourceSqliteId,
     scheduleAccountId: workflow.scheduleAccountId,
+    ...(workflow.scheduleLastSlotAt === undefined ? {} : { scheduleLastSlotAt: workflow.scheduleLastSlotAt }),
     accountSourceSqliteId: workflow.accountSourceSqliteId,
     accountId: workflow.accountId,
     overrideKey: workflow.overrideKey,
@@ -1613,6 +1749,9 @@ function sanitizeWorkflowTemplate(template: WorkflowTemplate): WorkflowTemplate 
     description: template.description,
     trigger: template.trigger,
     graph: template.graph,
+    // Empfehlungen, die „Vorlage laden“ im Editor einträgt (TA-P6).
+    ...(typeof template.priority === 'number' ? { priority: template.priority } : {}),
+    ...(typeof template.cronExpr === 'string' ? { cronExpr: template.cronExpr } : {}),
   };
 }
 
@@ -1836,6 +1975,15 @@ function parseAiProfileMutationBody(
     const apiKey = normalizeNullableBodyText(body.apiKey, 'apiKey', 20000);
     if (apiKey.ok) values.apiKey = apiKey.value;
     else errors.push({ field: 'apiKey', message: apiKey.message });
+  }
+  // Profil-Typ „OpenRouter Entscheidungsmodell (Decisions API)“: einheitliche
+  // Kennung speichern (die Laufzeit erkennt ihn daran) und den Key nur über
+  // HTTPS schicken.
+  if (values.provider !== undefined && isAiDecisionsProvider(values.provider)) {
+    values.provider = AI_DECISIONS_PROVIDER_ID;
+    if (values.baseUrl !== undefined && !/^https:\/\//i.test(values.baseUrl)) {
+      errors.push({ field: 'baseUrl', message: 'Entscheidungsmodelle (Decisions API) nur ueber https' });
+    }
   }
 
   if (errors.length > 0) {

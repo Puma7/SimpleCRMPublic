@@ -10,6 +10,8 @@ import {
 } from '../db';
 import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
+import { runWorkflowScheduleTick } from './workflow-schedule-tick';
+import { pruneAiLearningCandidates } from '../ai-learnings';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -177,6 +179,33 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
       }
     },
 
+    // Taktgeber der Zeitplan-Workflows: sucht die faelligen Zeitpunkte und
+    // reiht deren workflow.execute-Laeufe ein (workflow-schedule-tick.ts).
+    // Ohne Queue gilt dasselbe wie beim Sync-Taktgeber: lieber scheitern als
+    // still nie ausloesen.
+    'workflow.schedule.tick': async (job) => {
+      if (!options.requeue) throw new Error('workflow schedule tick requires a job queue');
+      const result = await runWorkflowScheduleTick({
+        db: options.db,
+        queue: options.requeue,
+        workspaceId: job.workspaceId,
+        now: now(),
+        ...(options.applyWorkspaceSession
+          ? { applyWorkspaceSession: options.applyWorkspaceSession }
+          : {}),
+      });
+      // Wie beim Sync: der Takt selbst scheitert nicht an einem einzelnen
+      // Workflow — der Anspruch ist zurueckgenommen, der naechste Takt
+      // versucht es erneut, solange der Zeitpunkt im Nachholfenster liegt.
+      if (result.failed.length > 0) {
+        const workflowIds = result.failed.map((entry) => entry.workflowId).join(', ');
+        console.warn(
+          `[workflow-schedule] could not enqueue ${result.failed.length} scheduled run(s) `
+          + `in workspace ${job.workspaceId}: ${workflowIds}. They are retried on the next tick.`,
+        );
+      }
+    },
+
     'lock.cleanup': async (job) => {
       const plan = buildLockCleanupPlan(job.payload, now());
       const batchWasFull = await withWorkspaceTransaction(options.db, {
@@ -301,6 +330,17 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
       }, { applySession: options.applyWorkspaceSession });
 
       if (batchWasFull) await requeue(options, 'audit.retention', plan.workspaceId, job.payload, now());
+
+      // TA-P5: Learnings-Rohdaten mitnehmen — unverarbeitete nach 90 Tagen,
+      // verarbeitete, sobald über ihren Vorschlag entschieden ist. Eigene
+      // Transaktion und nur protokolliert: die Audit-Retention darf daran nie scheitern.
+      await pruneAiLearningCandidates({
+        db: options.db,
+        now,
+        ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+      }, plan.workspaceId).catch((error: unknown) => {
+        console.warn(`[ai-learnings] Aufräumen fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
+      });
     },
   };
 }

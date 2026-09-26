@@ -5,6 +5,8 @@ import { escapeHtmlText } from "@shared/compose-body"
 export type MailView =
   | "inbox"
   | "sent"
+  /** Gesendet (KI): gesendete Mails automatischer Herkunft (TA-P3). */
+  | "sent_ai"
   | "archived"
   | "drafts"
   | "scheduled_send"
@@ -113,6 +115,16 @@ export type EmailMessage = {
   soft_deleted?: number
   outbound_hold?: number
   outbound_block_reason?: string | null
+  /**
+   * Kennzeichnung „gesendet von“ (Teilautomatisierung P3), nur an gesendeten
+   * Mails: human | ai_auto | ai_approved | workflow | relay; null = unbekannt
+   * (Altbestand, per IMAP synchronisiert).
+   */
+  sent_by_kind?: string | null
+  /** Anzeigename (Mensch), „Workflow „…““ oder Name des Relays. */
+  sent_by_label?: string | null
+  /** 1 = „Ohne Ausgangsprüfung senden“ wurde verwendet. */
+  sent_outbound_review_skipped?: number | null
   /** KI-Gegenlese: 'pending' = Entwurf wartet auf menschliche Freigabe. */
   approval_state?: string | null
   approval_reason?: string | null

@@ -136,6 +136,14 @@ export async function processDueScheduledSends(
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
+        if ('outboundHeld' in r && r.outboundHeld) {
+          // Der Ausgang hat den Entwurf angehalten: er liegt mit Banner im
+          // Posteingang, Planung und Planer sind geloescht. Kein Fehlversuch —
+          // die Entscheidung liegt jetzt beim Menschen.
+          clearScheduledSendDraftMeta(draftId);
+          logger.warn(`[email] scheduled send ${draftId}: vom Ausgang angehalten (${errMsg})`);
+          continue;
+        }
         if ('deliveryAmbiguous' in r && r.deliveryAmbiguous) {
           // SMTP brach nach der vollstaendig uebertragenen Nachricht ab: der
           // Server hat sie womoeglich angenommen. Ein automatischer Neuversand

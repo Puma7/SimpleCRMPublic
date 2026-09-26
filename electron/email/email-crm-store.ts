@@ -1281,6 +1281,8 @@ function viewFilterClause(view: import('./email-store.js').AccountMailView): str
       return `m.soft_deleted = 0 AND ${nonDraftMail} AND (m.is_spam = 1 OR COALESCE(m.spam_status, 'clean') = 'spam')`;
     case 'sent':
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
+    case 'sent_ai':
+      return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0 AND m.sent_by_kind IN ('ai_auto', 'ai_approved', 'workflow')`;
     case 'drafts':
       return `m.soft_deleted = 0 AND m.folder_kind = 'draft' AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = '')`;
     case 'scheduled_send':

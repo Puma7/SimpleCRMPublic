@@ -138,6 +138,7 @@ describe('Workflow-Katalog-Synchronität', () => {
     expect(portsOf('email.sender_filter')).toEqual(['blacklist', 'default', 'whitelist']);
     expect(portsOf('logic.threshold')).toEqual(['no', 'yes']);
     expect(portsOf('logic.loop')).toEqual(['done', 'each']);
+    expect(portsOf('ai.decide')).toEqual(['error', 'ja', 'nein', 'unsicher']);
     // logic.switch hat dynamische Cases — bewusst KEINE statischen Ports.
     expect(portsOf('logic.switch')).toEqual([]);
   });

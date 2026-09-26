@@ -183,6 +183,52 @@ describe('findOutboundGraphTraps', () => {
     expect(findOutboundGraphTrapsShared(graph as never)).toEqual([{ code: 'dead_end', nodeId: 'rev' }]);
   });
 
+  describe('ai.decide (KI-Entscheidung)', () => {
+    const decideGraph = (edges: WorkflowGraphDocument['edges']): WorkflowGraphDocument => ({
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'dec', type: 'registry', data: { nodeType: 'ai.decide', config: { question: 'Versandfähig?' } } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'tag', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'ki-halt' } } },
+      ],
+      edges: [{ id: 'e0', source: 't1', target: 'dec' }, ...edges],
+    });
+
+    it('accepts ja → release with extra steps on nein/unsicher (outbound holds there)', () => {
+      const graph = decideGraph([
+        { id: 'e1', source: 'dec', target: 'rel', label: 'ja' },
+        { id: 'e2', source: 'dec', target: 'tag', label: 'nein' },
+        { id: 'e3', source: 'dec', target: 'tag', label: 'unsicher' },
+      ]);
+      expect(findOutboundGraphTraps(graph)).toEqual([]);
+      expect(findOutboundGraphTrapsShared(graph as never)).toEqual([]);
+    });
+
+    it('accepts an unlabelled edge as the ja port (pickEdge falls back for ja)', () => {
+      const graph = decideGraph([{ id: 'e1', source: 'dec', target: 'rel' }]);
+      expect(findOutboundGraphTraps(graph)).toEqual([]);
+      expect(findOutboundGraphTrapsShared(graph as never)).toEqual([]);
+    });
+
+    it('flags a missing ja port and a release on nein/unsicher/error', () => {
+      const noJa = decideGraph([{ id: 'e1', source: 'dec', target: 'tag', label: 'nein' }]);
+      expect(findOutboundGraphTraps(noJa)).toEqual([{ code: 'dead_end', nodeId: 'dec' }]);
+      expect(findOutboundGraphTrapsShared(noJa as never)).toEqual([{ code: 'dead_end', nodeId: 'dec' }]);
+      for (const port of ['nein', 'unsicher', 'error']) {
+        const releaseOnHold = decideGraph([
+          { id: 'e1', source: 'dec', target: 'tag', label: 'ja' },
+          { id: 'e2', source: 'dec', target: 'rel', label: port },
+        ]);
+        expect(findOutboundGraphTraps(releaseOnHold)).toEqual([
+          { code: 'dead_end', nodeId: 'tag' },
+          { code: 'dead_end', nodeId: 'rel' },
+        ]);
+        expect(findOutboundGraphTrapsShared(releaseOnHold as never)).toEqual(findOutboundGraphTraps(releaseOnHold));
+      }
+    });
+  });
+
   it('requires both ports on a logic.threshold branch node', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,

@@ -2,6 +2,7 @@ import { z, ZodTypeAny } from 'zod';
 import { isStrictBase64Payload } from '../../packages/core/src/base64';
 import { AllowedInvokeChannels, DeprecatedInvokeChannels, IPCChannels, InvokeChannel } from './channels';
 import { applyEmailIpcSchemas } from './email-schemas';
+import { applyAiLearningsIpcSchemas } from './ai-learnings-schemas';
 
 type SchemaEntry = {
   payload: ZodTypeAny;
@@ -880,6 +881,7 @@ baseSchemaMap.set(IPCChannels.FollowUp.DeleteSavedView, {
 });
 
 applyEmailIpcSchemas(baseSchemaMap);
+applyAiLearningsIpcSchemas(baseSchemaMap);
 
 export const IpcSchemas: Record<InvokeChannel, SchemaEntry> = Object.fromEntries(
   Array.from(baseSchemaMap.entries())

@@ -12,21 +12,30 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { invokeRenderer } from "@/services/transport"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import { useEffect, useMemo, useState } from "react"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import { workflowTriggerLabel } from "./trigger-labels"
+import {
+  aiProfileReadiness,
+  learningsCollectEnabled,
+  templateCheckRows,
+  templatePickEdits,
+  UNKNOWN_TEMPLATE_LIVE_CHECKS,
+  withDecisionModelProfile,
+  type TemplateLiveChecks,
+} from "./workflow-template-checks"
+
+/** Was der Dialog beim Laden an der Vorlage ergänzt hat (für die Rückmeldung). */
+export type WorkflowTemplatePickInfo = {
+  /** Eingetragenes Entscheidungsmodell in „KI-Entscheidung“, sonst null. */
+  decisionProfileLabel: string | null
+}
 
 type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onPick: (template: WorkflowTemplateDto) => void
-}
-
-type LiveChecks = {
-  aiProfileReady: boolean | null
-  cannedReady: boolean | null
-  autoReplyEnabled: boolean | null
+  onPick: (template: WorkflowTemplateDto, info: WorkflowTemplatePickInfo) => void
 }
 
 const TEMPLATE_PORT_NOTES: Record<string, string> = {
@@ -36,36 +45,34 @@ const TEMPLATE_PORT_NOTES: Record<string, string> = {
     "Spam-Pipeline: Priorität 1–9 empfohlen. Nach mark_spam → Stopp — Agent-/Antwort-Workflows (ab 50) laufen nicht auf Spam-Mails.",
   "agent-retoure":
     "Nur wenn nicht Spam. Agent-Workflows bitte mit Priorität 50+ hinter Spam-Pipelines (1–9) anlegen.",
-}
-
-/** Welche Live-Voraussetzungen betreffen dieses Template? (aus den Node-Typen abgeleitet) */
-function requiredChecksFor(template: WorkflowTemplateDto): {
-  needsAi: boolean
-  needsCanned: boolean
-  needsAutoReplySwitch: boolean
-} {
-  const types = new Set(
-    template.graph.nodes
-      .map((n) => (n.data as { nodeType?: string })?.nodeType)
-      .filter((t): t is string => typeof t === "string"),
-  )
-  const needsAi = [...types].some((t) => t.startsWith("ai."))
-  const needsCanned = types.has("ai.pick_canned")
-  const needsAutoReplySwitch = types.has("email.auto_reply") || types.has("email.send_draft")
-  return { needsAi, needsCanned, needsAutoReplySwitch }
+  // Teilautomatisierung (TA-P6)
+  "inbound-spam-decision":
+    "Ja → Spam + Verschieben in den Ordner „Spam“ auf dem Mail-Server + Stopp (klappt das Verschieben nicht, z. B. bei POP3, bleibt die Mail trotzdem Spam). Unsicher → „Spam prüfen“ + Stopp. Nein → keine Kante: Lauf endet, nachfolgende Workflows laufen weiter. KI-Fehler → Tag ki-fehler.",
+  "inbound-human-or-ai-reply":
+    "Ja/Unsicher/KI-Fehler → Tag manuell. Nein → Gate: Erlaubt → Entwurf → Gegenprüfung (Senden → Versand mit Ausgangsprüfung; Prüfen → Tag ki-freigabe + Aufgabe); Blockiert → Tag ki-manuell. Spam-Mails werden übersprungen.",
+  "outbound-decision-before-send":
+    "Ja → Versand freigeben (autoSend). Nein/Unsicher/KI-Fehler → Versand bleibt angehalten (Hinweis „Versand blockiert“), zusätzlich Tag ausgang-blockiert.",
+  "learnings-weekly-digest":
+    "Zeitplan Mo 06:00 (0 6 * * 1) wird beim Laden unter „Erweitert → Cron“ eingetragen. Ergebnis: Vorschlag unter Einstellungen → Learnings.",
 }
 
 function CheckRow({
+  id,
   ok,
   label,
   hint,
 }: {
+  id: string
   ok: boolean | null
   label: string
   hint: string
 }) {
   return (
-    <li className="flex items-start gap-1.5 text-[11px]">
+    <li
+      className="flex items-start gap-1.5 text-[11px]"
+      data-check={id}
+      data-state={ok === true ? "ok" : ok === false ? "missing" : "unknown"}
+    >
       {ok === true ? (
         <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
       ) : ok === false ? (
@@ -85,12 +92,9 @@ function CheckRow({
 
 export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
   const [templates, setTemplates] = useState<WorkflowTemplateDto[]>([])
-  const [checks, setChecks] = useState<LiveChecks>({
-    aiProfileReady: null,
-    cannedReady: null,
-    autoReplyEnabled: null,
-  })
+  const [checks, setChecks] = useState<TemplateLiveChecks>(UNKNOWN_TEMPLATE_LIVE_CHECKS)
   const { labelByType } = useWorkflowNodeCatalog()
+  const serverClientMode = getRendererTransport().kind === "http"
 
   useEffect(() => {
     if (!open) return
@@ -99,8 +103,16 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
     })
     // Live-Checks für die Voraussetzungs-Anzeige (best effort).
     void invokeRenderer(IPCChannels.Email.ListAiProfiles)
-      .then((rows) => setChecks((c) => ({ ...c, aiProfileReady: Array.isArray(rows) && rows.length > 0 })))
-      .catch(() => setChecks((c) => ({ ...c, aiProfileReady: null })))
+      .then((rows) => setChecks((c) => ({ ...c, ...aiProfileReadiness(rows) })))
+      .catch(() =>
+        setChecks((c) => ({ ...c, chatProfileReady: null, decideProfileReady: null, decisionModelProfile: null })),
+      )
+    void invokeRenderer(IPCChannels.Email.ListKnowledgeBases)
+      .then((rows) => setChecks((c) => ({ ...c, knowledgeBaseReady: Array.isArray(rows) && rows.length > 0 })))
+      .catch(() => setChecks((c) => ({ ...c, knowledgeBaseReady: null })))
+    void invokeRenderer(IPCChannels.Email.GetLearningsOverview)
+      .then((overview) => setChecks((c) => ({ ...c, learningsCollectEnabled: learningsCollectEnabled(overview) })))
+      .catch(() => setChecks((c) => ({ ...c, learningsCollectEnabled: null })))
     void invokeRenderer(IPCChannels.Email.ListCannedResponses)
       .then((rows) => setChecks((c) => ({ ...c, cannedReady: Array.isArray(rows) && rows.length > 0 })))
       .catch(() => setChecks((c) => ({ ...c, cannedReady: null })))
@@ -143,12 +155,23 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
         <ScrollArea className="max-h-[420px] pr-3">
           <ul className="space-y-2">
             {templates.map((t) => {
-              const req = requiredChecksFor(t)
-              const hasChecks = req.needsAi || req.needsCanned || req.needsAutoReplySwitch
+              const checkRows = templateCheckRows(t, checks, { serverClientMode })
+              const pickEdits = templatePickEdits(t)
               return (
-                <li key={t.id} className="rounded-lg border p-3">
+                <li key={t.id} className="rounded-lg border p-3" data-template-id={t.id}>
                   <div className="font-medium">{t.name}</div>
                   <p className="text-sm text-muted-foreground">{t.description}</p>
+                  {pickEdits.priority || pickEdits.cronExpr ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Beim Laden eingetragen:{" "}
+                      {[
+                        pickEdits.priority ? `Priorität ${pickEdits.priority}` : null,
+                        pickEdits.cronExpr ? `Zeitplan ${pickEdits.cronExpr}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(", ")}
+                    </p>
+                  ) : null}
                   {TEMPLATE_PORT_NOTES[t.id] ? (
                     <p className="mt-1 text-[11px] text-muted-foreground">{TEMPLATE_PORT_NOTES[t.id]}</p>
                   ) : null}
@@ -160,29 +183,11 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
                       </span>
                     ))}
                   </div>
-                  {hasChecks ? (
+                  {checkRows.length > 0 ? (
                     <ul className="mt-2 space-y-1 border-t pt-2">
-                      {req.needsAi ? (
-                        <CheckRow
-                          ok={checks.aiProfileReady}
-                          label="KI-Profil mit API-Schlüssel"
-                          hint="(Einstellungen → E-Mail → KI)"
-                        />
-                      ) : null}
-                      {req.needsCanned ? (
-                        <CheckRow
-                          ok={checks.cannedReady}
-                          label="Mindestens ein Textbaustein"
-                          hint="(Einstellungen → E-Mail → Textbausteine)"
-                        />
-                      ) : null}
-                      {req.needsAutoReplySwitch ? (
-                        <CheckRow
-                          ok={checks.autoReplyEnabled}
-                          label="Auto-Antwort-Schalter aktiviert"
-                          hint="(Einstellungen → Automatisierung — sonst wird nie automatisch gesendet)"
-                        />
-                      ) : null}
+                      {checkRows.map((row) => (
+                        <CheckRow key={row.id} id={row.id} ok={row.ok} label={row.label} hint={row.hint} />
+                      ))}
                     </ul>
                   ) : null}
                   <Button
@@ -190,7 +195,14 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
                     size="sm"
                     className="mt-2"
                     onClick={() => {
-                      onPick(t)
+                      // Nur beim Laden: „KI-Entscheidung“ ohne Profil bekommt
+                      // das Entscheidungsmodell (falls angelegt).
+                      const profile = checks.decisionModelProfile
+                      const prepared = withDecisionModelProfile(t, profile)
+                      onPick(prepared.template, {
+                        decisionProfileLabel:
+                          prepared.nodeIds.length > 0 && profile ? profile.label || `Profil ${profile.id}` : null,
+                      })
                       onOpenChange(false)
                     }}
                   >

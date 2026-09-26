@@ -493,12 +493,37 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { draftIdVariable: 'draft.id', reviewPrompt: '', profileId: null },
   },
   {
+    type: 'ai.decide',
+    label: 'KI-Entscheidung',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Beantwortet eine Ja/Nein-Frage zur Mail per KI (Entscheidungsmodell oder Chat-Modell) und verzweigt in Ja, Nein, Unsicher oder KI-Fehler. Im Ausgang hält alles außer „Ja“ den Versand an.',
+    defaultConfig: {
+      question: '',
+      yesCriteria: '',
+      noCriteria: '',
+      contextMode: 'full',
+      threshold: 80,
+      profileId: null,
+    },
+  },
+  {
     type: 'ai.pick_canned',
     label: 'KI: Textbaustein wählen',
     category: 'ai',
     canvasType: 'registry',
     description: 'Die KI wählt den passenden Textbaustein, füllt Platzhalter und legt einen Entwurf an.',
     defaultConfig: { createDraft: true },
+  },
+  {
+    type: 'ai.learnings_digest',
+    label: 'Learnings auswerten',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Wertet gesammelte Learnings per KI aus und legt einen Vorschlag für die Wissensbasis an (Einstellungen → Learnings). Ändert die Wissensbasis nie selbst. Für Zeitplan- und manuelle Workflows.',
+    defaultConfig: { knowledgeBaseId: null, period: 'since_last', minCandidates: 3, profileId: null },
   },
   {
     type: 'email.auto_reply',

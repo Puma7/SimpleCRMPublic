@@ -4,23 +4,24 @@ import type { ServerDatabase } from './db/schema';
 import type { WorkspaceTransaction } from './db/workspace-context';
 
 /** Mirrors shared/knowledge-context — inlined for packages/server Docker build (no /shared copy). */
-const KNOWLEDGE_CONTEXTS = ['inbound', 'outbound', 'general'] as const;
-type KnowledgeContext = (typeof KNOWLEDGE_CONTEXTS)[number];
+export const KNOWLEDGE_CONTEXTS = ['inbound', 'outbound', 'general', 'learnings'] as const;
+export type KnowledgeContext = (typeof KNOWLEDGE_CONTEXTS)[number];
 
-function isKnowledgeContext(value: unknown): value is KnowledgeContext {
+export function isKnowledgeContext(value: unknown): value is KnowledgeContext {
   return typeof value === 'string' && (KNOWLEDGE_CONTEXTS as readonly string[]).includes(value);
 }
 
-function knowledgeContextsForDirection(
+/** Learnings (TA-P5) werden in jeder Richtung zusätzlich gelesen. */
+export function knowledgeContextsForDirection(
   direction: 'inbound' | 'outbound' | 'draft_created' | 'manual' | string | undefined,
 ): KnowledgeContext[] {
   if (direction === 'outbound' || direction === 'draft_created') {
-    return ['general', 'outbound'];
+    return ['general', 'outbound', 'learnings'];
   }
   if (direction === 'inbound') {
-    return ['general', 'inbound'];
+    return ['general', 'inbound', 'learnings'];
   }
-  return ['general'];
+  return ['general', 'learnings'];
 }
 
 function formatKnowledgeChunksForPrompt(
@@ -137,6 +138,8 @@ export async function searchKnowledgeForWorkflow(
 ): Promise<WorkflowKnowledgeChunkMatch[]> {
   const kbIds = new Set<number>();
   if (explicitKbId != null && explicitKbId > 0) kbIds.add(explicitKbId);
+  // Eine im Knoten gewählte Wissensbasis ergänzt die Kontext-Wissensbasen der
+  // Richtung — die Learnings eingeschlossen — statt sie zu ersetzen.
   for (const id of await listKnowledgeBaseIdsForWorkflow(trx, workspaceId, accountId, direction)) {
     kbIds.add(id);
   }

@@ -200,6 +200,9 @@ describe('Interpolations-Inventar (Schema-Flag interpolate:true)', () => {
   test('exakt diese (Knotentyp, Feld)-Paare sind interpolierbar — Änderungen sind bewusste Entscheidungen', () => {
     expect(pairs).toEqual([
       'ai.agent:systemPrompt',
+      'ai.decide:noCriteria',
+      'ai.decide:question',
+      'ai.decide:yesCriteria',
       'ai.draft_reply:systemPrompt',
       'ai.review_draft:reviewPrompt',
       'crm.create_task:title',

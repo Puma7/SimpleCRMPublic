@@ -9,6 +9,10 @@ import { registerEmailNodes } from '../../electron/workflow/nodes/email-nodes';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../../electron/workflow/types';
 import { runWorkflowGraph } from '../../electron/workflow/runtime';
 import { assignCategoryPathToMessage } from '../../electron/email/email-crm-store';
+import {
+  isServerWorkflowNodeTypeSupported,
+  listServerWorkflowNodeCatalog,
+} from '../../packages/server/src/workflow-node-catalog';
 
 jest.mock('../../electron/email/email-crm-store', () => ({
   assignCategoryPathToMessage: jest.fn(),
@@ -54,6 +58,14 @@ describe('workflow desktop parity', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  // TA-P1: ai.decide soll in Vorlagen beider Editionen verwendbar sein.
+  test('ai.decide is registered on the desktop and supported on the server (usable in templates)', () => {
+    ensureBuiltinWorkflowNodes();
+    expect(listWorkflowNodeCatalog().map((e) => e.type)).toContain('ai.decide');
+    expect(isServerWorkflowNodeTypeSupported('ai.decide')).toBe(true);
+    expect(listServerWorkflowNodeCatalog().map((e) => e.type)).toContain('ai.decide');
   });
 
   test('desktop template list omits server-only templates (relay follow-up)', () => {

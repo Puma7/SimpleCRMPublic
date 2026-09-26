@@ -265,6 +265,8 @@ export async function getResolvedAiRuntime(profileId?: number | null): Promise<{
   apiKey: string | null;
   profileId: number | null;
   profileLabel: string | null;
+  /** Profil-Typ (z. B. openrouter_decisions); Chat-Aufrufe lehnen Entscheidungsmodelle ab. */
+  provider: string;
 }> {
   await ensureDefaultAiProfiles();
   const profile = resolveAiProfile(profileId);
@@ -280,6 +282,7 @@ export async function getResolvedAiRuntime(profileId?: number | null): Promise<{
       apiKey: await getEmailAiApiKey(),
       profileId: null,
       profileLabel: null,
+      provider: 'openai',
     };
   }
   return {
@@ -289,5 +292,6 @@ export async function getResolvedAiRuntime(profileId?: number | null): Promise<{
     apiKey: await getAiProfileApiKey(profile.keytar_account),
     profileId: profile.id,
     profileLabel: profile.label,
+    provider: String(profile.provider ?? ''),
   };
 }

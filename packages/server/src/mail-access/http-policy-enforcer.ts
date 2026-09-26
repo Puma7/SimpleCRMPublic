@@ -1107,10 +1107,15 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // send-skip-outbound-review sendet den gespeicherten Entwurf sofort — dieselben
+  // Zusatzrechte wie approve-draft-send (Entwurf bearbeiten, Eltern-Mail, Anhänge).
+  const sendsStoredDraftNow =
+    canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
+    || canonicalPath === '/api/v1/email/messages/:messageId/send-skip-outbound-review';
   if (
     canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send'
     || canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send/retry'
-    || canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
+    || sendsStoredDraftNow
   ) {
     // Scheduling (PATCH sendAt), cancelling (PATCH sendAt:null), and retrying durably
     // ARM the EXISTING stored draft; the worker then transmits its stored body +
@@ -1134,7 +1139,7 @@ async function assertSupplementalHttpPermissions(
     // ⇒ true), which requires mail.triage at job time. Check that now so we do not
     // mutate approval state only to fail the subsequent send.
     if (
-      canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
+      sendsStoredDraftNow
       && ports.mailResourceLookup?.resolveScheduledDraftReplyParent
     ) {
       const draftId = optionalPositiveInt(

@@ -44,14 +44,15 @@ export function workflowDirectionForTrigger(trigger: WorkflowTriggerKind): Workf
 }
 
 /**
- * Trigger, die nur die Desktop-Runtime ausloest (Cron-Scheduler, Entwurf,
- * CRM-/Aufgaben-/Termin-Ereignisse). Die Server-Edition reiht Workflows nur
- * fuer inbound, outbound, manual, relay und webhook.incoming ein; unbekannte
- * Namen laufen dort als manual. Spiegel: src/components/email/workflow/trigger-labels.ts.
+ * Trigger, die nur die Desktop-Runtime ausloest (Entwurf, CRM-/Aufgaben-/
+ * Termin-Ereignisse). Die Server-Edition reiht Workflows fuer inbound,
+ * outbound, manual, relay, webhook.incoming und schedule ein (Zeitplan ueber
+ * den Minutentakt in packages/server/src/jobs/workflow-schedule-tick.ts);
+ * unbekannte Namen laufen dort als manual.
+ * Spiegel: src/components/email/workflow/trigger-labels.ts.
  */
 export const DESKTOP_ONLY_WORKFLOW_TRIGGERS: ReadonlySet<string> = new Set([
   'draft_created',
-  'schedule',
   'crm.deal_stage_changed',
   'task.due',
   'calendar.event_start',

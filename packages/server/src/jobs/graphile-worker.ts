@@ -549,12 +549,18 @@ function graphileSharedQueueKind(type: ServerJobType): string | undefined {
     || type === 'ai.review'
     || type === 'ai.draft_reply'
     || type === 'ai.review_draft'
+    || type === 'ai.decide'
     || type === 'ai.transform_text'
   ) {
     return 'ai';
   }
   if (type === 'mail.spam.score') {
     return 'spam';
+  }
+  // Eigene Queue: ein langer Learnings-KI-Aufruf soll die KI-Jobs der
+  // eingehenden Kette ('ai-<ws>') nicht aufhalten.
+  if (type === 'learnings.digest') {
+    return 'learnings';
   }
   if (type === 'mail.vacation.auto_reply') {
     return 'mail';
@@ -752,6 +758,19 @@ export function graphileJobKeyForJob(
       return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
     }
   }
+  if (type === 'ai.decide') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
+    // Der Knoten gehört in den Key: resumeNodeId ist hier nur der erste
+    // verdrahtete Ausgang, zwei Entscheidungen können auf dasselbe Ziel zeigen.
+    const nodeId = graphileKeyScalar(payload.nodeId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${nodeId ?? 'none'}${identity}`;
+    }
+  }
   if (type === 'ai.transform_text') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
@@ -829,6 +848,14 @@ export function graphileJobKeyForJob(
     const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && delayedJobId) return `${type}:${workspaceKey}:delayed:${delayedJobId}`;
     if (workspaceKey && workflowId && runId) return `${type}:${workspaceKey}:run:${runId}`;
+    // Zeitplan-Lauf des Server-Taktgebers: Workflow + Zeitpunkt. Der Anspruch
+    // in der Datenbank (schedule_last_slot_at) verhindert doppeltes Ausloesen;
+    // der Key faengt zusaetzlich eine doppelte Einreihung ab, solange der Lauf
+    // noch wartet. Nur ohne Nachricht — „Jetzt ausfuehren" traegt keinen Slot.
+    const scheduleSlot = graphileKeyScalar(payload.scheduleSlot);
+    if (workspaceKey && workflowId && !messageId && payload.triggerName === 'schedule' && scheduleSlot) {
+      return `${type}:${workspaceKey}:${workflowId}:schedule:${scheduleSlot}`;
+    }
     if (workspaceKey && workflowId && messageId && terminalNodeId) {
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`;
     }
@@ -872,10 +899,19 @@ export function graphileJobKeyForJob(
   // mail.sync.schedule waere das je Instanz ein voller Durchlauf durch alle
   // faelligen Konten.
   if (
-    (type === 'lock.cleanup' || type === 'audit.retention' || type === 'mail.sync.schedule')
+    (
+      type === 'lock.cleanup'
+      || type === 'audit.retention'
+      || type === 'mail.sync.schedule'
+      || type === 'workflow.schedule.tick'
+    )
     && workspaceKey
   ) {
     return `${type}:${workspaceKey}`;
+  }
+  // TA-P5: hoechstens eine wartende Auswertung je Workspace und Ziel-Wissensbasis.
+  if (type === 'learnings.digest' && workspaceKey) {
+    return `${type}:${workspaceKey}:${graphileKeyScalar(payload.knowledgeBaseId) ?? 'default'}`;
   }
   return undefined;
 }

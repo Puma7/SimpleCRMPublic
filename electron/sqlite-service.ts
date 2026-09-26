@@ -4,6 +4,7 @@ import os from 'os';
 import { app } from 'electron';
 import fs from 'fs';
 import { ensureAssignedToReferentialIntegrity } from './email/email-assigned-to-integrity';
+import { ensureSentProvenanceColumns } from './email/email-sent-provenance-schema';
 import { plainTextFromHtml } from './email/email-parse-utils';
 import { runMailRoadmapMigrations } from './mail-roadmap-migrations';
 import {
@@ -68,6 +69,11 @@ import {
     createEmailSpamLearningEventsTable,
     createEmailSpamFeatureStatsTable,
     createEmailSpamDecisionsTable,
+    createAiLearningDigestsTable,
+    createAiLearningCandidatesTable,
+    AI_LEARNINGS_INDEXES,
+    AI_LEARNING_DIGESTS_TABLE,
+    AI_LEARNING_CANDIDATES_TABLE,
     EMAIL_WORKFLOW_VERSIONS_TABLE,
     EMAIL_WORKFLOW_RUN_STEPS_TABLE,
     WORKFLOW_KNOWLEDGE_BASES_TABLE,
@@ -193,7 +199,10 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailSpamLearningEventsTable);
         connection.exec(createEmailSpamFeatureStatsTable);
         connection.exec(createEmailSpamDecisionsTable);
+        connection.exec(createAiLearningDigestsTable);
+        connection.exec(createAiLearningCandidatesTable);
         indexes.forEach((index) => connection.exec(index));
+        AI_LEARNINGS_INDEXES.forEach((index) => connection.exec(index));
         runMigrations();
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
@@ -1010,6 +1019,8 @@ function runMigrations() {
                     mcn = readMsgCols2();
                 }
             }
+            // Teilautomatisierung P3: Kennzeichnung „gesendet von“.
+            ensureSentProvenanceColumns(conn);
             const trashSnap = [
                 { name: 'trash_prev_archived', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_archived INTEGER` },
                 { name: 'trash_prev_is_spam', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN trash_prev_is_spam INTEGER` },
@@ -1126,6 +1137,16 @@ function runMigrations() {
         ensureMigrationTable(EMAIL_SPAM_DECISIONS_TABLE, createEmailSpamDecisionsTable, [
             `CREATE INDEX IF NOT EXISTS idx_email_spam_decisions_msg ON ${EMAIL_SPAM_DECISIONS_TABLE}(message_id, created_at);`,
         ]);
+        // TA-P5 Learnings: Tabellen und der KI-Schnappschuss am Entwurf (Server seit 0018).
+        ensureMigrationTable(AI_LEARNING_DIGESTS_TABLE, createAiLearningDigestsTable, [...AI_LEARNINGS_INDEXES]);
+        ensureMigrationTable(AI_LEARNING_CANDIDATES_TABLE, createAiLearningCandidatesTable, [...AI_LEARNINGS_INDEXES]);
+        if (msgTableExists) {
+            const snapshotCols = conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[];
+            if (!snapshotCols.some((c) => c.name === 'ai_suggestion_snapshot')) {
+                console.log('Adding ai_suggestion_snapshot to email_messages...');
+                conn.exec(`ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN ai_suggestion_snapshot TEXT`);
+            }
+        }
 
         const kbChunkTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE);
         if (kbChunkTable) {

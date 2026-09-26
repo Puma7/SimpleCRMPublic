@@ -6,6 +6,7 @@ import type {
   EmailEvidenceEventType,
   EmailEvidenceSummary,
   MailPermission,
+  OutboundReviewSkipPolicy,
   WorkflowNodeCatalogEntry,
   WorkflowTemplate,
 } from '@simplecrm/core';
@@ -2176,6 +2177,15 @@ export type EmailMessageRecord = {
   replyParentMessageId?: number | null;
   approvalState?: string | null;
   approvalReason?: string | null;
+  /** Ausgangsprüfung: Entwurf angehalten (Versand blockiert). */
+  outboundHold?: boolean;
+  /** Grund der Sperre (Workflow/KI-Prüfung); null ohne Grund oder bei metadata-only. */
+  outboundBlockReason?: string | null;
+  /** TA-P3: human | ai_auto | ai_approved | workflow | relay; null = Altbestand/kein Versand. */
+  sentByKind?: string | null;
+  /** Name als Schnappschuss (Nutzer, „Workflow „…““, Relay). */
+  sentByLabel?: string | null;
+  sentOutboundReviewSkipped?: boolean;
   /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
   searchSnippet?: string | null;
   bodyText?: string | null;
@@ -2608,13 +2618,45 @@ export type EmailComposeSendResult =
      * the message).
      */
     deliveryAmbiguous?: boolean;
+    /**
+     * Der Ausgang hat den Entwurf endgültig angehalten (synchroner Block der
+     * Ausgangs-Workflows): Banner, Posteingang, Planung gelöscht.
+     */
+    outboundHeld?: boolean;
   };
+
+/** „Ohne Ausgangsprüfung senden“ (TA-P2): Freigabe für den aktuellen Inhalt vorbereiten. */
+export type EmailOutboundReviewSkipPrepareResult =
+  | { ok: true; values: EmailComposeSendInput }
+  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'not_held' | 'changed_since_hold' };
+
+export type EmailOutboundReviewSkipApiPort = {
+  /** Einstellung `outbound_review_skip_policy` (Standard „all“). */
+  readPolicy(input: { workspaceId: string }): Promise<OutboundReviewSkipPolicy>;
+  /**
+   * Nur für lokale Entwürfe mit outbound_hold: Banner entfernen, Freigabe-Marker
+   * für den aktuellen Inhalt setzen (der normale Sendepfad erkennt ihn),
+   * Planung löschen, Übersprung-Marker schreiben. Liefert die Sendewerte des
+   * gespeicherten Entwurfs.
+   */
+  prepare(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<EmailOutboundReviewSkipPrepareResult>;
+};
 
 export type EmailComposeSenderApiPort = {
   send(input: {
     workspaceId: string;
     actorUserId: string;
     values: EmailComposeSendInput;
+    /**
+     * Versand eines Workflows ohne menschlichen Akteur (Trusted Service,
+     * actorUserId ist der Platzhalter 'system'): Ausgangs-Workflows laufen
+     * als Dienst statt als Nutzer.
+     */
+    trustedService?: boolean;
   }): Promise<EmailComposeSendResult>;
 };
 
@@ -2746,7 +2788,7 @@ export type EmailMessageApiPort = {
     done?: boolean;
     spam?: boolean;
     search?: string;
-    view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+    view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
     sort?: 'date_desc' | 'date_asc' | 'priority' | 'relevance';
     /** Suchbereich: 'broad' sucht ueber alle Ordner (nur mit search wirksam). */
@@ -3231,7 +3273,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -4069,6 +4111,24 @@ export type AiTextTransformApiPort = {
   transformText(input: AiTextTransformInput): Promise<AiTextTransformResult>;
 };
 
+/** Ergebnis von „Verbindung testen“ eines KI-Profils; `message` enthält nie den Key. */
+export type AiProfileConnectionTestResult = {
+  ok: boolean;
+  message: string;
+  model: string;
+  latencyMs: number;
+  /** Nur Entscheidungsmodelle: Ja-Wahrscheinlichkeit der Testfrage (0–100). */
+  probability?: number;
+};
+
+export type AiProfileConnectionTestApiPort = {
+  test(input: {
+    workspaceId: string;
+    actorUserId: string;
+    profileId: number;
+  }): Promise<AiProfileConnectionTestResult>;
+};
+
 export type WorkflowRecord = {
   id: number;
   sourceSqliteId: number | null;
@@ -4081,6 +4141,13 @@ export type WorkflowRecord = {
   cronExpr: string | null;
   scheduleAccountSourceSqliteId: number | null;
   scheduleAccountId: number | null;
+  /**
+   * Zuletzt ausgeloester Zeitplan-Zeitpunkt (ISO). null = Zeitplan nicht
+   * scharf: der Server-Taktgeber loest ihn nie aus, bis der Workflow einmal
+   * ueber die API gespeichert/aktiviert wird (Bestand vor 0056, Desktop-Import).
+   * Optional, weil nur der Postgres-Port ihn kennt.
+   */
+  scheduleLastSlotAt?: string | null;
   accountSourceSqliteId: number | null;
   accountId: number | null;
   overrideKey: string | null;
@@ -4160,6 +4227,10 @@ export type WorkflowApiPort = {
        *  aendert — aendert ein Admin sie zwischenzeitlich, muss der Write
        *  scheitern statt sie stillschweigend zurueckzusetzen. */
       priority?: number;
+      /** Gesetzt, wenn die Route einen aktiven Zeitplan gegen den GESPEICHERTEN
+       *  Cron-Ausdruck geprueft hat (Patch ohne cronExpr): ein zwischenzeitlich
+       *  geaenderter Ausdruck waere ungeprueft aktiv. */
+      cronExpr?: string | null;
     };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {
@@ -4442,6 +4513,20 @@ export type WorkflowKnowledgeBaseApiPort = {
     actorUserId: string;
     id: number;
   }): Promise<WorkflowKnowledgeBaseRecord | null>;
+  /** TA-P5: ganzes Markdown-Dokument atomar speichern (ein Chunk „Dokument“). */
+  saveDocument?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    content: string;
+  }): Promise<WorkflowKnowledgeDocumentSaveResult | null>;
+};
+
+export type WorkflowKnowledgeDocumentSaveResult = {
+  knowledgeBase: WorkflowKnowledgeBaseRecord;
+  chunk: WorkflowKnowledgeChunkRecord;
+  created: boolean;
+  removedChunks: WorkflowKnowledgeChunkRecord[];
 };
 
 export type WorkflowKnowledgeChunkRecord = {
@@ -5587,6 +5672,8 @@ export type SmtpRelayAdminPort = {
 
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
+  /** TA-P5: Learnings sammeln, auswerten, freigeben. */
+  aiLearnings?: import('../ai-learnings').AiLearningsApiPort;
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;
@@ -5609,6 +5696,7 @@ export type ServerApiPorts = {
   aiProfiles?: AiProfileApiPort;
   aiPrompts?: AiPromptApiPort;
   aiTextTransform?: AiTextTransformApiPort;
+  aiProfileConnectionTest?: AiProfileConnectionTestApiPort;
   automationApiKeys?: AutomationApiKeyApiPort;
   customerCustomFields?: CustomerCustomFieldApiPort;
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;
@@ -5633,6 +5721,7 @@ export type ServerApiPorts = {
   emailComposeAttachments?: EmailComposeAttachmentUploadApiPort;
   emailComposeSender?: EmailComposeSenderApiPort;
   emailOutboundValidation?: EmailOutboundValidationApiPort;
+  emailOutboundReviewSkip?: EmailOutboundReviewSkipApiPort;
   emailDiagnostics?: EmailDiagnosticsApiPort;
   emailFolders?: EmailFolderApiPort;
   emailGdprExport?: EmailGdprExportApiPort;
