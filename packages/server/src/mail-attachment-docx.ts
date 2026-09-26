@@ -1,10 +1,13 @@
 /**
- * DOCX text extraction in a worker thread (C-A7, G7). The inflate budget
- * bounds the XML, not the DOM mammoth/xmldom builds from it: a DOCX of a few
- * dozen KB inside the budget reaches several GB of heap and blocks the event
- * loop for tens of seconds. Guard and parse therefore run in a worker with
- * its own heap limit; on out-of-memory or timeout only the worker is gone and
- * the attachment stays without text.
+ * DOCX and PDF text extraction in a worker thread (C-A7, G7). The inflate
+ * budget bounds the XML, not the DOM mammoth/xmldom builds from it: a DOCX of
+ * a few dozen KB inside the budget reaches several GB of heap and blocks the
+ * event loop for tens of seconds. A crafted PDF can do the same to pdf.js,
+ * and a PDF parse in the main thread could not even be stopped after its
+ * timeout. Both parsers therefore run in a worker with its own heap limit;
+ * on out-of-memory or timeout only the worker is gone (terminated) and the
+ * attachment stays without text. Attachments are only parsed for their text,
+ * never opened or executed.
  *
  * This module is also the worker entry: the worker loads this same file
  * (dist/mail-attachment-docx.js in the build, the .ts source under Jest/tsx).
@@ -12,10 +15,14 @@
 import { createRequire } from 'node:module';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
+import { inflateRawSync } from 'node:zlib';
+
 import {
   assertDocxInflatesWithinLimit,
   capAttachmentText,
+  extractOfficeText,
   type DocxZipLoader,
+  type OfficeTextKind,
 } from '@simplecrm/core';
 
 const DOCX_WORKER_RESOURCE_LIMITS = {
@@ -28,7 +35,8 @@ const MIB = 1024 * 1024;
 const HEAP_POLL_INTERVAL_MS = 100;
 const WORKER_KIND = 'simplecrm-docx-text';
 
-type DocxWorkerInput = { kind: typeof WORKER_KIND; docx: Uint8Array };
+type TextWorkerFormat = 'docx' | 'pdf' | OfficeTextKind;
+type DocxWorkerInput = { kind: typeof WORKER_KIND; format?: TextWorkerFormat; docx: Uint8Array };
 type DocxWorkerResult = { text: string } | { error: string };
 
 /** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
@@ -45,6 +53,23 @@ export async function extractDocxText(buf: Buffer): Promise<string> {
   const mammoth = await import('mammoth');
   const result = await mammoth.extractRawText({ buffer: buf });
   return capAttachmentText(result.value ?? '');
+}
+
+/** pdf.js in the calling thread; runs inside the worker. */
+export async function extractPdfText(buf: Buffer): Promise<string> {
+  const { PDFParse } = await import('pdf-parse');
+  const parser = new PDFParse({ data: new Uint8Array(buf) });
+  try {
+    const result = await parser.getText();
+    return capAttachmentText(result.text ?? '');
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+}
+
+/** Spreadsheets, RTF, DOC, OpenDocument, PPTX (core readers); runs inside the worker. */
+export function extractOfficeTextInThread(kind: OfficeTextKind, buf: Buffer): string {
+  return capAttachmentText(extractOfficeText(kind, buf, (data, maxOutputLength) => inflateRawSync(data, { maxOutputLength })));
 }
 
 /** Built code starts this compiled module; from TS sources (Jest, tsx) the worker needs the tsx loader too. */
@@ -69,13 +94,28 @@ function heapLimitOverridden(heapSizeLimit: number): boolean {
  * timeoutMs. Rejects on parse errors, out-of-memory and timeout.
  */
 export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker('docx', buf, timeoutMs);
+}
+
+/** PDF -> plain text in the same kind of worker (heap limit, terminated after timeoutMs). */
+export function extractPdfTextInWorker(buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker('pdf', buf, timeoutMs);
+}
+
+/** Office formats (xlsx, xlsb, xls, ods, odt, rtf, doc, pptx) in the same kind of worker. */
+export function extractOfficeTextInWorker(kind: OfficeTextKind, buf: Buffer, timeoutMs: number): Promise<string> {
+  return runTextWorker(kind, buf, timeoutMs);
+}
+
+function runTextWorker(format: TextWorkerFormat, buf: Buffer, timeoutMs: number): Promise<string> {
+  const label = format.toUpperCase();
   const entry = workerEntry();
   const worker = new Worker(entry.filename, {
     execArgv: entry.execArgv,
     // Explicitly the caller's process.env (the default outside Jest): under Jest the
     // test's sandboxed env (e.g. TSX_TSCONFIG_PATH) must reach the tsx-loaded worker.
     env: process.env,
-    workerData: { kind: WORKER_KIND, docx: buf } satisfies DocxWorkerInput,
+    workerData: { kind: WORKER_KIND, format, docx: buf } satisfies DocxWorkerInput,
     resourceLimits: DOCX_WORKER_RESOURCE_LIMITS,
   });
   return new Promise<string>((resolve, reject) => {
@@ -91,7 +131,7 @@ export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise
       else resolve(text);
     };
     const stop = (reason: string) => {
-      const error = new Error(`DOCX parse stopped: ${reason}`);
+      const error = new Error(`${label} parse stopped: ${reason}`);
       console.warn(`[mail] attachment text: ${error.message}; attachment stays without text`);
       finish(error);
     };
@@ -124,17 +164,23 @@ export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise
         stop(heapLimit);
         return;
       }
-      console.warn(`[mail] attachment text: DOCX worker failed: ${error.message}`);
+      console.warn(`[mail] attachment text: ${label} worker failed: ${error.message}`);
       finish(error);
     });
-    worker.on('exit', (code) => finish(new Error(`DOCX worker exited with code ${code}`)));
+    worker.on('exit', (code) => finish(new Error(`${label} worker exited with code ${code}`)));
     watchHeap();
   });
 }
 
 if (!isMainThread && (workerData as Partial<DocxWorkerInput> | null)?.kind === WORKER_KIND) {
-  const { docx } = workerData as DocxWorkerInput;
-  extractDocxText(Buffer.from(docx.buffer, docx.byteOffset, docx.byteLength)).then(
+  const { docx, format } = workerData as DocxWorkerInput;
+  const input = Buffer.from(docx.buffer, docx.byteOffset, docx.byteLength);
+  const run = format === 'pdf'
+    ? extractPdfText(input)
+    : format === 'docx' || format === undefined
+      ? extractDocxText(input)
+      : Promise.resolve().then(() => extractOfficeTextInThread(format, input));
+  run.then(
     (text) => parentPort?.postMessage({ text } satisfies DocxWorkerResult),
     (error: unknown) =>
       parentPort?.postMessage({

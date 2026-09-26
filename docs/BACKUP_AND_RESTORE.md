@@ -7,7 +7,11 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 `docker/backup.sh` writes files into `/backups`:
 
 - `db-<stamp>.dump`: PostgreSQL custom-format dump from `pg_dump -Fc`.
-- `attachments-<stamp>.tar`: optional attachment archive when `ATTACHMENTS_DIR` exists.
+- `attachments-<stamp>.list`: the attachment files of this set, one line per
+  file (`sha256`, size, mtime, relative path, tab separated). The contents live
+  once in `attachments-store/<aa>/<sha256>` (see "Incremental attachments"
+  below). Sets from older versions carry `attachments-<stamp>.tar` instead;
+  restore and restore drill still read those.
 - `audit-archive-<stamp>.tar`: optional audit archive when `AUDIT_ARCHIVE_DIR` exists.
 - `backup-<stamp>.sha256`: SHA-256 manifest for every file in the set.
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
@@ -24,6 +28,32 @@ This document covers the current Docker backup, restore, restore-drill, and doct
   counting them would claim a dependency on the old `.env` that the startup
   check itself does not see. The same yardstick on both sides, or the warning
   contradicts the behaviour.
+
+### Incremental attachments
+
+Attachment files are written once and never changed, so a backup only has to
+read what is new (`docker/backup-attachments.sh`):
+
+- A file with the same path, size and mtime as in the previous list keeps its
+  recorded sha256 and is not read again. New files are hashed and their
+  content is copied into `attachments-store` only if it is not there yet
+  (identical attachments in several mails: one copy). Every copy is hashed
+  again before it gets its final name.
+- Every set is complete on its own: list plus store give the whole attachment
+  folder at the time of the backup, so any set can be restored without the
+  ones before it.
+- `restore.sh` reads every content of the list and checks its hash **before**
+  `pg_restore` touches the database, then writes each file (hash checked) and
+  recreates identical content as hard links. Files that are not in the list are
+  left alone.
+- `restore-drill.sh` reads every content of the list and checks its hash;
+  `doctor.sh` checks that they exist (`backup_attachments=ok|missing`).
+- Retention removes a content from the store only when no remaining list (and
+  no list being written) names it and it is older than one day. Without any
+  list nothing is removed. Protected rollback sets keep their contents.
+
+The first backup after the upgrade copies all attachments into the store once;
+older `.tar` sets are removed by retention as usual.
 
 The dump and the archives are written the same way, as `*.partial`, and only
 get their final names once all of them are complete; the manifest comes last.
@@ -486,13 +516,13 @@ Equivalent direct script call:
 sh restore-compose.sh
 ```
 
-With no arguments, it restores the latest `db-*.dump` from the Compose `backups` volume and auto-detects matching attachments/audit archives.
+With no arguments, it restores the latest `db-*.dump` from the Compose `backups` volume and auto-detects the matching attachment list (`attachments-<stamp>.list`, or the `.tar` of an older set) and audit archive.
 
 Explicit paths are container paths inside the backups volume:
 
 ```sh
 sh ./simplecrm restore /backups/db-2026-06-05T10-00-00Z.dump \
-  /backups/attachments-2026-06-05T10-00-00Z.tar \
+  /backups/attachments-2026-06-05T10-00-00Z.list \
   /backups/audit-archive-2026-06-05T10-00-00Z.tar
 ```
 
@@ -548,7 +578,7 @@ the admin role:
 
 ```sh
 DATABASE_URL="postgres://simplecrm_app:app-password@postgres:5432/simplecrm" \
-  sh docker/restore.sh /backups/db-STAMP.dump /backups/attachments-STAMP.tar /backups/audit-archive-STAMP.tar
+  sh docker/restore.sh /backups/db-STAMP.dump /backups/attachments-STAMP.list /backups/audit-archive-STAMP.tar
 ```
 
 `restore.sh` checks that this login is neither a superuser nor able to become

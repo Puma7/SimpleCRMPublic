@@ -210,7 +210,7 @@ describe('server mail auth header fallback', () => {
     async function verifyParsed(trustedAuthservId: string | null) {
       const parsed = await parseMailSource(Buffer.from(rawMail));
       return verifyMailAuthentication({
-        rawRfc822B64: parsed.rawRfc822B64,
+        rawRfc822: parsed.rawRfc822,
         rawHeaders: parsed.rawHeaders,
         bodyText: parsed.bodyText,
         bodyHtml: parsed.bodyHtml,

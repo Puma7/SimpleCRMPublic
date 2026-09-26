@@ -157,11 +157,16 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
   }
 
   async function seedCandidates(count: number, workspaceId = WS_A): Promise<void> {
+    // Zeitstempel aus derselben Uhr wie die Auswertung (JS, Millisekunden),
+    // wie im Produktivcode. now() der Datenbank hat Mikrosekunden und lag im
+    // selben Millisekundenbruchteil oft hinter dem auf ms gekürzten JS-„now“
+    // der Auswertung (created_at <= to) — der Eintrag fiel dann heraus.
+    const base = Date.now() - 1000;
     for (let i = 0; i < count; i += 1) {
       await postgres.admin.query(`
         INSERT INTO ai_learning_candidates (workspace_id, kind, question_text, human_text, created_at)
-        VALUES ($1, 'human_reply', $2, $3, now() - ($4 || ' minutes')::interval)
-      `, [workspaceId, `Betreff: Frage ${i}`, `Antwort ${i}: Rückgabe 30 Tage.`, String(i)]);
+        VALUES ($1, 'human_reply', $2, $3, $4)
+      `, [workspaceId, `Betreff: Frage ${i}`, `Antwort ${i}: Rückgabe 30 Tage.`, new Date(base - i * 60_000)]);
     }
   }
 

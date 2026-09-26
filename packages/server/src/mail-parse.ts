@@ -55,7 +55,8 @@ export type ServerMailSyncParsedMessage = Readonly<{
   attachmentsTruncated: boolean;
   attachmentsJson: unknown | null;
   rawHeaders: string | null;
-  rawRfc822B64: string;
+  /** The original source bytes; stored compressed (mail-raw-storage.ts). */
+  rawRfc822: Buffer;
   attachments?: readonly ServerMailSyncParsedAttachment[];
 }>;
 
@@ -177,7 +178,8 @@ export async function parseMailSource(
     attachmentsTruncated,
     attachmentsJson: parseJsonValue(attachmentsJson),
     rawHeaders: rawHeadersFromParsed(parsed),
-    rawRfc822B64: source.toString('base64'),
+    // Own copy: the caller's buffer may be a view that is reused later.
+    rawRfc822: Buffer.from(source),
     attachments: storedAttachments,
   };
 }

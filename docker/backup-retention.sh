@@ -88,6 +88,7 @@ remove_backup_set() {
   rm -f \
     "$backup_dir/db-$stamp.dump" \
     "$backup_dir/attachments-$stamp.tar" \
+    "$backup_dir/attachments-$stamp.list" \
     "$backup_dir/audit-archive-$stamp.tar" \
     "$backup_dir/backup-$stamp.sha256" \
     "$backup_dir/backup-$stamp.meta"
@@ -102,6 +103,10 @@ remove_orphan_backup_file() {
     attachments-*.tar)
       stamp="${file_name#attachments-}"
       stamp="${stamp%.tar}"
+      ;;
+    attachments-*.list)
+      stamp="${file_name#attachments-}"
+      stamp="${stamp%.list}"
       ;;
     audit-archive-*.tar)
       stamp="${file_name#audit-archive-}"
@@ -125,6 +130,13 @@ remove_orphan_backup_file() {
   fi
 }
 
+# Stamps the update protects ($BACKUP_DIR/.protected-stamps, written by
+# docker/update-lib.sh): the backup a rollback needs. Retention keeps them.
+protected_backup_stamps() {
+  [ -f "$1/.protected-stamps" ] || return 0
+  grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$' "$1/.protected-stamps" || true
+}
+
 prune_backup_retention() {
   backup_dir="$1"
 
@@ -132,7 +144,8 @@ prune_backup_retention() {
   validate_retention_count BACKUP_RETENTION_WEEKLY "$BACKUP_RETENTION_WEEKLY"
   validate_retention_count BACKUP_RETENTION_MONTHLY "$BACKUP_RETENTION_MONTHLY"
 
-  keep_stamps="$(select_retained_backup_stamps "$backup_dir" "$BACKUP_RETENTION_DAILY" "$BACKUP_RETENTION_WEEKLY" "$BACKUP_RETENTION_MONTHLY")"
+  keep_stamps="$(select_retained_backup_stamps "$backup_dir" "$BACKUP_RETENTION_DAILY" "$BACKUP_RETENTION_WEEKLY" "$BACKUP_RETENTION_MONTHLY")
+$(protected_backup_stamps "$backup_dir")"
 
   for path in "$backup_dir"/db-*.dump; do
     [ -e "$path" ] || continue
@@ -145,8 +158,14 @@ prune_backup_retention() {
     fi
   done
 
-  for path in "$backup_dir"/attachments-*.tar "$backup_dir"/audit-archive-*.tar "$backup_dir"/backup-*.sha256 "$backup_dir"/backup-*.meta; do
+  for path in "$backup_dir"/attachments-*.tar "$backup_dir"/attachments-*.list "$backup_dir"/audit-archive-*.tar "$backup_dir"/backup-*.sha256 "$backup_dir"/backup-*.meta; do
     [ -e "$path" ] || continue
     remove_orphan_backup_file "$backup_dir" "$path"
   done
+
+  # Anhang-Inhalte, die kein verbliebener Satz mehr nennt (backup-attachments.sh;
+  # nur wenn eingebunden, wie in backup.sh).
+  if command -v prune_attachment_store >/dev/null 2>&1; then
+    prune_attachment_store "$backup_dir"
+  fi
 }

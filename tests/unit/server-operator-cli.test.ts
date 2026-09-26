@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -8,59 +8,85 @@ const repoRoot = join(__dirname, '..', '..');
 const bashAvailable = () => process.platform !== 'win32'
   && spawnSync('bash', ['--version'], { stdio: 'ignore' }).status === 0;
 
-// Spins up a fake `docker` on PATH that records every argv it receives, reports
-// the configured set of existing Compose stacks for `compose ls`, and lets the
-// restore orchestration's health-wait return immediately (so the scripts run to
-// completion without Docker). Returns the exit status, stderr, and the recorded
-// compose project flags.
+// A fake `docker` on PATH that records every argv and keeps a tiny image store
+// (tag -> id, which image each service container runs) in FAKE_STORE, so the
+// update's generations, cleanup and rollback can be checked without Docker.
+// `compose build` creates new ids for the compose tags, `compose up -d api
+// caddy` starts containers from them. A fake `df` reports FAKE_DF_FREE_KB
+// (FAKE_DF_FREE_KB_AFTER_PRUNE once the build cache was pruned).
+const FAKE_DOCKER = readFileSync(join(repoRoot, 'tests', 'fixtures', 'operator-cli', 'fake-docker.sh'), 'utf8');
+
+const FAKE_DF = readFileSync(join(repoRoot, 'tests', 'fixtures', 'operator-cli', 'fake-df.sh'), 'utf8');
+
+const GB_KB = 1024 * 1024;
+
+type FakeDockerRun = {
+  status: number;
+  stdout: string;
+  stderr: string;
+  projectFlags: string[];
+  log: string;
+  dockerEnv: string[];
+  /** Image store after the run: ref -> id. */
+  images: Record<string, string>;
+  /** Contents of the update state files (by file name). */
+  stateFiles: Record<string, string>;
+};
+
+/** Persistent fake Docker host for several runs (images, running containers, update state). */
+function fakeHost(seed: { images?: Record<string, string>; running?: { api?: string; caddy?: string } } = {}): string {
+  const store = mkdtempSync(join(tmpdir(), 'simplecrm-fakehost-'));
+  writeFileSync(join(store, 'images'), Object.entries(seed.images ?? {}).map(([ref, id]) => `${ref} ${id}\n`).join(''));
+  const running = [
+    seed.running?.api ? `api ${seed.running.api}\n` : '',
+    seed.running?.caddy ? `caddy ${seed.running.caddy}\n` : '',
+  ].join('');
+  writeFileSync(join(store, 'running'), running);
+  return store;
+}
+
 function runWithFakeDocker(
   args: readonly string[],
-  options: { env?: Record<string, string>; stacks?: readonly string[] } = {},
-): { status: number; stderr: string; projectFlags: string[]; log: string } {
+  options: { env?: Record<string, string>; stacks?: readonly string[]; cwd?: string; host?: string } = {},
+): FakeDockerRun {
   const dir = mkdtempSync(join(tmpdir(), 'simplecrm-fakedocker-'));
+  const store = options.host ?? join(dir, 'host');
+  if (!options.host) mkdirSync(store);
   try {
     const logPath = join(dir, 'docker.log');
-    const fakeDocker = join(dir, 'docker');
-    writeFileSync(
-      fakeDocker,
-      [
-        '#!/bin/sh',
-        'echo "$*" >> "$DOCKER_LOG"',
-        // `compose ls` -> a table header plus one row per configured fake stack.
-        'case "$*" in',
-        "  *\"compose ls\"*) printf 'NAME STATUS CONFIG\\n'; for p in $FAKE_STACKS; do printf '%s running x\\n' \"$p\"; done; exit 0 ;;",
-        '  *"ps -q api"*) echo "fakeapi"; exit 0 ;;',
-        'esac',
-        // restore-compose.sh probes `docker inspect` for health.
-        'case "$1" in inspect) echo "healthy"; exit 0 ;; esac',
-        // Optionally fail the plain migrate-apply (but not --check / --repair-checksums).
-        'if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then',
-        '  case "$*" in',
-        '    *--check*|*--repair-checksums*) : ;;',
-        '    *migrate.js*) exit 1 ;;',
-        '  esac',
-        'fi',
-        'exit 0',
-        '',
-      ].join('\n'),
-    );
-    chmodSync(fakeDocker, 0o755);
+    writeFileSync(join(dir, 'docker'), FAKE_DOCKER);
+    chmodSync(join(dir, 'docker'), 0o755);
+    writeFileSync(join(dir, 'df'), FAKE_DF);
+    chmodSync(join(dir, 'df'), 0o755);
 
     const result = spawnSync('bash', args.slice(), {
-      cwd: repoRoot,
+      cwd: options.cwd ?? repoRoot,
       env: {
         ...process.env,
         PATH: `${dir}:${process.env.PATH ?? ''}`,
         DOCKER_LOG: logPath,
+        FAKE_STORE: store,
         FAKE_STACKS: (options.stacks ?? []).join(' '),
+        FAKE_DF_FREE_KB: String(50 * GB_KB),
+        SIMPLECRM_STATE_DIR: join(store, 'state'),
         ...(options.env ?? {}),
       },
+      input: '',
       encoding: 'utf8',
     });
 
     const log = existsSync(logPath) ? readFileSync(logPath, 'utf8') : '';
-    const projectFlags = [...log.matchAll(/-p (\S+)/g)].map((m) => m[1] ?? '');
-    return { status: result.status ?? -1, stderr: result.stderr ?? '', projectFlags, log };
+    const projectFlags = [...log.matchAll(/compose -p (\S+)/g)].map((m) => m[1] ?? '');
+    const dockerEnv = existsSync(`${logPath}.env`) ? readFileSync(`${logPath}.env`, 'utf8').split('\n').filter(Boolean) : [];
+    const images = Object.fromEntries(
+      (existsSync(join(store, 'images')) ? readFileSync(join(store, 'images'), 'utf8') : '')
+        .split('\n').filter(Boolean).map((line) => line.split(' ') as [string, string]),
+    );
+    const stateDir = join(store, 'state');
+    const stateFiles = Object.fromEntries(
+      (existsSync(stateDir) ? readdirSync(stateDir) : []).map((name) => [name, readFileSync(join(stateDir, name), 'utf8')]),
+    );
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '', projectFlags, log, dockerEnv, images, stateFiles };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -304,4 +330,558 @@ describe('API volume ownership after the switch to a non-root image', () => {
     expect(fix).toBeGreaterThan(lines.findIndex((line) => line.includes('--profile restore run --rm restore')));
     expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
   }));
+});
+
+describe('update: fixed release, health check and the way back', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.test', '-c', 'init.defaultBranch=main', ...args,
+  ], { cwd, encoding: 'utf8' }).trim();
+
+  /**
+   * A server checkout as operators have it: a clone of an origin with release
+   * tags. Every commit carries the real update scripts, only a marker changes.
+   */
+  function serverCheckout(tags: readonly string[]): { root: string; checkout: string; commitOf: Record<string, string> } {
+    const root = mkdtempSync(join(tmpdir(), 'simplecrm-update-tags-'));
+    const origin = join(root, 'origin');
+    execFileSync('mkdir', ['-p', join(origin, 'docker')]);
+    git(origin, 'init', '-q');
+    for (const name of ['update.sh', 'update-lib.sh', 'rollback.sh', 'restore-compose.sh', 'disk-report.sh', 'simplecrm']) {
+      writeFileSync(join(origin, 'docker', name), readFileSync(join(repoRoot, 'docker', name)));
+    }
+    const commitOf: Record<string, string> = {};
+    for (const tag of tags) {
+      writeFileSync(join(origin, 'marker.txt'), `${tag}\n`);
+      git(origin, 'add', '-A');
+      git(origin, 'commit', '-q', '-m', tag);
+      git(origin, 'tag', tag);
+      commitOf[tag] = git(origin, 'rev-parse', '--short', 'HEAD');
+    }
+    writeFileSync(join(origin, 'marker.txt'), 'main\n');
+    git(origin, 'commit', '-q', '-am', 'unreleased work on main');
+    const checkout = join(root, 'checkout');
+    git(root, 'clone', '-q', '--no-tags', origin, checkout);
+    return { root, checkout, commitOf };
+  }
+
+  test('--version latest checks out the highest release tag (numeric, no pre-releases)', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.2.0', 'v1.10.0', 'v1.9.0', 'v2.0.0-rc1']);
+    try {
+      const run = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'latest', '--no-backup'], { cwd: checkout });
+      expect(run.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.10.0']);
+      expect(readFileSync(join(checkout, 'marker.txt'), 'utf8')).toBe('v1.10.0\n');
+      expect(run.stdout).toContain('Updating source to release v1.10.0');
+      expect(run.stdout).toContain(`-> ${commitOf['v1.10.0']} (v1.10.0)`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
+  // Gatekeeper PR #195: VERSION ist in docker-compose.yml der Image-Tag (simplecrm/api:${VERSION:-dev}) und
+  // wird der API übergeben. Der Release-Wunsch darf ihn weder setzen noch aus ihm gelesen werden.
+  test('--version never leaks into the image tag; an operator VERSION stays the image tag', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.0.9', 'v1.1.0']);
+    try {
+      const release = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.0.9', '--no-backup'], { cwd: checkout });
+      expect(release.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+      expect(release.dockerEnv.length).toBeGreaterThan(0);
+      expect(new Set(release.dockerEnv)).toEqual(new Set(['VERSION=<unset>']));
+
+      // Operator pins the image tag in the shell; the update follows main as before.
+      const imageTag = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { VERSION: 'prod-2026' } });
+      expect(imageTag.status).toBe(0);
+      expect(new Set(imageTag.dockerEnv)).toEqual(new Set(['VERSION=prod-2026']));
+
+      // Both at once: release from --version, image tag from the operator.
+      const both = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--version', 'v1.1.0', '--no-backup'],
+        { cwd: checkout, env: { VERSION: 'prod-2026' } },
+      );
+      expect(both.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.1.0']);
+      expect(new Set(both.dockerEnv)).toEqual(new Set(['VERSION=prod-2026']));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
+  test('--version vX.Y.Z checks out exactly that release; unknown or malformed tags stop before Docker', ranOrSkipped(() => {
+    const { root, checkout, commitOf } = serverCheckout(['v1.0.9', 'v1.1.0']);
+    try {
+      const exact = runWithFakeDocker(['docker/simplecrm', 'update', '--version=v1.0.9', '--no-backup'], { cwd: checkout });
+      expect(exact.status).toBe(0);
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+
+      // Codex-Review PR #195: auch bei knappem Platz weder Build-Cache-Prune noch Generations-Tags.
+      const host = fakeHost({ images: { 'simplecrm/api:dev': 'sha256:api0', 'simplecrm/web:dev': 'sha256:web0' } });
+      const unknown = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v9.9.9', '--no-backup'], {
+        cwd: checkout, host, env: { FAKE_DF_FREE_KB: String(GB_KB) },
+      });
+      rmSync(host, { recursive: true, force: true });
+      expect(unknown.status).not.toBe(0);
+      expect(unknown.log).not.toContain(' build');
+      expect(unknown.log).not.toMatch(/^(tag|builder|info) /m);
+      expect(Object.keys(unknown.images).filter((ref) => ref.includes(':gen-'))).toEqual([]);
+      // Nichts wurde verändert: kein Hinweis auf einen Weg zurück.
+      expect(unknown.stderr).not.toContain('Update stopped during');
+      expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
+
+      const malformed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'main;rm', '--no-backup'], { cwd: checkout });
+      expect(malformed.status).toBe(2);
+      expect(malformed.stderr).toContain('--version must be a release tag');
+      expect(malformed.log).not.toMatch(/ build| run | up -d/);
+
+      const combined = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0', '--branch', 'main'], { cwd: checkout });
+      expect(combined.status).toBe(2);
+      expect(combined.log).not.toMatch(/ build| run | up -d/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }));
+
+  test('waits for a healthy API; an unhealthy new version fails and prints the way back with the backup', ranOrSkipped(() => {
+    const dump = '/backups/db-2026-09-26T16-00-00Z.dump';
+    const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull'], { env: { FAKE_BACKUP_DUMP: dump } });
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toContain(`Pre-update backup: ${dump}`);
+    const lines = ok.log.split('\n');
+    expect(lines.findIndex((line) => line.startsWith('inspect') && line.includes('.State.Health')))
+      .toBeGreaterThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+
+    const unhealthy = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull'],
+      { env: { FAKE_BACKUP_DUMP: dump, FAKE_API_HEALTH: 'unhealthy', UPDATE_API_HEALTH_TIMEOUT_SECONDS: '0' } },
+    );
+    expect(unhealthy.status).not.toBe(0);
+    expect(unhealthy.stderr).toContain('the API did not become healthy');
+    expect(unhealthy.stderr).toContain('Update stopped during: verify');
+    expect(unhealthy.stderr).toContain(`simplecrm" restore ${dump}`);
+    expect(unhealthy.stdout).not.toContain('Update complete');
+  }));
+
+  // Codex-Review PR #195: Die Befehle für den Weg zurück müssen denselben Stack treffen wie das Update.
+  test('the way back keeps the compose project and every compose file', ranOrSkipped(() => {
+    const composeFile = `${repoRoot}/docker/docker-compose.yml:${repoRoot}/docker/docker-compose.relay.yml`;
+    const env = { COMPOSE_PROJECT_NAME: 'prod42', COMPOSE_FILE: composeFile };
+    const selection = `COMPOSE_PROJECT_NAME="prod42" COMPOSE_FILE="${composeFile}"`;
+
+    const beforeMigrations = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { ...env, FAKE_FAIL_BUILD: '1' } },
+    );
+    expect(beforeMigrations.status).not.toBe(0);
+    expect(beforeMigrations.stderr).toContain('Update stopped during: build');
+    expect(beforeMigrations.stderr).toContain(`${selection} SKIP_PULL=1 SKIP_BACKUP=1 sh "${repoRoot}/docker/update.sh"`);
+
+    const afterMigrations = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { ...env, FAKE_FAIL_MIGRATE: '1' } },
+    );
+    expect(afterMigrations.stderr).toContain(`${selection} docker compose -p "prod42"`);
+    expect(afterMigrations.stderr).toContain(`${selection} sh "${repoRoot}/docker/simplecrm" restore`);
+  }));
+
+  test('a failure before the migrations only asks to rebuild the previous commit', ranOrSkipped(() => {
+    const failed = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { FAKE_FAIL_MIGRATE: '1' } },
+    );
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('Update stopped during: migrate');
+    expect(failed.stderr).toContain('restore /backups/db-<stamp>.dump');
+
+    const preflight = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '1' } });
+    expect(preflight.status).toBe(4);
+    expect(preflight.stderr).not.toContain('Update stopped during');
+  }));
+});
+
+/**
+ * Speicherplatz und Rollback (PR #195, Messung auf dem Produktivserver: 17,5 GB
+ * Build-Cache, Container-Logs ohne Grenze). Nach einem Update bleiben genau zwei
+ * Generationen der eigenen Images; der Rollback nutzt die vorherige ohne Neubau
+ * und das Backup von direkt vor dem Update.
+ */
+describe('update: image generations, rollback and disk space', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', [
+    '-c', 'user.name=Test', '-c', 'user.email=test@example.test', '-c', 'init.defaultBranch=main', ...args,
+  ], { cwd, encoding: 'utf8' }).trim();
+  const running = { images: { 'simplecrm/api:dev': 'sha256:api0', 'simplecrm/web:dev': 'sha256:web0' }, running: { api: 'sha256:api0', caddy: 'sha256:web0' } };
+  const gens = (images: Record<string, string>, repo: string) => Object.entries(images)
+    .filter(([ref]) => ref.startsWith(`${repo}:gen-`)).map(([, id]) => id).sort();
+  const stateOf = (run: FakeDockerRun, kind: 'state' | 'attempt', project = 'docker') => {
+    const text = run.stateFiles[`${project}.${kind}`] ?? '';
+    return Object.fromEntries(text.split('\n').filter(Boolean).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+  };
+  const destructive = /volume (rm|prune)|system prune|image prune (-a|--all)|image prune -f -a/;
+
+  /** A server checkout (git clone) whose commits carry the real scripts. */
+  function checkoutWithTags(tags: readonly string[]): { root: string; checkout: string; head: string } {
+    const root = mkdtempSync(join(tmpdir(), 'simplecrm-rollback-'));
+    const origin = join(root, 'origin');
+    mkdirSync(join(origin, 'docker'), { recursive: true });
+    git(origin, 'init', '-q');
+    for (const name of ['update.sh', 'update-lib.sh', 'rollback.sh', 'restore-compose.sh', 'disk-report.sh', 'simplecrm']) {
+      writeFileSync(join(origin, 'docker', name), readFileSync(join(repoRoot, 'docker', name)));
+    }
+    writeFileSync(join(origin, 'marker.txt'), 'installed\n');
+    git(origin, 'add', '-A');
+    git(origin, 'commit', '-q', '-m', 'installed');
+    for (const tag of tags) {
+      writeFileSync(join(origin, 'marker.txt'), `${tag}\n`);
+      git(origin, 'commit', '-q', '-am', tag);
+      git(origin, 'tag', tag);
+    }
+    const checkout = join(root, 'checkout');
+    git(root, 'clone', '-q', '--no-tags', origin, checkout);
+    git(checkout, 'checkout', '-q', '--detach', git(origin, 'rev-list', '--max-parents=0', 'HEAD'));
+    return { root, checkout, head: git(checkout, 'rev-parse', 'HEAD') };
+  }
+
+  test('each update keeps exactly the current and the previous generation; cleanup never touches volumes', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const first = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      expect(first.status).toBe(0);
+      expect(gens(first.images, 'simplecrm/api')).toEqual(['sha256:api0', 'sha256:api1']);
+      expect(first.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(first.images[stateOf(first, 'state').previous_api_image!]).toBe('sha256:api0');
+      expect(first.images[stateOf(first, 'state').current_api_image!]).toBe('sha256:api1');
+      expect(first.stateFiles['docker.attempt']).toBeUndefined();
+
+      const second = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      const third = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      expect(second.status).toBe(0);
+      expect(third.status).toBe(0);
+      expect(gens(third.images, 'simplecrm/api')).toEqual(['sha256:api2', 'sha256:api3']);
+      expect(gens(third.images, 'simplecrm/web')).toEqual(['sha256:web2', 'sha256:web3']);
+      expect(third.images[stateOf(third, 'state').previous_web_image!]).toBe('sha256:web2');
+      expect(third.images['postgres:18-alpine']).toBeUndefined();
+      for (const run of [first, second, third]) {
+        expect(run.log).not.toMatch(destructive);
+        expect(run.log).toMatch(/builder prune -af --reserved-space 2gb/);
+        expect(run.log).toMatch(/image prune -f --filter label=org\.simplecrm\.image/);
+      }
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('a failed build keeps the running version, its images and the last rollback state', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      const failed = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: { FAKE_FAIL_BUILD: '1' } });
+      expect(failed.status).not.toBe(0);
+      expect(failed.stateFiles['docker.state']).toBe(ok.stateFiles['docker.state']);
+      expect(stateOf(failed, 'attempt')).toMatchObject({ stage: 'build' });
+      expect(failed.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(gens(failed.images, 'simplecrm/api')).toContain('sha256:api1');
+      expect(failed.stderr).toContain('The database is unchanged');
+      expect(failed.stderr).toContain('simplecrm" rollback');
+      expect(failed.log).not.toMatch(destructive);
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('rollback after a failed migration: previous images, no rebuild, pre-update backup restored', ranOrSkipped(() => {
+    const { root, checkout, head } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    const dump = '/backups/db-2026-09-26T16-00-00Z.dump';
+    try {
+      const failed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: dump, FAKE_FAIL_MIGRATE: '1' },
+      });
+      expect(failed.status).not.toBe(0);
+      expect(stateOf(failed, 'attempt')).toMatchObject({ stage: 'migrate', backup: dump, from_commit: head });
+      expect(failed.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(failed.log).toMatch(/--entrypoint sh backup -c [\s\S]*\.protected-stamps" sh +2026-09-26T16-00-00Z$/m);
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(git(checkout, 'rev-parse', 'HEAD')).toBe(head);
+      expect(rollback.images['simplecrm/api:dev']).toBe('sha256:api0');
+      expect(rollback.images['simplecrm/web:dev']).toBe('sha256:web0');
+      expect(rollback.stdout).toContain(`restored from ${dump}`);
+      expect(rollback.log).toContain('--profile restore run --rm restore');
+      expect(rollback.log).not.toMatch(/ build$/m);
+      expect(rollback.stateFiles['docker.attempt']).toBeUndefined();
+      expect(stateOf(rollback, 'state')).toMatchObject({ current_commit: head, previous_api_image: '' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Nach einem Update, das nach seinen Migrationen scheiterte, ist der laufende
+  // Stand nicht mehr der letzte gute. Ein erneuter Versuch darf das Rollback-Ziel
+  // und dessen Sicherung (von vor den ersten Migrationen) nicht überschreiben.
+  test('a second attempt after a failed one keeps the last good version and its pre-migration backup', ranOrSkipped(() => {
+    const { root, checkout, head } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    const first = '/backups/db-2026-09-26T16-00-00Z.dump';
+    const second = '/backups/db-2026-09-26T16-30-00Z.dump';
+    try {
+      runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: first, FAKE_API_HEALTH: 'unhealthy', UPDATE_API_HEALTH_TIMEOUT_SECONDS: '0' },
+      });
+      const again = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: second, FAKE_FAIL_MIGRATE: '1' },
+      });
+      expect(again.status).not.toBe(0);
+      expect(again.stdout).toContain('An earlier update did not finish');
+      expect(stateOf(again, 'attempt')).toMatchObject({ from_commit: head, backup: first });
+      expect(again.images[stateOf(again, 'attempt').from_api_image!]).toBe('sha256:api0');
+      expect(again.log).toMatch(/\.protected-stamps" sh +2026-09-26T16-00-00Z 2026-09-26T16-30-00Z$/m);
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(rollback.images['simplecrm/api:dev']).toBe('sha256:api0');
+      expect(rollback.stdout).toContain(`restored from ${first}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('rollback of a successful update: previous version plus the protected backup; asks first', ranOrSkipped(() => {
+    const { root, checkout, head } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    const dump = '/backups/db-2026-09-26T17-00-00Z.dump';
+    try {
+      const updated = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: dump },
+      });
+      expect(updated.status).toBe(0);
+      expect(stateOf(updated, 'state')).toMatchObject({ previous_commit: head, rollback_backup: dump, current_release: 'v1.1.0' });
+      expect(updated.log).toMatch(/\.protected-stamps" sh 2026-09-26T17-00-00Z$/m);
+
+      // Without a terminal and without --yes nothing happens.
+      const unconfirmed = runWithFakeDocker(['docker/simplecrm', 'rollback'], { cwd: checkout, host });
+      expect(unconfirmed.status).toBe(2);
+      expect(unconfirmed.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(unconfirmed.stdout).toContain('Everything changed in SimpleCRM after that backup is lost');
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(git(checkout, 'rev-parse', 'HEAD')).toBe(head);
+      expect(rollback.images['simplecrm/api:dev']).toBe('sha256:api0');
+      expect(rollback.log).toContain('--profile restore run --rm restore');
+      expect(rollback.log).not.toMatch(/ build$/m);
+
+      const again = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(again.status).toBe(3);
+      expect(again.stderr).toContain('Nothing to roll back to');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Wartung nach dem Update: prüft Anhänge und Mail-Originale; ein Befund wird gemeldet,
+  // macht das bereits abgeschlossene Update aber nicht rückgängig oder rot.
+  test('the update ends with a maintenance check that only reports', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host });
+      expect(ok.status).toBe(0);
+      expect(ok.log).toMatch(/run --rm --no-deps --entrypoint node api packages\/server\/dist\/cli\/maintenance\.js --check-only$/m);
+
+      const findings = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], {
+        host, env: { FAKE_FAIL_MAINTENANCE: '1' },
+      });
+      expect(findings.status).toBe(0);
+      expect(findings.stderr).toContain('the maintenance check reported problems');
+      expect(stateOf(findings, 'state').current_api_image).toBeTruthy();
+
+      const manual = runWithFakeDocker(['docker/simplecrm', 'maintenance', '--deep'], { host });
+      expect(manual.status).toBe(0);
+      expect(manual.log).toMatch(/--entrypoint node api packages\/server\/dist\/cli\/maintenance\.js --deep$/m);
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Codex-Review PR #195: Mehrere SimpleCRM-Projekte auf einem Docker-Host dürfen sich beim Aufräumen
+  // nicht gegenseitig die Rollback-Images löschen; der Rollback-Zustand gilt ja je Projekt.
+  test('generations are kept per compose project: updating one project leaves the rollback images of another', ranOrSkipped(() => {
+    const host = fakeHost({
+      images: {
+        'simplecrm/api:a': 'sha256:apiA', 'simplecrm/web:a': 'sha256:webA',
+        'simplecrm/api:b': 'sha256:apiB', 'simplecrm/web:b': 'sha256:webB',
+      },
+    });
+    const beta = { COMPOSE_PROJECT_NAME: 'beta', VERSION: 'b' };
+    const alpha = { COMPOSE_PROJECT_NAME: 'alpha', VERSION: 'a' };
+    try {
+      const b = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: beta });
+      expect(b.status).toBe(0);
+      const betaState = stateOf(b, 'state', 'beta');
+      expect(betaState.previous_api_image).toMatch(/^simplecrm\/api:gen-beta\./);
+      expect(b.images[betaState.previous_api_image!]).toBe('sha256:apiB');
+
+      let a = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: alpha });
+      a = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: alpha });
+      expect(a.status).toBe(0);
+      expect(a.images[betaState.previous_api_image!]).toBe('sha256:apiB');
+      expect(a.images[betaState.current_api_image!]).toBe(b.images[betaState.current_api_image!]);
+      expect(a.images[betaState.previous_web_image!]).toBe('sha256:webB');
+      const alphaGens = Object.keys(a.images).filter((ref) => ref.startsWith('simplecrm/api:gen-alpha.'));
+      expect(alphaGens).toHaveLength(2);
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Codex-Review PR #195: Mit eigenem BACKUP_DIR liefert der Backup-Container einen anderen Pfad.
+  // Der restore-Dienst mountet das Volume immer unter /backups; nur dieser Pfad darf im Zustand stehen.
+  test('a custom BACKUP_DIR is recorded as the /backups path the restore service mounts', ranOrSkipped(() => {
+    const { root, checkout } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    try {
+      const updated = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: '/srv/sicherungen/db-2026-09-26T17-00-00Z.dump' },
+      });
+      expect(updated.status).toBe(0);
+      expect(stateOf(updated, 'state').rollback_backup).toBe('/backups/db-2026-09-26T17-00-00Z.dump');
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(rollback.stdout).toContain('restored from /backups/db-2026-09-26T17-00-00Z.dump');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Codex-Review PR #195: Entfernt die Aufbewahrung (z. B. 0/0/0) den neuen Satz sofort wieder, wäre die
+  // neueste Sicherung eine ältere. Ohne frische Sicherung darf weder gebaut noch migriert werden.
+  test('no new backup set: the update stops before build and migrations', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const result = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull'], { host, env: { FAKE_BACKUP_DUMP: '' } });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('left no new backup set');
+      expect(result.stderr).toContain('The database is unchanged');
+      expect(result.log).not.toMatch(/ build$/m);
+      expect(result.log).not.toContain('migrate.js');
+      expect(stateOf(result, 'attempt')).toMatchObject({ stage: 'backup', backup: '' });
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('rollback checks that the backup still exists before it changes anything', ranOrSkipped(() => {
+    const { root, checkout } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    try {
+      const updated = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: '/backups/db-2026-09-26T17-00-00Z.dump' },
+      });
+      expect(updated.status).toBe(0);
+      const release = git(checkout, 'rev-parse', 'HEAD');
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], {
+        cwd: checkout, host, env: { FAKE_MISSING_BACKUP: '1' },
+      });
+      expect(rollback.status).toBe(4);
+      expect(rollback.stderr).toContain('is no longer in the backups volume');
+      expect(git(checkout, 'rev-parse', 'HEAD')).toBe(release);
+      expect(rollback.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(rollback.log).not.toMatch(/ stop |--profile restore/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('rollback before the migrations only swaps the images back; the data stays', ranOrSkipped(() => {
+    const { root, checkout, head } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    try {
+      const failed = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0', '--no-backup'], {
+        cwd: checkout, host, env: { FAKE_FAIL_BUILD: '1' },
+      });
+      expect(stateOf(failed, 'attempt')).toMatchObject({ stage: 'build' });
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(rollback.stdout).toContain('Data:     unchanged');
+      expect(rollback.log).not.toContain('--profile restore');
+      expect(rollback.log).toMatch(/ up -d api caddy$/m);
+      expect(git(checkout, 'rev-parse', 'HEAD')).toBe(head);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('too little space: the build cache goes first; still too little stops before any change', ranOrSkipped(() => {
+    const blocked = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull'], {
+      env: { FAKE_DF_FREE_KB: String(GB_KB), FAKE_DF_FREE_KB_AFTER_PRUNE: String(2 * GB_KB) },
+    });
+    expect(blocked.status).toBe(5);
+    expect(blocked.stderr).toContain('Nothing was changed');
+    expect(blocked.log).toContain('builder prune -af --reserved-space 0gb');
+    expect(blocked.log).not.toMatch(/ build$|--rm backup$| up -d/m);
+    expect(blocked.stateFiles).toEqual({});
+
+    const freed = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], {
+      env: { FAKE_DF_FREE_KB: String(GB_KB), FAKE_DF_FREE_KB_AFTER_PRUNE: String(20 * GB_KB) },
+    });
+    expect(freed.status).toBe(0);
+    const lines = freed.log.split('\n');
+    expect(lines.findIndex((line) => line.includes('builder prune -af --reserved-space 0gb')))
+      .toBeLessThan(lines.findIndex((line) => / build$/.test(line)));
+  }));
+
+  test('disk report: read-only overview with hints', ranOrSkipped(() => {
+    const report = runWithFakeDocker(['docker/simplecrm', 'disk'], { env: { FAKE_DF_FREE_KB: String(GB_KB) } });
+    expect(report.status).toBe(0);
+    for (const heading of ['== Speicherplatz ==', '== Docker (Images, Container, Volumes, Build-Cache) ==', '== SimpleCRM-Versionen (Rollback) ==', '== Volumes ==', '== Datenbank ==', '== Logs ==', '== Hinweise ==']) {
+      expect(report.stdout).toContain(heading);
+    }
+    expect(report.stdout).toContain('Nur 1.0 GB frei');
+    expect(report.log).not.toMatch(/ rm |prune|tag /);
+  }));
+});
+
+describe('backup retention keeps the protected rollback backup', () => {
+  test('protected stamps survive, the rest follows the retention counts', () => {
+    if (!bashAvailable()) return;
+    const dir = mkdtempSync(join(tmpdir(), 'simplecrm-retention-'));
+    try {
+      const stamps = ['2026-09-20T01-00-00Z', '2026-09-21T01-00-00Z', '2026-09-22T01-00-00Z', '2026-09-23T01-00-00Z'];
+      for (const stamp of [...stamps, '2020-01-01T01-00-00Z']) {
+        writeFileSync(join(dir, `db-${stamp}.dump`), 'x');
+        writeFileSync(join(dir, `attachments-${stamp}.tar`), 'x');
+      }
+      writeFileSync(join(dir, '.protected-stamps'), '2020-01-01T01-00-00Z\nnot-a-stamp\n');
+      const result = spawnSync('sh', ['-c', '. docker/backup-retention.sh; prune_backup_retention "$1"', 'sh', dir], {
+        cwd: repoRoot,
+        env: { ...process.env, BACKUP_RETENTION_DAILY: '2', BACKUP_RETENTION_WEEKLY: '0', BACKUP_RETENTION_MONTHLY: '0' },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(readdirSync(dir).filter((name) => name.startsWith('db-')).sort()).toEqual([
+        'db-2020-01-01T01-00-00Z.dump',
+        'db-2026-09-22T01-00-00Z.dump',
+        'db-2026-09-23T01-00-00Z.dump',
+      ]);
+      expect(existsSync(join(dir, 'attachments-2020-01-01T01-00-00Z.tar'))).toBe(true);
+      expect(existsSync(join(dir, 'attachments-2026-09-20T01-00-00Z.tar'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

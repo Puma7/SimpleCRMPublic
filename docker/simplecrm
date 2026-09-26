@@ -25,11 +25,24 @@ usage() {
 usage: simplecrm <command> [args]
 
 Commands:
-  update [--no-pull] [--no-backup] [--repair-checksums] [--branch <name>]
+  update [--version <vX.Y.Z|latest>] [--no-pull] [--no-backup]
+         [--repair-checksums] [--branch <name>]
                                     Update this server: pull, backup, build,
                                     migrate, restart, verify. Alias: upgrade.
+                                    --version latest = newest release tag
+                                    (recommended); without it: origin/main.
                                     --repair-checksums opts into re-stamping
                                     upstream-redefined migration checksums.
+  rollback [--yes]           Back to the version before the last (or a failed)
+                             update: its kept images, no rebuild; restores the
+                             pre-update backup once migrations may have run.
+  disk                       Show where the disk space goes (read-only).
+  maintenance [--check-only] [--deep]
+                             Check attachments and stored mail originals
+                             against the database and run the verified space
+                             savings now. Never deletes attachments or
+                             originals; attachment copies of deleted mails
+                             are set aside and removed after 7 days.
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.
@@ -46,6 +59,10 @@ Optional env:
   COMPOSE_PROJECT_NAME    Compose project (default: this file's directory name)
   COMPOSE_FILE=/path/to/docker-compose.yml
   BRANCH                  Branch for `update` (default: main)
+  RELEASE                 Release tag for `update` (vX.Y.Z or latest), same as --version
+  UPDATE_API_HEALTH_TIMEOUT_SECONDS  Wait for a healthy API after `update` (default: 180)
+  UPDATE_MIN_FREE_GB      Free space `update` needs for backup + build (default: 6)
+  DOCKER_BUILD_CACHE_KEEP_GB  Build cache kept after `update` (default: 2)
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
   RESTORE_CADDY_INSECURE=true
 USAGE
@@ -96,11 +113,23 @@ case "$command" in
         --repair-checksums) export REPAIR_CHECKSUMS=1 ;;
         --branch) shift; [ -n "${1:-}" ] || { echo "--branch requires a value" >&2; exit 2; }; export BRANCH="$1" ;;
         --branch=*) export BRANCH="${1#--branch=}" ;;
+        # RELEASE, not VERSION: VERSION is the image tag in docker-compose.yml.
+        --version) shift; [ -n "${1:-}" ] || { echo "--version requires a value" >&2; exit 2; }; export RELEASE="$1" ;;
+        --version=*) export RELEASE="${1#--version=}" ;;
         *) echo "unknown update flag: $1" >&2; exit 2 ;;
       esac
       shift
     done
     sh "$SCRIPT_DIR/update.sh"
+    ;;
+  rollback)
+    sh "$SCRIPT_DIR/rollback.sh" "$@"
+    ;;
+  disk)
+    sh "$SCRIPT_DIR/disk-report.sh"
+    ;;
+  maintenance)
+    compose run --rm --no-deps --entrypoint node api packages/server/dist/cli/maintenance.js "$@"
     ;;
   up)
     compose up -d --build

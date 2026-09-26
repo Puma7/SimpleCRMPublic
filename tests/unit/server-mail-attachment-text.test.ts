@@ -1,13 +1,19 @@
 /**
  * @jest-environment node
  */
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { deflateRawSync } from 'node:zlib';
 
 import JSZip from 'jszip';
 
-import { extractDocxText, extractDocxTextInWorker } from '../../packages/server/src/mail-attachment-docx';
+import {
+  extractDocxText,
+  extractDocxTextInWorker,
+  extractOfficeTextInWorker,
+  extractPdfTextInWorker,
+} from '../../packages/server/src/mail-attachment-docx';
 import { extractAttachmentTextFromBuffer } from '../../packages/server/src/mail-attachment-text';
 
 // The DOCX worker loads the TS sources through tsx; map @simplecrm/core to src like Jest does.
@@ -231,5 +237,102 @@ describe('server attachment text extraction', () => {
       'DOCX parse stopped: timeout after 500 ms',
     );
     expect(stats).toHaveBeenCalled();
+  }, 30_000);
+});
+
+/** Minimal single-page PDF containing the given ASCII text. */
+function buildMiniPdf(text: string): Buffer {
+  const objs: string[] = [];
+  objs[1] = '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n';
+  objs[2] = '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n';
+  objs[3] = '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n';
+  const stream = `BT /F1 24 Tf 72 700 Td (${text}) Tj ET`;
+  objs[4] = `4 0 obj\n<< /Length ${stream.length} >>\nstream\n${stream}\nendstream\nendobj\n`;
+  objs[5] = '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n';
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [0];
+  for (let i = 1; i <= 5; i += 1) {
+    offsets[i] = pdf.length;
+    pdf += objs[i];
+  }
+  const xrefPos = pdf.length;
+  pdf += 'xref\n0 6\n0000000000 65535 f \n';
+  for (let i = 1; i <= 5; i += 1) pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`;
+  return Buffer.from(pdf, 'latin1');
+}
+
+// Ein präpariertes PDF konnte pdf.js im Hauptprozess des Servers blockieren, und nach dem
+// Timeout lief das Parsen weiter. Jetzt läuft es wie DOCX in einem Worker mit eigener
+// Speichergrenze, der beim Timeout beendet wird. Anhänge werden nur gelesen, nie ausgeführt.
+describe('server PDF text extraction runs isolated in a worker', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('extracts the text of a PDF through the worker', async () => {
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    await expect(extractAttachmentTextFromBuffer(buildMiniPdf('Suchtext im PDF'), 'pdf')).resolves.toContain('Suchtext im PDF');
+    expect(terminate).toHaveBeenCalled();
+  }, 30_000);
+
+  test('terminates the PDF worker when the timeout expires', async () => {
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(extractPdfTextInWorker(buildMiniPdf('langsam'), 1)).rejects.toThrow('PDF parse stopped: timeout after 1 ms');
+    expect(terminate).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[mail] attachment text: PDF parse stopped: timeout'));
+  }, 30_000);
+
+  test('a damaged PDF fails in the worker, not in the server', async () => {
+    await expect(extractPdfTextInWorker(Buffer.from('%PDF-1.4 kaputt'), 15_000)).rejects.toThrow();
+  }, 30_000);
+});
+
+// Lieferanten schicken Preislisten als CSV oder Excel; gesucht wird nach der EAN.
+describe('server office and CSV attachments become searchable text', () => {
+  const fixture = (name: string) => readFileSync(path.join(__dirname, '../fixtures/attachments', name));
+  const EAN = '4006381333931';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test.each([
+    ['xlsx', 'lieferant-ean.xlsx'],
+    ['xls', 'lieferant-ean.xls'],
+    ['ods', 'lieferant-ean.ods'],
+    ['doc', 'angebot.doc'],
+    ['rtf', 'angebot.rtf'],
+    ['odt', 'angebot.odt'],
+  ] as const)('%s is read in the isolated worker', async (kind, file) => {
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    const text = await extractAttachmentTextFromBuffer(fixture(file), kind);
+    expect(text).toContain(EAN);
+    expect(terminate).toHaveBeenCalled();
+  }, 30_000);
+
+  test('an Excel CSV in Windows-1252 keeps its umlauts', async () => {
+    const csv = Buffer.from(`EAN;Artikel\r\n${EAN};Mutter Müller-Größe\r\n`, 'latin1');
+    await expect(extractAttachmentTextFromBuffer(csv, 'text')).resolves.toBe(`EAN;Artikel ${EAN};Mutter Müller-Größe`);
+  });
+
+  test('an "xls" that is really CSV is read as text', async () => {
+    await expect(extractAttachmentTextFromBuffer(Buffer.from(`${EAN};Schraube`), 'xls')).resolves.toBe(`${EAN};Schraube`);
+  });
+
+  // Viele Warenwirtschaften exportieren "Excel" als XML-Tabelle (Excel 2003) mit Endung .xls.
+  test('an "xls" that is an Excel 2003 XML table is read as markup text', async () => {
+    const xml = Buffer.from(`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet><Table>`
+      + `<Row><Cell><Data ss:Type="Number">${EAN}</Data></Cell><Cell><Data ss:Type="String">Mutter M8</Data></Cell></Row>`
+      + '</Table></Worksheet></Workbook>');
+    const text = await extractAttachmentTextFromBuffer(xml, 'xls');
+    expect(text).toContain(EAN);
+    expect(text).toContain('Mutter M8');
+  });
+
+  test('a damaged spreadsheet fails in the worker, not in the server', async () => {
+    const damaged = fixture('lieferant-ean.xls').subarray(0, 600);
+    await expect(extractOfficeTextInWorker('xls', damaged, 15_000)).rejects.toThrow();
   }, 30_000);
 });

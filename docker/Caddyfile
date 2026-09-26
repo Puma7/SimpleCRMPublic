@@ -50,8 +50,14 @@
 	# event stream carries the access token as WebSocket subprotocol (echoed in
 	# the response), and invitation links carry the invitation token in the path
 	# (/api/v1/auth/invitations/<token>) or the query (/login?invite=<token>).
+	# Rotation sized for small servers: 25 MiB per file, at most 4 old files,
+	# none older than 14 days (Caddy's default would keep 10 x 100 MiB).
 	log {
-		output file /var/log/access.log
+		output file /var/log/access.log {
+			roll_size 25MiB
+			roll_keep 4
+			roll_keep_for 336h
+		}
 		format filter {
 			wrap json
 			fields {

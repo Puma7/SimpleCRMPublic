@@ -17,6 +17,7 @@ jest.mock('../../packages/server/src/mail-attachment-docx', () => ({
   extractDocxTextInWorker: () => mockExtractDocx(),
 }));
 
+import { ATTACHMENT_TEXT_EXTRACTOR_VERSION } from '../../packages/core/src/email/attachment-text';
 import { extractTextForAttachmentRow } from '../../packages/server/src/mail-attachment-text';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -81,7 +82,14 @@ describe('server attachment text extraction crash loop', () => {
     expect(mockExtractDocx).toHaveBeenCalledTimes(1);
 
     // Parser still running (in production: possibly about to crash the process).
-    expect(updates).toEqual([{ content_text: null, text_extracted_at: expect.any(Date), updated_at: expect.any(Date) }]);
+    // The mark carries the current extractor version, so a crash is not retried
+    // by the re-extraction of rows older versions left without text either.
+    expect(updates).toEqual([{
+      content_text: null,
+      text_extracted_at: expect.any(Date),
+      text_extractor_version: ATTACHMENT_TEXT_EXTRACTOR_VERSION,
+      updated_at: expect.any(Date),
+    }]);
 
     releaseParse('Inhalt');
     await expect(pending).resolves.toBe(true);

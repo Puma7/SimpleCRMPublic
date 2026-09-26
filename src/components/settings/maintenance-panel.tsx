@@ -82,7 +82,7 @@ export function MaintenancePanel() {
   }, [authLoading, isAdmin, loadStatus])
 
   const serverUpgradeHint = useMemo(() => (
-    `cd docker\nsh ./simplecrm up --build\nsh ./simplecrm doctor`
+    `sh docker/simplecrm update --version latest\nsh docker/simplecrm doctor`
   ), [])
 
   if (authLoading) {
@@ -263,7 +263,9 @@ export function MaintenancePanel() {
           ) : (
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">
-                Die Server-Edition wird auf dem Host aktualisiert (Docker Compose). Daten bleiben in den Volumes erhalten.
+                Die Server-Edition wird auf dem Host im Repository-Verzeichnis aktualisiert (Docker Compose). Das Update
+                sichert vorher die Datenbank, wartet auf die gesunde API und zeigt bei einem Fehler den Weg zurück.
+                Daten bleiben in den Volumes erhalten.
               </p>
               <pre className="rounded-md border bg-muted/40 p-3 text-xs overflow-x-auto">{serverUpgradeHint}</pre>
             </div>

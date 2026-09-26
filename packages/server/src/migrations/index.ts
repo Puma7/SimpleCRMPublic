@@ -55,6 +55,8 @@ import { emailAccountTrustedAuthservIdMigration } from './0054_email_account_tru
 import { emailMessageSentProvenanceMigration } from './0055_email_message_sent_provenance';
 import { emailWorkflowScheduleStateMigration } from './0056_email_workflow_schedule_state';
 import { aiLearningsMigration } from './0057_ai_learnings';
+import { emailRawRfc822StorageMigration } from './0058_email_raw_rfc822_storage';
+import { attachmentTextExtractorVersionMigration } from './0059_attachment_text_extractor_version';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -116,6 +118,8 @@ export const serverMigrations: readonly SqlMigration[] = [
   emailMessageSentProvenanceMigration,
   emailWorkflowScheduleStateMigration,
   aiLearningsMigration,
+  emailRawRfc822StorageMigration,
+  attachmentTextExtractorVersionMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);
