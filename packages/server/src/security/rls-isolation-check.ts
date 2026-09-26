@@ -149,6 +149,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('automation_api_keys'),
   rlsPolicyTable('ai_usage_events'),
   rlsPolicyTable('ai_reply_feedback'),
+  rlsPolicyTable('ai_learning_candidates'),
+  rlsPolicyTable('ai_learning_digests'),
   rlsPolicyTable('return_reasons'),
   rlsPolicyTable('returns'),
   rlsPolicyTable('return_items'),

@@ -391,6 +391,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0053_task_assignment_scope_orphan_backfill',
   '0054_email_account_trusted_authserv_id',
   '0056_email_workflow_schedule_state',
+  '0057_ai_learnings',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

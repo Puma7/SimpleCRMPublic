@@ -92,6 +92,8 @@ export type ServerDatabase = {
   automation_api_keys: AutomationApiKeysTable;
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
+  ai_learning_candidates: AiLearningCandidatesTable;
+  ai_learning_digests: AiLearningDigestsTable;
   return_reasons: ReturnReasonsTable;
   returns: ReturnsTable;
   return_items: ReturnItemsTable;
@@ -107,6 +109,46 @@ export type AiReplyFeedbackTable = {
   sent_len: number;
   changed_ratio: number;
   created_at: TimestampColumn;
+};
+
+/** TA-P5: bereinigte Learnings-Rohdaten (Migration 0057). */
+export type AiLearningCandidatesTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  kind: 'draft_edit' | 'human_reply' | 'note';
+  account_id: number | null;
+  source_message_id: number | null;
+  sent_message_id: number | null;
+  question_text: string | null;
+  ai_text: string | null;
+  human_text: string | null;
+  note_text: string | null;
+  created_by_user_id: string | null;
+  created_at: TimestampColumn;
+  digest_id: number | null;
+  processed_at: TimestampColumn | null;
+};
+
+/** TA-P5: Vorschläge für eine neue Wissensbasis-Fassung (Migration 0057). */
+export type AiLearningDigestsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  knowledge_base_id: number;
+  status: 'pending' | 'accepted' | 'rejected' | 'failed';
+  trigger: 'manual' | 'workflow';
+  requested_by_user_id: string | null;
+  workflow_id: number | null;
+  period_from: TimestampColumn | null;
+  period_to: TimestampColumn;
+  candidate_count: number;
+  base_content: string;
+  proposed_content: string;
+  summary: string;
+  operations_json: JsonColumn;
+  error: string | null;
+  created_at: TimestampColumn;
+  decided_by_user_id: string | null;
+  decided_at: TimestampColumn | null;
 };
 
 export type EmailAutoReplyReservationsTable = {
