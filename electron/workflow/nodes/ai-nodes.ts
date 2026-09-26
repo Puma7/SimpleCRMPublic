@@ -1,6 +1,18 @@
 import { listAiPrompts, type AiPromptRow } from '../../email/email-crm-store';
 import { resolvePromptProfileId } from '../../email/email-ai-profiles';
-import { runChatCompletion } from '../../email/email-openai';
+import { runAiDecideCall, runChatCompletion } from '../../email/email-openai';
+import {
+  AI_DECIDE_CRITERIA_MAX_CHARS,
+  AI_DECIDE_QUESTION_MAX_CHARS,
+  aiDecideDryRunOutcome,
+  aiDecideErrorOutcome,
+  aiDecideOutboundBlockReason,
+  aiDecideVariables,
+  buildAiDecideMailContext,
+  evaluateAiDecideOutcome,
+  normalizeAiDecideContextMode,
+  type AiDecideOutcome,
+} from '../../../packages/core/src/workflow/ai-decide';
 import type { AccountOverrideScope } from '../../../shared/mail-account-overrides';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
@@ -506,6 +518,74 @@ export function registerAiNodes(register: Reg): void {
         status: 'ok',
         variables: { 'ai.class': label, 'ai.class_confidence': confidence },
       };
+    },
+  });
+
+  register({
+    type: 'ai.decide',
+    label: 'KI-Entscheidung',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Beantwortet eine Ja/Nein-Frage zur Mail per KI und verzweigt in Ja, Nein, Unsicher oder KI-Fehler.',
+    defaultConfig: {
+      question: '',
+      yesCriteria: '',
+      noCriteria: '',
+      contextMode: 'full',
+      threshold: 80,
+      profileId: null,
+    },
+    execute: async (ctx, config) => {
+      // Ausgangs-Workflow: alles außer „ja“ hält den Versand an (wie
+      // ai.outbound_review); die Ausgänge laufen dann nur für Zusatzschritte.
+      // Eingehend nur Verzweigung — bewusst KEIN Spam-Überspringen, die Frage
+      // kann gerade „Ist das Spam?“ sein.
+      const finish = (outcome: AiDecideOutcome): NodeExecuteResult => {
+        const variables = aiDecideVariables(outcome);
+        const blockReason = ctx.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
+        if (blockReason) {
+          const id = ctx.messageId ?? ctx.outbound?.messageId;
+          if (!ctx.dryRun && id != null) setOutboundHold(id, true, blockReason);
+          return { status: 'ok', port: outcome.answer, blocked: true, blockReason, message: outcome.summary, variables };
+        }
+        return { status: 'ok', port: outcome.answer, message: outcome.summary, variables };
+      };
+      // Testlauf: keine KI-Anfrage. Die Versandvorschau (previewOutbound)
+      // entscheidet dagegen echt — eine dort erteilte Freigabe überspringt
+      // die Ausgangsprüfung beim eigentlichen Versand.
+      if (ctx.dryRun && !ctx.previewOutbound) return finish(aiDecideDryRunOutcome());
+      const question = String(config.question ?? '').trim().slice(0, AI_DECIDE_QUESTION_MAX_CHARS);
+      if (!question) return finish(aiDecideErrorOutcome({ message: 'Keine Frage angegeben' }));
+      const mode = normalizeAiDecideContextMode(config.contextMode);
+      const strings = mode === 'metadata' && ctx.direction !== 'outbound' && ctx.message
+        ? buildMetadataContextFromMessage(ctx.message)
+        : ctx.strings;
+      const mail = buildAiDecideMailContext({ direction: ctx.direction, mode, strings });
+      try {
+        const result = await runAiDecideCall({
+          profileId: profileIdFromConfig(config),
+          question,
+          yesCriteria: String(config.yesCriteria ?? '').trim().slice(0, AI_DECIDE_CRITERIA_MAX_CHARS),
+          noCriteria: String(config.noCriteria ?? '').trim().slice(0, AI_DECIDE_CRITERIA_MAX_CHARS),
+          contextText: mail.text,
+          state: mail.state,
+        });
+        return finish(evaluateAiDecideOutcome({
+          probability: result.probability,
+          threshold: config.threshold,
+          source: result.source,
+          model: result.model,
+          modelAnswer: result.modelAnswer,
+          reason: result.reason,
+        }));
+      } catch (e) {
+        const model = (e as { aiModel?: unknown }).aiModel;
+        return finish(aiDecideErrorOutcome({
+          message: e instanceof Error ? e.message : String(e),
+          model: typeof model === 'string' ? model : '',
+        }));
+      }
     },
   });
 

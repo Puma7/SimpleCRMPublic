@@ -87,7 +87,15 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
 > = {
   'ai.outbound_review': { ports: ['ok', 'block', 'error'], releasePorts: ['ok'] },
   'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
+  // Nur „ja“ gibt frei; nein/unsicher/error halten den Versand an (Zusatzschritte).
+  'ai.decide': { ports: ['ja', 'nein', 'unsicher', 'error'], releasePorts: ['ja'] },
 };
+
+/**
+ * Benannte Ports, die zur Laufzeit auf eine unbeschriftete Standard-Kante
+ * zurückfallen (pickEdge): `ok` aus Abwärtskompatibilität, `ja` (ai.decide).
+ */
+const NAMED_PORTS_WITH_DEFAULT_FALLBACK: ReadonlySet<string> = new Set(['ok', 'ja']);
 
 function namedPortBranch(
   node: WorkflowGraphNode,
@@ -313,6 +321,7 @@ const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
   'ai.pick_canned',
   'ai.draft_reply',
   'ai.review_draft',
+  'ai.decide',
 ]);
 /**
  * Server: Knoten, die deferieren, sobald sie einen Folgeknoten haben (OK- bzw.
@@ -897,7 +906,8 @@ export function findOutboundGraphTraps(
           // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
           // meldet er einen lauffähigen Altgraphen als dead_end — und
           // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
-          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
+          const edge = labelled
+            ?? (NAMED_PORTS_WITH_DEFAULT_FALLBACK.has(port) ? outs.find(edgeIsDefault) : undefined);
           const isReleasePort = portBranch.releasePorts.includes(port);
           if (edge) {
             walk(edge.target, holdPath || !isReleasePort);

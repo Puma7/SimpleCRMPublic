@@ -70,6 +70,7 @@ export const EMAIL_GLOBAL_OBJECT_CHANNELS = new Map<string, string>([
   ['email:delete-ai-profile', 'AI profiles are workspace-wide (no account_id).'],
   ['email:set-ai-profile-api-key', 'AI profiles are workspace-wide (no account_id).'],
   ['email:clear-ai-profile-api-key', 'AI profiles are workspace-wide (no account_id).'],
+  ['email:test-ai-profile', 'AI profiles are workspace-wide (no account_id).'],
   ['email:save-team-member', 'Team members are workspace-wide (no account_id).'],
   ['email:set-google-oauth-app', 'clientId is the workspace OAuth app, not a record; owner/admin only.'],
   ['email:set-microsoft-oauth-app', 'clientId is the workspace OAuth app, not a record; owner/admin only.'],

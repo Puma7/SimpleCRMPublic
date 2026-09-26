@@ -17,12 +17,18 @@ function isAbortOrTimeout(err: unknown, msg: string): boolean {
   return false;
 }
 
-/** Format stored or fresh AI errors for UI and reply_suggestion_error. */
-export function formatAiUserError(err: unknown): string {
+/**
+ * Format stored or fresh AI errors for UI and reply_suggestion_error.
+ * `timeoutSeconds`: Zeitlimit des Aufrufs für die Meldung (Decisions API: 30 s).
+ */
+export function formatAiUserError(err: unknown, options?: { timeoutSeconds?: number }): string {
   const msg = errorMessage(err).trim();
   if (!msg) return 'KI-Anfrage fehlgeschlagen';
 
   if (isAbortOrTimeout(err, msg)) {
+    if (options?.timeoutSeconds !== undefined) {
+      return `KI-Anfrage abgebrochen oder Zeitlimit (${options.timeoutSeconds} Sekunden) überschritten. Bitte erneut versuchen.`;
+    }
     return (
       'KI-Anfrage abgebrochen oder Zeitlimit (90 Sekunden) überschritten. ' +
       'Bitte erneut versuchen oder die Nachricht erneut öffnen und „Antwort entwerfen“ wählen.'

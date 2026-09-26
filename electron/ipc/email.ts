@@ -200,7 +200,7 @@ import {
   getAccountMailSettings,
   setAccountMailSettings,
 } from '../email/account-mail-settings-store';
-import { getAiSettings, setAiSettings, runChatCompletion } from '../email/email-openai';
+import { getAiSettings, setAiSettings, runChatCompletion, testAiProfileConnection } from '../email/email-openai';
 import {
   getEmailAiCustomerTemplateContext,
   type EmailAiCustomerTemplateContext,
@@ -2161,6 +2161,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await clearAiProfileApiKey(row.keytar_account);
         return { success: true as const };
       },
+      { logger },
+    ),
+  );
+
+  // „Verbindung testen“: gleiche Rechte wie das Bearbeiten der KI-Profile.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.TestAiProfile,
+      async (_event: IpcMainInvokeEvent, profileId: number) => testAiProfileConnection(profileId),
       { logger },
     ),
   );

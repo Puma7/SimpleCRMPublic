@@ -77,6 +77,11 @@ describe('workflow editor edge label helpers', () => {
     expect(edgeLabelOptionsForSource(reviewDraft).labels).toEqual(['send', 'hold']);
     expect(defaultLabelForConnection(reviewDraft, 'hold', [], 'r1')).toBe('hold');
 
+    const decide = { type: 'registry', data: { nodeType: 'ai.decide' } };
+    expect(edgeLabelOptionsForSource(decide).labels).toEqual(['ja', 'nein', 'unsicher', 'error']);
+    expect(defaultLabelForConnection(decide, 'unsicher', [], 'd1')).toBe('unsicher');
+    expect(normalizeEdgeLabelForSource(decide, 'KI-Fehler')).toBe('error');
+
     const authCheck = { type: 'registry', data: { nodeType: 'email.auth_check' } };
     expect(edgeLabelOptionsForSource(authCheck).labels).toEqual([
       'pass',

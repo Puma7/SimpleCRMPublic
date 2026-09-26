@@ -493,6 +493,22 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: { draftIdVariable: 'draft.id', reviewPrompt: '', profileId: null },
   },
   {
+    type: 'ai.decide',
+    label: 'KI-Entscheidung',
+    category: 'ai',
+    canvasType: 'registry',
+    description:
+      'Beantwortet eine Ja/Nein-Frage zur Mail per KI (Entscheidungsmodell oder Chat-Modell) und verzweigt in Ja, Nein, Unsicher oder KI-Fehler. Im Ausgang hält alles außer „Ja“ den Versand an.',
+    defaultConfig: {
+      question: '',
+      yesCriteria: '',
+      noCriteria: '',
+      contextMode: 'full',
+      threshold: 80,
+      profileId: null,
+    },
+  },
+  {
     type: 'ai.pick_canned',
     label: 'KI: Textbaustein wählen',
     category: 'ai',

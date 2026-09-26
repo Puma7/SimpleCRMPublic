@@ -442,6 +442,168 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
     },
   },
 
+  'ai.decide': {
+    fields: [
+      {
+        key: 'question',
+        type: 'textarea',
+        label: 'Frage (Ja/Nein)',
+        help:
+          'Eine Frage, die sich mit Ja oder Nein beantworten lässt. Platzhalter wie {{subject}} oder {{customer.name}} ' +
+          'werden gefüllt. Die Mail selbst bekommt die KI automatisch dazu (siehe „Was darf die KI sehen?“).',
+        example: 'Ist diese E-Mail Spam?',
+        required: true,
+        interpolate: true,
+        validation: { maxLength: 4000 },
+      },
+      {
+        key: 'yesCriteria',
+        type: 'textarea',
+        label: 'Wann „Ja“? (optional)',
+        help: 'Kriterien in eigenen Worten, wann die Antwort „Ja“ lauten soll.',
+        example: 'Werbung, Phishing oder Massenmail ohne Bezug zu uns.',
+        interpolate: true,
+        validation: { maxLength: 2000 },
+      },
+      {
+        key: 'noCriteria',
+        type: 'textarea',
+        label: 'Wann „Nein“? (optional)',
+        help: 'Kriterien in eigenen Worten, wann die Antwort „Nein“ lauten soll.',
+        example: 'Anfrage eines Kunden oder Lieferanten, auch wenn sie kurz ist.',
+        interpolate: true,
+        validation: { maxLength: 2000 },
+      },
+      {
+        key: 'contextMode',
+        type: 'select',
+        label: 'Was darf die KI von der Mail sehen?',
+        help:
+          '„Kompletten Text“ schickt Betreff, Absender, Empfänger, Text (gekürzt auf 12 000 Zeichen) und Anhangsnamen. ' +
+          '„Nur Kopfdaten“ schickt Betreff, Absender, Empfänger, Textvorschau und Anhangsnamen (datensparsam). ' +
+          'Im Ausgangs-Workflow ist die Mail der Entwurf (Betreff, Empfänger, Text).',
+        options: [
+          { value: 'full', label: 'Kompletten Text senden' },
+          { value: 'metadata', label: 'Nur Kopfdaten' },
+        ],
+      },
+      {
+        key: 'threshold',
+        type: 'number',
+        label: 'Mindest-Sicherheit in % (50–99)',
+        help:
+          'Ab dieser Ja-Wahrscheinlichkeit geht es bei „Ja“ weiter, bis 100 minus diesem Wert bei „Nein“, ' +
+          'dazwischen bei „Unsicher“. Standard 80: Ja ab 80 %, Nein bis 20 %.',
+        example: '80',
+        required: true,
+        validation: { min: 50, max: 99, integer: true },
+      },
+      {
+        key: 'profileId',
+        type: 'aiProfile',
+        label: 'KI-Profil (Anbieter & Modell)',
+        help:
+          'Ein Entscheidungsmodell (Profil-Typ „OpenRouter Entscheidungsmodell (Decisions API)“) oder ein normales ' +
+          'Chat-Modell. Chat-Modelle liefern zusätzlich eine kurze Begründung. Leer = Standard-Profil.',
+      },
+    ],
+    ports: [
+      {
+        id: 'ja',
+        label: 'Ja',
+        description: 'Die Ja-Wahrscheinlichkeit liegt mindestens bei der Mindest-Sicherheit.',
+        kind: 'success',
+        color: 'emerald',
+        synonyms: ['yes'],
+      },
+      {
+        id: 'nein',
+        label: 'Nein',
+        description:
+          'Die Ja-Wahrscheinlichkeit liegt höchstens bei 100 minus Mindest-Sicherheit. ' +
+          'Ohne Kante endet der Lauf hier. Im Ausgangs-Workflow wird der Versand angehalten.',
+        kind: 'branch',
+        color: 'amber',
+        synonyms: ['no'],
+      },
+      {
+        id: 'unsicher',
+        label: 'Unsicher',
+        description:
+          'Die Ja-Wahrscheinlichkeit liegt dazwischen. Ohne Kante endet der Lauf hier. ' +
+          'Im Ausgangs-Workflow wird der Versand angehalten.',
+        kind: 'branch',
+        color: 'violet',
+        synonyms: ['uncertain'],
+      },
+      {
+        id: 'error',
+        label: 'KI-Fehler',
+        description:
+          'Der KI-Aufruf ist fehlgeschlagen oder die Antwort war nicht auswertbar. ' +
+          'Im Ausgangs-Workflow wird der Versand angehalten.',
+        kind: 'failure',
+        color: 'red',
+        synonyms: ['fehler'],
+      },
+    ],
+    outputs: [
+      {
+        name: 'ai.decide.answer',
+        label: 'Antwort',
+        description: 'ja, nein, unsicher oder error — entspricht dem gewählten Ausgang.',
+        example: 'nein',
+        type: 'string',
+      },
+      {
+        name: 'ai.decide.probability',
+        label: 'Ja-Wahrscheinlichkeit (0–100)',
+        description: 'Wie wahrscheinlich laut Modell „Ja“ zutrifft. Leer bei KI-Fehler und im Testlauf.',
+        example: '12',
+        type: 'number',
+      },
+      {
+        name: 'ai.decide.confidence',
+        label: 'Sicherheit der Antwort (0–100)',
+        description: 'Bei „Ja“ die Ja-Wahrscheinlichkeit, bei „Nein“ 100 minus diesem Wert.',
+        example: '88',
+        type: 'number',
+      },
+      {
+        name: 'ai.decide.reason',
+        label: 'Begründung des Modells',
+        description: 'Nur bei Chat-Modellen; Entscheidungsmodelle liefern keine Begründung (dann leer).',
+        example: 'Kundenanfrage zu einer Bestellung.',
+        type: 'string',
+      },
+      {
+        name: 'ai.decide.summary',
+        label: 'Zusammenfassung',
+        description: 'Ein deutscher Satz mit Antwort und Ja-Wahrscheinlichkeit.',
+        example: 'Entscheidungsmodell: Nein (Ja-Wahrscheinlichkeit 12 %)',
+        type: 'string',
+      },
+      {
+        name: 'ai.decide.model',
+        label: 'Verwendetes Modell',
+        example: 'typesafe/jev-1.13',
+        type: 'string',
+      },
+    ],
+    docs: {
+      longHelp:
+        'Beantwortet eine Ja/Nein-Frage zur Mail per KI und verzweigt in die Ausgänge Ja, Nein, Unsicher und KI-Fehler. ' +
+        'Grundlage ist die Ja-Wahrscheinlichkeit des Modells und die Mindest-Sicherheit. Ist an „Nein“ oder „Unsicher“ ' +
+        'nichts angeschlossen, endet der Lauf dort (kein Rückfall auf eine unbeschriftete Kante). ' +
+        'Im Ausgangs-Workflow halten „Nein“, „Unsicher“ und „KI-Fehler“ den Versand immer an (wie die KI-Ausgangsprüfung); ' +
+        'die Ausgänge dienen dann nur für Zusatzschritte wie Tags. Im Testlauf wird die KI nicht gefragt (Ergebnis „Unsicher“).',
+      prerequisites: [
+        'Ein KI-Profil mit API-Schlüssel: ein Entscheidungsmodell (OpenRouter Decisions API) oder ein Chat-Modell.',
+      ],
+      seeAlso: ['ai.classify', 'ai.outbound_review', 'logic.switch'],
+    },
+  },
+
   'ai.classify': {
     fields: [
       {

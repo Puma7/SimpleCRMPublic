@@ -40,6 +40,12 @@ export const FALLBACK_PORTS: Record<string, WorkflowNodePortSchema[]> = {
     { id: "block", label: "Blockiert", kind: "branch" },
     { id: "error", label: "KI-Fehler", kind: "failure" },
   ],
+  "ai.decide": [
+    { id: "ja", label: "Ja", kind: "success" },
+    { id: "nein", label: "Nein", kind: "branch" },
+    { id: "unsicher", label: "Unsicher", kind: "branch" },
+    { id: "error", label: "KI-Fehler", kind: "failure" },
+  ],
 }
 
 /** Deklarierte Schema-Ports, sonst die Canvas-Fallback-Ports (vor Katalog-Fetch). */

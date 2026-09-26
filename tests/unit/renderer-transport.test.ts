@@ -8972,6 +8972,21 @@ describe('renderer transport', () => {
     expect(missing).toEqual([]);
   });
 
+  test('TestAiProfile posts to the profile test-connection route and returns the result', async () => {
+    const result = { ok: true, message: 'Verbindung erfolgreich (Ja-Wahrscheinlichkeit 97 %)', model: 'typesafe/jev-1.13', latencyMs: 120, probability: 97 };
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: result }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.TestAiProfile, 21)).resolves.toEqual(result);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/ai/profiles/21/test-connection',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   test('GetComposeSignature falls back to team member signature when account has none', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))

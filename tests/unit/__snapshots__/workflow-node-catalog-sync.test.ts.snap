@@ -16,6 +16,14 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
     "contextMode",
     "labels",
   ],
+  "ai.decide": [
+    "contextMode",
+    "noCriteria",
+    "profileId",
+    "question",
+    "threshold",
+    "yesCriteria",
+  ],
   "ai.draft_reply": [
     "greeting",
     "includeCanned",

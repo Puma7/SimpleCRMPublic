@@ -1434,6 +1434,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   const aiProviderPresetIdSchema = z.enum([
     'openai',
     'openrouter',
+    'openrouter_decisions',
     'anthropic',
     'google',
     'deepseek',
@@ -1503,6 +1504,16 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: standardResult,
   });
   set(IPCChannels.Email.ClearAiProfileApiKey, { payload: positiveInt, result: standardResult });
+  set(IPCChannels.Email.TestAiProfile, {
+    payload: positiveInt,
+    result: z.object({
+      ok: z.boolean(),
+      message: z.string(),
+      model: z.string(),
+      latencyMs: z.number().int().nonnegative(),
+      probability: z.number().int().min(0).max(100).optional(),
+    }),
+  });
 
   // --- Team ---
   set(IPCChannels.Email.ListTeamMembers, { payload: voidPayload, result: recordArray });

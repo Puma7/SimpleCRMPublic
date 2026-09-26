@@ -30,6 +30,12 @@ describe('inboundNodeRequiresConditionGate', () => {
     ).toBe(false);
   });
 
+  test('allows ai.decide without prior condition (it only branches)', () => {
+    expect(
+      inboundNodeRequiresConditionGate(node('registry', { nodeType: 'ai.decide', config: { question: 'Spam?' } })),
+    ).toBe(false);
+  });
+
   test('gates crm, code, and email side-effect nodes', () => {
     expect(
       inboundNodeRequiresConditionGate(

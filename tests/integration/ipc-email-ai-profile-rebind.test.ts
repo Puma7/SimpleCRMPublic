@@ -194,4 +194,47 @@ describe('KI-Profil: gespeicherter Key bleibt beim Host (C-A16)', () => {
       }),
     ]);
   });
+
+  test('Entscheidungsmodell-Profil laesst sich anlegen und per TestAiProfile pruefen (Key nie in der Meldung)', async () => {
+    const saved = await invoke(IPCChannels.Email.SaveAiProfile, eventFor('agent'), {
+      label: 'Jev',
+      provider: 'openrouter_decisions',
+      baseUrl: 'https://openrouter.ai/api',
+      model: 'typesafe/jev-1.13',
+      embeddingModel: null,
+      isDefault: false,
+      apiKey: 'or-geheim',
+    });
+    expect(saved).toEqual({ success: true, id: expect.any(Number) });
+
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn(async () => new Response(JSON.stringify({ answers: { decision: { noul: 0.93 } } })));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      await expect(invoke(IPCChannels.Email.TestAiProfile, eventFor('agent'), saved.id)).resolves.toEqual({
+        ok: true,
+        message: 'Verbindung erfolgreich (Ja-Wahrscheinlichkeit 93 %)',
+        model: 'typesafe/jev-1.13',
+        latencyMs: expect.any(Number),
+        probability: 93,
+      });
+      expect(fetchMock).toHaveBeenCalledWith('https://openrouter.ai/api/alpha/decisions', expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer or-geheim' }),
+      }));
+
+      fetchMock.mockImplementationOnce(async () => new Response('bad key or-geheim', { status: 401 }));
+      const failed = await invoke(IPCChannels.Email.TestAiProfile, eventFor('agent'), saved.id);
+      expect(failed).toMatchObject({ ok: false, model: 'typesafe/jev-1.13' });
+      expect(failed.message).not.toContain('or-geheim');
+
+      await expect(invoke(IPCChannels.Email.TestAiProfile, eventFor('agent'), 9999)).resolves.toEqual({
+        ok: false,
+        message: 'KI-Profil nicht gefunden',
+        model: '',
+        latencyMs: 0,
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });

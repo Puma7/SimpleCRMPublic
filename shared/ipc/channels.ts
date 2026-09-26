@@ -320,6 +320,7 @@ const EmailChannels = literal({
   DeleteAiProfile: 'email:delete-ai-profile',
   SetAiProfileApiKey: 'email:set-ai-profile-api-key',
   ClearAiProfileApiKey: 'email:clear-ai-profile-api-key',
+  TestAiProfile: 'email:test-ai-profile',
   GetComposeSignature: 'email:get-compose-signature',
   ListAccountSignatures: 'email:list-account-signatures',
   SaveAccountSignature: 'email:save-account-signature',

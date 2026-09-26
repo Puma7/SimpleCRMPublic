@@ -67,7 +67,11 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
 > = {
   'ai.outbound_review': { ports: ['ok', 'block', 'error'], releasePorts: ['ok'] },
   'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
+  'ai.decide': { ports: ['ja', 'nein', 'unsicher', 'error'], releasePorts: ['ja'] },
 };
+
+/** Benannte Ports mit Rückfall auf die unbeschriftete Kante (pickEdge): ok, ja. */
+const NAMED_PORTS_WITH_DEFAULT_FALLBACK: ReadonlySet<string> = new Set(['ok', 'ja']);
 
 function edgeIsDefaultLabel(edge: { label?: string | null }): boolean {
   const label = (edge.label ?? '').toLowerCase();
@@ -211,10 +215,11 @@ export function findOutboundGraphTraps(
         for (const port of portBranch.ports) {
           const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
           // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
-          // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
-          // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
-          // und das Speichern scheitert mit 422.
-          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
+          // Default-Kante zurück (Altgraphen vor den benannten Ports), ebenso `ja`
+          // (ai.decide). Ohne diesen Fallback meldet der Validator einen
+          // lauffähigen Graphen als dead_end und das Speichern scheitert mit 422.
+          const edge = labelled
+            ?? (NAMED_PORTS_WITH_DEFAULT_FALLBACK.has(port) ? outs.find(edgeIsDefaultLabel) : undefined);
           const isReleasePort = portBranch.releasePorts.includes(port);
           if (edge) {
             walk(edge.target, holdPath || !isReleasePort);
@@ -494,6 +499,7 @@ const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
   'ai.pick_canned',
   'ai.draft_reply',
   'ai.review_draft',
+  'ai.decide',
 ]);
 const SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
   'ai.classify',

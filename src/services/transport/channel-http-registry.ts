@@ -4240,6 +4240,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     body: { apiKey: null },
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.TestAiProfile, ([id]) => ({
+    method: "POST",
+    path: `/api/v1/ai/profiles/${positiveId(id, "email ai profile id")}/test-connection`,
+    body: {},
+    transform: (body) => dataBody<{
+      ok: boolean
+      message: string
+      model: string
+      latencyMs: number
+      probability?: number
+    }>(body),
+  })],
   [IPCChannels.Email.ListAiPrompts, ([payload]) => ({
     method: "GET",
     path: "/api/v1/ai/prompts",

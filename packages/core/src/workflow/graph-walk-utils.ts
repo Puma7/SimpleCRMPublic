@@ -29,6 +29,19 @@ export function edgeIsDefault(edge: WorkflowGraphEdge): boolean {
   return !label || label === 'default' || label === 'standard' || label === 'fallback';
 }
 
+/**
+ * Benannte Ports ohne Rückfall auf die unbeschriftete Standard-Kante. Gilt für
+ * jeden Knoten — auch ein logic.switch-Fall dieses Namens endet ohne eigene Kante.
+ */
+export const FAIL_CLOSED_NAMED_PORTS: ReadonlySet<string> = new Set([
+  'block',
+  'error',
+  'hold',
+  'send',
+  'nein',
+  'unsicher',
+]);
+
 export function pickEdge(
   edges: WorkflowGraphEdge[],
   port: 'yes' | 'no' | 'default' | string,
@@ -45,7 +58,10 @@ export function pickEdge(
     }
     // Fail-closed nur für explizite Hold/Block-Ausgänge — andere Ports (z. B. approved,
     // send_tracking-Fallback) fallen wie bisher auf die Default-Kante durch.
-    if (lower === 'block' || lower === 'error' || lower === 'hold' || lower === 'send') {
+    // „nein“/„unsicher“ (ai.decide) ebenso: ohne eigene Kante endet der Zweig,
+    // statt auf der unbeschrifteten Kante als „ja“ weiterzulaufen. „ja“ darf
+    // weiter auf die unbeschriftete Kante fallen (Ende der Funktion).
+    if (FAIL_CLOSED_NAMED_PORTS.has(lower)) {
       return undefined;
     }
   }
