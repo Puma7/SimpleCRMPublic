@@ -23,6 +23,9 @@ const AI_DECIDE_REASON_MAX_CHARS = 500;
 const AI_DECIDE_ERROR_MAX_CHARS = 200;
 const AI_DECIDE_CHAT_PARSE_MAX_CHARS = 8_000;
 const AI_DECIDE_MAX_JSON_CANDIDATES = 20;
+// Obergrenze der Zeichenschritte über alle Kandidaten: Ohne sie wäre die Suche
+// bei vielen offenen Klammern ohne Gegenstück quadratisch in der Textlänge.
+const AI_DECIDE_JSON_SCAN_BUDGET = 100_000;
 
 export const AI_DECIDE_OUTBOUND_BLOCK_REASON =
   'Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen.';
@@ -420,11 +423,14 @@ function fieldsFromObject(obj: Record<string, unknown>): ChatFields {
 /** Alle ausbalancierten {...}-Abschnitte (Strings und Escapes berücksichtigt). */
 function jsonObjectCandidates(text: string): string[] {
   const out: string[] = [];
+  let budget = AI_DECIDE_JSON_SCAN_BUDGET;
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     let depth = 0;
     let inString = false;
     let escaped = false;
     for (let i = start; i < text.length; i += 1) {
+      budget -= 1;
+      if (budget < 0) return out;
       const ch = text[i];
       if (inString) {
         if (escaped) escaped = false;
