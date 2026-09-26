@@ -26,6 +26,8 @@ import { ensureSentProvenanceColumns } from '../../electron/email/email-sent-pro
 import {
   markDraftOrigin,
   markDraftOriginEdited,
+  markDraftOriginEditedIfChanged,
+  readDraftOriginContent,
   recordSentProvenance,
 } from '../../electron/email/email-sent-provenance';
 
@@ -107,8 +109,38 @@ describe('Desktop: Kennzeichnung „gesendet von“', () => {
     expect(sentColumns(74)).toMatchObject({ sent_by_kind: 'human', sent_by_workflow_id: null });
   });
 
+  test('Speichern im Entwurfsfenster: nur eine echte Änderung zählt als Bearbeitung', () => {
+    insertDraft(78);
+    db.prepare(
+      `UPDATE email_messages SET body_text = ?, to_json = ? WHERE id = 78`,
+    ).run('Guten Tag,\n\nIhre Bestellung kommt morgen.', JSON.stringify({ value: [{ address: 'kunde@example.com' }] }));
+    markDraftOrigin(78, 'ai', 7);
+
+    // Wie IPC UpdateComposeDraft: vorher lesen, speichern, vergleichen.
+    let before = readDraftOriginContent(78);
+    expect(before).not.toBeNull();
+    db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = 78`).run(
+      'Guten Tag, Ihre Bestellung kommt morgen.',
+      '<p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p>',
+    );
+    markDraftOriginEditedIfChanged(78, before);
+    expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 78').get())
+      .toEqual({ draft_origin_edited: 0 });
+
+    before = readDraftOriginContent(78);
+    db.prepare(`UPDATE email_messages SET body_text = ? WHERE id = 78`).run('Guten Tag, Ihre Bestellung kommt übermorgen.');
+    markDraftOriginEditedIfChanged(78, before);
+    expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 78').get())
+      .toEqual({ draft_origin_edited: 1 });
+    // Bereits bearbeitet: nichts mehr zu vergleichen.
+    expect(readDraftOriginContent(78)).toBeNull();
+    recordSentProvenance(78, { kind: 'human', userId: 'u1' });
+    expect(sentColumns(78)).toMatchObject({ sent_by_kind: 'human' });
+  });
+
   test('Bearbeiten ohne Herkunft markiert nichts; eigener Entwurf ⇒ human', () => {
     insertDraft(75);
+    expect(readDraftOriginContent(75)).toBeNull();
     markDraftOriginEdited(75);
     expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 75').get())
       .toEqual({ draft_origin_edited: 0 });

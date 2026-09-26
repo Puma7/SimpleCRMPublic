@@ -4,6 +4,9 @@
  * hat; die Oberfläche zeigt daraus Kennzeichen und die Ansicht „Gesendet (KI)“.
  */
 
+import { stripOutboundWarningFromHtml, stripOutboundWarningFromPlain } from './outbound-review-parse';
+import { plainTextFromHtml } from './parse-utils';
+
 export const SENT_BY_KINDS = ['human', 'ai_auto', 'ai_approved', 'workflow', 'relay'] as const;
 
 /**
@@ -129,4 +132,91 @@ export function sentByDescription(input: {
     default:
       return null;
   }
+}
+
+/** Inhalt eines Entwurfs, wie er gespeichert ist (Empfänger als JSON oder Adressliste). */
+export type DraftContentSnapshot = {
+  subject?: string | null;
+  bodyText?: string | null;
+  bodyHtml?: string | null;
+  to?: unknown;
+  cc?: unknown;
+  bcc?: unknown;
+  attachmentPaths?: readonly string[] | null;
+  accountId?: number | string | null;
+};
+
+/**
+ * Hat ein Mensch den Inhalt eines KI-/Workflow-Entwurfs geändert? Das
+ * Entwurfsfenster speichert beim Öffnen und vor dem Senden immer alle Felder
+ * — nur ein echter Unterschied zählt. Verglichen werden Betreff, Text
+ * (Leerraum, HTML-Umformatierung des Editors und der Hinweis „Versand
+ * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto.
+ */
+export function draftContentChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
+  return normalizedDraftContent(before) !== normalizedDraftContent(after);
+}
+
+function normalizedDraftContent(snapshot: DraftContentSnapshot): string {
+  return JSON.stringify({
+    subject: collapseWhitespace(snapshot.subject ?? ''),
+    body: draftBodyText(snapshot),
+    to: recipientAddresses(snapshot.to),
+    cc: recipientAddresses(snapshot.cc),
+    bcc: recipientAddresses(snapshot.bcc),
+    attachments: [...(snapshot.attachmentPaths ?? [])].map((path) => path.trim()).filter(Boolean).sort(),
+    account: snapshot.accountId == null ? null : String(snapshot.accountId),
+  });
+}
+
+function draftBodyText(snapshot: DraftContentSnapshot): string {
+  const text = snapshot.bodyText?.trim()
+    ? stripOutboundWarningFromPlain(snapshot.bodyText)
+    : plainTextFromHtml(stripOutboundWarningFromHtml(snapshot.bodyHtml ?? ''));
+  return collapseWhitespace(text);
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Adressen aus gespeichertem Empfänger-JSON ({ value: [...] }, Array) oder einer Adressliste. */
+function recipientAddresses(value: unknown): string[] {
+  const addresses: string[] = [];
+  const visit = (node: unknown): void => {
+    if (node == null) return;
+    if (typeof node === 'string') {
+      const trimmed = node.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          visit(JSON.parse(trimmed));
+          return;
+        } catch {
+          // keine JSON-Liste: als Adressliste lesen
+        }
+      }
+      for (const part of trimmed.split(/[,;]+/)) {
+        const angle = /<([^>]+)>/.exec(part);
+        const address = (angle ? angle[1]! : part).trim().toLowerCase();
+        if (address) addresses.push(address);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node === 'object') {
+      const record = node as Record<string, unknown>;
+      if (typeof record.address === 'string') {
+        const address = record.address.trim().toLowerCase();
+        if (address) addresses.push(address);
+      }
+      if (Array.isArray(record.value)) visit(record.value);
+      if (Array.isArray(record.group)) visit(record.group);
+    }
+  };
+  visit(value);
+  return [...new Set(addresses)].sort();
 }

@@ -8,6 +8,8 @@ import { getDb, getSyncInfo } from '../sqlite-service';
 import { outboundReviewApprovedKey } from './outbound-approval';
 import {
   determineSentProvenance,
+  draftContentChanged,
+  type DraftContentSnapshot,
   type DraftOriginKind,
   type SentProvenance,
 } from '../../packages/core/src/email/sent-provenance';
@@ -49,6 +51,63 @@ export function markDraftOriginEdited(draftId: number): void {
        WHERE id = ? AND uid < 0 AND draft_origin_kind IS NOT NULL`,
     )
     .run(draftId);
+}
+
+type DraftContentRow = {
+  account_id: number | null;
+  subject: string | null;
+  body_text: string | null;
+  body_html: string | null;
+  to_json: string | null;
+  cc_json: string | null;
+  bcc_json: string | null;
+  draft_attachment_paths_json: string | null;
+};
+
+function attachmentPathsFromJson(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((path): path is string => typeof path === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Inhalt eines lokalen Entwurfs mit KI-/Workflow-Herkunft, der noch nicht als
+ * bearbeitet gilt; sonst null (dann ist nichts zu vergleichen).
+ */
+export function readDraftOriginContent(draftId: number): DraftContentSnapshot | null {
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT * FROM ${EMAIL_MESSAGES_TABLE}
+         WHERE id = ? AND uid < 0 AND draft_origin_kind IS NOT NULL AND COALESCE(draft_origin_edited, 0) = 0`,
+      )
+      .get(draftId) as (DraftContentRow & Record<string, unknown>) | undefined;
+    if (!row) return null;
+    return {
+      subject: row.subject,
+      bodyText: row.body_text,
+      bodyHtml: row.body_html,
+      to: row.to_json,
+      cc: row.cc_json,
+      bcc: row.bcc_json ?? null,
+      attachmentPaths: attachmentPathsFromJson(row.draft_attachment_paths_json ?? null),
+      accountId: row.account_id,
+    };
+  } catch (error) {
+    console.warn('[email] draft origin content not read:', error);
+    return null;
+  }
+}
+
+/** Nach dem Speichern: nur ein echter Unterschied zum vorherigen Inhalt markiert „bearbeitet“. */
+export function markDraftOriginEditedIfChanged(draftId: number, before: DraftContentSnapshot | null): void {
+  if (!before) return;
+  const after = readDraftOriginContent(draftId);
+  if (after && draftContentChanged(before, after)) markDraftOriginEdited(draftId);
 }
 
 function lookupName(sql: string, id: string | number | null): string | null {

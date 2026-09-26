@@ -1,6 +1,8 @@
 import {
   SENT_AI_VIEW_KINDS,
+  composeOutboundHeldDraftBody,
   determineSentProvenance,
+  draftContentChanged,
   sentByBadgeLabel,
   sentByDescription,
   workflowSentByLabel,
@@ -61,5 +63,48 @@ describe('Kennzeichnung „gesendet von“ (TA-P3)', () => {
     expect(sentByDescription({ kind: 'ai_approved', label: 'Anna' })).toBe('KI-Entwurf, freigegeben von Anna');
     expect(sentByDescription({ kind: null, label: null })).toBeNull();
     expect([...SENT_AI_VIEW_KINDS]).toEqual(['ai_auto', 'ai_approved', 'workflow']);
+  });
+});
+
+describe('draftContentChanged: echte Änderung eines KI-Entwurfs (TA-P3)', () => {
+  const aiDraft = {
+    subject: 'Re: Frage zur Lieferung',
+    bodyText: 'Guten Tag,\n\nIhre Bestellung kommt morgen.\n\nViele Grüße',
+    bodyHtml: null,
+    to: JSON.stringify({ value: [{ address: 'Kunde@Example.com', name: 'Kunde' }] }),
+    cc: null,
+    bcc: null,
+    attachmentPaths: [],
+    accountId: 3,
+  };
+
+  test('Speichern im Entwurfsfenster ohne Änderung ist keine Änderung', () => {
+    expect(draftContentChanged(aiDraft, {
+      ...aiDraft,
+      // Editor: Absätze als HTML, Text neu aus dem HTML gewonnen, Empfänger als Objekt.
+      bodyText: 'Guten Tag, Ihre Bestellung kommt morgen. Viele Grüße',
+      bodyHtml: '<p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p><p>Viele Grüße</p>',
+      to: { value: [{ address: 'kunde@example.com', name: 'Kunde GmbH' }] },
+      cc: '',
+    })).toBe(false);
+  });
+
+  test('der Hinweis „Versand blockiert“ zählt nicht als Inhalt', () => {
+    const held = composeOutboundHeldDraftBody(
+      { plain: aiDraft.bodyText, html: '' },
+      'Preisangabe fehlt',
+    );
+    expect(draftContentChanged(aiDraft, { ...aiDraft, bodyText: held.bodyText, bodyHtml: held.bodyHtml })).toBe(false);
+  });
+
+  test.each([
+    ['Text', { bodyText: 'Guten Tag, Ihre Bestellung kommt übermorgen. Viele Grüße' }],
+    ['Betreff', { subject: 'Re: Frage zur Lieferung (dringend)' }],
+    ['Empfänger', { to: 'andere@example.com' }],
+    ['Kopie', { cc: 'chef@example.com' }],
+    ['Anhang', { attachmentPaths: ['/tmp/rechnung.pdf'] }],
+    ['Konto', { accountId: 4 }],
+  ])('%s geändert ⇒ Änderung', (_label, patch) => {
+    expect(draftContentChanged(aiDraft, { ...aiDraft, ...patch })).toBe(true);
   });
 });

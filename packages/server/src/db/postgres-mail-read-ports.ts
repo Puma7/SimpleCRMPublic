@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import {
   SENT_AI_VIEW_KINDS,
   buildFeaturePreview,
+  draftContentChanged,
   buildSpamDecision,
   evaluatePreWorkflowMailSecurity,
   evaluateSenderFilterFromLists,
@@ -1362,6 +1363,31 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             || input.values.bccJson !== undefined
             || input.values.draftAttachmentPaths !== undefined
             || accountMove !== undefined;
+          // TA-P3: Das Entwurfsfenster speichert immer alle Felder — nur ein echter
+          // Unterschied macht aus „KI · freigegeben“ einen Versand „Mensch“.
+          const storedAttachmentPaths = composeDraftAttachmentPathsFromStored(current.draft_attachment_paths_json);
+          const originContentChanged = contentEdited && draftContentChanged(
+            {
+              subject: current.subject,
+              bodyText: current.body_text,
+              bodyHtml: current.body_html,
+              to: current.to_json,
+              cc: current.cc_json,
+              bcc: current.bcc_json,
+              attachmentPaths: storedAttachmentPaths,
+              accountId: current.account_id,
+            },
+            {
+              subject: input.values.subject ?? current.subject,
+              bodyText,
+              bodyHtml: input.values.bodyHtml === undefined ? current.body_html : input.values.bodyHtml,
+              to: input.values.toJson === undefined ? current.to_json : input.values.toJson,
+              cc: input.values.ccJson === undefined ? current.cc_json : input.values.ccJson,
+              bcc: input.values.bccJson === undefined ? current.bcc_json : input.values.bccJson,
+              attachmentPaths: input.values.draftAttachmentPaths ?? storedAttachmentPaths,
+              accountId: accountMove?.account_id ?? current.account_id,
+            },
+          );
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
@@ -1400,8 +1426,12 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                   approval_state: null,
                   approval_reason: null,
                   auto_submitted: 0,
-                  // TA-P3: ein Mensch hat einen KI-/Workflow-Entwurf bearbeitet
-                  // (Versand dann „Mensch“ statt „KI · freigegeben“).
+                }
+                : {}),
+              // TA-P3: ein Mensch hat einen KI-/Workflow-Entwurf bearbeitet
+              // (Versand dann „Mensch“ statt „KI · freigegeben“).
+              ...(originContentChanged
+                ? {
                   draft_origin_edited: kyselySql<boolean>`(email_messages.draft_origin_edited OR email_messages.draft_origin_kind IS NOT NULL)`,
                 }
                 : {}),

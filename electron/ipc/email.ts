@@ -928,6 +928,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               ? recipientJsonFromField(payload.bcc)
               : null
             : undefined;
+        // TA-P3: Inhalt vor dem Speichern festhalten (nur bei KI-/Workflow-Herkunft).
+        const sentProvenance = await import('../email/email-sent-provenance.js');
+        const originBefore = sentProvenance.readDraftOriginContent(payload.messageId);
         updateComposeDraft(payload.messageId, {
           accountId: payload.accountId,
           subject: payload.subject,
@@ -939,21 +942,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           draftAttachmentPaths: payload.draftAttachmentPaths,
           replyParentMessageId: replyParentMessageIdForCaller(event, payload.replyParentMessageId),
         });
-        // TA-P3: gleiche „Inhalt geändert“-Erkennung wie updateComposeDraft — ein
-        // Mensch hat einen KI-/Workflow-Entwurf bearbeitet (kein „KI · freigegeben“ mehr).
-        if (
-          payload.subject !== undefined ||
-          payload.bodyText !== undefined ||
-          payload.bodyHtml !== undefined ||
-          toJson !== undefined ||
-          ccJson !== undefined ||
-          bccJson !== undefined ||
-          payload.draftAttachmentPaths !== undefined ||
-          payload.accountId !== undefined
-        ) {
-          const { markDraftOriginEdited } = await import('../email/email-sent-provenance.js');
-          markDraftOriginEdited(payload.messageId);
-        }
+        // Ein Mensch hat einen KI-/Workflow-Entwurf tatsächlich geändert (kein
+        // „KI · freigegeben“ mehr); bloßes Speichern ohne Änderung zählt nicht.
+        sentProvenance.markDraftOriginEditedIfChanged(payload.messageId, originBefore);
         if (payload.markReplyParentDone !== undefined) {
           const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
           setComposeMarkReplyParentDone(payload.messageId, payload.markReplyParentDone);

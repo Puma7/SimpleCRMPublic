@@ -151,6 +151,29 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
     expect(edited.ok).toBe(true);
     await send(8103, { actorUserId: USER_ID });
     expect(await sentBy(8103)).toMatchObject({ sent_by_kind: 'human', sent_by_workflow_id: null });
+
+    // Das Entwurfsfenster speichert vor dem Senden alle Felder — ohne echte
+    // Änderung (nur HTML-Absätze, Empfängername) bleibt es „KI · freigegeben“.
+    await seedDraft(8107);
+    await markOrigin(8107, 'ai');
+    const saved = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft!({
+      workspaceId: WORKSPACE_ID,
+      messageId: 8107,
+      values: {
+        subject: 'Re: Frage',
+        bodyText: 'Antwort',
+        bodyHtml: '<p>Antwort</p>',
+        toJson: { value: [{ address: 'kunde@example.com', name: 'Kunde' }] },
+        ccJson: null,
+        bccJson: null,
+        draftAttachmentPaths: [],
+      },
+    });
+    expect(saved.ok).toBe(true);
+    const flag = await postgres.admin.query(`SELECT draft_origin_edited FROM email_messages WHERE id = 8107`);
+    expect(flag.rows[0]).toEqual({ draft_origin_edited: false });
+    await send(8107, { actorUserId: USER_ID });
+    expect(await sentBy(8107)).toMatchObject({ sent_by_kind: 'ai_approved', sent_by_label: 'Anna Beispiel' });
   });
 
   test('Workflow ohne Menschen sendet KI-Entwurf ⇒ ai_auto; Workflow-Entwurf ⇒ workflow', async () => {
@@ -226,10 +249,10 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
 
   test('Ansicht „Gesendet (KI)“: nur KI/Automatik, auch in der Suche; Liste trägt die Kennzeichnung', async () => {
     // Läuft nach den Versand-Tests: 8101 human, 8102 ai_approved, 8103 human,
-    // 8104 ai_auto, 8105 workflow, 8106 human, Relay-Zeile relay.
+    // 8107 ai_approved, 8104 ai_auto, 8105 workflow, 8106 human, Relay-Zeile relay.
     const port = createPostgresEmailMessageReadPort({ db });
     const listed = await port.list({ workspaceId: WORKSPACE_ID, view: 'sent_ai', limit: 50 });
-    expect(listed.items.map((item) => item.id).sort()).toEqual([8102, 8104, 8105]);
+    expect(listed.items.map((item) => item.id).sort()).toEqual([8102, 8104, 8105, 8107]);
     expect(listed.items.find((item) => item.id === 8104)).toEqual(expect.objectContaining({
       sentByKind: 'ai_auto',
       sentByLabel: 'Workflow „KI-Antwort“',
@@ -241,6 +264,6 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
     expect(all.items.find((item) => item.id === 8101)).toEqual(expect.objectContaining({ sentByKind: 'human' }));
 
     const searched = await port.list({ workspaceId: WORKSPACE_ID, view: 'sent_ai', search: 'Frage', limit: 50 });
-    expect(searched.items.map((item) => item.id).sort()).toEqual([8102, 8104, 8105]);
+    expect(searched.items.map((item) => item.id).sort()).toEqual([8102, 8104, 8105, 8107]);
   });
 });
