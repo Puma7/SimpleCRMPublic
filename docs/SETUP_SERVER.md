@@ -364,7 +364,12 @@ If a step fails after the source was changed, the script prints the way back:
   (`raw_rfc822_z`, with sha256 and size of the original). Attachment parts that
   exist as files are taken out of it and put back byte for byte on reading
   (codec `br-parts`, part objects in `<attachments>/<ws>/raw-parts/`, hard
-  links, never deleted automatically). Every write proves the round trip,
+  links). A part no stored original names any more (its messages were
+  deleted) is moved to `raw-parts/.unreferenced/` (still readable) and
+  removed 7 days later after a fresh check; only workspaces that exist in the
+  database are touched. A stored original that cannot be read back is never
+  replaced by a rebuilt message for mailauth, Rspamd checks or Rspamd
+  learning: those are skipped for it. Every write proves the round trip,
   every read checks the hash. Identical attachment files become hard links of
   one inode (every row keeps its own path). Search is unaffected: it never
   reads the original. Existing mail is converted in the background after the
@@ -375,7 +380,9 @@ If a step fails after the source was changed, the script prints the way back:
 - **`sh docker/simplecrm maintenance [--check-only] [--deep]`** checks every
   attachment row against its file (missing, size, with `--deep` the sha256),
   counts files without a row, verifies stored originals and runs the verified
-  conversions right away. It never deletes anything; exit code 1 on findings.
+  conversions right away. It never deletes attachments or originals (parts
+  of deleted mails: see above; `--check-only` only counts them); exit code 1
+  on findings.
   The update runs `--check-only` at the end.
 - **`sh docker/simplecrm disk`** reports disk, Docker (images, build cache),
   volumes (including volumes of other compose projects without containers, e.g.

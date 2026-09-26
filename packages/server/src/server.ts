@@ -206,6 +206,7 @@ import { startBodyTextBackfillRun } from './mail-body-text-backfill';
 import { startRawCompressionBackfillRun } from './mail-raw-compression-backfill';
 import { startRawPartDedupTicker } from './mail-raw-part-dedup';
 import { startAttachmentDedupTicker } from './mail-attachment-dedup';
+import { startRawPartGcTicker } from './mail-raw-part-gc';
 import { createPostgresMailSyncJobPort } from './mail-sync';
 import { createPostgresMailSyncPostProcessor } from './mail-sync-post-process';
 import {
@@ -451,6 +452,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       maintenanceTickers.push(startRawCompressionBackfillRun({ db }));
       maintenanceTickers.push(startRawPartDedupTicker({ db, attachmentsRoot }));
       maintenanceTickers.push(startAttachmentDedupTicker({ db, attachmentsRoot }));
+      maintenanceTickers.push(startRawPartGcTicker({ db, attachmentsRoot }));
       if (ports.emailTracking?.pruneWorkspace) {
         emailTrackingRetentionTicker = startEmailTrackingRetentionTicker({
           db,

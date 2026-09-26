@@ -13,13 +13,15 @@
  * stores anything. Anything else simply stays in the stored original.
  *
  * Part objects live at <root>/<workspaceId>/raw-parts/<aa>/<sha256>, hard
- * links of the attachment files (no extra space). They are never deleted
- * automatically: removing an attachment file leaves the part object, so the
- * original stays complete.
+ * links of the attachment files (no extra space). Removing an attachment file
+ * leaves the part object, so the original stays complete. Only when no stored
+ * original names a part any more (its messages were deleted) does
+ * mail-raw-part-gc set it aside and, days later, remove it; readers still find
+ * a set-aside part (readVerifiedPart).
  */
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { link, mkdir, readFile, stat } from 'node:fs/promises';
+import { link, mkdir, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 export type Base64Run = {
@@ -277,13 +279,56 @@ export function rawPartPath(partsDir: string, sha256: string): string {
   return path.join(partsDir, sha256.slice(0, 2), sha256);
 }
 
-/** Reads a part object and checks size and sha256. */
-export async function readVerifiedPart(partsDir: string, sha256: string, size: number): Promise<Buffer> {
-  const data = await readFile(rawPartPath(partsDir, sha256));
+/** Where mail-raw-part-gc keeps parts no original names, before removing them. */
+export function setAsidePartsDir(partsDir: string): string {
+  return path.join(partsDir, '.unreferenced');
+}
+
+/** Name of a set-aside part: `<sha256>.<ms since epoch when it was set aside>`. */
+export function setAsidePartPath(partsDir: string, sha256: string, setAsideAt: number): string {
+  if (!SHA256_PATTERN.test(sha256)) throw new Error('invalid part sha256');
+  return path.join(setAsidePartsDir(partsDir), sha256.slice(0, 2), `${sha256}.${Math.floor(setAsideAt)}`);
+}
+
+export function parseSetAsidePartName(name: string): { sha256: string; setAsideAt: number } | null {
+  const match = /^([0-9a-f]{64})\.(\d{1,16})$/.exec(name);
+  return match ? { sha256: match[1]!, setAsideAt: Number(match[2]) } : null;
+}
+
+/** Set-aside copies of one part, newest first. */
+export async function findSetAsideParts(partsDir: string, sha256: string): Promise<string[]> {
+  if (!SHA256_PATTERN.test(sha256)) return [];
+  const dir = path.join(setAsidePartsDir(partsDir), sha256.slice(0, 2));
+  const names = await readdir(dir).catch(() => [] as string[]);
+  return names
+    .map((name) => ({ name, parsed: parseSetAsidePartName(name) }))
+    .filter((entry) => entry.parsed?.sha256 === sha256)
+    .sort((a, b) => b.parsed!.setAsideAt - a.parsed!.setAsideAt)
+    .map((entry) => path.join(dir, entry.name));
+}
+
+function verifiedPart(data: Buffer, sha256: string, size: number): Buffer {
   if (data.length !== size || sha256Hex(data) !== sha256) {
     throw new Error(`raw part ${sha256} is damaged`);
   }
   return data;
+}
+
+/**
+ * Reads a part object and checks size and sha256. A part the GC has set aside
+ * (a message named it again right after the check) is still found there.
+ */
+export async function readVerifiedPart(partsDir: string, sha256: string, size: number): Promise<Buffer> {
+  try {
+    return verifiedPart(await readFile(rawPartPath(partsDir, sha256)), sha256, size);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    for (const candidate of await findSetAsideParts(partsDir, sha256)) {
+      const data = await readFile(candidate).catch(() => null);
+      if (data && data.length === size && sha256Hex(data) === sha256) return data;
+    }
+    throw error;
+  }
 }
 
 export async function fileSha256(filePath: string): Promise<string> {

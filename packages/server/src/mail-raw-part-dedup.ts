@@ -15,7 +15,8 @@
  * Messages with nothing to take out are marked (empty part list) and not
  * scanned again until a new original is written.
  *
- * Nothing is deleted: part objects stay even when attachment files go.
+ * Nothing is deleted here: part objects stay even when attachment files go
+ * (mail-raw-part-gc.ts removes parts no original names any more).
  */
 import { randomUUID } from 'node:crypto';
 

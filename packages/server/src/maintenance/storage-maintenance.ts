@@ -12,8 +12,10 @@
  * Cleanup (unless checkOnly; every step proves its result before it writes):
  *  - compress legacy base64 originals;
  *  - take attachment parts out of originals;
- *  - link identical attachment files.
- * Nothing is deleted.
+ *  - link identical attachment files;
+ *  - parts of originals no message names any more: set aside, removed after
+ *    7 days (mail-raw-part-gc.ts). With checkOnly they are only counted.
+ * Attachment files and originals are never deleted.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -31,6 +33,7 @@ import {
 import { runAttachmentDedup } from '../mail-attachment-dedup';
 import { runRawCompressionBackfillBatch } from '../mail-raw-compression-backfill';
 import { runRawPartDedupBatch } from '../mail-raw-part-dedup';
+import { runRawPartGc, type RawPartGcResult } from '../mail-raw-part-gc';
 import { loadStoredRaw, rawPartReaderFor, storedRawColumns } from '../mail-raw-storage';
 
 const ROW_BATCH = 500;
@@ -72,6 +75,8 @@ export type StorageMaintenanceReport = {
     filesLinked: number;
     bytesFreed: number;
   } | null;
+  /** Parts of originals no message names any more (checkOnly: what would happen). */
+  unreferencedParts: RawPartGcResult;
   ok: boolean;
 };
 
@@ -263,10 +268,13 @@ export async function runStorageMaintenance(options: StorageMaintenanceOptions):
     attachments: { rows: 0, missing: 0, sizeMismatch: 0, hashMismatch: 0, hashed: 0, orphanFiles: 0, examples: [] },
     originals: { total: 0, legacyBase64: 0, compressed: 0, withoutAttachmentCopies: 0, checked: 0, damaged: 0, examples: [] },
     cleanup: null,
+    unreferencedParts: { setAside: 0, restored: 0, removed: 0, bytesFreed: 0, waiting: 0, unknownWorkspaces: 0 },
     ok: true,
   };
   // Cleanup first, so the checks see the final state.
   if (!options.checkOnly) report.cleanup = await runCleanup(options);
+  report.unreferencedParts = await runRawPartGc({ ...options, checkOnly: options.checkOnly === true });
+  if (report.cleanup) report.cleanup.bytesFreed += report.unreferencedParts.bytesFreed;
   const known = await checkAttachments(options, report.attachments);
   await countOrphanFiles(options, known, report.attachments);
   await checkOriginals(options, report.originals);
@@ -307,8 +315,25 @@ export function formatStorageMaintenanceReport(report: StorageMaintenanceReport)
     `  Noch base64 (wird umgestellt):      ${o.legacyBase64}`,
     `  Geprüft / beschädigt:               ${o.checked} / ${o.damaged}`,
   );
+  const u = report.unreferencedParts;
+  const partLines = report.cleanup
+    ? [
+      `  Beiseitegelegt (Mail gelöscht):     ${u.setAside}`,
+      `  Wieder benötigt, zurückgelegt:      ${u.restored}`,
+      `  Nach 7 Tagen entfernt:              ${u.removed}`,
+    ]
+    : [
+      `  Würden beiseitegelegt:              ${u.setAside}`,
+      `  Würden nach 7 Tagen entfernt:       ${u.removed}`,
+    ];
+  lines.push(
+    'Anhangkopien gelöschter Mails:',
+    ...partLines,
+    `  Beiseite, Frist läuft noch:         ${u.waiting}`,
+    ...(u.unknownWorkspaces > 0 ? [`  Ordner ohne Workspace (unberührt):  ${u.unknownWorkspaces}`] : []),
+  );
   const examples = [...a.examples, ...o.examples];
   if (examples.length > 0) lines.push('Beispiele:', ...examples.map((example) => `  - ${example}`));
-  lines.push(report.ok ? 'Ergebnis: in Ordnung.' : 'Ergebnis: PROBLEME gefunden (siehe oben). Es wurde nichts gelöscht.');
+  lines.push(report.ok ? 'Ergebnis: in Ordnung.' : 'Ergebnis: PROBLEME gefunden (siehe oben). Anhänge und Originale wurden nicht gelöscht.');
   return `${lines.join('\n')}\n`;
 }

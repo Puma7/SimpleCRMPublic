@@ -207,12 +207,14 @@ zeigt, wo der Platz hingeht: Platte, Docker-Images und Build-Cache, Volumes (auc
 - **Gleiche Anhänge:** Sie belegen nur einmal Platz. Jede Mail behält ihre eigene Datei, per Hardlink auf denselben Inhalt.
 - **Anhangssicherung:** Sie ist inkrementell: Jede Sicherung kopiert nur neue Inhalte, lässt sich aber trotzdem allein vollständig wiederherstellen.
 - **Umstellung:** Bestehende Mails werden nach dem Update im Hintergrund umgestellt. Anhänge werden nie automatisch gelöscht.
+- **Gelöschte Mails:** Die Anhangkopie aus dem Original einer gelöschten Mail wird erst beiseitegelegt (weiter lesbar) und 7 Tage später entfernt, wenn keine Mail sie mehr braucht. So belegen gelöschte Anhänge nicht dauerhaft Platz auf dem Server und in den Sicherungen.
+- **Beschädigtes Original:** Kann ein gespeichertes Original nicht mehr gelesen werden, laufen SPF/DKIM/DMARC- und Rspamd-Prüfung für diese Mail nicht (statt eine nachgebaute Nachricht zu bewerten), und Rspamd lernt sie nicht.
 
 ```sh
 sh docker/simplecrm maintenance
 ```
 
-prüft Anhang-Dateien und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort. Es meldet fehlende oder veränderte Dateien und Dateien ohne Eintrag. Es löscht nichts. `--check-only` prüft nur, `--deep` liest jede Datei vollständig. Das Update führt am Ende eine kurze Prüfung aus.
+prüft Anhang-Dateien und Mail-Originale gegen die Datenbank und erledigt die Umstellung sofort. Es meldet fehlende oder veränderte Dateien und Dateien ohne Eintrag. Anhänge und Originale löscht es nie; nur Anhangkopien gelöschter Mails werden wie oben beiseitegelegt und nach 7 Tagen entfernt. `--check-only` prüft nur, `--deep` liest jede Datei vollständig. Das Update führt am Ende eine kurze Prüfung aus.
 
 **Einmalig bei älteren Servern:** Kennt Ihr Server `--version` noch nicht (Stand 1.1.0 oder älter, Meldung `unknown update flag`), aktualisieren Sie einmal mit `sh docker/update.sh`. Danach steht `--version` zur Verfügung.
 

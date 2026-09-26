@@ -31,7 +31,9 @@ export function parseMaintenanceCliArgs(argv: readonly string[]): MaintenanceCli
 const USAGE = `usage: maintenance [--check-only] [--deep]
   Checks attachment files and stored mail originals against the database and
   runs the verified space savings (compress originals, take attachment copies
-  out of originals, link identical attachments). Nothing is deleted.
+  out of originals, link identical attachments). Attachments and originals are
+  never deleted; attachment copies of deleted mails are set aside and removed
+  after 7 days (with --check-only only counted).
   --check-only  only check
   --deep        read every attachment and every original completely
 `;

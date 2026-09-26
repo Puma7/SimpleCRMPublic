@@ -40,7 +40,9 @@ Commands:
   maintenance [--check-only] [--deep]
                              Check attachments and stored mail originals
                              against the database and run the verified space
-                             savings now. Never deletes anything.
+                             savings now. Never deletes attachments or
+                             originals; attachment copies of deleted mails
+                             are set aside and removed after 7 days.
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.

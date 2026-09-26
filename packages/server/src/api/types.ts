@@ -2519,6 +2519,8 @@ export type EmailMessageSecurityCheckResult = {
   decision: SpamDecisionRecord | null;
   authChecked: boolean;
   rspamdChecked: boolean;
+  /** The stored original is unreadable; mailauth and rspamd were not run. */
+  rawDamaged?: boolean;
 };
 
 export type EmailMessageBulkMutationResult = {

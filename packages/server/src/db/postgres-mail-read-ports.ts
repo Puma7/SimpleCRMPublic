@@ -104,7 +104,13 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
-import { loadStoredRawOrNull, rawPartReaderFor, storedRawColumns, type StoredRawColumns } from '../mail-raw-storage';
+import {
+  loadStoredRawForCheck,
+  loadStoredRawOrNull,
+  rawPartReaderFor,
+  storedRawColumns,
+  type StoredRawColumns,
+} from '../mail-raw-storage';
 import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
 import {
   approveDraftSendInTransaction,
@@ -2346,19 +2352,24 @@ async function runPostgresMailSecurityCheck(
   if (!current) return null;
 
   const settings = await loadMailSecurityCheckSettings(trx, workspaceId);
-  const checks = await runStoredMailSecurityChecks({
-    rawRfc822: await loadStoredRawOrNull(current, `security check of message ${messageId}`, {
-      readPart: rawPartReaderFor(attachmentsRoot, workspaceId),
-    }),
-    rawHeaders: current.raw_headers,
-    bodyText: current.body_text,
-    bodyHtml: current.body_html,
-    mailauthEnabled: settings.mailauthEnabled,
-    trustedAuthservId: await loadTrustedAuthservId(trx, workspaceId, current.account_id),
-    rspamdEnabled: settings.rspamdEnabled,
-    rspamdUrl: settings.rspamdUrl,
-    rspamdTimeoutMs: settings.rspamdTimeoutMs,
+  const rawRfc822 = await loadStoredRawForCheck(current, `security check of message ${messageId}`, {
+    readPart: rawPartReaderFor(attachmentsRoot, workspaceId),
   });
+  // Damaged original: no mailauth/rspamd verdict (a message rebuilt from headers
+  // and text is not the one received); the spam decision uses the stored values.
+  const checks = rawRfc822 === 'damaged'
+    ? { auth: null, rspamd: null, authChecked: false, rspamdChecked: false }
+    : await runStoredMailSecurityChecks({
+      rawRfc822,
+      rawHeaders: current.raw_headers,
+      bodyText: current.body_text,
+      bodyHtml: current.body_html,
+      mailauthEnabled: settings.mailauthEnabled,
+      trustedAuthservId: await loadTrustedAuthservId(trx, workspaceId, current.account_id),
+      rspamdEnabled: settings.rspamdEnabled,
+      rspamdUrl: settings.rspamdUrl,
+      rspamdTimeoutMs: settings.rspamdTimeoutMs,
+    });
   const securityPatch = mailSecurityPatch(checks.auth, checks.rspamd, now);
   const currentForSpam = mailSecuritySpamRow(current, checks.auth, checks.rspamd);
 
@@ -2392,6 +2403,7 @@ async function runPostgresMailSecurityCheck(
     security,
     authChecked: checks.authChecked,
     rspamdChecked: checks.rspamdChecked,
+    ...(rawRfc822 === 'damaged' ? { rawDamaged: true } : {}),
   };
 }
 
@@ -4612,9 +4624,11 @@ async function runRspamdLearningBestEffort(
   options: Pick<PostgresMailReadPortOptions, 'rspamdFetch' | 'attachmentsRoot'>,
 ): Promise<void> {
   for (const { storedRaw, messageId, workspaceId, ...request } of requests) {
-    const rawRfc822 = await loadStoredRawOrNull(storedRaw, `rspamd learning of message ${messageId}`, {
+    const rawRfc822 = await loadStoredRawForCheck(storedRaw, `rspamd learning of message ${messageId}`, {
       readPart: rawPartReaderFor(options.attachmentsRoot, workspaceId),
     });
+    // Never teach rspamd a message rebuilt from headers and text.
+    if (rawRfc822 === 'damaged') continue;
     await learnMessageWithRspamd({
       ...request,
       rawRfc822,

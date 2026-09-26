@@ -210,7 +210,26 @@ export async function loadStoredRaw(
   return Buffer.from(encoded, 'base64');
 }
 
-/** Like loadStoredRaw, but a damaged original is logged and treated as missing. */
+/**
+ * For checks that judge the message itself (mailauth, rspamd): the original,
+ * null when none was ever stored, or 'damaged' when one is stored but cannot be
+ * read back. A damaged original must not be replaced by a message rebuilt from
+ * headers and text: its verdict would be stored as if it were the real one.
+ */
+export async function loadStoredRawForCheck(
+  row: StoredRawColumns,
+  context: string,
+  options: LoadStoredRawOptions = {},
+): Promise<Buffer | null | 'damaged'> {
+  try {
+    return await loadStoredRaw(row, options);
+  } catch (error) {
+    console.error(`[mail] ${context} skipped, stored original unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    return 'damaged';
+  }
+}
+
+/** Like loadStoredRaw, but a damaged original is logged and treated as missing (display only). */
 export async function loadStoredRawOrNull(
   row: StoredRawColumns,
   context: string,

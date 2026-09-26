@@ -144,6 +144,7 @@ describe('storage maintenance checks and cleans up without deleting anything', (
     expect(text).toContain('file missing');
     expect(text).toContain('content does not match its sha256');
     expect(text).toContain('does not match its sha256');
-    expect(text).toContain('Es wurde nichts gelöscht');
+    expect(text).toContain('Anhänge und Originale wurden nicht gelöscht');
+    expect(report.unreferencedParts).toMatchObject({ setAside: 0, removed: 0 });
   });
 });
