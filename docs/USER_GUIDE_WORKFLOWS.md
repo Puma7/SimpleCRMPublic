@@ -21,12 +21,25 @@ Sie finden die Workflows unter **E-Mail → Workflows** (Unterleiste im E-Mail-B
 | **E-Mail eingehend** | wenn eine neue Mail abgeholt wurde |
 | **E-Mail ausgehend** | kurz bevor eine Mail versendet wird (kann den Versand anhalten) |
 | **Entwurf erstellt** | wenn ein neuer Entwurf angelegt wurde |
-| **Zeitplan (Cron)** | regelmäßig zu festen Zeiten, optional mit Postfach-Abgleich |
+| **Zeitplan (Cron)** | regelmäßig zu festen Zeiten (Desktop und Server), optional mit Postfach-Abgleich |
 | **Manuell** | per Knopf „Jetzt ausführen“ |
 | **CRM-Ereignisse** | z. B. Kunde angelegt, Deal-Phase geändert, Aufgabe fällig, Termin beginnt |
 | **Webhook (eingehend)** | wenn ein externes System die Automations-Schnittstelle aufruft (für Fortgeschrittene) |
 
-**Entwurf erstellt**, **Zeitplan** und die **CRM-Ereignisse** gibt es nur in der Desktop-Edition. Die Server-Edition bietet sie nicht an, blendet das Zeitplan-Feld aus und lehnt das Speichern mit einem solchen Auslöser ab; bestehende Workflows bleiben lesbar und lassen sich umstellen oder deaktivieren.
+**Entwurf erstellt** und die **CRM-Ereignisse** gibt es nur in der Desktop-Edition. Die Server-Edition bietet sie nicht an und lehnt das Speichern mit einem solchen Auslöser ab; bestehende Workflows bleiben lesbar und lassen sich umstellen oder deaktivieren. Den **Zeitplan** gibt es in beiden Editionen.
+
+### Zeitplan-Workflows
+
+Den Zeitplan tragen Sie unter **„Erweitert (Zeitplan, Test, Backfill)“** im Feld **Cron** ein — fünf Felder: `Minute Stunde Tag Monat Wochentag`. Beispiele: `0 6 * * 1-5` (werktags 06:00), `*/30 * * * *` (jede halbe Stunde), `0 6 * * MON` (montags 06:00). Wochentag 0 und 7 sind Sonntag; Monats- und Tagesnamen (`JAN`, `MON-FRI`) sind erlaubt.
+
+- **Mindestabstand 15 Minuten** — dichtere Ausdrücke lehnt der Editor ab.
+- **Geplantes Konto:** optional. Auf dem Desktop wird dieses Postfach vor dem Lauf abgeholt; auf dem Server holt SimpleCRM alle Postfächer ohnehin regelmäßig ab, das Konto steht dem Workflow als `email.account_id` zur Verfügung (z. B. für „E-Mail-Konto syncen“).
+- **Variablen:** `{{schedule.sync_log}}` (Desktop: Ergebnis des Abgleichs; Server: Hinweis auf den automatischen Abruf), auf dem Server zusätzlich `{{schedule.slot}}` (geplanter Zeitpunkt) und `{{schedule.fired_at}}` (Zeitpunkt der Auslösung durch den Server).
+- **Jetzt ausführen** startet einen Zeitplan-Workflow sofort mit denselben Variablen.
+
+**Server-Edition:** Der Server prüft jede Minute, welche Zeitpunkte fällig sind, und startet jeden Zeitpunkt genau einmal — auch mit mehreren Server-Prozessen. Maßgeblich ist die **Zeitzone** unter **Einstellungen → Automatisierung** (Standard `Europe/Berlin`, Sommer- und Winterzeit inklusive); der Editor zeigt die **nächste Ausführung** in dieser Zeitzone an. Nur fünf Felder (kein Sekundenfeld); ein aktiver Zeitplan braucht einen Ausdruck. Verpasste Zeitpunkte (Server war aus) holt der Server nur nach, wenn sie **höchstens 15 Minuten** zurückliegen; ältere verfallen. Ein neu gespeicherter oder aktivierter Zeitplan startet erst mit dem nächsten Zeitpunkt. Uhrzeiten, die es beim Umstellen auf Sommerzeit nicht gibt (z. B. 02:30), fallen an diesem Tag aus; doppelte Uhrzeiten beim Zurückstellen zählen nur einmal. Der Lauf reiht sich in die Workflow-Warteschlange des Workspaces ein und kann deshalb kurz hinter anderen Workflow-Läufen warten.
+
+**Desktop-Edition:** Zeitplan-Workflows laufen, solange SimpleCRM geöffnet ist, in der Zeitzone des Rechners; es gibt keine Nachholung. Sind **Tag** und **Wochentag** beide eingeschränkt (z. B. `0 6 1 * 1`), verlangt der Desktop beides (der 1. und ein Montag), der Server genügt eines von beiden wie das klassische Unix-cron (der 1. oder jeder Montag).
 
 ## Der Editor in 5 Minuten
 

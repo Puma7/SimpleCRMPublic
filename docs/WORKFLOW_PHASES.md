@@ -42,6 +42,7 @@ Siehe Zielbild: [`WORKFLOW_VISION.md`](WORKFLOW_VISION.md).
 | `ai.outbound_review`, Vorlage `outbound-quality-check` | ✅ |
 | Cron: `runScheduledWorkflowFire` führt Graph aus (+ optional Konto-Sync) | ✅ |
 | Desktop: **Jetzt ausführen** (`workflow:execute-now`) für manual/schedule/CRM | ✅ |
+| Server: Zeitplan-Auslöser — Minutentakt `workflow.schedule.tick` je Workspace (Maintenance-Ticker), Anspruch je Zeitpunkt per bedingtem UPDATE auf `email_workflows.schedule_last_slot_at` (Migration `0056`), `workflow.execute` mit Ausloeser `schedule`, Dienst-Provenienz und Job-Key Workflow+Zeitpunkt; Nachholung höchstens 15 Minuten; Zeitzone `workflow_schedule_timezone` (sync_info, Standard `Europe/Berlin`); Cron-Parser rein in `packages/core/src/workflow/cron-schedule.ts` (5 Felder, Mindestabstand 15 Minuten); „Jetzt ausführen“ läuft als `schedule` | ✅ |
 | Globaler Spam-Schwellwert → `logic.threshold` mit `useGlobalThreshold` | ✅ |
 | Compose: **Ausgang prüfen** (Dry-Run, keine DB-Mutation) | ✅ |
 | Canvas-Ports für `email.sender_filter` / `logic.threshold` | ✅ |
