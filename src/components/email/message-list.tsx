@@ -62,6 +62,7 @@ import { MessageDoneFilterChips } from "./message-done-filter-chips"
 import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
 import { invokeRenderer } from "@/services/transport"
 import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
+import { SentProvenanceBadges } from "./sent-provenance"
 import type { BulkListAction } from "./hooks/use-email-messages"
 
 type Props = {
@@ -970,6 +971,7 @@ export function MessageList({
                                 Freigabe
                               </span>
                             ) : null}
+                            <SentProvenanceBadges message={m} />
                             {m.has_attachments ? (
                               <Paperclip
                                 className="h-3 w-3 text-muted-foreground"

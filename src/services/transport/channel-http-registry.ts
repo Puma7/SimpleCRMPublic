@@ -378,6 +378,9 @@ type EmailMessageRecord = {
   approvalReason?: string | null
   outboundHold?: boolean | number | null
   outboundBlockReason?: string | null
+  sentByKind?: string | null
+  sentByLabel?: string | null
+  sentOutboundReviewSkipped?: boolean | number | null
 }
 
 type EmailThreadRecord = {
@@ -5800,6 +5803,10 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     // Hinweis „Versand blockiert“ und Listen-Kennzeichen brauchen beide Felder.
     outbound_hold: record.outboundHold ? 1 : 0,
     outbound_block_reason: record.outboundBlockReason ?? null,
+    // Kennzeichnung „gesendet von“ (Teilautomatisierung P3).
+    sent_by_kind: record.sentByKind ?? null,
+    sent_by_label: record.sentByLabel ?? null,
+    sent_outbound_review_skipped: record.sentOutboundReviewSkipped ? 1 : 0,
     updated_at: record.updatedAt ?? undefined,
     remote_content_policy: record.remoteContentPolicy ?? undefined,
     read_receipt_requested: record.readReceiptRequested ? 1 : 0,
@@ -6957,17 +6964,18 @@ function optionalPositiveQueryId(value: unknown, label: string): number | undefi
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
+    || value === "sent_ai"
     || value === "archived"
     || value === "drafts"
     || value === "scheduled_send"

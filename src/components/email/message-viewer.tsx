@@ -105,6 +105,7 @@ import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
 import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
 import { OutboundHoldBanner } from "./outbound-hold-banner"
+import { SentProvenanceLine } from "./sent-provenance"
 
 type Props = {
   accounts: EmailAccount[]
@@ -1407,6 +1408,8 @@ export function MessageViewer(props: Props) {
                     }, metadataPlacement === "inline" && !metadataPanelOpen ? 120 : 0)
                   }}
                 />
+
+                <SentProvenanceLine message={selectedMessage} />
 
                 {selectedMessage.pgp_status === "encrypted_unread" ||
                 bodyText.startsWith("-----BEGIN PGP MESSAGE-----") ? (

@@ -82,6 +82,57 @@ describe('renderer transport: Ausgang und Versand-Herkunft', () => {
     expect(row.outbound_hold).toBe(0);
     expect(row.outbound_block_reason).toBeNull();
   });
+
+  test('TA-P3: Ansicht sent_ai wird übergeben, „gesendet von“ kommt in der Liste an', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        items: [serverMessage({
+          uid: 12,
+          folderKind: 'sent',
+          sentByKind: 'ai_auto',
+          sentByLabel: 'Workflow „KI-Antwort“',
+          sentOutboundReviewSkipped: true,
+        })],
+        nextCursor: null,
+      },
+    }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const rows = await transport.invoke(IPCChannels.Email.ListMessagesByView, {
+      accountId: 'all',
+      view: 'sent_ai',
+      limit: 50,
+    }) as Array<Record<string, unknown>>;
+
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe('/api/v1/email/messages');
+    expect(url.searchParams.get('view')).toBe('sent_ai');
+    expect(rows[0]).toEqual(expect.objectContaining({
+      sent_by_kind: 'ai_auto',
+      sent_by_label: 'Workflow „KI-Antwort“',
+      sent_outbound_review_skipped: 1,
+    }));
+  });
+
+  test('TA-P3: ohne Kennzeichnung (Altbestand) null bzw. 0; unbekannte Ansicht wird abgewiesen', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: serverMessage({ uid: 12, folderKind: 'sent' }),
+    }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const row = await transport.invoke(IPCChannels.Email.GetMessage, 801) as Record<string, unknown>;
+    expect(row).toEqual(expect.objectContaining({
+      sent_by_kind: null,
+      sent_by_label: null,
+      sent_outbound_review_skipped: 0,
+    }));
+
+    await expect(transport.invoke(IPCChannels.Email.ListMessagesByView, {
+      accountId: 'all',
+      view: 'sent_robot',
+      limit: 50,
+    })).rejects.toThrow('Invalid email message view');
+  });
 });
 
 describe('renderer transport: Ohne Ausgangsprüfung senden (TA-P2)', () => {
