@@ -29,8 +29,6 @@ describe('parseCronExpression', () => {
     expect([...cron.daysOfMonth].sort((a, b) => a - b)).toEqual([1, 15]);
     expect(cron.months.size).toBe(12);
     expect([...cron.daysOfWeek].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
-    expect(cron.dayOfMonthRestricted).toBe(true);
-    expect(cron.dayOfWeekRestricted).toBe(true);
   });
 
   test('a value with a step runs to the end of the field', () => {
@@ -48,12 +46,6 @@ describe('parseCronExpression', () => {
     expect([...parsed('0 6 * * 0,7').daysOfWeek]).toEqual([0]);
     expect([...parsed('0 6 * * 5-7').daysOfWeek].sort()).toEqual([0, 5, 6]);
     expect([...parsed('0 6 * * */2').daysOfWeek].sort()).toEqual([0, 2, 4, 6]);
-  });
-
-  test('a day field starting with * counts as unrestricted (also with a step)', () => {
-    const cron = parsed('0 6 */2 * 1');
-    expect(cron.dayOfMonthRestricted).toBe(false);
-    expect(cron.dayOfWeekRestricted).toBe(true);
   });
 
   test.each([
@@ -101,7 +93,7 @@ describe('validateWorkflowScheduleCron', () => {
     '0-45/15 8-17 * * MON-FRI',
     '30 2 * * *',
     '0 0 29 2 *',
-    '0 0 31 2 1',
+    '0 0 29 2 MON',
     '0 0 1 1 *',
   ])('accepts %p', (expression) => {
     expect(validateWorkflowScheduleCron(expression)).toBeNull();
@@ -116,6 +108,8 @@ describe('validateWorkflowScheduleCron', () => {
     ['0 0 31 2 *', /trifft nie zu/],
     ['0 0 30,31 2 *', /trifft nie zu/],
     ['0 0 31 4,6,9,11 *', /trifft nie zu/],
+    // Tag UND Wochentag: der Wochentag rettet ein unmoegliches Datum nicht.
+    ['0 0 31 2 1', /trifft nie zu/],
     ['0 0 0 6 * *', /Sekunden-Feld/],
     ['0 6 * *', /genau 5 Felder/],
   ])('rejects %p', (expression, message) => {
@@ -153,14 +147,15 @@ describe('cronMatches', () => {
     expect(cronMatches('0 12 * * 7', utc('2026-09-28T12:00:00Z'), 'UTC')).toBe(false);
   });
 
-  test('day of month OR weekday when both are restricted', () => {
-    // 2026-09-28 ist ein Montag, nicht der Erste; 2026-10-01 ein Donnerstag.
-    expect(cronMatches('0 6 1 * 1', utc('2026-09-28T06:00:00Z'), 'UTC')).toBe(true);
-    expect(cronMatches('0 6 1 * 1', utc('2026-10-01T06:00:00Z'), 'UTC')).toBe(true);
-    expect(cronMatches('0 6 1 * 1', utc('2026-10-02T06:00:00Z'), 'UTC')).toBe(false);
+  test('day of month AND weekday when both are restricted (like node-cron, unlike crontab)', () => {
+    // 2026-09-28 ist ein Montag, nicht der Erste; 2026-10-01 ein Donnerstag;
+    // 2027-02-01 ist ein Montag UND der Erste.
+    expect(cronMatches('0 6 1 * 1', utc('2026-09-28T06:00:00Z'), 'UTC')).toBe(false);
+    expect(cronMatches('0 6 1 * 1', utc('2026-10-01T06:00:00Z'), 'UTC')).toBe(false);
+    expect(cronMatches('0 6 1 * 1', utc('2027-02-01T06:00:00Z'), 'UTC')).toBe(true);
   });
 
-  test('day of month AND weekday when one of them starts with *', () => {
+  test('day of month AND weekday also when one of them starts with *', () => {
     // */2 = ungerade Tage; Montag 2026-09-28 (gerade) trifft nicht, Montag 2026-10-05 (ungerade) schon.
     expect(cronMatches('0 6 */2 * 1', utc('2026-09-28T06:00:00Z'), 'UTC')).toBe(false);
     expect(cronMatches('0 6 */2 * 1', utc('2026-10-05T06:00:00Z'), 'UTC')).toBe(true);
@@ -296,10 +291,13 @@ describe('nextCronSlotAfter', () => {
     expect(nextCronSlotAfter('0 0 31 2 *', utc('2026-09-26T10:00:00Z'), 'UTC')).toBeNull();
   });
 
-  test('respects the day-of-month OR weekday rule', () => {
-    // Nach Samstag 2026-09-26: Montag 28.09. kommt vor dem Ersten.
+  test('needs day of month and weekday together', () => {
+    // Nach Samstag 2026-09-26 ist der naechste Montag, der auf den Ersten faellt, der 01.02.2027.
     expect(iso(nextCronSlotAfter('0 6 1 * 1', utc('2026-09-26T10:00:00Z'), 'UTC')))
-      .toBe('2026-09-28T06:00:00.000Z');
+      .toBe('2027-02-01T06:00:00.000Z');
+    // Der 29. Februar an einem Montag: erst 2044.
+    expect(iso(nextCronSlotAfter('0 0 29 2 MON', utc('2026-09-26T10:00:00Z'), 'UTC')))
+      .toBe('2044-02-29T00:00:00.000Z');
   });
 });
 

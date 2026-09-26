@@ -13,10 +13,11 @@
  * Monats- und Tagesnamen (`JAN`, `MON-FRI`). Wochentag 0 und 7 sind Sonntag.
  * Sekunden (6 Felder), `?`, `L`, `W` und `#` kennt nur der Desktop (node-cron).
  *
- * Tag-des-Monats und Wochentag: Sind BEIDE eingeschraenkt (beginnen nicht mit
- * `*`), genuegt eines von beiden — die Regel des klassischen Unix-cron
- * (`0 6 1 * 1` = am Ersten UND an jedem Montag). node-cron 4 auf dem Desktop
- * verlangt dort beides; siehe docs/USER_GUIDE_WORKFLOWS.md.
+ * Tag-des-Monats und Wochentag muessen BEIDE passen (`0 6 1 * 1` = nur ein
+ * Montag, der auf den Ersten faellt) — wie node-cron 4 auf dem Desktop, damit
+ * ein exportierter Workflow in beiden Editionen zu denselben Zeiten laeuft.
+ * Das klassische Unix-crontab laesst dort eines von beiden genuegen; siehe
+ * docs/USER_GUIDE_WORKFLOWS.md.
  *
  * Zeitzone: Felder werden als Wanduhrzeit in einer IANA-Zeitzone gelesen
  * (Intl.DateTimeFormat). Beim Vorstellen der Uhr (Sommerzeit) gibt es die
@@ -43,9 +44,6 @@ export type ParsedCronExpression = Readonly<{
   months: ReadonlySet<number>;
   /** 0 = Sonntag … 6 = Samstag (7 ist bereits auf 0 abgebildet). */
   daysOfWeek: ReadonlySet<number>;
-  /** Feld beginnt nicht mit `*` — steuert die Oder-Regel zwischen Tag und Wochentag. */
-  dayOfMonthRestricted: boolean;
-  dayOfWeekRestricted: boolean;
 }>;
 
 export type CronParseResult =
@@ -85,8 +83,12 @@ const DAY_MS = 24 * HOUR_MS;
 const MAX_ZONE_OFFSET_MS = 14 * HOUR_MS;
 /** Laengster angenommener Uhr-Ruecksprung; reale Zonen springen hoechstens 2 h. */
 const MAX_FOLD_MS = 3 * HOUR_MS;
-/** Reicht fuer den 29. Februar (naechster Schalttag hoechstens 8 Jahre entfernt). */
-const DEFAULT_NEXT_SLOT_HORIZON_DAYS = 366 * 8 + 2;
+/**
+ * Suchfenster fuer den naechsten Termin. Der 29. Februar an einem bestimmten
+ * Wochentag kommt nur alle 28 Jahre (ueber Jahrhundertgrenzen bis zu 40)
+ * vor; die Suche laeuft tageweise und prueft Uhrzeiten nur an passenden Tagen.
+ */
+const DEFAULT_NEXT_SLOT_HORIZON_DAYS = 366 * 40;
 
 export function parseCronExpression(expression: string): CronParseResult {
   const source = typeof expression === 'string' ? expression.trim() : '';
@@ -126,8 +128,6 @@ export function parseCronExpression(expression: string): CronParseResult {
       daysOfMonth: sets[2]!,
       months: sets[3]!,
       daysOfWeek,
-      dayOfMonthRestricted: !parts[2]!.startsWith('*'),
-      dayOfWeekRestricted: !parts[4]!.startsWith('*'),
     },
   };
 }
@@ -226,10 +226,9 @@ export function validateWorkflowScheduleCron(expression: string): string | null 
 const DAYS_IN_MONTH_MAX = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
 
 function cronCanEverMatch(cron: ParsedCronExpression): boolean {
-  // Jeder Wochentag faellt irgendwann auf jedes Datum; entscheidend ist nur,
-  // ob der Tag des Monats in einem der Monate vorkommt. Mit der Oder-Regel
-  // traegt der Wochentag allein.
-  if (cron.dayOfMonthRestricted && cron.dayOfWeekRestricted) return true;
+  // Jedes Datum faellt irgendwann auf jeden Wochentag (auch der 29. Februar im
+  // 400-Jahre-Zyklus); entscheidend ist nur, ob der Tag des Monats in einem
+  // der Monate vorkommt.
   for (const month of cron.months) {
     for (const day of cron.daysOfMonth) {
       if (day <= DAYS_IN_MONTH_MAX[month]!) return true;
@@ -336,11 +335,9 @@ function resolveCron(spec: string | ParsedCronExpression): ParsedCronExpression 
   return parsed.cron;
 }
 
+/** Tag UND Wochentag — wie node-cron 4 (TimeMatcher.match), nicht wie Unix-crontab. */
 function cronDayMatches(cron: ParsedCronExpression, dayOfMonth: number, dayOfWeek: number): boolean {
-  const domMatch = cron.daysOfMonth.has(dayOfMonth);
-  const dowMatch = cron.daysOfWeek.has(dayOfWeek);
-  if (cron.dayOfMonthRestricted && cron.dayOfWeekRestricted) return domMatch || dowMatch;
-  return domMatch && dowMatch;
+  return cron.daysOfMonth.has(dayOfMonth) && cron.daysOfWeek.has(dayOfWeek);
 }
 
 function cronMatchesAt(cron: ParsedCronExpression, instant: number, timeZone: string): boolean {
