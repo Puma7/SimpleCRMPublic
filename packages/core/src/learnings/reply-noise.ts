@@ -5,6 +5,22 @@
  * Zonen-Marker (Spiegel von shared/compose-body.ts) zuerst zerlegt.
  */
 
+import { replaceElementBlocks, replaceTags } from '../email/parse-utils';
+
+/**
+ * Harte Obergrenzen für Mail-Inhalte, bevor irgendetwas sie verarbeitet
+ * (Zitat/Signatur abschneiden, Datenschutzfilter). Gespeichert werden ohnehin
+ * höchstens 4000 Zeichen; der Anfang einer Mail trägt den Inhalt.
+ */
+export const LEARNING_SOURCE_TEXT_MAX_LENGTH = 20_000;
+/** HTML ist durch Markup länger; es wird vor der Umwandlung gekürzt. */
+export const LEARNING_SOURCE_HTML_MAX_LENGTH = 100_000;
+
+export function clampLearningSource(value: string | null | undefined, max = LEARNING_SOURCE_TEXT_MAX_LENGTH): string {
+  const text = String(value ?? '');
+  return text.length > max ? text.slice(0, max) : text;
+}
+
 /** Spiegel der Zonen-Marker aus shared/compose-body.ts (Test hält beide gleich). */
 export const LEARNING_COMPOSE_QUOTE_MARKER = '<!-- simplecrm-quote -->';
 export const LEARNING_COMPOSE_BODY_MARKER = '<!-- simplecrm-body -->';
@@ -41,20 +57,60 @@ function decodeBasicEntities(value: string): string {
     .replace(/&amp;/gi, '&');
 }
 
-/** Einfache HTML→Text-Umwandlung für Mail-Inhalte (keine Formatierung nötig). */
+/**
+ * Wie `input.replace(/<!--[\s\S]*?-->/g, '')`, aber linear: ein offener
+ * Kommentar ohne `-->` beendet die Suche, statt je `<!--` bis zum Ende zu laufen.
+ */
+function removeHtmlComments(input: string): string {
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    const start = input.indexOf('<!--', cursor);
+    if (start === -1) break;
+    const end = input.indexOf('-->', start + 4);
+    if (end === -1) break;
+    out += input.slice(cursor, start);
+    cursor = end + 3;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/** Wie `input.replace(/<tag[^>]*>/gi, replacement)`, linear (siehe replaceTags). */
+function replaceOpeningTags(input: string, tag: string, replacement: string): string {
+  const open = new RegExp(`<${tag}`, 'gi');
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    open.lastIndex = cursor;
+    const start = open.exec(input);
+    if (!start) break;
+    const end = input.indexOf('>', start.index + start[0].length);
+    if (end === -1) break;
+    out += `${input.slice(cursor, start.index)}${replacement}`;
+    cursor = end + 1;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/** Leerzeichen/Tabs vor einem Zeilenumbruch; beginnt nur am Anfang des Laufs. */
+const TRAILING_BLANKS_BEFORE_NEWLINE = /(?<![ \t])[ \t]+\n/g;
+const TRAILING_BLANKS_AT_LINE_END = /(?<![ \t])[ \t]+$/gm;
+
+/**
+ * Einfache HTML→Text-Umwandlung für Mail-Inhalte (keine Formatierung nötig).
+ * Alle Schritte sind linear (keine faulen `[\s\S]*?`-Regexe, die bei offenen
+ * Tags je Treffer bis zum Textende laufen).
+ */
 export function learningHtmlToText(html: string): string {
-  return decodeBasicEntities(
-    String(html ?? '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<(script|style|head)[^>]*>[\s\S]*?<\/\1>/gi, '')
-      .replace(/<blockquote[^>]*>[\s\S]*?<\/blockquote>/gi, '\n')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(?:p|div|li|tr|h[1-6])>/gi, '\n')
-      .replace(/<li[^>]*>/gi, '- ')
-      .replace(/<[^>]+>/g, ''),
-  )
+  let value = removeHtmlComments(String(html ?? ''));
+  for (const tag of ['script', 'style', 'head']) value = replaceElementBlocks(value, tag, '');
+  value = replaceElementBlocks(value, 'blockquote', '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|li|tr|h[1-6])>/gi, '\n');
+  value = replaceTags(replaceOpeningTags(value, 'li', '- '), '');
+  return decodeBasicEntities(value)
     .replace(/\r\n?/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
+    .replace(TRAILING_BLANKS_BEFORE_NEWLINE, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -116,7 +172,7 @@ export function stripReplyNoise(text: string): string {
 
   return lines
     .join('\n')
-    .replace(/[ \t]+$/gm, '')
+    .replace(TRAILING_BLANKS_AT_LINE_END, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -127,7 +183,11 @@ export function stripReplyNoise(text: string): string {
  * entfernt danach das übrige Rauschen.
  */
 export function extractLearningReplyText(input: { text?: string | null; html?: string | null }): string {
+  // Marker per indexOf auf dem ganzen HTML (linear), gekürzt wird die Zone.
   const html = String(input.html ?? '');
+  const toText = (value: string) => clampLearningSource(
+    learningHtmlToText(clampLearningSource(value, LEARNING_SOURCE_HTML_MAX_LENGTH)),
+  );
   if (html.includes(LEARNING_COMPOSE_BODY_MARKER) || html.includes(LEARNING_COMPOSE_QUOTE_MARKER)
     || html.includes(LEARNING_COMPOSE_SIGNATURE_MARKER)) {
     let editable = html;
@@ -137,9 +197,23 @@ export function extractLearningReplyText(input: { text?: string | null; html?: s
     if (sigIdx >= 0) editable = editable.slice(0, sigIdx);
     const bodyIdx = editable.indexOf(LEARNING_COMPOSE_BODY_MARKER);
     if (bodyIdx >= 0) editable = editable.slice(bodyIdx + LEARNING_COMPOSE_BODY_MARKER.length);
-    return stripReplyNoise(learningHtmlToText(editable));
+    return stripReplyNoise(toText(editable));
   }
-  const text = String(input.text ?? '');
+  const text = clampLearningSource(input.text);
   if (text.trim()) return stripReplyNoise(text);
-  return stripReplyNoise(learningHtmlToText(html));
+  return stripReplyNoise(toText(html));
 }
+
+/**
+ * Nur für den Laufzeit-Test (tests/unit/ai-learnings-redos.test.ts): jedes
+ * Muster wird dort einzeln gegen entartete Eingaben gemessen.
+ */
+export const LEARNING_REPLY_NOISE_PATTERNS_FOR_TESTS: Readonly<Record<string, RegExp>> = {
+  ...Object.fromEntries(QUOTE_HEADER_PATTERNS.map((pattern, index) => [`quoteHeader${index}`, pattern])),
+  signatureDelimiter: SIGNATURE_DELIMITER,
+  mobileFooter: MOBILE_FOOTER,
+  greetingLine: GREETING_LINE,
+  closingLine: CLOSING_LINE,
+  trailingBlanksBeforeNewline: TRAILING_BLANKS_BEFORE_NEWLINE,
+  trailingBlanksAtLineEnd: TRAILING_BLANKS_AT_LINE_END,
+};

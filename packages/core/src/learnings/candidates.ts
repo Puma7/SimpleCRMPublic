@@ -14,7 +14,13 @@ import {
   type LearningCandidateKind,
 } from './digest';
 import { redactPersonalData, type RedactionHints } from './redact';
-import { extractLearningReplyText, learningHtmlToText, stripReplyNoise } from './reply-noise';
+import {
+  clampLearningSource,
+  extractLearningReplyText,
+  LEARNING_SOURCE_HTML_MAX_LENGTH,
+  learningHtmlToText,
+  stripReplyNoise,
+} from './reply-noise';
 
 export type PreparedLearningCandidate = {
   kind: LearningCandidateKind;
@@ -52,8 +58,12 @@ export function buildLearningQuestionText(
   input: { subject?: string | null; text?: string | null; html?: string | null },
   hints: RedactionHints,
 ): string {
-  const subject = cleanLearningSubject(input.subject);
-  const bodySource = String(input.text ?? '').trim() ? String(input.text) : learningHtmlToText(String(input.html ?? ''));
+  // Vor jeder Verarbeitung hart kürzen: Eltern-Mails sind fremder, beliebig langer Inhalt.
+  const subject = cleanLearningSubject(clampLearningSource(input.subject, 1000));
+  const text = clampLearningSource(input.text);
+  const bodySource = text.trim()
+    ? text
+    : clampLearningSource(learningHtmlToText(clampLearningSource(input.html, LEARNING_SOURCE_HTML_MAX_LENGTH)));
   const body = isEncrypted(bodySource) ? '' : stripReplyNoise(bodySource);
   const combined = [subject ? `Betreff: ${subject}` : '', body].filter(Boolean).join('\n\n');
   return sanitize(combined, hints);
@@ -67,12 +77,12 @@ export function buildLearningQuestionText(
  */
 export function prepareSentLearningCandidate(source: SentLearningSource): PreparedLearningCandidate | null {
   const hints: RedactionHints = { names: source.names ?? [] };
-  const rawSent = String(source.sentText ?? '');
+  const rawSent = clampLearningSource(source.sentText);
   if (isEncrypted(rawSent)) return null;
   const human = extractLearningReplyText({ text: source.sentText, html: source.sentHtml });
   if (!human.trim()) return null;
 
-  const snapshot = String(source.aiSnapshot ?? '').trim();
+  const snapshot = clampLearningSource(source.aiSnapshot).trim();
   const question = buildLearningQuestionText(
     { subject: source.parentSubject, text: source.parentText, html: source.parentHtml },
     hints,
@@ -112,7 +122,7 @@ export function prepareNoteLearningCandidate(input: {
   names?: readonly (string | null | undefined)[];
 }): PreparedLearningCandidate | null {
   const hints: RedactionHints = { names: input.names ?? [] };
-  const note = sanitize(String(input.note ?? ''), hints, LEARNING_NOTE_MAX_LENGTH);
+  const note = sanitize(clampLearningSource(input.note), hints, LEARNING_NOTE_MAX_LENGTH);
   if (!note.trim()) return null;
   const hasQuestion = Boolean(
     String(input.questionSubject ?? '').trim()

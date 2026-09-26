@@ -6,6 +6,12 @@
  * Bewusst konservativ bei Zahlen: Datumsangaben, Uhrzeiten, Preise, Mengen und
  * Fristen bleiben stehen, weil genau sie oft den Inhalt eines Learnings tragen
  * („Rückgabe innerhalb von 14 Tagen“, „Versand ab 49,00 €“).
+ *
+ * Laufzeit: Die Texte stammen aus fremden Mails. Jedes Muster ist linear —
+ * ein Treffer beginnt nur am Anfang einer Zeichenfolge (Lookbehind statt
+ * `\b`/ohne Anker), Leerraum ist nie zweideutig auf mehrere `\s*` verteilt,
+ * und Rückfragen an den Resttext laufen rückwärts über wenige Zeichen statt
+ * über den ganzen Text (Test: tests/unit/ai-learnings-redos.test.ts).
  */
 
 export const LEARNING_PLACEHOLDERS = {
@@ -124,13 +130,17 @@ function redactUrl(url: string, mode: 'full' | 'query'): string {
 
 // --- E-Mail -----------------------------------------------------------------
 
-const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+/**
+ * Beginnt nur am Anfang eines Lokalteils: ohne den Lookbehind liefe der
+ * Lokalteil von jeder Position einer langen Folge („aaaa…“) bis zum Ende.
+ */
+const EMAIL_PATTERN = /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 
 // --- IBAN / BIC -------------------------------------------------------------
 
 /** Großbuchstaben: „Konto AT61… bei …“ darf nicht in die IBAN hineinlaufen. */
 const IBAN_PATTERN = /\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[ ]?[A-Z0-9]{1,4})?\b/g;
-const BIC_KEYWORD_PATTERN = /\b(BIC|SWIFT(?:-Code)?|SWIFT\/BIC)(\s*[:.]?\s*)([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/gi;
+const BIC_KEYWORD_PATTERN = /\b(BIC|SWIFT(?:-Code)?|SWIFT\/BIC)(\s*(?:[:.]\s*)?)([A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/gi;
 const BIC_BARE_PATTERN = /\b[A-Z]{4}(?:DE|AT|CH|LI|LU|NL|BE|FR|IT|ES|GB|PL|CZ|DK|SE|NO|FI|IE|PT)[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b/g;
 
 // --- Bestell-/Kunden-/Rechnungsnummern ----------------------------------------
@@ -165,11 +175,14 @@ const NUMBER_KEYWORDS = [
 ];
 
 const NUMBER_KEYWORD_PATTERN = new RegExp(
-  `\\b(${NUMBER_KEYWORDS.join('|')})(\\s*(?:(?:Nr\\.?|No\\.?|Nummer|number)\\s*)?(?:[:#]|-(?=\\s)|\\s)\\s*#?\\s*)([A-Z0-9](?:[A-Z0-9./_-]*[A-Z0-9])?)`,
+  // Trenner wie „\s*(Nr\s*)?([:#]|-|\s)\s*#?\s*“, aber ohne zwei benachbarte \s*
+  // (sonst quadratisch viele Aufteilungen eines langen Leerraums).
+  `\\b(${NUMBER_KEYWORDS.join('|')})((?:\\s*(?:Nr\\.?|No\\.?|Nummer|number))?(?:\\s*[:#]|\\s*-(?=\\s)|\\s)\\s*(?:#\\s*)?)([A-Z0-9](?:[A-Z0-9./_-]*[A-Z0-9])?)`,
   'gi',
 );
 
-const HASH_NUMBER_PATTERN = /(^|[\s(])#\s?(\d{4,}[A-Z0-9-]*)\b/gi;
+/** `\d{4}[A-Z0-9-]*` = `\d{4,}[A-Z0-9-]*`, ohne zwei konkurrierende Ziffernläufe. */
+const HASH_NUMBER_PATTERN = /(^|[\s(])#\s?(\d{4}[A-Z0-9-]*)\b/gi;
 const TICKET_CODE_PATTERN = /\[[A-Z0-9]{1,12}-[A-Z0-9]{1,20}\]/g;
 /** Lange Ziffernfolgen ohne Trenner (Sendungs-/Kontonummern). Preise/Daten haben Trenner. */
 const LONG_DIGITS_PATTERN = /(?<![\d.,])\d{7,}(?![\d.,]\d)/g;
@@ -177,7 +190,7 @@ const LONG_DIGITS_PATTERN = /(?<![\d.,])\d{7,}(?![\d.,]\d)/g;
 // --- Telefon ----------------------------------------------------------------
 
 const PHONE_KEYWORD_PATTERN = new RegExp(
-  `\\b(Tel(?:efon)?\\.?|Fon|Phone|Mobil(?:funk)?|Mobile|Handy|Fax|Telefax|Cell|WhatsApp|Hotline)(\\s*(?:[:.]|-?Nr\\.?:?)?\\s*)(\\+?[\\d(][\\d\\s()/.-]{4,}\\d)`,
+  `\\b(Tel(?:efon)?\\.?|Fon|Phone|Mobil(?:funk)?|Mobile|Handy|Fax|Telefax|Cell|WhatsApp|Hotline)(\\s*(?:(?:[:.]|-?Nr\\.?:?)\\s*)?)(\\+?[\\d(][\\d\\s()/.-]{4,}\\d)`,
   'gi',
 );
 const PHONE_INTERNATIONAL_PATTERN = /(?<![\w+])(?:\+|00)[1-9][\d \t./()-]{6,}\d(?!\d)/g;
@@ -187,7 +200,9 @@ const PHONE_NATIONAL_PATTERN = /(?<![\w.,/])(?:\(0\d{2,5}\)|0\d{2,5})(?:[ \t/-]\
 
 const STREET_SUFFIX = '(?:straße|strasse|str\\.|weg|gasse|platz|allee|ring|damm|ufer|steig|pfad|stieg|chaussee|kai)';
 const STREET_PATTERN = new RegExp(
-  `(?:\\b[${LETTER}][${LETTER}-]*${STREET_SUFFIX}|\\b(?:Straße|Strasse|Str\\.|Weg|Gasse|Platz|Allee)(?=[ \\t]+\\d))[ \\t]+\\d{1,3}(?:[ \\t]?[a-zA-Z])?(?:[ \\t]?[-/][ \\t]?\\d{1,3}[a-zA-Z]?)?(?![\\d\\p{L}])`,
+  // Beginnt nur am Anfang eines Wortes aus Buchstaben/Bindestrichen: mit `\b`
+  // startete „a-a-a-…“ an jedem Buchstaben neu und liefe jedes Mal bis zum Ende.
+  `(?:(?<![${LETTER}0-9_-])[${LETTER}][${LETTER}-]*${STREET_SUFFIX}|\\b(?:Straße|Strasse|Str\\.|Weg|Gasse|Platz|Allee)(?=[ \\t]+\\d))[ \\t]+\\d{1,3}(?:[ \\t]?[a-zA-Z])?(?:[ \\t]?[-/][ \\t]?\\d{1,3}[a-zA-Z]?)?(?![\\d\\p{L}])`,
   'gu',
 );
 const ENGLISH_STREET_PATTERN = /\b\d{1,5}\s+(?:[A-Z][a-z]+\s){1,3}(?:Street|St\.|Road|Rd\.|Avenue|Ave\.|Lane|Ln\.|Drive|Boulevard|Blvd\.|Way|Court|Ct\.)(?=[\s,.]|$)/g;
@@ -195,6 +210,17 @@ const POSTAL_CITY_PATTERN = new RegExp(
   `(^|[\\s,(;])((?:D|A|CH|DE|AT)-)?(\\d{4,5})[ \\t]+([A-ZÄÖÜ][${LETTER}]+(?:(?:[ -]|[ \\t](?:am|an der|im|bei|ob der)[ \\t])[A-ZÄÖÜ(][${LETTER})./]+)?)`,
   'gm',
 );
+
+/**
+ * Steht vor `index` (nach Leerzeichen/Tabs) der Textanfang, ein Zeilenumbruch
+ * oder ein Komma? Rückwärts über den Leerraum statt Regex über den ganzen
+ * Text davor (das wäre je Treffer linear, insgesamt quadratisch).
+ */
+function startsLineOrFollowsComma(whole: string, index: number): boolean {
+  let i = index;
+  while (i > 0 && (whole[i - 1] === ' ' || whole[i - 1] === '\t')) i -= 1;
+  return i === 0 || whole[i - 1] === '\n' || whole[i - 1] === ',';
+}
 
 function isPostalCity(prefix: string | undefined, code: string, city: string, precededByLineStart: boolean): boolean {
   const cityWord = city.split(/[\s-]/)[0]!.toLowerCase().replace(/[^a-zäöüß]/g, '');
@@ -220,11 +246,17 @@ const TITLE_NAME_PATTERN = new RegExp(
   'gm',
 );
 
+/** Jeder Hinweis kostet einen Durchlauf über den Text: Anzahl und Länge begrenzen. */
+const MAX_NAME_HINTS = 300;
+const MAX_NAME_HINT_LENGTH = 200;
+const MAX_NAME_VARIANTS = 600;
+
 function collectNameVariants(names: readonly (string | null | undefined)[] | undefined): string[] {
   const full = new Set<string>();
   const parts = new Set<string>();
-  for (const raw of names ?? []) {
+  for (const raw of (names ?? []).slice(0, MAX_NAME_HINTS)) {
     let value = String(raw ?? '')
+      .slice(0, MAX_NAME_HINT_LENGTH)
       .replace(/<[^>]*>/g, ' ')
       .replace(/["'„“”«»]/g, ' ')
       .replace(/\s+/g, ' ')
@@ -249,9 +281,9 @@ function collectNameVariants(names: readonly (string | null | undefined)[] | und
     }
   }
   // Lange Varianten zuerst, damit „Max Mustermann“ vor „Max“ ersetzt wird.
-  return [...full, ...parts]
-    .filter((v, i, all) => all.indexOf(v) === i)
-    .sort((a, b) => b.length - a.length);
+  return [...new Set([...full, ...parts])]
+    .sort((a, b) => b.length - a.length)
+    .slice(0, MAX_NAME_VARIANTS);
 }
 
 function redactNames(text: string, names: readonly (string | null | undefined)[] | undefined, keep: Keeper): string {
@@ -334,9 +366,7 @@ export function redactPersonalData(text: string, hints: RedactionHints = {}): st
   out = out.replace(POSTAL_CITY_PATTERN, (match, lead: string, prefix: string | undefined, code: string, city: string, offset: number, whole: string) => {
     const body = match.slice(lead.length);
     if (keep(body)) return match;
-    const before = whole.slice(0, offset + lead.length);
-    const lineStart = /(^|\n)[ \t]*$/.test(before) || /,[ \t]*$/.test(before);
-    if (!isPostalCity(prefix, code, city, lineStart)) return match;
+    if (!isPostalCity(prefix, code, city, startsLineOrFollowsComma(whole, offset + lead.length))) return match;
     return `${lead}${P.address}`;
   });
   out = replaceWith(out, LONG_DIGITS_PATTERN, keep, () => P.number);
@@ -348,3 +378,26 @@ export function redactPersonalData(text: string, hints: RedactionHints = {}): st
   });
   return collapsePlaceholders(out);
 }
+
+/**
+ * Nur für den Laufzeit-Test (tests/unit/ai-learnings-redos.test.ts): jedes
+ * Muster wird dort einzeln gegen entartete Eingaben gemessen.
+ */
+export const LEARNING_REDACTION_PATTERNS_FOR_TESTS: Readonly<Record<string, RegExp>> = {
+  url: URL_PATTERN,
+  email: EMAIL_PATTERN,
+  iban: IBAN_PATTERN,
+  bicKeyword: BIC_KEYWORD_PATTERN,
+  bicBare: BIC_BARE_PATTERN,
+  numberKeyword: NUMBER_KEYWORD_PATTERN,
+  hashNumber: HASH_NUMBER_PATTERN,
+  ticketCode: TICKET_CODE_PATTERN,
+  longDigits: LONG_DIGITS_PATTERN,
+  phoneKeyword: PHONE_KEYWORD_PATTERN,
+  phoneInternational: PHONE_INTERNATIONAL_PATTERN,
+  phoneNational: PHONE_NATIONAL_PATTERN,
+  street: STREET_PATTERN,
+  englishStreet: ENGLISH_STREET_PATTERN,
+  postalCity: POSTAL_CITY_PATTERN,
+  titleName: TITLE_NAME_PATTERN,
+};

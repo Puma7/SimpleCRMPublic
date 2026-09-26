@@ -294,6 +294,29 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
       .resolves.toEqual({ ok: false, code: 'empty_note' });
   });
 
+  test('Große Eltern-Mail (200 KB, entartet): Notiz und Versand blockieren den Event-Loop nicht', async () => {
+    await setCollect(true);
+    const parent = await seedInbound();
+    await postgres.admin.query('UPDATE email_messages SET body_text = $2, body_html = $3 WHERE id = $1', [
+      parent,
+      `Kann ich die Jacke zurückgeben? ${'a-'.repeat(100_000)}`,
+      `<p>${'<!--'.repeat(50_000)}`,
+    ]);
+    const started = Date.now();
+    const note = await createAiLearningNote({ db }, {
+      workspaceId: WS_A, actorUserId: USER_A, text: 'Rückgaben sind 30 Tage kostenlos.', messageId: parent,
+    });
+    expect(note.ok).toBe(true);
+    await send(await seedDraft(parent), 'Die Rückgabe ist innerhalb von 30 Tagen möglich.', parent);
+    expect(Date.now() - started).toBeLessThan(5000);
+    const rows = await candidates();
+    expect(rows.map((row) => row.kind)).toEqual(['note', 'human_reply']);
+    for (const row of rows) {
+      expect(String(row.question_text)).toContain('Kann ich die Jacke zurückgeben?');
+      expect(String(row.question_text).length).toBeLessThanOrEqual(4000);
+    }
+  });
+
   test('Auswerten: legt „Learnings“ an, Vorschlag, dann „bereits offen“; zu wenige; Fehler lässt Kandidaten offen', async () => {
     await seedCandidates(1);
     const tooFew = await runAiLearningsDigest({ db, chat: async () => '{}' }, {

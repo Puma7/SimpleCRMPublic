@@ -253,6 +253,24 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(deleteAiLearningCandidate(first!.id)).toBe(false);
   });
 
+  test('Große Eltern-Mail (200 KB, entartet): Notiz und Versand blockieren den Main-Prozess nicht', async () => {
+    saveAiLearningsSettings({ collectEnabled: true });
+    const parent = inbound();
+    db.prepare('UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = ?')
+      .run(`Kann ich die Jacke zurückgeben? ${'a-'.repeat(100_000)}`, `<p>${'<!--'.repeat(50_000)}`, parent);
+    const started = Date.now();
+    expect(addAiLearningNote({ text: 'Rückgaben sind 30 Tage kostenlos.', messageId: parent, actorUserId: USER }))
+      .toMatchObject({ success: true });
+    await send(draft(parent), 'Die Rückgabe ist innerhalb von 30 Tagen möglich.', parent);
+    expect(Date.now() - started).toBeLessThan(3000);
+    const rows = listAiLearningCandidates();
+    expect(rows.map((row) => row.kind).sort()).toEqual(['human_reply', 'note']);
+    for (const row of rows) {
+      expect(row.questionText).toContain('Kann ich die Jacke zurückgeben?');
+      expect(row.questionText!.length).toBeLessThanOrEqual(4000);
+    }
+  });
+
   test('Auswerten: zu wenige, Fehler lässt Kandidaten offen, Vorschlag mit eigener Wissensbasis, dann „bereits offen“', async () => {
     seedCandidates(1);
     await expect(runAiLearningsDigest({ trigger: 'manual', minCandidates: 3 }))
