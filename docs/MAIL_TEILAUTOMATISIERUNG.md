@@ -116,6 +116,8 @@ Für Zeitplan- oder manuelle Workflows. Felder: Ziel-Wissensbasis (leer = „Lea
 
 Die KI-Antwort-Vorlagen schicken Antworten ab jetzt durch den Ausgangs-Workflow („Zusätzlich durch Ausgangs-Workflows prüfen“ an).
 
+Priorität und Zeitplan gehören zur Vorlage; „Vorlage laden“ trägt sie im Editor ein. „Mensch oder KI?“ beginnt mit „Stopp nach Spam“, damit eine als Spam markierte Mail nie beantwortet wird, auch wenn die Spam-Vorlage davor mit Fehler endete (z. B. Verschieben bei einem POP3-Konto). Schritt-für-Schritt-Anleitung: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md#teilautomatisierung-schritt-für-schritt).
+
 ## 5. Datenmodell (neu)
 
 | Edition | Änderung |
