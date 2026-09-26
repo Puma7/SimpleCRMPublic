@@ -703,6 +703,8 @@ type WorkflowTemplateRecord = {
   description: string
   trigger: string
   graph: unknown
+  priority?: number
+  cronExpr?: string
 }
 
 type WorkflowNodeCatalogRecord = {

@@ -95,13 +95,27 @@ export function applyAutoLayoutToDocument(
   }
 }
 
+/**
+ * Bausteine, die nur prüfen und nichts an der Mail ändern: direkt am Auslöser
+ * sind sie eine Bedingung, keine Aktion. Die KI-Entscheidung verzweigt wie
+ * eine Bedingung (jeder Ausgang öffnet das Inbound-Gate), „Stopp nach Spam“
+ * beendet nur den Lauf (Vorlagen „Teilautomatisierung“).
+ */
+const TRIGGER_DIRECT_GUARD_NODE_TYPES: ReadonlySet<string> = new Set([
+  "ai.decide",
+  "logic.stop_after_spam",
+])
+
 /** True if Trigger connects directly to an Aktion (Bedingung übersprungen). */
 export function graphHasTriggerToActionShortcut(doc: WorkflowGraphDocument): boolean {
-  const typeById = new Map(doc.nodes.map((n) => [n.id, n.type]));
+  const nodeById = new Map(doc.nodes.map((n) => [n.id, n]))
   return doc.edges.some((e) => {
-    if (typeById.get(e.source) !== "trigger") return false
-    const tgt = typeById.get(e.target)
-    return tgt === "action" || tgt === "registry"
+    if (nodeById.get(e.source)?.type !== "trigger") return false
+    const target = nodeById.get(e.target)
+    if (target?.type === "action") return true
+    if (target?.type !== "registry") return false
+    const nodeType = (target.data as { nodeType?: unknown } | undefined)?.nodeType
+    return !(typeof nodeType === "string" && TRIGGER_DIRECT_GUARD_NODE_TYPES.has(nodeType))
   })
 }
 

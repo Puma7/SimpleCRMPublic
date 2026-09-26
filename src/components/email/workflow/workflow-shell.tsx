@@ -86,6 +86,7 @@ import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
+import { templatePickEdits } from "./workflow-template-checks"
 import { decideWorkflowSaveGate, type WorkflowSaveBaseline } from "./workflow-save-gate"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
@@ -1356,7 +1357,20 @@ export function WorkflowShell() {
             useWorkflowEditorStore.getState().resetFromGraph(t.graph)
             setSelectedNodeId(null)
             setSelectedEdgeId(null)
-            toast.success(`Vorlage „${t.name}" geladen — bitte speichern.`)
+            // Empfohlene Priorität und Zeitplan der Vorlage mit übernehmen.
+            const edits = templatePickEdits(t)
+            if (edits.priority) setEditPriority(edits.priority)
+            if (edits.cronExpr) {
+              setEditCron(edits.cronExpr)
+              setAdvancedOpen(true)
+            }
+            const applied = [
+              edits.priority ? `Priorität ${edits.priority}` : null,
+              edits.cronExpr ? `Zeitplan ${edits.cronExpr}` : null,
+            ].filter(Boolean)
+            toast.success(
+              `Vorlage „${t.name}" geladen${applied.length > 0 ? ` (${applied.join(", ")})` : ""} — bitte speichern.`,
+            )
           }}
         />
         <WorkflowVersionsDialog

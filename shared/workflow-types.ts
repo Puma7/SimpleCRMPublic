@@ -59,6 +59,10 @@ export type WorkflowTemplateDto = {
   description: string;
   trigger: WorkflowTriggerKind;
   graph: import('./email-workflow-graph').WorkflowGraphDocument;
+  /** Empfohlene Priorität; „Vorlage laden“ trägt sie im Editor ein. */
+  priority?: number;
+  /** Cron-Ausdruck einer Zeitplan-Vorlage; „Vorlage laden“ trägt ihn ein. */
+  cronExpr?: string;
 };
 
 /**
