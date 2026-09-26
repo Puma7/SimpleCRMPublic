@@ -195,9 +195,11 @@ function parseCronValue(raw: string, spec: CronFieldSpec): number | string {
  * WORKFLOW_CRON_MIN_INTERVAL_MINUTES Minuten und mindestens ein moeglicher
  * Termin. Gibt null oder eine deutsche Fehlermeldung zurueck.
  *
- * Der Abstand ergibt sich allein aus dem Minutenfeld: zwischen zwei
- * Stunden liegt hoechstens die Luecke vom letzten zum ersten Minutenwert,
- * uebersprungene Stunden verlaengern sie nur.
+ * Der Abstand ergibt sich aus dem Minutenfeld: innerhalb einer Stunde die
+ * Luecken zwischen den Minutenwerten; die Luecke vom letzten zum ersten
+ * Minutenwert nur dann, wenn zwei aufeinanderfolgende Stunden aktiv sind
+ * (23 → 0 zaehlt dazu). `0,50 0 * * *` laeuft um 00:00 und 00:50 und ist
+ * damit erlaubt.
  */
 export function validateWorkflowScheduleCron(expression: string): string | null {
   const parsed = parseCronExpression(expression);
@@ -213,7 +215,9 @@ export function validateWorkflowScheduleCron(expression: string): string | null 
         return `Intervall zu kurz — mindestens alle ${minInterval} Minuten`;
       }
     }
-    if (minutes[0]! + 60 - minutes[minutes.length - 1]! < minInterval) {
+    const hours = parsed.cron.hours;
+    const consecutiveHours = [...hours].some((hour) => hours.has((hour + 1) % 24));
+    if (consecutiveHours && minutes[0]! + 60 - minutes[minutes.length - 1]! < minInterval) {
       return `Intervall zu kurz — mindestens alle ${minInterval} Minuten (auch über die volle Stunde)`;
     }
   }

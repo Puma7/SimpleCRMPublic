@@ -95,6 +95,10 @@ describe('validateWorkflowScheduleCron', () => {
     '0 0 29 2 *',
     '0 0 29 2 MON',
     '0 0 1 1 *',
+    // Codex-Review PR #194: die Luecke ueber die volle Stunde zaehlt nur bei
+    // aufeinanderfolgenden aktiven Stunden (00:00 und 00:50 liegen 50 Minuten auseinander).
+    '0,50 0 * * *',
+    '0,50 0,2 * * *',
   ])('accepts %p', (expression) => {
     expect(validateWorkflowScheduleCron(expression)).toBeNull();
   });
@@ -104,6 +108,8 @@ describe('validateWorkflowScheduleCron', () => {
     ['*/10 * * * *', /Intervall zu kurz/],
     ['0,10 * * * *', /Intervall zu kurz/],
     ['0,50 * * * *', /über die volle Stunde/],
+    ['0,50 8,9 * * *', /über die volle Stunde/],
+    ['0,50 23,0 * * *', /über die volle Stunde/],
     ['0-5 * * * *', /Intervall zu kurz/],
     ['0 0 31 2 *', /trifft nie zu/],
     ['0 0 30,31 2 *', /trifft nie zu/],
