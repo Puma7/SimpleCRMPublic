@@ -33,6 +33,10 @@ Commands:
                                     (recommended); without it: origin/main.
                                     --repair-checksums opts into re-stamping
                                     upstream-redefined migration checksums.
+  rollback [--yes]           Back to the version before the last (or a failed)
+                             update: its kept images, no rebuild; restores the
+                             pre-update backup once migrations may have run.
+  disk                       Show where the disk space goes (read-only).
   up                         Build and start the standard server stack.
   ps                         Show Compose service status.
   logs [service ...]          Show recent Compose logs.
@@ -51,6 +55,8 @@ Optional env:
   BRANCH                  Branch for `update` (default: main)
   RELEASE                 Release tag for `update` (vX.Y.Z or latest), same as --version
   UPDATE_API_HEALTH_TIMEOUT_SECONDS  Wait for a healthy API after `update` (default: 180)
+  UPDATE_MIN_FREE_GB      Free space `update` needs for backup + build (default: 6)
+  DOCKER_BUILD_CACHE_KEEP_GB  Build cache kept after `update` (default: 2)
   RESTORE_CADDY_HEALTH_URL=https://crm.example.com/health
   RESTORE_CADDY_INSECURE=true
 USAGE
@@ -109,6 +115,12 @@ case "$command" in
       shift
     done
     sh "$SCRIPT_DIR/update.sh"
+    ;;
+  rollback)
+    sh "$SCRIPT_DIR/rollback.sh" "$@"
+    ;;
+  disk)
+    sh "$SCRIPT_DIR/disk-report.sh"
     ;;
   up)
     compose up -d --build

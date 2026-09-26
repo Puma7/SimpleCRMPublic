@@ -125,6 +125,13 @@ remove_orphan_backup_file() {
   fi
 }
 
+# Stamps the update protects ($BACKUP_DIR/.protected-stamps, written by
+# docker/update-lib.sh): the backup a rollback needs. Retention keeps them.
+protected_backup_stamps() {
+  [ -f "$1/.protected-stamps" ] || return 0
+  grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z$' "$1/.protected-stamps" || true
+}
+
 prune_backup_retention() {
   backup_dir="$1"
 
@@ -132,7 +139,8 @@ prune_backup_retention() {
   validate_retention_count BACKUP_RETENTION_WEEKLY "$BACKUP_RETENTION_WEEKLY"
   validate_retention_count BACKUP_RETENTION_MONTHLY "$BACKUP_RETENTION_MONTHLY"
 
-  keep_stamps="$(select_retained_backup_stamps "$backup_dir" "$BACKUP_RETENTION_DAILY" "$BACKUP_RETENTION_WEEKLY" "$BACKUP_RETENTION_MONTHLY")"
+  keep_stamps="$(select_retained_backup_stamps "$backup_dir" "$BACKUP_RETENTION_DAILY" "$BACKUP_RETENTION_WEEKLY" "$BACKUP_RETENTION_MONTHLY")
+$(protected_backup_stamps "$backup_dir")"
 
   for path in "$backup_dir"/db-*.dump; do
     [ -e "$path" ] || continue
