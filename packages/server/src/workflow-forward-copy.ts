@@ -335,6 +335,7 @@ export function createPostgresWorkflowForwardCopyPort(
             duplicate: reviewResult.duplicate,
             now: now(),
             reviewPending: reviewResult.reviewPending,
+            permanent: reviewResult.permanent === true,
           });
           return;
         }
@@ -790,6 +791,8 @@ type ForwardReviewResult = {
   error: string | null;
   reviewPending: boolean;
   duplicate: boolean;
+  /** The SMTP server refused the forward for good: no job retry. */
+  permanent?: boolean;
 };
 
 /** Materialises the forward as a draft and runs it through composeSender.send,
@@ -913,7 +916,19 @@ async function forwardViaOutboundReview(args: {
       { applySession: args.applyWorkspaceSession },
     );
   }
-  return { ok: false, error: sendResult.error, reviewPending: false, duplicate: false };
+  // Same classification and redaction as the direct SMTP path.
+  const refusal = sendResult.smtpRefusal
+    ? classifySmtpRefusal(sendResult.smtpRefusal.code, sendResult.smtpRefusal.stage, sendResult.error)
+    : null;
+  return {
+    ok: false,
+    error: refusal
+      ? forwardRefusalMessage(resolveConfiguredSmtpHost(prepared.account.smtpHost) ?? 'SMTP-Server', refusal)
+      : sendResult.error,
+    reviewPending: false,
+    duplicate: false,
+    permanent: refusal?.permanent === true,
+  };
 }
 
 
@@ -949,20 +964,18 @@ const FINAL_REFUSAL_STAGES = new Set(['MAIL_FROM', 'RCPT_TO', 'DATA', 'DATA_FINA
 
 /** The server's explicit refusal, if the error is one; the reply text is redacted. */
 function smtpRefusal(error: unknown): SmtpRefusal | null {
-  let code: number | undefined;
-  let stage: string | undefined;
-  if (error instanceof SmtpDataRejectedError) {
-    code = error.smtpCode;
-    stage = 'DATA_FINAL';
-  } else if (error instanceof SmtpPreDataSendError && error.smtpCode !== undefined) {
-    code = error.smtpCode;
-    stage = error.stage;
+  if (error instanceof SmtpDataRejectedError) return classifySmtpRefusal(error.smtpCode, 'DATA_FINAL', error.message);
+  if (error instanceof SmtpPreDataSendError && error.smtpCode !== undefined && error.stage) {
+    return classifySmtpRefusal(error.smtpCode, error.stage, error.message);
   }
-  if (code === undefined || !stage) return null;
+  return null;
+}
+
+function classifySmtpRefusal(code: number, stage: string, replyText: string): SmtpRefusal {
   // Strip the status prefixes of multi-line replies, then redact: content filters
   // quote addresses and text of the forwarded mail back in their reply, and the
   // message reaches the job log and forward_copy.error in later workflow steps.
-  const reply = sanitizeSmtpResponse((error as Error).message
+  const reply = sanitizeSmtpResponse(replyText
     .split(/\r?\n/)
     .map((line) => line.replace(/^\d{3}[ -]/, '').trim())
     .filter(Boolean)

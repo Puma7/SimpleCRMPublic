@@ -12747,6 +12747,69 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // Codex zu #196: Ueber die Ausgangspruefung kam eine 5xx-Ablehnung nur als Text
+  // zurueck; der Job wurde fuenfmal wiederholt und jedes Mal erneut abgelehnt.
+  test('postgres workflow forward-copy via outbound review: a 5xx refusal is final and redacted, a 4xx is retried', async () => {
+    const now = new Date('2026-07-04T11:05:50.000Z');
+    let refusal: { error: string; smtpRefusal: { code: number; stage: string } } = {
+      error: '554-5.7.1 Message from <kunde@example.com> rejected\n554 5.7.1 Reject due to policy restrictions',
+      smtpRefusal: { code: 554, stage: 'DATA_FINAL' },
+    };
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 52, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 520, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 33,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 330,
+        account_id: 7,
+        subject: 'Review refusal',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender: { async send() { return { ok: false as const, ...refusal }; } },
+      createDraft: async () => ({ ok: true as const, draftMessageId: 54323 }),
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 52, messageId: 33, to: 'audit@example.com', runOutboundReview: true };
+    const attempt = () => port.forwardCopy(plan).then(() => null, (error: unknown) => error as Error);
+
+    const final = await attempt();
+    expect(isNonRetryableJobError(final)).toBe(true);
+    expect(final!.message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 554): '
+      + '5.7.1 Message from <[email]> rejected 5.7.1 Reject due to policy restrictions. '
+      + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
+      + 'Es folgt kein weiterer Versuch.',
+    );
+    expect(rows.forwardDedup).toEqual([]);
+
+    refusal = { error: '451 4.7.1 Try again later', smtpRefusal: { code: 451, stage: 'DATA_FINAL' } };
+    const temporary = await attempt();
+    expect(isNonRetryableJobError(temporary)).toBe(false);
+    expect(temporary!.message).toContain('vorübergehend abgelehnt (SMTP 451)');
+    expect(rows.forwardDedup).toEqual([]);
+  });
+
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
     const now = new Date('2026-07-04T11:04:30.000Z');
     const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
@@ -27953,11 +28016,14 @@ describe('server edition foundation', () => {
       await expect(send()).resolves.toEqual({
         ok: false,
         error: expect.stringContaining('554 5.7.1 rejected by policy'),
+        // Callers (forward copy via outbound review) tell final from temporary by this.
+        smtpRefusal: { code: 554, stage: 'DATA_FINAL' },
       });
       finalReply = '451 4.3.0 try again later\r\n';
       await expect(send()).resolves.toEqual({
         ok: false,
         error: expect.stringContaining('451 4.3.0 try again later'),
+        smtpRefusal: { code: 451, stage: 'DATA_FINAL' },
       });
       // The server stays silent after the terminating dot: accepted or not is unknown.
       finalReply = null;
