@@ -283,12 +283,6 @@ export type ComposeOutboundReviewInput = Readonly<{
   inReplyToMessageId?: number | null;
   attachmentCount: number;
   attachmentPaths?: readonly string[];
-  /**
-   * Geplanter Versand (Workflow, „Später senden“): ein synchroner Block der
-   * Ausgangs-Workflows hält den Entwurf endgültig an (Banner, Posteingang,
-   * Planung gelöscht) statt nur einen Fehler zu melden.
-   */
-  holdOnBlock?: boolean;
   /** Workflow-Versand ohne menschlichen Akteur: Ausgangs-Workflows laufen als Dienst. */
   trustedService?: boolean;
 }>;
@@ -511,7 +505,6 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(values.inReplyToMessageId === undefined ? {} : { inReplyToMessageId: values.inReplyToMessageId }),
             attachmentCount: attachments.length,
             ...(values.attachmentPaths === undefined ? {} : { attachmentPaths: values.attachmentPaths }),
-            ...(input.holdOnOutboundBlock ? { holdOnBlock: true } : {}),
             ...(input.trustedService ? { trustedService: true } : {}),
           });
           if (!review.allowed) {
@@ -990,16 +983,18 @@ export function createPostgresComposeOutboundReviewPort(options: {
               workflows,
             });
             if (!dryRun.allowed) {
-              if (input.holdOnBlock) {
-                const reason = await persistOutboundBlockOnDraft(trx, {
-                  workspaceId: input.workspaceId,
-                  messageId: input.draftMessageId,
-                  reason: dryRun.reason,
-                  now,
-                });
-                return { allowed: false, error: reason, held: true };
-              }
-              return { allowed: false, error: dryRun.reason };
+              // Synchroner Block (auch ai.decide, das hier die KI fragt) oder
+              // Workflow-Fehler: der Entwurf bleibt wie auf dem Desktop endgültig
+              // angehalten — Hinweis mit Grund im Posteingang, Planung gelöscht —,
+              // gleich ob ein Mensch sendet oder der geplante Versand. Die
+              // Antwort bleibt ein Fehler mit Grund.
+              const reason = await persistOutboundBlockOnDraft(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.draftMessageId,
+                reason: dryRun.reason,
+                now,
+              });
+              return { allowed: false, error: reason, held: true };
             }
           }
 

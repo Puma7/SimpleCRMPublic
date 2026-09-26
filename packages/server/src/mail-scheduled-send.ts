@@ -196,9 +196,6 @@ async function processScheduledDraft(input: {
   const result = await input.composeSender.send({
     workspaceId: input.workspaceId,
     actorUserId: input.actorUserId,
-    // Ein synchroner Block der Ausgangs-Workflows hält den geplanten Entwurf
-    // an (Posteingang, Banner) statt fünf Fehlversuche zu zählen.
-    holdOnOutboundBlock: true,
     ...(input.trustedService ? { trustedService: true } : {}),
     values: {
       accountId: draft.accountId,

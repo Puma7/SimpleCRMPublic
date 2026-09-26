@@ -2619,8 +2619,8 @@ export type EmailComposeSendResult =
      */
     deliveryAmbiguous?: boolean;
     /**
-     * Der Ausgang hat den Entwurf endgültig angehalten (nur mit
-     * `holdOnOutboundBlock`): Banner, Posteingang, Planung gelöscht.
+     * Der Ausgang hat den Entwurf endgültig angehalten (synchroner Block der
+     * Ausgangs-Workflows): Banner, Posteingang, Planung gelöscht.
      */
     outboundHeld?: boolean;
   };
@@ -2651,8 +2651,6 @@ export type EmailComposeSenderApiPort = {
     workspaceId: string;
     actorUserId: string;
     values: EmailComposeSendInput;
-    /** Geplanter Versand: ein synchroner Ausgangs-Block hält den Entwurf an. */
-    holdOnOutboundBlock?: boolean;
     /**
      * Versand eines Workflows ohne menschlichen Akteur (Trusted Service,
      * actorUserId ist der Platzhalter 'system'): Ausgangs-Workflows laufen

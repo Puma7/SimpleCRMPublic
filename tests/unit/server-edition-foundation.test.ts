@@ -15059,13 +15059,10 @@ describe('server edition foundation', () => {
       limit: 10,
     });
 
-    // TA-P2: geplante Sendungen lassen einen synchronen Ausgangs-Block den Entwurf
-    // anhalten (Posteingang) statt fuenf Fehlversuche zu zaehlen.
     expect(composeCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
-        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 101,
@@ -15080,7 +15077,6 @@ describe('server edition foundation', () => {
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
-        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 103,
@@ -15093,7 +15089,6 @@ describe('server edition foundation', () => {
       {
         workspaceId: WORKSPACE_A_ID,
         actorUserId: USER_A_ID,
-        holdOnOutboundBlock: true,
         values: {
           accountId: 7,
           draftMessageId: 104,
@@ -15785,7 +15780,9 @@ describe('server edition foundation', () => {
     expect(source).not.toMatch(/clearScheduledDraftMeta/);
   });
 
-  test('reviewOutbound.review returns dry-run block without queuing async review', async () => {
+  // TA-P2 (Härtung): Der synchrone Block hält den Entwurf endgültig an (wie auf
+  // dem Desktop), auch wenn ein Mensch sendet — vorher blieb er unmarkiert.
+  test('reviewOutbound.review holds the draft on a dry-run block without queuing async review', async () => {
     const now = new Date('2026-08-01T09:00:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
       workflows: [{
@@ -15836,8 +15833,12 @@ describe('server edition foundation', () => {
     expect(result).toEqual({
       allowed: false,
       error: 'Workflow wuerde blockieren',
+      held: true,
     });
-    expect(rows.messages.find((m) => m.id === 84)?.outbound_hold).toBe(false);
+    expect(rows.messages.find((m) => m.id === 84)).toEqual(expect.objectContaining({
+      outbound_hold: true,
+      outbound_block_reason: 'Workflow wuerde blockieren',
+    }));
     expect(rows.runs).toHaveLength(0);
     expect(rows.jobs).toHaveLength(0);
   });
