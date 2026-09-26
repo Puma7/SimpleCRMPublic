@@ -7,7 +7,7 @@
  */
 import { stripOutboundWarningFromHtml, stripOutboundWarningFromPlain } from './outbound-review-parse';
 import { decodeHtmlEntities, plainTextFromHtml } from './parse-utils';
-import { draftRecipientAddresses } from './sent-provenance';
+import { draftRecipientAddresses, htmlLinkTargets } from './sent-provenance';
 
 export const OUTBOUND_REVIEW_SKIP_POLICY_KEY = 'outbound_review_skip_policy';
 
@@ -134,18 +134,6 @@ function collapseWhitespace(value: string): string {
 
 function normalizedText(value: string): string {
   return collapseWhitespace(decodeHtmlEntities(value));
-}
-
-const LINK_TARGET = /\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
-
-function htmlLinkTargets(html: string): string[] {
-  const targets: string[] = [];
-  LINK_TARGET.lastIndex = 0;
-  for (let match = LINK_TARGET.exec(html); match; match = LINK_TARGET.exec(html)) {
-    const value = collapseWhitespace(decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? ''));
-    if (value) targets.push(value);
-  }
-  return targets.sort();
 }
 
 function attachmentPathList(value: unknown): string[] {

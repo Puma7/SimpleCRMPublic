@@ -113,6 +113,40 @@ describe('draftContentChanged: echte Änderung eines KI-Entwurfs (TA-P3)', () =>
     expect(draftContentChanged(aiDraft, { ...aiDraft, ...patch })).toBe(true);
   });
 
+  describe('Review B7: Text- und HTML-Fassung zählen beide', () => {
+    const withHtml = {
+      ...aiDraft,
+      bodyText: 'Guten Tag, Ihre Bestellung kommt morgen. Viele Grüße',
+      bodyHtml: '<p>Guten Tag,</p><p>Ihre Bestellung kommt <a href="https://shop.example.test/status">morgen</a>.</p><p>Viele Grüße</p>',
+    };
+
+    test('nur das HTML geändert (Text im HTML oder ein Link-Ziel) ⇒ Änderung', () => {
+      expect(draftContentChanged(withHtml, {
+        ...withHtml,
+        bodyHtml: withHtml.bodyHtml.replace('morgen</a>', 'übermorgen</a>'),
+      })).toBe(true);
+      expect(draftContentChanged(withHtml, {
+        ...withHtml,
+        bodyHtml: withHtml.bodyHtml.replace('shop.example.test', 'phish.example.test'),
+      })).toBe(true);
+      // Ein Link um vorhandenen Text im bisher reinen Text-Entwurf.
+      expect(draftContentChanged(aiDraft, {
+        ...aiDraft,
+        bodyText: 'Guten Tag, Ihre Bestellung kommt morgen. Viele Grüße',
+        bodyHtml: '<p>Guten Tag,</p><p>Ihre Bestellung kommt <a href="https://phish.example.test/">morgen</a>.</p><p>Viele Grüße</p>',
+      })).toBe(true);
+    });
+
+    test('nur der Textteil geändert ⇒ Änderung; unverändert gespeichert ⇒ keine', () => {
+      expect(draftContentChanged(withHtml, { ...withHtml, bodyText: 'Guten Tag, Ihre Bestellung kommt übermorgen. Viele Grüße' })).toBe(true);
+      expect(draftContentChanged(withHtml, {
+        ...withHtml,
+        bodyText: 'Guten Tag,\n\nIhre Bestellung kommt morgen.\n\nViele Grüße',
+        bodyHtml: withHtml.bodyHtml.replace('<a href', '<a target="_blank" href'),
+      })).toBe(false);
+    });
+  });
+
   describe('Zonen des Entwurfsfensters', () => {
     const signature = '<p>Erika Beispiel<br/>Support</p>';
     const quote = '<p>Am 25.09. schrieb Kunde: Wann kommt meine Bestellung?</p>';

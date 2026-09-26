@@ -148,6 +148,22 @@ describe('Desktop: Kennzeichnung „gesendet von“', () => {
     expect(sentColumns(78)).toMatchObject({ sent_by_kind: 'human' });
   });
 
+  test('Review B7: nur das HTML geändert ⇒ bearbeitet ⇒ human statt „KI · freigegeben“', () => {
+    insertDraft(79);
+    db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = 79`).run(
+      'Ihre Bestellung kommt morgen.',
+      '<p>Ihre Bestellung kommt <a href="https://shop.example.test/status">morgen</a>.</p>',
+    );
+    markDraftOrigin(79, 'ai', 7);
+    const before = readDraftOriginContent(79);
+    db.prepare(`UPDATE email_messages SET body_html = ? WHERE id = 79`).run(
+      '<p>Ihre Bestellung kommt <a href="https://phish.example.test/status">morgen</a>.</p>',
+    );
+    markDraftOriginEditedIfChanged(79, before);
+    recordSentProvenance(79, { kind: 'human', userId: 'u1' });
+    expect(sentColumns(79)).toMatchObject({ sent_by_kind: 'human' });
+  });
+
   test('Bearbeiten ohne Herkunft markiert nichts; eigener Entwurf ⇒ human', () => {
     insertDraft(75);
     expect(readDraftOriginContent(75)).toBeNull();

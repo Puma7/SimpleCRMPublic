@@ -5,12 +5,11 @@
  */
 
 import {
-  LEARNING_COMPOSE_BODY_MARKER,
   LEARNING_COMPOSE_QUOTE_MARKER,
   LEARNING_COMPOSE_SIGNATURE_MARKER,
 } from '../learnings/reply-noise';
 import { stripOutboundWarningFromHtml, stripOutboundWarningFromPlain } from './outbound-review-parse';
-import { plainTextFromHtml } from './parse-utils';
+import { decodeHtmlEntities, plainTextFromHtml } from './parse-utils';
 
 export const SENT_BY_KINDS = ['human', 'ai_auto', 'ai_approved', 'workflow', 'relay'] as const;
 
@@ -161,13 +160,12 @@ export type DraftContentSnapshot = {
  * Signatur- und Zitat-Zone setzt das Fenster selbst ein.
  */
 export function draftContentChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
-  return normalizedDraftContent(before) !== normalizedDraftContent(after);
+  return normalizedDraftMeta(before) !== normalizedDraftMeta(after) || draftBodyChanged(before, after);
 }
 
-function normalizedDraftContent(snapshot: DraftContentSnapshot): string {
+function normalizedDraftMeta(snapshot: DraftContentSnapshot): string {
   return JSON.stringify({
     subject: collapseWhitespace(snapshot.subject ?? ''),
-    body: draftBodyText(snapshot),
     to: recipientAddresses(snapshot.to),
     cc: recipientAddresses(snapshot.cc),
     bcc: recipientAddresses(snapshot.bcc),
@@ -176,35 +174,90 @@ function normalizedDraftContent(snapshot: DraftContentSnapshot): string {
   });
 }
 
-function draftBodyText(snapshot: DraftContentSnapshot): string {
-  const authored = composeAuthoredHtml(snapshot.bodyHtml ?? '');
-  const text = authored !== null
-    ? plainTextFromHtml(stripOutboundWarningFromHtml(authored))
-    : snapshot.bodyText?.trim()
-      ? stripOutboundWarningFromPlain(snapshot.bodyText)
-      : plainTextFromHtml(stripOutboundWarningFromHtml(snapshot.bodyHtml ?? ''));
-  return collapseWhitespace(text);
+type DraftBodyForms = {
+  /** Textteil (Hinweis und — bei Zonen-Markern — Signatur/Zitat herausgerechnet); null = leer. */
+  text: string | null;
+  /** Text und Link-/Bildziele des HTML-Teils (nur Anrede und Text); null = kein HTML. */
+  html: { text: string; links: string[] } | null;
+};
+
+/**
+ * Review B7: Text- und HTML-Fassung zählen beide. Der Brieftext (HTML-Text,
+ * sonst Textteil) muss gleich sein; wo beide Stände einen Textteil haben,
+ * auch dieser; Link- und Bildziele ebenso. Ein reiner Text-Entwurf, den das
+ * Entwurfsfenster als HTML speichert, bleibt dabei unverändert.
+ */
+function draftBodyChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
+  const a = draftBodyForms(before);
+  const b = draftBodyForms(after);
+  if ((a.html?.text ?? a.text ?? '') !== (b.html?.text ?? b.text ?? '')) return true;
+  if (a.text !== null && b.text !== null && a.text !== b.text) return true;
+  return JSON.stringify(a.html?.links ?? []) !== JSON.stringify(b.html?.links ?? []);
+}
+
+function draftBodyForms(snapshot: DraftContentSnapshot): DraftBodyForms {
+  const html = String(snapshot.bodyHtml ?? '');
+  const zones = html.trim() ? composeZones(html) : null;
+  const authored = zones ? zones.authored : '';
+  const htmlForm = html.trim()
+    ? {
+      text: normalizedBodyText(plainTextFromHtml(stripOutboundWarningFromHtml(authored))),
+      links: htmlLinkTargets(authored),
+    }
+    : null;
+  let text = snapshot.bodyText?.trim()
+    ? normalizedBodyText(stripOutboundWarningFromPlain(snapshot.bodyText))
+    : null;
+  // Der Textteil des Entwurfsfensters enthält Signatur und Zitat mit; nur
+  // Anrede und Text zählen (wie im HTML).
+  if (text !== null && zones) {
+    for (const zoneHtml of [zones.quoteHtml, zones.signatureHtml]) {
+      const zoneText = normalizedBodyText(plainTextFromHtml(zoneHtml));
+      if (!zoneText) continue;
+      const at = text.lastIndexOf(zoneText);
+      if (at >= 0) text = collapseWhitespace(`${text.slice(0, at)} ${text.slice(at + zoneText.length)}`);
+    }
+  }
+  return { text: text || null, html: htmlForm };
+}
+
+function normalizedBodyText(value: string): string {
+  return collapseWhitespace(decodeHtmlEntities(value));
+}
+
+const LINK_TARGET = /\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+
+/** Link- und Bildziele (href/src) eines HTML-Teils, sortiert (auch für die Ausgangs-Sperre). */
+export function htmlLinkTargets(html: string): string[] {
+  const targets: string[] = [];
+  LINK_TARGET.lastIndex = 0;
+  for (let match = LINK_TARGET.exec(html); match; match = LINK_TARGET.exec(html)) {
+    const value = collapseWhitespace(decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? ''));
+    if (value) targets.push(value);
+  }
+  return targets.sort();
 }
 
 /**
- * HTML aus dem Entwurfsfenster (mit Zonen-Markern, siehe shared/compose-body.ts):
- * Anrede und Text ohne Signatur- und Zitat-Zone. null ohne Marker (KI-Entwurf,
- * Altbestand) — dann gilt der Klartext.
+ * HTML aus dem Entwurfsfenster (Zonen-Marker, siehe shared/compose-body.ts):
+ * Anrede und Text („authored“) getrennt von Signatur- und Zitat-Zone, die das
+ * Fenster selbst einsetzt. Ohne Marker (KI-Entwurf, Altbestand) ist alles Text.
  */
-function composeAuthoredHtml(html: string): string | null {
-  if (
-    !html.includes(LEARNING_COMPOSE_BODY_MARKER)
-    && !html.includes(LEARNING_COMPOSE_SIGNATURE_MARKER)
-    && !html.includes(LEARNING_COMPOSE_QUOTE_MARKER)
-  ) {
-    return null;
-  }
+function composeZones(html: string): { authored: string; signatureHtml: string; quoteHtml: string } {
   let authored = html;
+  let quoteHtml = '';
+  let signatureHtml = '';
   const quoteIdx = authored.indexOf(LEARNING_COMPOSE_QUOTE_MARKER);
-  if (quoteIdx >= 0) authored = authored.slice(0, quoteIdx);
+  if (quoteIdx >= 0) {
+    quoteHtml = authored.slice(quoteIdx + LEARNING_COMPOSE_QUOTE_MARKER.length);
+    authored = authored.slice(0, quoteIdx);
+  }
   const signatureIdx = authored.indexOf(LEARNING_COMPOSE_SIGNATURE_MARKER);
-  if (signatureIdx >= 0) authored = authored.slice(0, signatureIdx);
-  return authored;
+  if (signatureIdx >= 0) {
+    signatureHtml = authored.slice(signatureIdx + LEARNING_COMPOSE_SIGNATURE_MARKER.length);
+    authored = authored.slice(0, signatureIdx);
+  }
+  return { authored, signatureHtml, quoteHtml };
 }
 
 function collapseWhitespace(value: string): string {

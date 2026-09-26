@@ -177,6 +177,25 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
     expect(await sentBy(8107)).toMatchObject({ sent_by_kind: 'ai_approved', sent_by_label: 'Anna Beispiel' });
   });
 
+  test('Review B7: nur das HTML eines KI-Entwurfs geändert ⇒ human statt „KI · freigegeben“', async () => {
+    await postgres.admin.query(`
+      INSERT INTO email_messages (
+        id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+        account_id, folder_id, uid, folder_kind, subject, to_json, body_text, body_html
+      ) VALUES (8108, $1, 8108, $2, $3, $2, $3, -8108, 'draft', 'Re: Frage', $4::jsonb, 'Antwort Link',
+        '<p>Antwort <a href="https://shop.example.test/">Link</a></p>')
+    `, [WORKSPACE_ID, ACCOUNT_ID, FOLDER_ID, JSON.stringify({ value: [{ address: 'kunde@example.com' }] })]);
+    await markOrigin(8108, 'ai');
+    const edited = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft!({
+      workspaceId: WORKSPACE_ID,
+      messageId: 8108,
+      values: { bodyText: 'Antwort Link', bodyHtml: '<p>Antwort <a href="https://phish.example.test/">Link</a></p>' },
+    });
+    expect(edited.ok).toBe(true);
+    await send(8108, { actorUserId: USER_ID });
+    expect(await sentBy(8108)).toMatchObject({ sent_by_kind: 'human' });
+  });
+
   test('Workflow ohne Menschen sendet KI-Entwurf ⇒ ai_auto; Workflow-Entwurf ⇒ workflow', async () => {
     await seedDraft(8104);
     await markOrigin(8104, 'ai');
