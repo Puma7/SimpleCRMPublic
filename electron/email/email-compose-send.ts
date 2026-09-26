@@ -160,11 +160,17 @@ async function finalizeSentDraft(input: {
     );
   }
 
-  // TA-P5: Learning sammeln, solange die Zeile noch ein Entwurf ist (best effort).
-  collectSentLearningCandidateSafe(input.draftMessageId, { text: input.text, html: input.html });
-  markDraftAsSent(input.draftMessageId);
-  // Kennzeichnung direkt beim Übergang zu 'sent' (Herkunft/Marker noch vorhanden).
+  // Kennzeichnung „gesendet von“ beim Übergang zu 'sent' (Herkunft und Marker
+  // noch vorhanden), vor dem Learning, das sie braucht (best effort).
   const provenance = recordSentProvenance(input.draftMessageId, input.sentBy);
+  // TA-P5: Learning sammeln, solange die Zeile noch ein Entwurf ist — nur was
+  // ein Mensch gesendet hat (sent_by_kind 'human'), zählt (best effort).
+  collectSentLearningCandidateSafe(
+    input.draftMessageId,
+    { text: input.text, html: input.html },
+    { sentByKind: provenance?.kind ?? null },
+  );
+  markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
   clearScheduledSendActor(input.draftMessageId);
 

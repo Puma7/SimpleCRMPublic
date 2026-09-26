@@ -55,9 +55,12 @@ import {
   searchKnowledgeForWorkflow,
 } from '../../electron/workflow/knowledge-base';
 import { registerLearningsDigestNode } from '../../electron/workflow/nodes/learnings-nodes';
+import { markDraftOrigin, markDraftOriginEdited } from '../../electron/email/email-sent-provenance';
 import type { RegisteredWorkflowNode, WorkflowContext } from '../../electron/workflow/types';
 
 const USER = 'user-1';
+/** Wie IPC SendCompose: ein Mensch sendet immer mit seiner Sitzung als Akteur. */
+const HUMAN = { userId: USER, role: 'admin' as const };
 
 describe('Learnings (Desktop, TA-P5)', () => {
   let db: Database.Database;
@@ -91,7 +94,13 @@ describe('Learnings (Desktop, TA-P5)', () => {
     return id;
   }
 
-  async function send(draftId: number, bodyText: string, parentId: number | null): Promise<void> {
+  /** actor null: Versand durch einen Workflow ohne Menschen (geplanter Versand). */
+  async function send(
+    draftId: number,
+    bodyText: string,
+    parentId: number | null,
+    actor: typeof HUMAN | null = HUMAN,
+  ): Promise<void> {
     await expect(sendComposeDraft({
       accountId,
       draftMessageId: draftId,
@@ -99,6 +108,7 @@ describe('Learnings (Desktop, TA-P5)', () => {
       bodyText,
       to: 'Max Mustermann <max@kunde.test>',
       ...(parentId ? { inReplyToMessageId: parentId } : {}),
+      ...(actor ? { actor } : {}),
     })).resolves.toEqual(expect.objectContaining({ ok: true }));
   }
 
@@ -179,21 +189,50 @@ describe('Learnings (Desktop, TA-P5)', () => {
     await send(unchanged, 'Hallo,\n\nDas Etikett liegt im Kundenkonto.\n\nGruß', parent);
     const automatic = draft(parent);
     db.prepare('UPDATE email_messages SET auto_submitted = 1 WHERE id = ?').run(automatic);
-    collectSentLearningCandidateSafe(automatic, { text: 'Automatische Antwort.' });
+    collectSentLearningCandidateSafe(automatic, { text: 'Automatische Antwort.' }, { sentByKind: 'human' });
     const orphan = draft(null);
-    collectSentLearningCandidateSafe(orphan, { text: 'Ohne Bezug.' });
+    collectSentLearningCandidateSafe(orphan, { text: 'Ohne Bezug.' }, { sentByKind: 'human' });
 
     expect(listAiLearningCandidates().map((c) => c.kind)).toEqual(['human_reply']);
     // Erneuter Aufruf nach dem Versand legt nichts doppelt an.
-    collectSentLearningCandidateSafe(human, { text: 'Ja, gerne.' });
+    collectSentLearningCandidateSafe(human, { text: 'Ja, gerne.' }, { sentByKind: 'human' });
     db.prepare("UPDATE email_messages SET folder_kind = 'draft' WHERE id = ?").run(human);
-    collectSentLearningCandidateSafe(human, { text: 'Ja, gerne. Das Etikett liegt im Kundenkonto.' });
+    collectSentLearningCandidateSafe(human, { text: 'Ja, gerne. Das Etikett liegt im Kundenkonto.' }, { sentByKind: 'human' });
     expect(listAiLearningCandidates()).toHaveLength(1);
     // Fehler beim Sammeln stören nie.
     closeDatabase();
-    expect(() => collectSentLearningCandidateSafe(human, { text: 'x' })).not.toThrow();
+    expect(() => collectSentLearningCandidateSafe(human, { text: 'x' }, { sentByKind: 'human' })).not.toThrow();
     db = new Database(':memory:');
     bootstrapFreshDatabaseSchema(db, { keepDbAssigned: true });
+  });
+
+  test('Versand: nur von Menschen gesendete Mails zählen (Kennzeichnung „gesendet von“)', async () => {
+    saveAiLearningsSettings({ collectEnabled: true });
+    const parent = inbound();
+    const changedText = 'Hallo Herr Mustermann,\n\nDie Rückgabe ist innerhalb von 30 Tagen kostenlos möglich, das Etikett liegt im Kundenkonto.\n\nViele Grüße';
+
+    // KI-Entwurf unverändert von einem Menschen gesendet (ai_approved): kein Kandidat,
+    // auch wenn der Text vom Schnappschuss abweicht (z. B. Vorlage des Knotens).
+    const approved = draft(parent, 'Die Rückgabe ist innerhalb von 14 Tagen möglich.');
+    markDraftOrigin(approved, 'ai', null);
+    await send(approved, changedText, parent);
+    // KI-Entwurf automatisch von einem Workflow gesendet (ai_auto): kein Kandidat.
+    const auto = draft(parent, 'Die Rückgabe ist innerhalb von 14 Tagen möglich.');
+    markDraftOrigin(auto, 'ai', null);
+    await send(auto, changedText, parent, null);
+    // Workflow-Antwort ohne KI und ohne RFC-3834-Marker (workflow): keine „menschliche Antwort“.
+    const workflow = draft(parent);
+    markDraftOrigin(workflow, 'workflow', null);
+    await send(workflow, 'Danke, wir melden uns.', parent, null);
+    expect(listAiLearningCandidates()).toEqual([]);
+    expect((getEmailMessageById(approved) as unknown as { sent_by_kind: string }).sent_by_kind).toBe('ai_approved');
+
+    // Vom Menschen geänderter KI-Entwurf (human): draft_edit.
+    const edited = draft(parent, 'Die Rückgabe ist innerhalb von 14 Tagen möglich.');
+    markDraftOrigin(edited, 'ai', null);
+    markDraftOriginEdited(edited);
+    await send(edited, changedText, parent);
+    expect(listAiLearningCandidates().map((c) => [c.kind, c.sentMessageId])).toEqual([['draft_edit', edited]]);
   });
 
   test('Notizen: mit und ohne Mail-Bezug, auch bei ausgeschaltetem Sammeln', () => {

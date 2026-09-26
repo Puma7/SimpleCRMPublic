@@ -330,9 +330,14 @@ async function insertCandidate(
 
 /**
  * Sammelt beim Versand eines Entwurfs (vor dem Nullen des KI-Schnappschusses
- * in markDraftAsSent). draft_edit: KI-Entwurf, den ein Mensch deutlich
- * geändert hat. human_reply: Antwort ohne KI-Schnappschuss, nicht automatisch
- * versendet, auf eine eingehende Mail. Fehler werden nur protokolliert.
+ * in markDraftAsSent). Maßgeblich ist die Kennzeichnung „gesendet von“, die
+ * finalizeSentDraft unmittelbar davor schreibt: nur sent_by_kind 'human'
+ * zählt — unverändert freigegebene (ai_approved) oder automatisch gesendete
+ * KI-Entwürfe (ai_auto), Workflow- und Relay-Mails sind keine Learnings.
+ * draft_edit: KI-Schnappschuss vorhanden und ein Mensch hat den Entwurf
+ * deutlich geändert. human_reply: Antwort ohne KI-Schnappschuss, nicht
+ * automatisch gekennzeichnet, auf eine eingehende Mail. Fehler werden nur
+ * protokolliert.
  */
 export async function collectSentLearningCandidateSafe(
   deps: AiLearningsDeps,
@@ -355,12 +360,15 @@ export async function collectSentLearningCandidateSafe(
           .select([
             'id', 'account_id', 'folder_kind', 'body_text', 'body_html', 'ai_suggestion_snapshot',
             'reply_parent_message_id', 'to_json', 'cc_json', 'customer_id', 'auto_submitted',
-            'scheduled_send_actor_user_id', 'scheduled_send_trusted_service_principal',
+            'scheduled_send_actor_user_id', 'scheduled_send_trusted_service_principal', 'sent_by_kind',
           ])
           .where('workspace_id', '=', input.workspaceId)
           .where('id', '=', input.messageId)
           .executeTakeFirst();
         if (!draft || draft.folder_kind === 'sent') return;
+        // Ohne Kennzeichnung (Versand nicht über finalizeSentDraft oder dort
+        // fehlgeschlagen) lieber kein Learning als ein falsches.
+        if (draft.sent_by_kind !== 'human') return;
 
         const snapshot = typeof draft.ai_suggestion_snapshot === 'string' ? draft.ai_suggestion_snapshot : '';
         const automatic = settings.get(`email_auto_submitted:${input.messageId}`) === '1'

@@ -1658,11 +1658,22 @@ async function finalizeSentDraft(input: {
   sentImapSyncFailed: boolean;
   sentBy: ComposeSentByActor;
 }): Promise<void> {
-  await input.store.recordSentProvenance?.({
-    workspaceId: input.workspaceId,
-    messageId: input.draftMessageId,
-    sentBy: input.sentBy,
-  });
+  // Best effort wie auf dem Desktop: SMTP ist durch — ein Fehler hier darf den
+  // Übergang zu 'sent' nicht verhindern; es fehlt dann nur die Kennzeichnung
+  // (und damit auch ein Learning, das nur bei sent_by_kind 'human' entsteht).
+  try {
+    await input.store.recordSentProvenance?.({
+      workspaceId: input.workspaceId,
+      messageId: input.draftMessageId,
+      sentBy: input.sentBy,
+    });
+  } catch (error) {
+    console.warn(
+      `[mail] Kennzeichnung „gesendet von“ fehlgeschlagen (Entwurf ${input.draftMessageId}): `
+      + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  // TA-P5: markDraftAsSent sammelt das Learning und liest dafür sent_by_kind.
   await input.store.markDraftAsSent({
     workspaceId: input.workspaceId,
     messageId: input.draftMessageId,

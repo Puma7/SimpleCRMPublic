@@ -19,6 +19,7 @@ import {
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
+import { markDraftOrigin } from '../../packages/server/src/mail-sent-provenance';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
 import { buildKnowledgePromptAppend, searchKnowledgeForWorkflow } from '../../packages/server/src/knowledge-workflow-search';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
@@ -120,7 +121,13 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     return id;
   }
 
-  async function send(draftId: number, bodyText: string, parentId: number | null): Promise<void> {
+  /** by 'workflow': Versand eines Workflows ohne Menschen (Trusted Service). */
+  async function send(
+    draftId: number,
+    bodyText: string,
+    parentId: number | null,
+    by: 'human' | 'workflow' = 'human',
+  ): Promise<void> {
     const sender = createPostgresEmailComposeSenderPort({
       db,
       secrets: { async readSecret() { return Buffer.from('smtp-secret'); } } as never,
@@ -129,7 +136,7 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     });
     const result = await sender.send({
       workspaceId: WS_A,
-      actorUserId: USER_A,
+      ...(by === 'human' ? { actorUserId: USER_A } : { actorUserId: 'system', trustedService: true }),
       values: {
         accountId: ACCOUNT_ID,
         draftMessageId: draftId,
@@ -224,6 +231,45 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     const off = await seedDraft(parent);
     await send(off, 'Noch eine Antwort.', parent);
     expect(await candidates()).toHaveLength(1);
+  });
+
+  test('Sammeln: nur von Menschen gesendete Mails zählen (Kennzeichnung „gesendet von“)', async () => {
+    await setCollect(true);
+    await postgres.admin.query('DELETE FROM ai_learning_candidates WHERE workspace_id = $1', [WS_A]);
+    const parent = await seedInbound();
+    const changedText = 'Hallo Herr Mustermann,\n\nDie Rückgabe ist innerhalb von 30 Tagen kostenlos möglich, das Etikett liegt im Kundenkonto.\n\nViele Grüße';
+    const origin = (draftId: number, kind: 'ai' | 'workflow') => withWorkspaceTransaction(
+      db,
+      { workspaceId: WS_A, role: 'system' },
+      async (trx) => markDraftOrigin(trx, { workspaceId: WS_A, draftId, kind, workflowId: null }),
+    );
+
+    // KI-Entwurf unverändert von einem Menschen gesendet (ai_approved): kein Kandidat,
+    // auch wenn der Text vom Schnappschuss abweicht.
+    const approved = await seedDraft(parent, { snapshot: 'Die Rückgabe ist innerhalb von 14 Tagen möglich.' });
+    await origin(approved, 'ai');
+    await send(approved, changedText, parent);
+    // KI-Entwurf automatisch von einem Workflow gesendet (ai_auto): kein Kandidat.
+    const auto = await seedDraft(parent, { snapshot: 'Die Rückgabe ist innerhalb von 14 Tagen möglich.' });
+    await origin(auto, 'ai');
+    await send(auto, changedText, parent, 'workflow');
+    // Workflow-Antwort ohne KI und ohne RFC-3834-Marker (workflow): keine „menschliche Antwort“.
+    const workflow = await seedDraft(parent);
+    await origin(workflow, 'workflow');
+    await send(workflow, 'Danke, wir melden uns.', parent, 'workflow');
+    expect(await candidates()).toEqual([]);
+    const kinds = await postgres.admin.query(
+      'SELECT id::int AS id, sent_by_kind FROM email_messages WHERE id = ANY($1::bigint[]) ORDER BY id',
+      [[approved, auto, workflow]],
+    );
+    expect(kinds.rows.map((row) => row.sent_by_kind)).toEqual(['ai_approved', 'ai_auto', 'workflow']);
+
+    // Vom Menschen geänderter KI-Entwurf (human): draft_edit.
+    const edited = await seedDraft(parent, { snapshot: 'Die Rückgabe ist innerhalb von 14 Tagen möglich.' });
+    await origin(edited, 'ai');
+    await postgres.admin.query('UPDATE email_messages SET draft_origin_edited = true WHERE id = $1', [edited]);
+    await send(edited, changedText, parent);
+    expect((await candidates()).map((row) => [row.kind, row.sent_message_id])).toEqual([['draft_edit', String(edited)]]);
   });
 
   test('Notiz: auch ohne Sammeln, mit Mail-Bezug bereinigt; unbekannte Mail → Fehler', async () => {

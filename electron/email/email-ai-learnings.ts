@@ -194,14 +194,18 @@ type ParentRow = {
 };
 
 /**
- * Beim Versand (vor markDraftAsSent): draft_edit für deutlich geänderte
- * KI-Entwürfe, human_reply für menschliche Antworten auf eingehende Mails
- * (nicht automatisch versendet). Der Schnappschuss wird danach genullt.
+ * Beim Versand (vor markDraftAsSent): Maßgeblich ist die Kennzeichnung
+ * „gesendet von“ (finalizeSentDraft bestimmt sie unmittelbar davor): nur
+ * sentByKind 'human' zählt — unverändert freigegebene (ai_approved) oder
+ * automatisch gesendete KI-Entwürfe (ai_auto), Workflow- und Relay-Mails sind
+ * keine Learnings. draft_edit: KI-Schnappschuss vorhanden und vom Menschen
+ * deutlich geändert; human_reply: menschliche Antwort auf eine eingehende
+ * Mail (nicht automatisch gekennzeichnet). Der Schnappschuss wird genullt.
  */
 export function collectSentLearningCandidateSafe(
   draftMessageId: number,
   sent: { text?: string | null; html?: string | null } = {},
-  options: { actorUserId?: string | null; now?: Date } = {},
+  options: { actorUserId?: string | null; now?: Date; sentByKind?: string | null } = {},
 ): void {
   try {
     const db = getDb();
@@ -218,6 +222,8 @@ export function collectSentLearningCandidateSafe(
       db.prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ai_suggestion_snapshot = NULL WHERE id = ?`).run(draftMessageId);
     }
     if (!isLearningsCollectEnabledValue(getSyncInfo(LEARNINGS_SETTING_KEYS.collectEnabled))) return;
+    // Ohne Kennzeichnung (unbekannt) lieber kein Learning als ein falsches.
+    if (options.sentByKind !== 'human') return;
 
     const parent = draft.reply_parent_message_id
       ? db

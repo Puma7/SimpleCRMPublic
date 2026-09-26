@@ -271,6 +271,7 @@ Unter **Einstellungen → Learnings** schalten Sie **„Learnings sammeln“** e
 
 - **Geänderte KI-Entwürfe:** Ein Mensch hat einen KI-Entwurf vor dem Senden deutlich geändert — gespeichert werden die KI-Fassung, die gesendete Fassung und die Kundenfrage.
 - **Antworten Ihres Teams:** Eine von einem Menschen geschriebene Antwort auf eine eingehende Mail (automatisch versendete Antworten zählen nicht).
+- Maßgeblich ist die Kennzeichnung **„Gesendet von“** (siehe „Nachher: Was hat die Automatik verschickt?“): Es zählen nur Mails, die ein Mensch gesendet hat. **KI · freigegeben** (unverändert gesendeter KI-Entwurf), **KI**, **Automatik** und **Relay** ergeben keine Learnings.
 - **Notizen:** In der Leseansicht einer Mail gibt es den Knopf **„Learning notieren“**. Die Notiz wird immer gespeichert, auch wenn das automatische Sammeln aus ist. Optional mit Bezug auf die geöffnete Mail.
 
 ### Datenschutz
