@@ -3290,6 +3290,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       // Fehlt serverseitig, solange das Tageslimit dort nicht durchgesetzt
       // wird — das Automatisierungs-Panel blendet das Feld dann aus.
       autoReplyMaxPerSenderPerDay?: number
+      // Zeitzone der Zeitplan-Workflows (nur Server; der Desktop nutzt die
+      // Zeitzone des Rechners und liefert das Feld nicht).
+      scheduleTimezone?: string
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({
@@ -7009,6 +7012,8 @@ function mapWorkflowAutomationSettingsPayload(value: unknown): Record<string, un
     spamScoreThreshold: input.spamScoreThreshold === undefined ? undefined : boundedNumberText(input.spamScoreThreshold, "workflow spam score threshold", 1, 100, true),
     autoReplyEnabled: optionalBoolean(input.autoReplyEnabled, "workflow auto reply enabled"),
     autoReplyMaxPerSenderPerDay: input.autoReplyMaxPerSenderPerDay === undefined ? undefined : boundedNumber(input.autoReplyMaxPerSenderPerDay, "workflow auto reply max per sender per day", 1, 50, true),
+    // Gueltigkeit (IANA-Name) prueft der Server; hier nur Form und Laenge.
+    scheduleTimezone: input.scheduleTimezone === undefined ? undefined : optionalTrimmedText(input.scheduleTimezone, "workflow schedule timezone", 64),
   })
 }
 

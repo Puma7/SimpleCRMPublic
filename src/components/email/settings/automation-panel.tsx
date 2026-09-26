@@ -21,6 +21,8 @@ import {
 } from "@/services/transport"
 import { AutomationMiscSettingsSection } from "./automation-misc-settings-section"
 import { AutoReplySettingsSection } from "./auto-reply-settings-section"
+import { WorkflowScheduleTimezoneSection } from "./workflow-schedule-timezone-section"
+import { normalizeWorkflowScheduleTimeZone } from "../../../../packages/core/src/workflow/cron-schedule"
 import { hasLocalIpc, invokeIpc } from "../types"
 
 type ServerAutomationApiKey = {
@@ -58,6 +60,9 @@ export function AutomationPanel() {
   // null = Backend bietet das Tageslimit nicht an (die Server-Edition setzt
   // es noch nicht durch) → Feld ausblenden und beim Speichern weglassen.
   const [autoReplyMaxPerDay, setAutoReplyMaxPerDay] = useState<string | null>("1")
+  // null = Backend kennt keine Workspace-Zeitzone (Desktop: Zeitzone des
+  // Rechners) → Feld ausblenden und beim Speichern weglassen.
+  const [scheduleTimezone, setScheduleTimezone] = useState<string | null>(null)
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -83,6 +88,7 @@ export function AutomationPanel() {
         httpAllowlist: string
         autoReplyEnabled: boolean
         autoReplyMaxPerSenderPerDay?: number
+        scheduleTimezone?: string
       }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
       setHttpAllowlist(wf.httpAllowlist)
@@ -92,6 +98,7 @@ export function AutomationPanel() {
           ? String(wf.autoReplyMaxPerSenderPerDay)
           : null,
       )
+      setScheduleTimezone(typeof wf.scheduleTimezone === "string" ? wf.scheduleTimezone : null)
 
       if (serverClientMode && canManage) {
         const api = await invokeRenderer(
@@ -141,7 +148,18 @@ export function AutomationPanel() {
       httpAllowlist: string
       autoReplyEnabled: boolean
       autoReplyMaxPerSenderPerDay?: number
+      scheduleTimezone?: string
     } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled }
+    if (scheduleTimezone !== null) {
+      // Dieselbe Pruefung wie der Server (IANA-Name, kanonische Schreibweise).
+      const zone = normalizeWorkflowScheduleTimeZone(scheduleTimezone)
+      if (!zone) {
+        toast.error(`Unbekannte Zeitzone „${scheduleTimezone.trim()}“ — bitte z. B. Europe/Berlin angeben.`)
+        return
+      }
+      payload.scheduleTimezone = zone
+      setScheduleTimezone(zone)
+    }
     if (autoReplyMaxPerDay !== null) {
       const maxPerDay = Math.min(50, Math.max(1, parseInt(autoReplyMaxPerDay, 10) || 1))
       payload.autoReplyMaxPerSenderPerDay = maxPerDay
@@ -472,7 +490,8 @@ export function AutomationPanel() {
         <div>
           <h3 className="text-base font-semibold">Workflow-Automatisierung (intern)</h3>
           <p className="text-sm text-muted-foreground">
-            IMAP-Löschung und HTTP-Knoten. Absender-Listen, mailauth, Rspamd und Spam-Schwellen:{" "}
+            IMAP-Löschung, HTTP-Knoten{serverClientMode ? " und Zeitzone der Zeitplan-Workflows" : ""}.
+            Absender-Listen, mailauth, Rspamd und Spam-Schwellen:{" "}
             <strong>Einstellungen → Mail-Sicherheit</strong>.
           </p>
         </div>
@@ -521,6 +540,14 @@ export function AutomationPanel() {
             placeholder="api.example.com, hooks.zapier.com"
           />
         </div>
+
+        {scheduleTimezone !== null ? (
+          <WorkflowScheduleTimezoneSection
+            value={scheduleTimezone}
+            onChange={setScheduleTimezone}
+            disabled={loading || !canEditWorkflowOptions}
+          />
+        ) : null}
 
         <Button
           type="button"

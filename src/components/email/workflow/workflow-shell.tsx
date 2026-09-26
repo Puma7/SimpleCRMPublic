@@ -24,7 +24,7 @@ import {
   parseWorkflowImport,
 } from "@shared/workflow-export-import"
 import { toast } from "sonner"
-import { validateWorkflowCronExpr } from "@shared/cron-validate"
+import { validateServerWorkflowCronExpr, validateWorkflowCronExpr } from "@shared/cron-validate"
 import {
   ChevronDown,
   Code2,
@@ -96,6 +96,10 @@ import {
 } from "./enrich-registry-labels"
 import { workflowTriggerLabel } from "./trigger-labels"
 import { WorkflowCanvas } from "./workflow-canvas"
+import { WorkflowScheduleHint } from "./workflow-schedule-hint"
+
+/** Standard-Zeitzone der Server-Zeitplaene, bis die Einstellung geladen ist. */
+const DEFAULT_SCHEDULE_TIME_ZONE = "Europe/Berlin"
 
 type AccountOpt = { id: number; display_name: string }
 
@@ -176,6 +180,9 @@ export function WorkflowShell() {
   const [editEnabled, setEditEnabled] = useState(true)
   const [editCron, setEditCron] = useState("")
   const [editScheduleAccountId, setEditScheduleAccountId] = useState<number | "">("")
+  // Server: Zeitplaene laufen in der Workspace-Zeitzone (Einstellungen →
+  // Automatisierung); fuer die Anzeige „Nächste Ausführung".
+  const [scheduleTimeZone, setScheduleTimeZone] = useState(DEFAULT_SCHEDULE_TIME_ZONE)
   const [editJson, setEditJson] = useState("")
   const [accounts, setAccounts] = useState<AccountOpt[]>([])
   const [saving, setSaving] = useState(false)
@@ -227,11 +234,11 @@ export function WorkflowShell() {
     )
   }, [rows, triggerFilter])
 
-  const triggerKindDisplay = useMemo(() => {
+  const graphTriggerKind = useMemo(() => {
     const triggerNode = graphNodes.find((n) => n.type === "trigger")
-    const kind = (triggerNode?.data as { kind?: string } | undefined)?.kind
-    return workflowTriggerLabel(kind)
+    return (triggerNode?.data as { kind?: string } | undefined)?.kind
   }, [graphNodes])
+  const triggerKindDisplay = workflowTriggerLabel(graphTriggerKind)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -273,6 +280,23 @@ export function WorkflowShell() {
     }
     void load()
   }, [canViewWorkflows, capabilitiesReady, load, serverClientMode])
+
+  // Die Zeitzone ist eine Workspace-Einstellung; lesen darf sie jeder, der
+  // Workflows sieht (GET /workflow/settings/automation). Ohne Antwort bleibt
+  // der Standard stehen — die Anzeige ist nur ein Hinweis.
+  useEffect(() => {
+    if (!serverClientMode || !workflowsVisible) return
+    let cancelled = false
+    void invokeRenderer(IPCChannels.Email.GetWorkflowAutomationSettings)
+      .then((settings) => {
+        const zone = (settings as { scheduleTimezone?: unknown } | null)?.scheduleTimezone
+        if (!cancelled && typeof zone === "string" && zone.trim()) setScheduleTimeZone(zone)
+      })
+      .catch((e) => logError("workflow-shell: load schedule time zone", e))
+    return () => {
+      cancelled = true
+    }
+  }, [serverClientMode, workflowsVisible])
 
   useEffect(() => {
     const subscription = subscribeServerEvents({
@@ -507,9 +531,21 @@ export function WorkflowShell() {
         })
       }
       const cronTrim = editCron.trim()
-      if (cronTrim && trig === "schedule") {
-        const cronErr = validateWorkflowCronExpr(cronTrim)
+      if (trig === "schedule") {
+        // Server: dieselbe Pruefung wie die Route (genau 5 Felder); ein aktiver
+        // Zeitplan braucht dort einen Ausdruck. Desktop (node-cron): 5 oder 6
+        // Felder, ein leerer Ausdruck laesst den Workflow einfach nie laufen.
+        const cronErr = serverClientMode
+          ? cronTrim
+            ? validateServerWorkflowCronExpr(cronTrim)
+            : editEnabled
+              ? "Aktive Zeitplan-Workflows brauchen einen Cron-Ausdruck (Erweitert → Cron)."
+              : null
+          : cronTrim
+            ? validateWorkflowCronExpr(cronTrim)
+            : null
         if (cronErr) {
+          if (serverClientMode) setAdvancedOpen(true)
           toast.error(cronErr)
           setSaving(false)
           return
@@ -944,52 +980,59 @@ export function WorkflowShell() {
                       advancedOpen && "rotate-180",
                     )}
                   />
-                  {serverClientMode ? "Erweitert (Test, Backfill)" : "Erweitert (Zeitplan, Test, Backfill)"}
+                  Erweitert (Zeitplan, Test, Backfill)
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-2">
                 <div className="flex flex-wrap items-end gap-3 rounded-md border bg-background/80 p-3">
-                  {/* Zeitplan-Trigger löst nur die Desktop-Runtime aus (F-A9-01). */}
-                  {!serverClientMode ? (
-                    <>
-                      <div className="w-[180px] space-y-1">
-                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Cron (Zeitplan)
-                        </Label>
-                        <Input
-                          value={editCron}
-                          onChange={(e) => setEditCron(e.target.value)}
-                          placeholder="*/15 * * * *"
-                          className="h-8 font-mono text-xs"
-                          disabled={!canEditWorkflows}
-                          readOnly={!canEditWorkflows}
-                        />
-                      </div>
-                      <div className="min-w-[180px] space-y-1">
-                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Geplantes Konto
-                        </Label>
-                        <select
-                          className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                          value={
-                            editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
-                          }
-                          disabled={!canEditWorkflows}
-                          onChange={(e) =>
-                            setEditScheduleAccountId(
-                              e.target.value ? parseInt(e.target.value, 10) : "",
-                            )
-                          }
-                        >
-                          <option value="">— keins (nur Graph-Lauf) —</option>
-                          {accounts.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {a.display_name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </>
+                  {/* F-A9-01: Frueher loeste der Server keinen Zeitplan aus, deshalb war das
+                      Feld dort ausgeblendet. Seit dem Server-Taktgeber (TA-P4) gilt es in
+                      beiden Editionen; der Server rechnet in der Workspace-Zeitzone. */}
+                  <div className="w-[180px] space-y-1">
+                    <Label
+                      htmlFor="wf-cron"
+                      className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                    >
+                      Cron (Zeitplan)
+                    </Label>
+                    <Input
+                      id="wf-cron"
+                      value={editCron}
+                      onChange={(e) => setEditCron(e.target.value)}
+                      placeholder={serverClientMode ? "0 6 * * 1-5" : "*/15 * * * *"}
+                      className="h-8 font-mono text-xs"
+                      disabled={!canEditWorkflows}
+                      readOnly={!canEditWorkflows}
+                    />
+                  </div>
+                  <div className="min-w-[180px] space-y-1">
+                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Geplantes Konto
+                    </Label>
+                    <select
+                      className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                      value={
+                        editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
+                      }
+                      disabled={!canEditWorkflows}
+                      onChange={(e) =>
+                        setEditScheduleAccountId(
+                          e.target.value ? parseInt(e.target.value, 10) : "",
+                        )
+                      }
+                    >
+                      <option value="">— keins (nur Graph-Lauf) —</option>
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {serverClientMode && graphTriggerKind === "schedule" ? (
+                    <div className="min-w-[220px] max-w-[320px] self-center">
+                      <WorkflowScheduleHint cronExpr={editCron} timeZone={scheduleTimeZone} />
+                    </div>
                   ) : null}
                   <div className="w-[120px] space-y-1">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
