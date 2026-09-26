@@ -4471,6 +4471,20 @@ export type WorkflowKnowledgeBaseApiPort = {
     actorUserId: string;
     id: number;
   }): Promise<WorkflowKnowledgeBaseRecord | null>;
+  /** TA-P5: ganzes Markdown-Dokument atomar speichern (ein Chunk „Dokument“). */
+  saveDocument?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    content: string;
+  }): Promise<WorkflowKnowledgeDocumentSaveResult | null>;
+};
+
+export type WorkflowKnowledgeDocumentSaveResult = {
+  knowledgeBase: WorkflowKnowledgeBaseRecord;
+  chunk: WorkflowKnowledgeChunkRecord;
+  created: boolean;
+  removedChunks: WorkflowKnowledgeChunkRecord[];
 };
 
 export type WorkflowKnowledgeChunkRecord = {
@@ -5616,6 +5630,8 @@ export type SmtpRelayAdminPort = {
 
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
+  /** TA-P5: Learnings sammeln, auswerten, freigeben. */
+  aiLearnings?: import('../ai-learnings').AiLearningsApiPort;
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;

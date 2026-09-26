@@ -35,6 +35,7 @@ import type {
   WorkflowDmarcIngestJobPlan,
   WorkflowDmarcIngestJobPort,
 } from '../dmarc-ingest';
+import { buildAiLearningsDigestJobPlan, type AiLearningsDigestJobPort } from '../ai-learnings';
 
 export type MailSyncProtocol = 'imap' | 'pop3';
 
@@ -168,6 +169,7 @@ export type ProductionJobHandlersOptions = Readonly<{
   workflowHttpRequest?: WorkflowHttpRequestPort;
   workflowForwardCopy?: WorkflowForwardCopyPort;
   workflowDmarcIngest?: WorkflowDmarcIngestPort;
+  aiLearningsDigest?: AiLearningsDigestJobPort;
   now?: () => Date;
 }>;
 
@@ -256,6 +258,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'workflow.dmarc_ingest': async (job) => {
       if (!options.workflowDmarcIngest) throw new Error('workflow DMARC ingest job port is not configured');
       await options.workflowDmarcIngest.ingest(buildWorkflowDmarcIngestJobPlan(job.payload, job.workspaceId));
+    },
+    'learnings.digest': async (job) => {
+      if (!options.aiLearningsDigest) throw new Error('learnings digest job port is not configured');
+      await options.aiLearningsDigest.digest(buildAiLearningsDigestJobPlan(job.payload, job.workspaceId));
     },
   };
 }

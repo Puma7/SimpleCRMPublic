@@ -41,6 +41,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
+import { collectSentLearningCandidateSafe } from './ai-learnings';
 import { removeComposeDraftAttachmentDirectory } from './compose-draft-attachment-files';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
@@ -1359,6 +1360,8 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
       );
     },
     async markDraftAsSent(input) {
+      // TA-P5: Learning sammeln, bevor der KI-Schnappschuss unten genullt wird (best effort).
+      await collectSentLearningCandidateSafe({ db: options.db, now: options.now }, input);
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },

@@ -50,6 +50,7 @@ export const SERVER_JOB_TYPES = [
   'audit.retention',
   'mail.sync.schedule',
   'workflow.schedule.tick',
+  'learnings.digest',
 ] as const;
 
 export type ServerJobType = typeof SERVER_JOB_TYPES[number];
@@ -280,6 +281,17 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     kind: 'non_mail',
     actorMode: 'service',
     classification: 'system_maintenance',
+  },
+  // TA-P5: Learnings auswerten. Liest nur bereits bereinigte Kandidaten und die
+  // Wissensbasis und schreibt einen Vorschlag — keine Nachricht, kein Konto,
+  // auf das sich eine Mail-Berechtigung beziehen liesse. Das Recht
+  // (workflows.manage) prueft die Route beim Einreihen; der Knoten reiht als
+  // Workflow (trusted-service bzw. mit Akteur) ein.
+  {
+    type: 'learnings.digest',
+    kind: 'non_mail',
+    actorMode: 'initiating_user_or_service',
+    classification: 'non_mail',
   },
 ]);
 

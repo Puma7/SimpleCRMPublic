@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { workflowGraphHasChainStopNode, workflowGraphHasSideEffectNode } from '@simplecrm/core';
 import { outboundWorkflowGuardError } from './workflow-outbound-guard';
+import { recordKnowledgeDocumentSaved } from './ai-learnings-routes';
 import {
   data,
   error,
@@ -184,6 +185,9 @@ export async function handleWorkflowRuntimeReadRoute(
       ? handleWorkflowForwardDedupList(req, ports)
       : handleWorkflowForwardDedupGet(req, ports, forwardDedupMatch[1]);
   }
+
+  const knowledgeDocumentMatch = /^\/api\/v1\/workflow-knowledge-bases\/([^/]+)\/document$/.exec(req.path);
+  if (knowledgeDocumentMatch) return handleKnowledgeBaseDocumentSave(req, ports, knowledgeDocumentMatch[1]);
 
   const knowledgeBaseMatch = /^\/api\/v1\/workflow-knowledge-bases(?:\/([^/]+))?$/.exec(req.path);
   if (knowledgeBaseMatch) {
@@ -883,6 +887,53 @@ async function handleKnowledgeBaseDelete(
   await auditKnowledgeBase(ports, principal, 'workflow_knowledge_base.deleted', base, { name: base.name });
   await publishKnowledgeBase(ports, principal.workspaceId, 'workflow_knowledge_base.deleted', base, principal.userId);
   return data(200, { deleted: true, knowledgeBase: sanitizeKnowledgeBase(base) });
+}
+
+/**
+ * TA-P5: ganzes Markdown-Dokument einer Wissensbasis ATOMAR ersetzen (ein
+ * Chunk „Dokument“, übrige entfallen). POST statt PUT, weil die API-Schicht nur
+ * GET/POST/PATCH/DELETE kennt; workflows.manage prüft
+ * rejectUnlessWorkflowRuntimeMutation wie bei den Chunk-Routen.
+ */
+async function handleKnowledgeBaseDocumentSave(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return methodNotAllowed();
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const id = positiveIntFromPath(rawId);
+  if (id === null) return error(400, 'invalid_workflow_knowledge_base_id', 'workflow knowledge base id muss eine positive Ganzzahl sein');
+  if (!ports.workflowKnowledgeBases?.saveDocument) return unavailable('workflow_knowledge_bases_unavailable', 'Workflow knowledge base API nicht konfiguriert');
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return error(400, 'invalid_workflow_knowledge_document_payload', 'Dokument muss ein JSON-Objekt sein');
+  }
+  const record = body as Record<string, unknown>;
+  const unknownFields = Object.keys(record).filter((key) => key !== 'content');
+  if (unknownFields.length > 0) {
+    return error(400, 'validation_error', 'Dokument ist ungueltig', {
+      fields: unknownFields.map((field) => ({ field, message: 'Feld ist nicht erlaubt' })),
+    });
+  }
+  const content = normalizeRequiredBodyText(record.content, 'content', 100000);
+  if (!content.ok) {
+    return error(400, 'validation_error', 'Dokument ist ungueltig', { fields: [{ field: 'content', message: content.message }] });
+  }
+  const result = await ports.workflowKnowledgeBases.saveDocument({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    id,
+    content: content.value,
+  });
+  if (!result) return error(404, 'workflow_knowledge_base_not_found', 'Workflow knowledge base nicht gefunden');
+  await recordKnowledgeDocumentSaved(ports, principal, result, 'knowledge_document');
+  return data(200, {
+    knowledgeBase: sanitizeKnowledgeBase(result.knowledgeBase),
+    chunk: sanitizeKnowledgeChunk(result.chunk, false),
+    removedChunkIds: result.removedChunks.map((chunk) => chunk.id),
+  });
 }
 
 async function handleKnowledgeChunkList(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

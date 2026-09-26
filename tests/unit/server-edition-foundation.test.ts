@@ -2026,6 +2026,7 @@ describe('server edition foundation', () => {
       'audit.retention',
       'mail.sync.schedule',
       'workflow.schedule.tick',
+      'learnings.digest',
     ]);
     expect(assertValidJobType('mail.sync')).toBe('mail.sync');
     expect(assertServerJobType('mail.sync.imap')).toBe('mail.sync.imap');
@@ -16332,6 +16333,8 @@ describe('server edition foundation', () => {
     expect(sessionCommands).toEqual([
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // TA-P5: audit.retention räumt danach in eigener Transaktion die Learnings-Rohdaten auf.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16425,6 +16428,15 @@ describe('server edition foundation', () => {
         wheres: [
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['id', 'in', [7, 8]],
+        ],
+      },
+      // TA-P5: Learnings-Rohdaten (unverarbeitet > 90 Tage, entschiedene Vorschläge).
+      {
+        kind: 'delete',
+        table: 'ai_learning_candidates',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          [expect.any(Function), undefined, undefined],
         ],
       },
     ]);

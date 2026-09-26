@@ -441,6 +441,11 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
 function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/workflows/:id/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
   assign('/api/v1/workflows/by-source/:sourceId/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
+  // TA-P5 „Learning notieren“: mit Mail-Bezug nur, wer die Mail lesen darf;
+  // ohne Bezug (oder messageId null) genügt die Anmeldung.
+  assign('/api/v1/ai-learnings/notes', {
+    POST: permissionPolicy('mail.content.read', optionalMessageBody('messageId', { allowNull: true })),
+  });
   assign('/api/v1/email/messages/:messageId/workflow-runs', { GET: permissionPolicy('mail.content.read', messagePath()) });
 
   for (const path of [

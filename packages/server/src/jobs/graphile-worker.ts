@@ -557,6 +557,11 @@ function graphileSharedQueueKind(type: ServerJobType): string | undefined {
   if (type === 'mail.spam.score') {
     return 'spam';
   }
+  // Eigene Queue: ein langer Learnings-KI-Aufruf soll die KI-Jobs der
+  // eingehenden Kette ('ai-<ws>') nicht aufhalten.
+  if (type === 'learnings.digest') {
+    return 'learnings';
+  }
   if (type === 'mail.vacation.auto_reply') {
     return 'mail';
   }
@@ -903,6 +908,10 @@ export function graphileJobKeyForJob(
     && workspaceKey
   ) {
     return `${type}:${workspaceKey}`;
+  }
+  // TA-P5: hoechstens eine wartende Auswertung je Workspace und Ziel-Wissensbasis.
+  if (type === 'learnings.digest' && workspaceKey) {
+    return `${type}:${workspaceKey}:${graphileKeyScalar(payload.knowledgeBaseId) ?? 'default'}`;
   }
   return undefined;
 }

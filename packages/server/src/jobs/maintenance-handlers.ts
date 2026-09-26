@@ -11,6 +11,7 @@ import {
 import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
 import { runWorkflowScheduleTick } from './workflow-schedule-tick';
+import { pruneAiLearningCandidates } from '../ai-learnings';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -329,6 +330,17 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
       }, { applySession: options.applyWorkspaceSession });
 
       if (batchWasFull) await requeue(options, 'audit.retention', plan.workspaceId, job.payload, now());
+
+      // TA-P5: Learnings-Rohdaten mitnehmen — unverarbeitete nach 90 Tagen,
+      // verarbeitete, sobald über ihren Vorschlag entschieden ist. Eigene
+      // Transaktion und nur protokolliert: die Audit-Retention darf daran nie scheitern.
+      await pruneAiLearningCandidates({
+        db: options.db,
+        now,
+        ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+      }, plan.workspaceId).catch((error: unknown) => {
+        console.warn(`[ai-learnings] Aufräumen fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
+      });
     },
   };
 }

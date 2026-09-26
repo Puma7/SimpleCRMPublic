@@ -124,6 +124,7 @@ import {
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
+import { executeServerLearningsDigestNode } from './ai-learnings';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
@@ -2288,6 +2289,18 @@ async function executeServerNode(
     if (type === 'ai.review' || type === 'ai_review') {
       return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
+  }
+  if (type === 'ai.learnings_digest') {
+    // TA-P5: prüft vorab und reiht den Auswertungs-Job ein; im Probelauf nur die Vorabprüfung.
+    return await executeServerLearningsDigestNode(trx, {
+      workspaceId: context.workspaceId,
+      workflowId: context.workflowId,
+      direction: context.direction,
+      config,
+      provenance: workflowJobProvenance(context),
+      dryRun: Boolean(dryRun),
+      now,
+    });
   }
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);

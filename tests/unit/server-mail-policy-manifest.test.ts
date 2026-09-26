@@ -9,6 +9,7 @@ import {
   type CanonicalApiRouteRegistration,
   type ServerApiPorts,
 } from '../../packages/server/src/api';
+import { AI_LEARNINGS_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/ai-learnings-routes';
 import { EMAIL_TRACKING_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/email-tracking-routes';
 import { MAIL_LOCK_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/lock-routes';
 import {
@@ -84,6 +85,7 @@ describe('server mail policy manifest', () => {
       'spam-routes',
       'returns-routes',
       'lock-routes',
+      'ai-learnings-routes',
     ]);
 
     expectRegistrationInventory('email-tracking-routes', EMAIL_TRACKING_ROUTE_REGISTRATIONS);
@@ -97,6 +99,7 @@ describe('server mail policy manifest', () => {
     expectRegistrationInventory('pgp-routes', PGP_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('spam-routes', SPAM_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('lock-routes', MAIL_LOCK_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('ai-learnings-routes', AI_LEARNINGS_MAIL_ROUTE_REGISTRATIONS);
   });
 
   test('independently inventories every delayed-job method accepted by the workflow handler', async () => {
