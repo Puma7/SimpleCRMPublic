@@ -19,6 +19,7 @@ import {
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
+import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
@@ -362,6 +363,42 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     const other = await withWorkspaceTransaction(db, { workspaceId: WS_B, role: 'system' }, (trx) =>
       saveWorkflowKnowledgeDocument(trx, WS_B, KB_ID, 'fremd', new Date()));
     expect(other).toBeNull();
+  });
+
+  test('Knoten im echten Workflow-Lauf (manuell): Job wird eingereiht, Lauf endet ok', async () => {
+    await seedCandidates(3);
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+        { id: 'digest', type: 'registry', data: { nodeType: 'ai.learnings_digest', config: { period: 'week', minCandidates: 2 } } },
+      ],
+      edges: [{ id: 'edge-1', source: 'trigger-1', target: 'digest' }],
+    };
+    await postgres.admin.query(`
+      INSERT INTO email_workflows (
+        id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+        definition_json, graph_json, execution_mode, engine_version
+      ) VALUES (9901, $1, 9901, 'Learnings wöchentlich', 'manual', true, 1, '{}'::jsonb, $2::jsonb, 'graph', 1)
+      ON CONFLICT (id) DO NOTHING
+    `, [WS_A, JSON.stringify(graph)]);
+    await createPostgresWorkflowExecutionJobPort({ db }).execute({
+      workspaceId: WS_A,
+      workflowId: 9901,
+      triggerName: 'manual',
+      trustedService: true,
+      context: {},
+    });
+    const jobs = await postgres.admin.query(`SELECT type, payload FROM job_queue WHERE workspace_id = $1`, [WS_A]);
+    expect(jobs.rows).toEqual([{
+      type: 'learnings.digest',
+      payload: expect.objectContaining({ trigger: 'workflow', workflowId: 9901, period: 'week', minCandidates: 2 }),
+    }]);
+    const steps = await postgres.admin.query(
+      `SELECT status, message FROM email_workflow_run_steps WHERE workspace_id = $1 AND node_type = 'ai.learnings_digest'`,
+      [WS_A],
+    );
+    expect(steps.rows).toEqual([expect.objectContaining({ status: 'ok', message: expect.stringMatching(/^queued_learnings_digest:/) })]);
   });
 
   test('Knoten: reiht im Zeitplan-Workflow ein, überspringt eingehende Workflows', async () => {
