@@ -1,4 +1,9 @@
 import {
+  COMPOSE_BODY_MARKER,
+  COMPOSE_QUOTE_MARKER,
+  COMPOSE_SIGNATURE_MARKER,
+} from '../../shared/compose-body';
+import {
   SENT_AI_VIEW_KINDS,
   composeOutboundHeldDraftBody,
   determineSentProvenance,
@@ -106,5 +111,50 @@ describe('draftContentChanged: echte Änderung eines KI-Entwurfs (TA-P3)', () =>
     ['Konto', { accountId: 4 }],
   ])('%s geändert ⇒ Änderung', (_label, patch) => {
     expect(draftContentChanged(aiDraft, { ...aiDraft, ...patch })).toBe(true);
+  });
+
+  describe('Zonen des Entwurfsfensters', () => {
+    const signature = '<p>Erika Beispiel<br/>Support</p>';
+    const quote = '<p>Am 25.09. schrieb Kunde: Wann kommt meine Bestellung?</p>';
+    // Wie das Entwurfsfenster speichert: Text aus dem ganzen Editor (inkl. Signatur).
+    function saved(bodyHtml: string, extras: { signature?: string; quote?: string } = {}) {
+      const html = `${bodyHtml}${extras.signature ? `${COMPOSE_SIGNATURE_MARKER}${extras.signature}` : ''}`
+        + `${extras.quote ? `${COMPOSE_QUOTE_MARKER}${extras.quote}` : ''}`;
+      return {
+        ...aiDraft,
+        bodyHtml: html,
+        bodyText: html.replace(/<!--[^>]*-->/g, ' ').replace(/<[^>]+>/g, ' '),
+      };
+    }
+    const aiBodyHtml = '<p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p><p>Viele Grüße</p>';
+
+    test('automatisch eingesetzte Signatur oder Zitat ist keine Änderung', () => {
+      expect(draftContentChanged(aiDraft, saved(aiBodyHtml, { signature }))).toBe(false);
+      expect(draftContentChanged(aiDraft, saved(aiBodyHtml, { signature, quote }))).toBe(false);
+      // Anrede-Zone vor dem Text: ebenfalls unverändert.
+      expect(draftContentChanged(
+        aiDraft,
+        saved(`<p>Guten Tag,</p>${COMPOSE_BODY_MARKER}<p>Ihre Bestellung kommt morgen.</p><p>Viele Grüße</p>`, { signature }),
+      )).toBe(false);
+    });
+
+    test('geänderter Text bleibt eine Änderung, auch mit Signatur-Zone', () => {
+      expect(draftContentChanged(
+        aiDraft,
+        saved('<p>Guten Tag,</p><p>Ihre Bestellung kommt übermorgen.</p><p>Viele Grüße</p>', { signature }),
+      )).toBe(true);
+      // Eine geänderte Anrede zählt (Zone vor dem Text gehört zum Geschriebenen).
+      expect(draftContentChanged(
+        aiDraft,
+        saved(`<p>Sehr geehrte Frau Muster,</p>${COMPOSE_BODY_MARKER}<p>Ihre Bestellung kommt morgen.</p><p>Viele Grüße</p>`, { signature }),
+      )).toBe(true);
+    });
+
+    test('Grenze: nur die Signatur zu ändern gilt nicht als Bearbeitung des KI-Texts', () => {
+      expect(draftContentChanged(
+        saved(aiBodyHtml, { signature }),
+        saved(aiBodyHtml, { signature: '<p>Erika Beispiel<br/>Teamleitung Support</p>' }),
+      )).toBe(false);
+    });
   });
 });

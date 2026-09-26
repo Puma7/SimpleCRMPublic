@@ -153,7 +153,7 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
     expect(await sentBy(8103)).toMatchObject({ sent_by_kind: 'human', sent_by_workflow_id: null });
 
     // Das Entwurfsfenster speichert vor dem Senden alle Felder — ohne echte
-    // Änderung (nur HTML-Absätze, Empfängername) bleibt es „KI · freigegeben“.
+    // Änderung (HTML-Absätze, Empfängername, Signatur-Zone) bleibt es „KI · freigegeben“.
     await seedDraft(8107);
     await markOrigin(8107, 'ai');
     const saved = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft!({
@@ -161,8 +161,9 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
       messageId: 8107,
       values: {
         subject: 'Re: Frage',
-        bodyText: 'Antwort',
-        bodyHtml: '<p>Antwort</p>',
+        // Mit Signatur-Zone, die das Fenster selbst einsetzt (zählt nicht als Bearbeitung).
+        bodyText: 'Antwort Anna Beispiel',
+        bodyHtml: '<p>Antwort</p><!-- simplecrm-signature --><p>Anna Beispiel</p>',
         toJson: { value: [{ address: 'kunde@example.com', name: 'Kunde' }] },
         ccJson: null,
         bccJson: null,

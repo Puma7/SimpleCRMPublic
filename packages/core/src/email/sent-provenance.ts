@@ -4,6 +4,11 @@
  * hat; die Oberfläche zeigt daraus Kennzeichen und die Ansicht „Gesendet (KI)“.
  */
 
+import {
+  LEARNING_COMPOSE_BODY_MARKER,
+  LEARNING_COMPOSE_QUOTE_MARKER,
+  LEARNING_COMPOSE_SIGNATURE_MARKER,
+} from '../learnings/reply-noise';
 import { stripOutboundWarningFromHtml, stripOutboundWarningFromPlain } from './outbound-review-parse';
 import { plainTextFromHtml } from './parse-utils';
 
@@ -151,7 +156,9 @@ export type DraftContentSnapshot = {
  * Entwurfsfenster speichert beim Öffnen und vor dem Senden immer alle Felder
  * — nur ein echter Unterschied zählt. Verglichen werden Betreff, Text
  * (Leerraum, HTML-Umformatierung des Editors und der Hinweis „Versand
- * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto.
+ * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto. Trägt das
+ * HTML die Zonen-Marker des Entwurfsfensters, zählen nur Anrede und Text:
+ * Signatur- und Zitat-Zone setzt das Fenster selbst ein.
  */
 export function draftContentChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
   return normalizedDraftContent(before) !== normalizedDraftContent(after);
@@ -170,10 +177,34 @@ function normalizedDraftContent(snapshot: DraftContentSnapshot): string {
 }
 
 function draftBodyText(snapshot: DraftContentSnapshot): string {
-  const text = snapshot.bodyText?.trim()
-    ? stripOutboundWarningFromPlain(snapshot.bodyText)
-    : plainTextFromHtml(stripOutboundWarningFromHtml(snapshot.bodyHtml ?? ''));
+  const authored = composeAuthoredHtml(snapshot.bodyHtml ?? '');
+  const text = authored !== null
+    ? plainTextFromHtml(stripOutboundWarningFromHtml(authored))
+    : snapshot.bodyText?.trim()
+      ? stripOutboundWarningFromPlain(snapshot.bodyText)
+      : plainTextFromHtml(stripOutboundWarningFromHtml(snapshot.bodyHtml ?? ''));
   return collapseWhitespace(text);
+}
+
+/**
+ * HTML aus dem Entwurfsfenster (mit Zonen-Markern, siehe shared/compose-body.ts):
+ * Anrede und Text ohne Signatur- und Zitat-Zone. null ohne Marker (KI-Entwurf,
+ * Altbestand) — dann gilt der Klartext.
+ */
+function composeAuthoredHtml(html: string): string | null {
+  if (
+    !html.includes(LEARNING_COMPOSE_BODY_MARKER)
+    && !html.includes(LEARNING_COMPOSE_SIGNATURE_MARKER)
+    && !html.includes(LEARNING_COMPOSE_QUOTE_MARKER)
+  ) {
+    return null;
+  }
+  let authored = html;
+  const quoteIdx = authored.indexOf(LEARNING_COMPOSE_QUOTE_MARKER);
+  if (quoteIdx >= 0) authored = authored.slice(0, quoteIdx);
+  const signatureIdx = authored.indexOf(LEARNING_COMPOSE_SIGNATURE_MARKER);
+  if (signatureIdx >= 0) authored = authored.slice(0, signatureIdx);
+  return authored;
 }
 
 function collapseWhitespace(value: string): string {

@@ -127,8 +127,18 @@ describe('Desktop: Kennzeichnung „gesendet von“', () => {
     expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 78').get())
       .toEqual({ draft_origin_edited: 0 });
 
+    // Das Fenster setzt eine Signatur-Zone ein (Zonen-Marker): keine Bearbeitung.
     before = readDraftOriginContent(78);
-    db.prepare(`UPDATE email_messages SET body_text = ? WHERE id = 78`).run('Guten Tag, Ihre Bestellung kommt übermorgen.');
+    db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = 78`).run(
+      'Guten Tag, Ihre Bestellung kommt morgen. Erika Beispiel',
+      '<p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p><!-- simplecrm-signature --><p>Erika Beispiel</p>',
+    );
+    markDraftOriginEditedIfChanged(78, before);
+    expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 78').get())
+      .toEqual({ draft_origin_edited: 0 });
+
+    before = readDraftOriginContent(78);
+    db.prepare(`UPDATE email_messages SET body_text = ?, body_html = NULL WHERE id = 78`).run('Guten Tag, Ihre Bestellung kommt übermorgen.');
     markDraftOriginEditedIfChanged(78, before);
     expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = 78').get())
       .toEqual({ draft_origin_edited: 1 });

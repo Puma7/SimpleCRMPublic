@@ -245,7 +245,7 @@ Sie können den Entwurf auch einfach öffnen und **bearbeiten** — sobald Sie d
 Gesendete Mails tragen ein Kennzeichen, wer sie verschickt hat (Details in der E-Mail-Anleitung, Abschnitt „Wer hat gesendet?“):
 
 - **KI** — der Workflow hat die KI-Antwort selbst versendet (Weg **Senden**). Die Leseansicht nennt den Workflow: „Automatisch von KI gesendet (Workflow „…“)“.
-- **KI · freigegeben** — Sie (oder ein Kollege) haben den KI-Entwurf **unverändert** gesendet, z. B. mit **„Jetzt senden“**. Haben Sie den Text vorher geändert, gilt die Mail als von Ihnen geschrieben und trägt kein Kennzeichen.
+- **KI · freigegeben** — Sie (oder ein Kollege) haben den KI-Entwurf **unverändert** gesendet, z. B. mit **„Jetzt senden“**. Haben Sie den Text vorher geändert, gilt die Mail als von Ihnen geschrieben und trägt kein Kennzeichen. Öffnen und Speichern im Entwurfsfenster, eine vom Fenster eingesetzte Signatur oder ein Zitat zählen nicht als Änderung.
 - **Automatik** — ein Workflow ohne KI hat verschickt (z. B. **„Entwurf erstellen“** + **„Entwurf senden“**).
 
 Die Ansicht **Gesendet (KI)** direkt unter **Gesendet** sammelt genau diese Mails. Wurde beim Versand **„Ohne Ausgangsprüfung senden“** verwendet, steht zusätzlich **„ohne Prüfung“** dabei.
