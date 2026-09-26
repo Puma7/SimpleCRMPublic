@@ -546,5 +546,53 @@ describe('ai.decide server job (Embedded Postgres)', () => {
       expect(created.status).toBe(201);
       expect((created.body as any).data.provider).toBe('openrouter_decisions');
     });
+
+    // Sicherheits-Review B6: „nur https“ gilt für die effektiven Werte (gespeichert + Änderung).
+    test('PATCH: http-Adresse auf ein Entscheidungsmodell oder Entscheidungsmodell auf ein http-Profil ⇒ 400', async () => {
+      const decisions = await api.handle({
+        method: 'POST',
+        path: '/api/v1/ai/profiles',
+        principal: principal(['workflows.manage']),
+        body: { label: 'Jev 2', provider: 'openrouter_decisions', baseUrl: 'https://openrouter.ai/api', model: 'typesafe/jev-1.13' },
+      });
+      expect(decisions.status).toBe(201);
+      const decisionsId = (decisions.body as any).data.id as number;
+      const onlyBaseUrl = await api.handle({
+        method: 'PATCH',
+        path: `/api/v1/ai/profiles/${decisionsId}`,
+        principal: principal(['workflows.manage']),
+        body: { baseUrl: 'http://openrouter.ai/api', apiKey: 'neuer-key' },
+      });
+      expect(onlyBaseUrl.status).toBe(400);
+      expect((onlyBaseUrl.body as any).error.details.fields).toEqual([
+        { field: 'baseUrl', message: 'Entscheidungsmodelle (Decisions API) nur ueber https' },
+      ]);
+
+      const plain = await api.handle({
+        method: 'POST',
+        path: '/api/v1/ai/profiles',
+        principal: principal(['workflows.manage']),
+        body: { label: 'Eigenes LLM', provider: 'openai', baseUrl: 'http://llm.example.com/v1', model: 'm' },
+      });
+      expect(plain.status).toBe(201);
+      const onlyProvider = await api.handle({
+        method: 'PATCH',
+        path: `/api/v1/ai/profiles/${(plain.body as any).data.id}`,
+        principal: principal(['workflows.manage']),
+        body: { provider: 'openrouter_decisions', apiKey: 'neuer-key' },
+      });
+      expect(onlyProvider.status).toBe(400);
+
+      // Weiterhin erlaubt: https-Adresse ändern bzw. andere Felder.
+      const ok = await api.handle({
+        method: 'PATCH',
+        path: `/api/v1/ai/profiles/${decisionsId}`,
+        principal: principal(['workflows.manage']),
+        body: { label: 'Jev (neu)' },
+      });
+      expect(ok.status).toBe(200);
+      const stored = await aiProfiles.get({ workspaceId: WORKSPACE_ID, id: decisionsId });
+      expect(stored).toMatchObject({ baseUrl: 'https://openrouter.ai/api', provider: 'openrouter_decisions' });
+    });
   });
 });

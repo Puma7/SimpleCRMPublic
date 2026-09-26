@@ -812,6 +812,16 @@ async function handleUpdateAiProfile(
   if (parsed.values.baseUrl !== undefined || parsed.values.provider !== undefined) {
     const current = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
     if (!current) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+    // „Nur https“ für Entscheidungsmodelle gegen die effektiven Werte (gespeichert
+    // + Änderung): sonst ließe sich per PATCH nur baseUrl bzw. nur provider ein
+    // Entscheidungsmodell mit http-Adresse herstellen (Review B6).
+    const effectiveProvider = parsed.values.provider ?? current.provider;
+    const effectiveBaseUrl = parsed.values.baseUrl ?? current.baseUrl;
+    if (isAiDecisionsProvider(effectiveProvider) && !/^https:\/\//i.test(effectiveBaseUrl)) {
+      return error(400, 'validation_error', 'AI profile payload ist ungueltig', {
+        fields: [{ field: 'baseUrl', message: 'Entscheidungsmodelle (Decisions API) nur ueber https' }],
+      });
+    }
     if (aiProfileMoveNeedsNewApiKey(current, parsed.values)) {
       return error(
         400,
