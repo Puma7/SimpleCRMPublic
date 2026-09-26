@@ -418,9 +418,16 @@ describe('update: fixed release, health check and the way back', () => {
       expect(exact.status).toBe(0);
       expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
 
-      const unknown = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v9.9.9', '--no-backup'], { cwd: checkout });
+      // Codex-Review PR #195: auch bei knappem Platz weder Build-Cache-Prune noch Generations-Tags.
+      const host = fakeHost({ images: { 'simplecrm/api:dev': 'sha256:api0', 'simplecrm/web:dev': 'sha256:web0' } });
+      const unknown = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v9.9.9', '--no-backup'], {
+        cwd: checkout, host, env: { FAKE_DF_FREE_KB: String(GB_KB) },
+      });
+      rmSync(host, { recursive: true, force: true });
       expect(unknown.status).not.toBe(0);
       expect(unknown.log).not.toContain(' build');
+      expect(unknown.log).not.toMatch(/^(tag|builder|info) /m);
+      expect(Object.keys(unknown.images).filter((ref) => ref.includes(':gen-'))).toEqual([]);
       // Nichts wurde verändert: kein Hinweis auf einen Weg zurück.
       expect(unknown.stderr).not.toContain('Update stopped during');
       expect(git(checkout, 'rev-parse', '--short', 'HEAD')).toBe(commitOf['v1.0.9']);
@@ -512,8 +519,8 @@ describe('update: image generations, rollback and disk space', () => {
   const running = { images: { 'simplecrm/api:dev': 'sha256:api0', 'simplecrm/web:dev': 'sha256:web0' }, running: { api: 'sha256:api0', caddy: 'sha256:web0' } };
   const gens = (images: Record<string, string>, repo: string) => Object.entries(images)
     .filter(([ref]) => ref.startsWith(`${repo}:gen-`)).map(([, id]) => id).sort();
-  const stateOf = (run: FakeDockerRun, kind: 'state' | 'attempt') => {
-    const text = run.stateFiles[`docker.${kind}`] ?? '';
+  const stateOf = (run: FakeDockerRun, kind: 'state' | 'attempt', project = 'docker') => {
+    const text = run.stateFiles[`${project}.${kind}`] ?? '';
     return Object.fromEntries(text.split('\n').filter(Boolean).map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
   };
   const destructive = /volume (rm|prune)|system prune|image prune (-a|--all)|image prune -f -a/;
@@ -678,6 +685,37 @@ describe('update: image generations, rollback and disk space', () => {
       expect(again.stderr).toContain('Nothing to roll back to');
     } finally {
       rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Codex-Review PR #195: Mehrere SimpleCRM-Projekte auf einem Docker-Host dürfen sich beim Aufräumen
+  // nicht gegenseitig die Rollback-Images löschen; der Rollback-Zustand gilt ja je Projekt.
+  test('generations are kept per compose project: updating one project leaves the rollback images of another', ranOrSkipped(() => {
+    const host = fakeHost({
+      images: {
+        'simplecrm/api:a': 'sha256:apiA', 'simplecrm/web:a': 'sha256:webA',
+        'simplecrm/api:b': 'sha256:apiB', 'simplecrm/web:b': 'sha256:webB',
+      },
+    });
+    const beta = { COMPOSE_PROJECT_NAME: 'beta', VERSION: 'b' };
+    const alpha = { COMPOSE_PROJECT_NAME: 'alpha', VERSION: 'a' };
+    try {
+      const b = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: beta });
+      expect(b.status).toBe(0);
+      const betaState = stateOf(b, 'state', 'beta');
+      expect(betaState.previous_api_image).toMatch(/^simplecrm\/api:gen-beta\./);
+      expect(b.images[betaState.previous_api_image!]).toBe('sha256:apiB');
+
+      let a = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: alpha });
+      a = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { host, env: alpha });
+      expect(a.status).toBe(0);
+      expect(a.images[betaState.previous_api_image!]).toBe('sha256:apiB');
+      expect(a.images[betaState.current_api_image!]).toBe(b.images[betaState.current_api_image!]);
+      expect(a.images[betaState.previous_web_image!]).toBe('sha256:webB');
+      const alphaGens = Object.keys(a.images).filter((ref) => ref.startsWith('simplecrm/api:gen-alpha.'));
+      expect(alphaGens).toHaveLength(2);
+    } finally {
       rmSync(host, { recursive: true, force: true });
     }
   }));

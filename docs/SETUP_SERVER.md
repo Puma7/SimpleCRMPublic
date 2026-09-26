@@ -319,13 +319,16 @@ If a step fails after the source was changed, the script prints the way back:
 ### Rollback, kept versions and disk space
 
 - **Two image generations.** Before building, the update tags the images that
-  are running as `simplecrm/api:gen-<commit>-<utc stamp>` (and `simplecrm/web:…`);
-  after a successful update the new images get their own generation tag. The
-  compose tag (`simplecrm/api:${VERSION:-dev}`) keeps pointing at the current
-  generation, so plain `docker compose` works as before. Exactly the current and
-  the previous generation stay; older `gen-*` tags and dangling images with the
-  label `org.simplecrm.image` are removed. Other images, volumes and data are
-  never touched (no `image prune -a`, no `volume prune`).
+  are running as `simplecrm/api:gen-<project>.<commit>-<utc stamp>` (and
+  `simplecrm/web:…`); after a successful update the new images get their own
+  generation tag. The compose tag (`simplecrm/api:${VERSION:-dev}`) keeps
+  pointing at the current generation, so plain `docker compose` works as before.
+  Exactly the current and the previous generation of the project stay; its older
+  `gen-<project>.*` tags and dangling images with the label
+  `org.simplecrm.image` are removed. Generations of other compose projects on
+  the same host, other images, volumes and data are never touched (no
+  `image prune -a`, no `volume prune`). An unknown release tag or branch stops
+  the update before any Docker command changes something.
 - **Rollback state.** `docker/.simplecrm-update/<project>.attempt` records an
   update in progress (what ran before it, how far it got, its backup);
   `<project>.state` records the last successful one (current and previous commit

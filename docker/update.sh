@@ -218,6 +218,7 @@ FROM_REV="$PREV_REV"
 # a rollback returns to (the same, unless a failed attempt migrated before).
 BACKUP_DUMP=""
 ROLLBACK_BACKUP=""
+FETCHED_COMMIT=""
 FROM_COMMIT=""
 FROM_RELEASE=""
 FROM_API_GEN=""
@@ -302,6 +303,21 @@ if [ -n "$RELEASE" ]; then
   fi
 fi
 
+# Fetch the target first: an unknown release tag or branch stops here, before
+# anything touches Docker (the checkout itself happens further down).
+if [ "${SKIP_PULL:-0}" != "1" ]; then
+  if [ -n "$RELEASE" ]; then
+    say "Fetching release $RELEASE"
+    # A release tag names one tested commit. Fetch exactly that tag; if a local
+    # tag of the same name points elsewhere, git refuses instead of guessing.
+    git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$RELEASE:refs/tags/$RELEASE"
+  else
+    say "Fetching origin/$BRANCH"
+    git -C "$REPO_DIR" fetch origin "$BRANCH"
+    FETCHED_COMMIT="$(git -C "$REPO_DIR" rev-parse FETCH_HEAD)"
+  fi
+fi
+
 ensure_free_space
 
 resolve_app_image_refs
@@ -354,21 +370,17 @@ else
   fi
   if [ -n "$RELEASE" ]; then
     say "[1/6] Updating source to release $RELEASE (previous: $PREV_REV)"
-    # A release tag names one tested commit. Fetch exactly that tag; if a local
-    # tag of the same name points elsewhere, git refuses instead of guessing.
-    git -C "$REPO_DIR" fetch --no-tags origin "refs/tags/$RELEASE:refs/tags/$RELEASE"
     # From here on the checkout changes: a failure prints the way back.
     set_stage source
     git -C "$REPO_DIR" checkout --force --detach "refs/tags/$RELEASE"
   else
     say "[1/6] Updating source to origin/$BRANCH (previous: $PREV_REV)"
-    # Reset to FETCH_HEAD (the exact commit we just fetched) rather than the
-    # remote-tracking ref origin/$BRANCH, which a plain branch fetch may leave
-    # stale — otherwise we could rebuild the previous commit and report success.
-    git -C "$REPO_DIR" fetch origin "$BRANCH"
+    # Reset to the exact commit fetched above rather than the remote-tracking
+    # ref origin/$BRANCH, which a plain branch fetch may leave stale — otherwise
+    # we could rebuild the previous commit and report success.
     set_stage source
-    git -C "$REPO_DIR" checkout -B "$BRANCH" FETCH_HEAD
-    git -C "$REPO_DIR" reset --hard FETCH_HEAD
+    git -C "$REPO_DIR" checkout -B "$BRANCH" "$FETCHED_COMMIT"
+    git -C "$REPO_DIR" reset --hard "$FETCHED_COMMIT"
   fi
 fi
 

@@ -7,9 +7,11 @@
 #
 # Image generations: compose keeps using its moving tag (simplecrm/api:dev or
 # the operator's VERSION). Each built generation additionally carries an
-# immutable tag simplecrm/api:gen-<commit>-<utc stamp>. After a successful
-# update exactly two generations stay: current and previous. A rollback points
-# the moving tag back at the previous generation; nothing is rebuilt.
+# immutable tag simplecrm/api:gen-<project>.<commit>-<utc stamp>, one namespace
+# per compose project, so several stacks on one host never remove each other's
+# rollback images. After a successful update exactly two generations of the
+# project stay: current and previous. A rollback points the moving tag back at
+# the previous generation; nothing is rebuilt.
 #
 # State (plain key=value lines, never sourced):
 #   $COMPOSE_DIR/.simplecrm-update/<project>.attempt  update in progress or failed
@@ -74,20 +76,27 @@ running_image_id() {
   docker inspect --format '{{.Image}}' "$_container" 2>/dev/null || true
 }
 
-# ensure_gen_tag <repo> <image id> <commit>: the generation tag of this image,
-# created if it has none. Prints repo:gen-... or nothing if there is no image.
+# Prefix of this project's generation tags in <repo>: repo:gen-<project>.
+# Compose project names never contain '.', so "gen-a." never matches "gen-a-b.".
+gen_tag_prefix() {
+  printf '%s:gen-%s.' "$1" "$(printf '%s' "$COMPOSE_PROJECT_NAME" | tr -c 'A-Za-z0-9_-' '_' | cut -c1-40)"
+}
+
+# ensure_gen_tag <repo> <image id> <commit>: this project's generation tag of
+# the image, created if it has none. Prints it, or nothing without an image.
 ensure_gen_tag() {
   _repo="$1"
   _id="$2"
   _commit="$3"
   [ -n "$_id" ] || return 0
+  _prefix="$(gen_tag_prefix "$_repo")"
   _existing="$(docker image inspect --format '{{range .RepoTags}}{{println .}}{{end}}' "$_id" 2>/dev/null \
-    | grep "^$_repo:gen-" | head -n 1 || true)"
+    | awk -v p="$_prefix" 'index($0, p) == 1' | head -n 1 || true)"
   if [ -n "$_existing" ]; then
     printf '%s\n' "$_existing"
     return 0
   fi
-  _base="$_repo:gen-$(printf '%s' "$_commit" | cut -c1-12)-$(date -u +%Y%m%d%H%M%S)"
+  _base="$_prefix$(printf '%s' "$_commit" | cut -c1-12)-$(date -u +%Y%m%d%H%M%S)"
   _tag="$_base"
   _n=2
   while [ -n "$(image_id "$_tag")" ]; do
@@ -98,13 +107,15 @@ ensure_gen_tag() {
   printf '%s\n' "$_tag"
 }
 
-# Remove every generation tag of the app repos except the given ones, then the
-# app's own dangling images (label). Never touches other images or volumes.
+# Remove this project's generation tags except the given ones, then the app's
+# own dangling images (label). Generations of other compose projects, other
+# images and volumes are never touched.
 cleanup_app_generations() {
   for _repo in $SIMPLECRM_APP_REPOS; do
+    _prefix="$(gen_tag_prefix "$_repo")"
     docker image ls --format '{{.Repository}}:{{.Tag}}' "$_repo" 2>/dev/null | while read -r _ref; do
       case "$_ref" in
-        "$_repo":gen-*) ;;
+        "$_prefix"*) ;;
         *) continue ;;
       esac
       _keep=0
