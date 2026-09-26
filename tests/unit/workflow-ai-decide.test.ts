@@ -295,15 +295,29 @@ describe('OpenRouter Decisions API', () => {
     });
   });
 
-  test('Antwort: alternative Formen probability/p_present/yes, 0–100', () => {
+  test('Antwort: alternative Formen probability/p_present/yes, jeweils 0–1', () => {
     expect(parseAiDecisionsResponse({ answers: { decision: { probability: 0.3 } } })).toMatchObject({ ok: true, probability: 30 });
-    expect(parseAiDecisionsResponse({ answers: { decision: { p_present: 55 } } })).toMatchObject({ ok: true, probability: 55 });
+    expect(parseAiDecisionsResponse({ answers: { decision: { p_present: 0.55 } } })).toMatchObject({ ok: true, probability: 55 });
     expect(parseAiDecisionsResponse({ answers: { decision: { yes: '0.7' } } })).toMatchObject({ ok: true, probability: 70 });
     expect(parseAiDecisionsResponse({ answers: { decision: { noul: { p_present: 0.2 } } } })).toMatchObject({ ok: true, probability: 20 });
     expect(parseAiDecisionsResponse({ answers: { other: { noul: 0.1 } } })).toMatchObject({ ok: true, probability: 10 });
     expect(parseAiDecisionsResponse({ probability: 0.5 })).toMatchObject({ ok: true, probability: 50 });
     expect(decisionsProbabilityToPercent(1)).toBe(100);
+    expect(decisionsProbabilityToPercent(0)).toBe(0);
     expect(decisionsProbabilityToPercent(101)).toBeNull();
+  });
+
+  test('Gatekeeper #2: Werte über 1 sind keine Wahrscheinlichkeit ⇒ KI-Fehler statt Raten der Skala', () => {
+    // Die Decisions API liefert Anteile 0–1. Eine Antwort in Prozent (z. B. 1
+    // für „1 %“ oder 55 für „55 %“) ist nicht von einem Anteil zu unterscheiden
+    // und darf im Ausgang nie als „Ja“ durchgehen: lieber der Ausgang
+    // „KI-Fehler“ (fail-closed) als eine falsch gelesene Skala.
+    for (const value of [1.5, 2, 55, 100, '55', '1,5']) {
+      expect(decisionsProbabilityToPercent(value)).toBeNull();
+      expect(parseAiDecisionsResponse({ answers: { decision: { noul: value } } })).toMatchObject({ ok: false });
+    }
+    expect(parseAiDecisionsResponse({ answers: { decision: { noul: 1 } } })).toMatchObject({ ok: true, probability: 100 });
+    expect(parseAiDecisionsResponse({ answers: { decision: { noul: '0,25' } } })).toMatchObject({ ok: true, probability: 25 });
   });
 
   test('kein verwertbarer Wert ⇒ Fehler (Kosten bleiben erhalten)', () => {

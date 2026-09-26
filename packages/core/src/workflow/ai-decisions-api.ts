@@ -102,12 +102,15 @@ function finiteNumber(value: unknown): number | null {
   return null;
 }
 
-/** 0–1 → Prozent, 1–100 → Prozent; alles andere ist unbrauchbar. */
+/**
+ * Anteil 0–1 → Prozent. Die Decisions API liefert Anteile; ein Wert über 1
+ * (etwa eine Antwort in Prozent) ist nicht eindeutig lesbar — 1 hieße dann
+ * 100 % oder 1 % — und gilt daher als unbrauchbar (Ausgang „KI-Fehler“).
+ */
 export function decisionsProbabilityToPercent(value: unknown): number | null {
   const n = finiteNumber(value);
-  if (n === null || n < 0 || n > 100) return null;
-  const percent = n <= 1 ? n * 100 : n;
-  return Math.max(0, Math.min(100, Math.round(percent)));
+  if (n === null || n < 0 || n > 1) return null;
+  return Math.round(n * 100);
 }
 
 const PROBABILITY_KEYS = ['noul', 'probability', 'p_present', 'yes'] as const;
