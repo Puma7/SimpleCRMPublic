@@ -5,9 +5,10 @@ import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, OperationNodeTransformer, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 
+import { createJsonbArrayPlugin } from '../../../packages/server/src/db/jsonb-array-plugin';
 import type { ServerDatabase } from '../../../packages/server/src/db/schema';
 import { serverMigrations } from '../../../packages/server/src/migrations';
 import { createPgMigrationDatabase, runServerMigrations } from '../../../packages/server/src/migrations/runner';
@@ -150,7 +151,11 @@ export async function startMigratedEmbeddedPostgres(prefix: string): Promise<Emb
       pool.on('error', () => {});
       pool.on('connect', (client) => client.on('error', () => {}));
       pools.push(pool);
-      return new Kysely<ServerDatabase>({ dialect: new PostgresDialect({ pool }) });
+      // Same plugins as createPostgresDatabase: tests must see what production sends.
+      return new Kysely<ServerDatabase>({
+        dialect: new PostgresDialect({ pool }),
+        plugins: [createJsonbArrayPlugin(OperationNodeTransformer)],
+      });
     },
     async stop() {
       for (const pool of pools) await pool.end().catch(() => undefined);

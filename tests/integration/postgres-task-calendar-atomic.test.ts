@@ -5,7 +5,7 @@ import { createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, OperationNodeTransformer, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 
 import type { TaskViewer } from '../../packages/server/src/api/types';
@@ -13,6 +13,7 @@ import {
   createPostgresCalendarEntryPort,
   createPostgresTaskReadPort,
 } from '../../packages/server/src/db/postgres-core-crm-read-ports';
+import { createJsonbArrayPlugin } from '../../packages/server/src/db/jsonb-array-plugin';
 import { createPostgresCalendarEventReadPort } from '../../packages/server/src/db/postgres-extended-crm-read-ports';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { runPostgresCoreCrmImport } from '../../packages/server/src/db/postgres-core-crm-import';
@@ -161,7 +162,11 @@ describe('PostgreSQL atomic task/calendar operations', () => {
     // Listener bereits an.
     pool.on('error', () => {});
     pool.on('connect', (client) => client.on('error', () => {}));
-    db = new Kysely<ServerDatabase>({ dialect: new PostgresDialect({ pool }) });
+    // Same plugins as createPostgresDatabase: tests must see what production sends.
+    db = new Kysely<ServerDatabase>({
+      dialect: new PostgresDialect({ pool }),
+      plugins: [createJsonbArrayPlugin(OperationNodeTransformer)],
+    });
   });
 
   afterAll(async () => {

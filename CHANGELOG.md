@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Server:** `simplecrm maintenance` brach mit `malformed array literal: "[]"` ab, und das Herausnehmen der Anhänge aus Mail-Originalen lief im Betrieb nie durch. Die Datenbankanbindung wandelt jedes JS-Array in JSON (für jsonb-Spalten); echte Postgres-Arrays (`text[]`, `bigint[]`) lehnen das ab. Sie gehen jetzt als Array-Literal an Postgres (`db/pg-array.ts`). Es wurde dabei nichts geschrieben oder gelöscht: Postgres lehnte die Änderung jeweils ab.
+- **Server:** Derselbe Fehler betraf Mail-Zugriffsregeln mit Kategorie- oder Tag-Filter: Speichern, das Löschen einer Kategorie und das Neuberechnen der Sichtbarkeit scheiterten.
+- Die Postgres-Tests laufen jetzt mit denselben Datenbank-Plugins wie der Server; vorher fehlte dort die JSON-Umwandlung, und die Fehler blieben unentdeckt.
+
 ## [1.1.1] - 2026-09-26
 
 Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt „Aktualisieren“](README.md#aktualisieren-update--upgrade).

@@ -13,9 +13,11 @@ import type {
 
 /**
  * True for JS arrays. node-postgres serialises a JS array parameter as a Postgres
- * array literal ({...}), which a jsonb column rejects with error 22P02. (The
- * server schema has no native Postgres array columns and no `= ANY(array)`
- * usage, so any array parameter is always destined for a jsonb column.)
+ * array literal ({...}), which a jsonb column rejects with error 22P02. Any JS
+ * array parameter is therefore treated as jsonb. The few native array columns
+ * (mail_acl_binding_constraints.value_ids/value_texts,
+ * email_messages.raw_rfc822_part_sha256s) and `&&`/`= ANY` comparisons take
+ * their values through db/pg-array.ts instead, never as JS arrays.
  */
 export function isJsonbUnsafeArray(value: unknown): value is readonly unknown[] {
   return Array.isArray(value);
