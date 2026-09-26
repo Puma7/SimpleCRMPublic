@@ -106,9 +106,10 @@ async function call(req: ApiRequest, ports: ServerApiPorts) {
 }
 
 describe('Learnings-Routen (TA-P5)', () => {
-  test('Verwaltung verlangt workflows.manage (auch zum Lesen)', async () => {
+  test('Verwaltung nur für Owner/Admin (auch zum Lesen), workflows.manage allein reicht nicht', async () => {
     const { ports } = makePorts();
-    for (const [method, path] of [
+    const owner = { userId: 'u-owner', workspaceId: WS, role: 'owner' as const };
+    const routes = [
       ['GET', '/api/v1/ai-learnings/overview'],
       ['GET', '/api/v1/ai-learnings/settings'],
       ['PATCH', '/api/v1/ai-learnings/settings'],
@@ -119,12 +120,20 @@ describe('Learnings-Routen (TA-P5)', () => {
       ['GET', '/api/v1/ai-learnings/digests/7'],
       ['POST', '/api/v1/ai-learnings/digests/7/accept'],
       ['POST', '/api/v1/ai-learnings/digests/7/reject'],
-    ] as const) {
-      const response = await call({ method, path, principal: plainUser, body: {} }, ports);
-      expect({ method, path, status: response.status }).toEqual({ method, path, status: 403 });
+    ] as const;
+    // Kandidaten stammen aus allen Postfächern; workflows.manage lässt sich per
+    // Gruppe an Nicht-Admins vergeben und würde die Mail-ACL umgehen.
+    for (const principal of [plainUser, delegatedManager]) {
+      for (const [method, path] of routes) {
+        const response = await call({ method, path, principal, body: {} }, ports);
+        expect({ user: principal.userId, method, path, status: response.status })
+          .toEqual({ user: principal.userId, method, path, status: 403 });
+      }
     }
-    const delegated = await call({ method: 'GET', path: '/api/v1/ai-learnings/overview', principal: delegatedManager }, ports);
-    expect(delegated.status).toBe(200);
+    for (const principal of [manager, owner]) {
+      expect(await call({ method: 'GET', path: '/api/v1/ai-learnings/overview', principal }, ports)).toMatchObject({ status: 200 });
+      expect(await call({ method: 'GET', path: '/api/v1/ai-learnings/candidates', principal }, ports)).toMatchObject({ status: 200 });
+    }
     expect(await call({ method: 'GET', path: '/api/v1/ai-learnings/overview' }, ports)).toMatchObject({ status: 401 });
     expect(await call({ method: 'PUT' as never, path: '/api/v1/ai-learnings/overview', principal: manager }, ports)).toMatchObject({ status: 405 });
     expect(await handleAiLearningsRoute({ method: 'GET', path: '/api/v1/workflows', principal: manager }, ports)).toBeNull();

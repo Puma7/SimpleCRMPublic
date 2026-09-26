@@ -100,11 +100,13 @@ function candidateText(candidate: AiLearningCandidateDto): { label: string; text
   return parts
 }
 
-/** Wer Learnings verwalten darf: Server workflows.manage, Desktop Owner/Admin. */
+/**
+ * Wer Learnings verwalten darf: in beiden Editionen nur Owner/Admin. Die
+ * Kandidaten tragen Inhalte aus allen Postfächern; ein per Gruppe vergebenes
+ * „Workflows verwalten“ genügt deshalb auch auf dem Server nicht.
+ */
 export function useCanManageLearnings(): boolean {
-  const { user, hasCapability } = useAuth()
-  const serverClientMode = getRendererTransport().kind === "http"
-  if (serverClientMode) return Boolean(hasCapability?.("workflows.manage"))
+  const { user } = useAuth()
   return user?.role === "owner" || user?.role === "admin"
 }
 
@@ -119,8 +121,8 @@ export function LearningsPanel() {
           <AlertTitle>Nur für Owner und Admins</AlertTitle>
           <AlertDescription>
             Gesammelte Learnings einsehen, auswerten und in die Wissensbasis übernehmen dürfen nur Owner und
-            Admins (Server: Recht „Workflows verwalten“). „Learning notieren“ in der Leseansicht einer E-Mail
-            steht allen offen, die die E-Mail lesen dürfen.
+            Admins. „Learning notieren“ in der Leseansicht einer E-Mail steht allen offen, die die E-Mail lesen
+            dürfen.
           </AlertDescription>
         </Alert>
       </div>

@@ -298,7 +298,7 @@ Der offene Vorschlag zeigt die Zusammenfassung der KI und die **komplette neue W
 
 ### Rechte
 
-- Einstellungen, Einträge und Vorschläge sehen, auswerten, übernehmen und verwerfen: **Owner und Admins** (Server: Recht „Workflows verwalten“). Andere Rollen sehen im Reiter nur einen Hinweis.
+- Einstellungen, Einträge und Vorschläge sehen, auswerten, übernehmen und verwerfen: nur **Owner und Admins**, auch auf dem Server — das Recht „Workflows verwalten“ allein genügt nicht, weil die Einträge Inhalte aus allen Postfächern enthalten. Der Reiter **Learnings** erscheint nur für Owner und Admins. Der Baustein „Learnings auswerten“ in einem Workflow läuft mit den üblichen Workflow-Rechten.
 - „Learning notieren“: jeder, der die Mail lesen darf; ohne Mail-Bezug jeder angemeldete Nutzer.
 - Server: Anlegen, Übernehmen und Verwerfen stehen im Audit-Log (`ai_learning_note.created`, `ai_learning_candidate.deleted`, `ai_learning_digest.created|accepted|rejected`).
 

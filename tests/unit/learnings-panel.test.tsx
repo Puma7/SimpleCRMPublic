@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
@@ -157,13 +159,26 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     );
   });
 
-  test('Server-Nutzer mit workflows.manage verwaltet Learnings', async () => {
+  test('Server: workflows.manage ohne Admin-Rolle reicht nicht, Admin verwaltet', async () => {
     mockTransportKind = 'http';
     mockRole = 'user';
     mockCapabilities = ['workflows.manage'];
+    const { unmount } = render(<LearningsPanel />);
+    expect(screen.getByText('Nur für Owner und Admins')).toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalled();
+    unmount();
+
+    mockRole = 'admin';
+    mockCapabilities = [];
     mockBackend();
     render(<LearningsPanel />);
     expect(await screen.findByText('Rückgabefrist korrigiert.')).toBeInTheDocument();
+  });
+
+  test('Reiter „Learnings“ ist nur für Owner/Admin sichtbar (beide Editionen)', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/components/email/settings-panels.tsx'), 'utf8');
+    const block = source.slice(source.indexOf('id: "learnings"'), source.indexOf('render: () => <LearningsPanel />'));
+    expect(block).toContain('adminOnly: true');
   });
 
   test('zeigt Einträge, Vorschlag mit Änderungsansicht, Verlauf und Datenschutz', async () => {

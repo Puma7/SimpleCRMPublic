@@ -3,7 +3,7 @@
  */
 /**
  * TA-P5: Rechte der Learnings-IPC-Kanäle. Verwaltung nur Owner/Admin
- * (Server-Parität workflows.manage); „Learning notieren“ für jeden, der die
+ * (wie auf dem Server); „Learning notieren“ für jeden, der die
  * Mail lesen darf (accountAccess 'ro' über die messageId der Payload).
  */
 const mockRegistrations = new Map<string, { handler: (...args: unknown[]) => unknown; options: Record<string, unknown> }>();

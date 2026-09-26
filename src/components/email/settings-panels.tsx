@@ -104,6 +104,8 @@ const TAB_DEFS: TabDef[] = [
     id: "learnings",
     label: "Learnings",
     icon: Lightbulb,
+    // Kandidaten aus allen Postfächern: Server und Desktop nur Owner/Admin.
+    adminOnly: true,
     render: () => <LearningsPanel />,
   },
   {

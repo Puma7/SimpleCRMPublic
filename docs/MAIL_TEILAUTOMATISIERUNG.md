@@ -134,7 +134,7 @@ Priorität und Zeitplan gehören zur Vorlage; „Vorlage laden“ trägt sie im 
 
 - „KI-Entscheidung“ zählt als KI-Aufruf mit Seiteneffekt (externer Dienst) wie die übrigen KI-Bausteine.
 - Zeitplan-Workflows laufen als System wie eingehende Workflows. Anlegen und Aktivieren braucht dieselben Rechte wie bisher (Server: `workflows.manage` für ausführungsrelevante Änderungen; Desktop: Owner/Admin).
-- Learnings einsehen, auswerten, übernehmen: Server `workflows.manage`, Desktop Owner/Admin. „Learning notieren“: jeder, der die Mail lesen darf.
+- Learnings einsehen, auswerten, übernehmen (Einstellungen, Einträge, Vorschläge): in beiden Editionen nur Owner/Admin. Die Einträge enthalten bereinigte Inhalte aus allen Postfächern; `workflows.manage` lässt sich auf dem Server per Gruppe an Nicht-Admins vergeben und würde die Mail-Rechte umgehen. Der Baustein „Learnings auswerten“ läuft als Workflow unter den üblichen Workflow-Rechten. „Learning notieren“: jeder, der die Mail lesen darf.
 - Die Decisions-API-Anfragen laufen über denselben SSRF-Schutz wie alle KI-Aufrufe (nur der Host aus dem Profil, fest aufgelöste IP, keine Weiterleitungen).
 
 ## 7. Umsetzung

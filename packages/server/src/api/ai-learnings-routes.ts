@@ -6,8 +6,9 @@
  *   Mail; ohne Bezug genügt die Anmeldung. Notizen funktionieren auch bei
  *   ausgeschaltetem Sammeln (sie sind bewusst gesetzt).
  * - Alles andere (Einstellungen, Übersicht, Kandidaten, Vorschläge) ist
- *   Wissensbasis-Verwaltung und verlangt workflows.manage — auch zum Lesen,
- *   weil die Kandidaten Inhalte aus Mails verschiedener Postfächer tragen.
+ *   Learnings-Verwaltung und nur für Owner/Admin — auch zum Lesen, weil die
+ *   Kandidaten Inhalte aus Mails aller Postfächer tragen (Parität Desktop).
+ *   Der Knoten ai.learnings_digest läuft dagegen unter den Workflow-Gates.
  */
 import {
   isLearningCandidateKind,
@@ -27,7 +28,7 @@ import type {
   WorkflowKnowledgeChunkRecord,
   WorkflowKnowledgeDocumentSaveResult,
 } from './types';
-import { data, error, positiveIntFromPath, rejectUnlessWorkflowManage, requirePrincipal } from './http';
+import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 import { buildAiLearningsDigestJobPayload } from '../ai-learnings';
 
 type RouteHandler = (req: ApiRequest, ports: ServerApiPorts, params: readonly string[]) => Promise<ApiResponse>;
@@ -89,11 +90,18 @@ function unavailable(): ApiResponse {
   return error(503, 'ai_learnings_unavailable', 'Learnings sind auf diesem Server nicht konfiguriert');
 }
 
+/**
+ * Learnings-Verwaltung nur für Owner/Admin (Parität zum Desktop). Kandidaten
+ * und Vorschläge enthalten bereinigte Inhalte aus allen Postfächern; ein per
+ * Gruppe vergebenes workflows.manage würde sonst die Mail-ACL umgehen.
+ */
 function manager(req: ApiRequest): AuthenticatedPrincipal | ApiResponse {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
-  return denied ?? principal;
+  if (!requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Learnings verwalten nur Owner und Admins');
+  }
+  return principal;
 }
 
 function bodyObject(body: unknown): Record<string, unknown> | null {
