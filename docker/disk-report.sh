@@ -113,7 +113,9 @@ if psql_run "SELECT pg_size_pretty(pg_database_size(current_database())) AS date
   # Kopien aus der Übernahme vom Desktop (SQLite): source_row trägt das Original ein zweites Mal,
   # die Zwischentabelle ein drittes. Nur Anzeige; entfernt wird nichts automatisch.
   psql_run "SELECT (SELECT count(*) FROM email_messages WHERE source_row ? 'raw_rfc822_b64') AS mails_mit_importkopie, (SELECT pg_size_pretty(coalesce(sum(pg_column_size(source_row)), 0)) FROM email_messages WHERE source_row ? 'raw_rfc822_b64') AS importkopien_in_mails, pg_size_pretty(pg_total_relation_size('sqlite_import_rows')) AS import_zwischentabelle;"
-  psql_run "WITH a AS (SELECT size_bytes, row_number() OVER (PARTITION BY content_sha256 ORDER BY id) AS n FROM email_message_attachments) SELECT count(*) AS anhaenge, pg_size_pretty(coalesce(sum(size_bytes), 0)) AS gesamt, pg_size_pretty(coalesce(sum(size_bytes) FILTER (WHERE n > 1), 0)) AS davon_doppelt FROM a;"
+  # Gleicher Inhalt in mehreren Mails liegt per Hardlink nur einmal auf der Platte
+  # (Wartungslauf alle 6 Stunden); die Summe hier ist die logische Größe.
+  psql_run "WITH a AS (SELECT size_bytes, row_number() OVER (PARTITION BY content_sha256 ORDER BY id) AS n FROM email_message_attachments) SELECT count(*) AS anhaenge, pg_size_pretty(coalesce(sum(size_bytes), 0)) AS gesamt, pg_size_pretty(coalesce(sum(size_bytes) FILTER (WHERE n > 1), 0)) AS davon_gleicher_inhalt FROM a;"
 else
   echo "Datenbank nicht erreichbar (läuft der postgres-Container?)."
 fi
