@@ -77,6 +77,29 @@ export function parseOutboundReviewResponse(raw: string): OutboundReviewParse {
   };
 }
 
+/** Schlusssatz des Hinweises „Versand blockiert“ (Text- und HTML-Fassung). */
+export const OUTBOUND_WARNING_CLOSING_TEXT = 'Bitte E-Mail prüfen, korrigieren und erneut senden.';
+
+/**
+ * Hinweis als Fließtext entfernen (Marker bis Schlusssatz, optional „---“):
+ * so steht er im Text, wenn das Entwurfsfenster den Hinweis-Block beim
+ * Speichern zu einem Absatz umgeformt hat.
+ */
+function removeFlattenedOutboundWarning(text: string): string {
+  let out = text;
+  for (let i = 0; i < 5; i++) {
+    const idx = out.indexOf(OUTBOUND_WARNING_MARKER);
+    if (idx < 0) break;
+    const closing = out.indexOf(OUTBOUND_WARNING_CLOSING_TEXT, idx);
+    if (closing < 0) break;
+    let end = closing + OUTBOUND_WARNING_CLOSING_TEXT.length;
+    const separator = /^\s*---(?:[ \t]*\n)?/.exec(out.slice(end));
+    if (separator) end += separator[0].length;
+    out = `${out.slice(0, idx)}${out.slice(end)}`;
+  }
+  return out;
+}
+
 /** Strip prior outbound-warning blocks from plain-text draft body. */
 export function stripOutboundWarningFromPlain(body: string): string {
   const text = body ?? '';
@@ -87,6 +110,8 @@ export function stripOutboundWarningFromPlain(body: string): string {
   if (sep >= 0) {
     return text.slice(idx + sep + '\n---\n'.length).trimStart();
   }
+  // Umgeformter Hinweis (Entwurfsfenster): nur den Hinweis entfernen, den Text behalten.
+  if (after.includes(OUTBOUND_WARNING_CLOSING_TEXT)) return removeFlattenedOutboundWarning(text).trim();
   return text.slice(0, idx).trim();
 }
 
@@ -121,6 +146,36 @@ function removeOutboundWarningDivs(input: string): string {
   return cursor === 0 ? input : out + input.slice(cursor);
 }
 
+/**
+ * Den vom Entwurfsfenster umgeformten Hinweis entfernen: der Editor macht aus
+ * dem Hinweis-div einen Absatz (<p><strong>Marker</strong><br>Grund<br>
+ * <em>Schlusssatz</em></p>). Entfernt wird vom öffnenden <p>/<div> vor dem
+ * Marker bis zum schließenden Tag nach dem Schlusssatz; linear (indexOf).
+ */
+function removeOutboundWarningParagraphs(input: string): string {
+  let out = input;
+  for (let i = 0; i < 5; i++) {
+    const markerIdx = out.indexOf(OUTBOUND_WARNING_MARKER);
+    if (markerIdx < 0) break;
+    const closingIdx = out.indexOf(OUTBOUND_WARNING_CLOSING_TEXT, markerIdx);
+    if (closingIdx < 0) break;
+    const lower = out.toLowerCase();
+    let start = Math.max(lower.lastIndexOf('<p', markerIdx), lower.lastIndexOf('<div', markerIdx));
+    // Nur der Block, der den Hinweis enthält — nie ein vorheriger Absatz.
+    if (start >= 0) {
+      const between = lower.slice(start, markerIdx);
+      if (between.includes('</p>') || between.includes('</div>')) start = -1;
+    }
+    const afterClosing = closingIdx + OUTBOUND_WARNING_CLOSING_TEXT.length;
+    const closeP = lower.indexOf('</p>', afterClosing);
+    const closeDiv = lower.indexOf('</div>', afterClosing);
+    const candidates = [closeP >= 0 ? closeP + 4 : -1, closeDiv >= 0 ? closeDiv + 6 : -1].filter((n) => n > 0);
+    const end = candidates.length > 0 ? Math.min(...candidates) : afterClosing;
+    out = `${out.slice(0, start >= 0 ? start : markerIdx)}${out.slice(end)}`;
+  }
+  return out;
+}
+
 /** Strip prior outbound-warning banner div(s) from HTML draft body. */
 export function stripOutboundWarningFromHtml(html: string): string {
   let inner = (html ?? '').trim();
@@ -130,6 +185,7 @@ export function stripOutboundWarningFromHtml(html: string): string {
     if (next === inner) break;
     inner = next;
   }
+  if (inner.includes(OUTBOUND_WARNING_MARKER)) inner = removeOutboundWarningParagraphs(inner).trim();
   return inner;
 }
 
@@ -180,12 +236,12 @@ export function buildOutboundWarningBanner(reason: string): { text: string; html
   const lines = [
     OUTBOUND_WARNING_MARKER,
     reason.trim(),
-    'Bitte E-Mail prüfen, korrigieren und erneut senden.',
+    OUTBOUND_WARNING_CLOSING_TEXT,
     '---',
     '',
   ];
   const text = lines.join('\n');
-  const html = `<div style="background:#fef3c7;border:1px solid #d97706;border-radius:6px;padding:12px;margin:0 0 16px 0;color:#78350f;font-family:sans-serif;font-size:14px;line-height:1.45"><strong>${OUTBOUND_WARNING_MARKER}</strong><br/>${reason.replace(/</g, '&lt;').replace(/>/g, '&gt;')}<br/><em>Bitte E-Mail prüfen, korrigieren und erneut senden.</em></div>`;
+  const html = `<div style="background:#fef3c7;border:1px solid #d97706;border-radius:6px;padding:12px;margin:0 0 16px 0;color:#78350f;font-family:sans-serif;font-size:14px;line-height:1.45"><strong>${OUTBOUND_WARNING_MARKER}</strong><br/>${reason.replace(/</g, '&lt;').replace(/>/g, '&gt;')}<br/><em>${OUTBOUND_WARNING_CLOSING_TEXT}</em></div>`;
   return { text, html };
 }
 
