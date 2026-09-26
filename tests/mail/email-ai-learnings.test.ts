@@ -371,6 +371,30 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(db.prepare('SELECT knowledge_context FROM workflow_knowledge_bases WHERE id = ?').get(firma)).toEqual({ knowledge_context: 'general' });
   });
 
+  test('Suchindex der Wissensbasis: Löschen und Neuanlegen des Abschnitts sind eine Einheit (Radar)', () => {
+    const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');
+    const chunks = () => (db.prepare(
+      'SELECT content FROM workflow_knowledge_chunks WHERE knowledge_base_id = ?',
+    ).all(kb) as Array<{ content: string }>).map((row) => ({ content: row.content.trimEnd() }));
+    expect(chunks().map((row) => row.content)).toEqual(['# Firma\n\n## Rückgabe\n\n14 Tage.']);
+
+    // Das Einfügen scheitert nach dem Löschen (Platte voll, Absturz, Sperre):
+    // ohne Transaktion bliebe die Wissensbasis ohne Suchindex, und alle
+    // KI-Bausteine sähen sie als leer.
+    db.exec(`CREATE TRIGGER kb_chunk_insert_fails BEFORE INSERT ON workflow_knowledge_chunks
+      BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+    try {
+      expect(() => saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n30 Tage.\n')).toThrow('disk I/O error');
+    } finally {
+      db.exec('DROP TRIGGER kb_chunk_insert_fails');
+    }
+    expect(chunks().map((row) => row.content)).toEqual(['# Firma\n\n## Rückgabe\n\n14 Tage.']);
+
+    saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n30 Tage.\n');
+    expect(chunks().map((row) => row.content)).toEqual(['# Firma\n\n## Rückgabe\n\n30 Tage.']);
+  });
+
   test('Übernehmen mit Konfliktwarnung, Verwerfen, Fehlerfälle', async () => {
     const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
     saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');

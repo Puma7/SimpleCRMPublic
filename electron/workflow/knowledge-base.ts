@@ -155,24 +155,30 @@ function syncChunksFromDocument(
   content: string,
   title: string,
 ): void {
-  getDb()
-    .prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
-    .run(knowledgeBaseId);
+  const db = getDb();
   const capped = content.slice(0, 500_000);
-  const r = getDb()
-    .prepare(
-      `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
-       (knowledge_base_id, title, content, source_path, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
-      knowledgeBaseId,
-      title.trim() || 'Dokument',
-      capped,
-      knowledgeMarkdownPath(knowledgeBaseId),
-      new Date().toISOString(),
-    );
-  const id = Number(r.lastInsertRowid);
+  // Löschen und Neuanlegen als Einheit: scheitert das Einfügen, bleibt der
+  // bisherige Suchindex stehen, statt die Wissensbasis für alle KI-Bausteine
+  // leer erscheinen zu lassen.
+  const replaceChunks = db.transaction((): number => {
+    db.prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
+      .run(knowledgeBaseId);
+    const r = db
+      .prepare(
+        `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
+         (knowledge_base_id, title, content, source_path, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        knowledgeBaseId,
+        title.trim() || 'Dokument',
+        capped,
+        knowledgeMarkdownPath(knowledgeBaseId),
+        new Date().toISOString(),
+      );
+    return Number(r.lastInsertRowid);
+  });
+  const id = replaceChunks();
   void storeEmbedding(id, capped.slice(0, 8000));
 }
 
