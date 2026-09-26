@@ -32,7 +32,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
-import { extractDocxTextInWorker } from './mail-attachment-docx';
+import { extractDocxTextInWorker, extractPdfTextInWorker } from './mail-attachment-docx';
 
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_POLL_INTERVAL_MS = 30_000;
@@ -67,9 +67,8 @@ const EXTRACTABLE_COLUMNS = [
 ] as const;
 
 /**
- * Reject after ms. NB: a pdf parse cannot be cancelled and may keep running
- * detached — acceptable, the row is marked as tried and the pipeline moves
- * on. The docx worker is terminated at the same deadline.
+ * Reject after ms. The pdf and docx workers are terminated at the same
+ * deadline; the row is marked as tried and the pipeline moves on.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -97,16 +96,10 @@ export async function extractAttachmentTextFromBuffer(
       return capAttachmentText(buf.toString('utf8'));
     case 'html':
       return capAttachmentText(plainTextFromHtml(buf.toString('utf8')));
-    case 'pdf': {
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: new Uint8Array(buf) });
-      try {
-        const result = await parser.getText();
-        return capAttachmentText(result.text ?? '');
-      } finally {
-        await parser.destroy().catch(() => undefined);
-      }
-    }
+    case 'pdf':
+      // pdf.js runs in a worker with its own heap limit; on timeout the worker
+      // is terminated (a parse in the main thread could not be stopped).
+      return extractPdfTextInWorker(buf, EXTRACT_TIMEOUT_MS);
     case 'docx':
       await validateDocxArchive(buf);
       // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
