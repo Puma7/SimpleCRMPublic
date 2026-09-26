@@ -78,6 +78,7 @@ Dieses Dokument beschreibt das **Soll-Verhalten** des SimpleCRM-E-Mail-Moduls au
 - **Ausgehend:** Trigger `outbound` (Qualitätsprüfung vor SMTP)
 - Graph-Editor: modulare Knoten aus der Palette; Ausführung über `graph_json`.
 - **KI-Profil** pro KI-Knoten: Dropdown in den Knoten-Eigenschaften (oder Experten-JSON `profileId`). Reihenfolge bei Prompt-Knoten: Knoten-Profil → Prompt-Profil → Standard-Profil.
+- **KI-Entscheidung:** `ai.decide` beantwortet eine Ja/Nein-Frage (Ports `ja`/`nein`/`unsicher`/`error`, Mindest-Sicherheit 50–99 %); im Ausgang hält alles außer `ja` den Versand an. Details: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md).
 - **Zwei-Stufen-KI-Antwort:** `ai.draft_reply` entwirft eine Antwort (Wissensbasis, Anrede, Konto-Signatur), `ai.review_draft` liest mit eigenem KI-Profil gegen und verzweigt in `send`/`hold`. Auf `hold` bekommt der Entwurf den Zustand **„Wartet auf Freigabe“**: neutrales Banner im Postfach mit KI-Begründung und den Buttons **Jetzt senden** / **Als Entwurf behalten**; Bearbeiten oder Versenden löscht den Zustand. Automatischer Versand nur bei aktivem Master-Schalter (**Einstellungen → Automatisierung**, Default aus) und innerhalb des Tageslimits pro Absender.
 
 Ausführung intern: `workflow-executor` → `runtime` → Registry-Knoten. Tests: `npm test` (Workflow-Integration).
@@ -91,6 +92,8 @@ Endanwender-Anleitung: [`USER_GUIDE_WORKFLOWS.md`](USER_GUIDE_WORKFLOWS.md).
 - **Mehrere Profile** — je Anbieter/Modell ein Eintrag.
 - **API-Key pro Profil** (Keytar), getrennt vom Modellnamen.
 - Vorlagen: OpenAI, Open Router, Anthropic, Google, DeepSeek, Ollama, frei konfigurierbar.
+- **OpenRouter Entscheidungsmodell (Decisions API)** (Profil-Typ `openrouter_decisions`, Base-URL `https://openrouter.ai/api`, Modelle z. B. `typesafe/jev-1.13`, `respan/span-01`): liefert nur eine Ja-Wahrscheinlichkeit und funktioniert **nur im Baustein „KI-Entscheidung“**. Andere KI-Bausteine melden mit einem solchen Profil „Dieses KI-Profil nutzt die OpenRouter Decisions API und funktioniert nur im Baustein „KI-Entscheidung“.“ Auf dem Server nur über `https`; vom Anbieter gemeldete Kosten (`usage.cost`) zählen in der KI-Nutzung und im Budget.
+- **Verbindung testen** im Profil: prüft das gespeicherte Profil mit einer kurzen Anfrage (Chat: „Antworte nur mit OK.“, Entscheidungsmodell: Testfrage) und zeigt Ergebnis, Modell und Dauer; die Meldung enthält nie den API-Key. Rechte wie beim Bearbeiten der Profile (Server: `workflows.manage`, mit Audit-Eintrag).
 - **Embedding-Modell** pro Profil für die **Wissensbasis**.
 - Legacy-Einstellung (ein Key) wird beim ersten Start in ein Standard-Profil migriert.
 

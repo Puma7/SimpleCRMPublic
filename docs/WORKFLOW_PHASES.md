@@ -71,6 +71,12 @@ Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwen
 | **4 Server-Parität & Spam-Kette** | `ai.draft_reply`/`ai.review_draft` auf dem Server; `approval_state` in PostgreSQL; HTTP Freigabe (`approve-draft-send` / `dismiss-draft-approval`); einheitliche fail-closed KI + Spam-Short-Circuit (`inboundChainStop`); Inbound-Kette überlebt KI/HTTP/Delay-Continuations; Run-Historie mit Port-Labels ok/block/error; Desktop-KI überspringt Spam-Mails |
 | **F-D1-03 Delay in der Kette** | Deferiert ein Inbound-Lauf nur an `logic.delay` und folgt dahinter kein kettenstoppender Knoten (`stopFurtherWorkflows`, `logic.stop_after_spam`), schaltet der Server die Kette sofort weiter (Hop-Claim verhindert doppeltes Einreihen durch die Continuation). Mit Stopper hinter dem Delay bleibt sie seriell; der Editor zeigt dann einen Hinweis |
 
+## Teilautomatisierung 2026-09 ([`MAIL_TEILAUTOMATISIERUNG.md`](MAIL_TEILAUTOMATISIERUNG.md))
+
+| Paket | Lieferung |
+|-------|-----------|
+| **P1 KI-Entscheidung** | `ai.decide` (beide Editionen): Ports `ja`/`nein`/`unsicher`/`error`, Schwelle 50–99 (Standard 80), Logik und Chat-Antwort-Parser in `packages/core/src/workflow/ai-decide.ts`, Decisions-API-Hilfen in `ai-decisions-api.ts`. `pickEdge` lässt `nein`/`unsicher` nicht auf die unbeschriftete Kante fallen (`ja` schon); Trap-Walker kennt `ai.decide` (Freigabe nur über `ja`). Ausgang: `nein`/`unsicher`/`error` halten den Versand an (Desktop `blocked`, Server Hold + Fortsetzung am Port). Server: Job-Typ `ai.decide` (Queue `ai`, Policy `mail.content.read`, `portResumeTargets`, Terminal-Kette, Abbruch-Check, Fehler → Port `error`, Interpolation im Job); Versandvorschau entscheidet synchron. Profil-Typ `openrouter_decisions` (`POST …/alpha/decisions` über `guardedAiPost`, 30 s, Kosten aus `usage.cost` in `ai_usage_events`); Chat-Bausteine lehnen ihn zentral ab. „Verbindung testen“: IPC `email:test-ai-profile`, `POST /api/v1/ai/profiles/:id/test-connection` (Usage `ai.profile_test`) |
+
 ## Smoke-Check 2026-06-01
 
 Automatisierte Stichprobe (CI-äquivalent, lokal):

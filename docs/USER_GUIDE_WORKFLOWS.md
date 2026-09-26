@@ -123,6 +123,33 @@ Der Baustein **„KI-Ausgangsprüfung“** hat drei sichtbare Ausgänge:
 
 Ohne Kante an **Blockiert** oder **KI-Fehler** stoppt der Workflow dort — der Entwurf bleibt trotzdem gehalten.
 
+### KI-Entscheidung — Ja/Nein-Fragen an die KI
+
+Der Baustein **„KI-Entscheidung“** beantwortet eine Ja/Nein-Frage zur Mail, z. B. „Ist diese E-Mail Spam?“ oder „Muss ein Mensch das bearbeiten?“, und verzweigt je nach Antwort.
+
+| Feld | Bedeutung |
+|------|-----------|
+| **Frage (Ja/Nein)** | Pflicht. Platzhalter wie `{{subject}}` sind erlaubt. |
+| **Wann „Ja“? / Wann „Nein“?** | Optional: Kriterien in eigenen Worten. |
+| **Was darf die KI sehen?** | **Kompletten Text** (Standard: Betreff, Absender, Empfänger, Text bis 12 000 Zeichen, Anhangsnamen) oder **Nur Kopfdaten**. Im Ausgangs-Workflow ist die Mail der Entwurf (Betreff, Empfänger, Text). |
+| **Mindest-Sicherheit** | 50–99 %, Standard 80: „Ja“ ab 80 % Ja-Wahrscheinlichkeit, „Nein“ bis 20 %, dazwischen „Unsicher“. |
+| **KI-Profil** | Ein Entscheidungsmodell (Profil-Typ **„OpenRouter Entscheidungsmodell (Decisions API)“**, z. B. `typesafe/jev-1.13`) oder ein normales Chat-Modell. Chat-Modelle liefern zusätzlich eine kurze Begründung. |
+
+| Ausgang | Bedeutung |
+|---------|-----------|
+| **Ja** | Ja-Wahrscheinlichkeit mindestens bei der Mindest-Sicherheit. Ohne beschriftete Kante geht es auf der unbeschrifteten Kante weiter. |
+| **Nein** | Ja-Wahrscheinlichkeit höchstens bei 100 minus Mindest-Sicherheit. Im Ausgangs-Workflow wird der Versand angehalten. |
+| **Unsicher** | Dazwischen. Im Ausgangs-Workflow wird der Versand angehalten. |
+| **KI-Fehler** | KI-Aufruf fehlgeschlagen oder Antwort nicht auswertbar. Im Ausgangs-Workflow wird der Versand angehalten. |
+
+Ist an **Nein**, **Unsicher** oder **KI-Fehler** nichts angeschlossen, endet der Lauf dort — es gibt keinen Rückfall auf eine unbeschriftete Kante. Im **Ausgangs-Workflow** dienen diese drei Ausgänge nur für Zusatzschritte wie Tags; der Entwurf bleibt immer angehalten. Der Hinweis „Versand blockiert“ zeigt dann die Begründung des Modells oder, bei Entscheidungsmodellen ohne Begründung, „Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen.“ mit der Ja-Wahrscheinlichkeit.
+
+Im **Eingang** verzweigt der Baustein nur; er setzt keine Sperre und überspringt auch als Spam markierte Mails nicht. „Ja“ und „Nein“ zählen als erfüllte Bedingung, danach dürfen auch Aktionen wie „Tag setzen“ laufen. Hinter „Unsicher“ und „KI-Fehler“ brauchen solche Aktionen eine eigene Bedingung (oder im Experten-JSON des Bausteins `runOnEveryInbound: true`).
+
+Ergebnis-Variablen für spätere Schritte: `ai.decide.answer` (ja, nein, unsicher, error), `ai.decide.probability` (Ja-Wahrscheinlichkeit 0–100), `ai.decide.confidence` (Sicherheit der gewählten Antwort), `ai.decide.reason` (Begründung, nur Chat-Modelle), `ai.decide.summary` (ein Satz, z. B. „Entscheidungsmodell: Nein (Ja-Wahrscheinlichkeit 12 %)“) und `ai.decide.model`.
+
+Der **Testlauf** fragt die KI nicht, Ergebnis ist immer „Unsicher“ („Testlauf: keine KI-Anfrage“). Die Prüfung beim Senden (Ausgang prüfen) fragt die KI dagegen wirklich. Auf dem Server läuft der Baustein als Hintergrund-Job; nachrangige eingehende Workflows warten darauf.
+
 ### Ihr erster Workflow in fünf Schritten
 
 1. **E-Mail → Workflows** öffnen und links auf **„Neu“** klicken.
