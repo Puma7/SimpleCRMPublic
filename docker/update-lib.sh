@@ -150,6 +150,12 @@ protect_backup_stamps() {
     sh "$@" >/dev/null
 }
 
+# backup_dump_present <path>: the dump is (still) in the backups volume.
+backup_dump_present() {
+  compose --profile backup run --rm --no-deps --entrypoint sh backup -c \
+    'test -s "${BACKUP_DIR:-/backups}/$1"' sh "$(basename "$1")" >/dev/null 2>&1
+}
+
 # /backups/db-<stamp>.dump -> <stamp>
 backup_stamp_of() {
   _name="$(basename "${1:-}")"

@@ -13,7 +13,8 @@ case "$*" in
   *"config --images"*) printf 'simplecrm/web:%s\nsimplecrm/api:%s\npostgres:18-alpine\nsimplecrm/api:%s\n' "${VERSION:-dev}" "${VERSION:-dev}" "${VERSION:-dev}"; exit 0 ;;
   *"ps -q api"*) echo fakeapi; exit 0 ;;
   *"ps -q caddy"*) echo fakecaddy; exit 0 ;;
-  *'db-*.dump'*) echo "${FAKE_BACKUP_DUMP:-}"; exit 0 ;;
+  *'db-*.dump'*) echo "${FAKE_BACKUP_DUMP-/backups/db-2026-09-26T15-00-00Z.dump}"; exit 0 ;;
+  *'test -s'*) [ -z "${FAKE_MISSING_BACKUP:-}" ]; exit ;;
 esac
 if [ -n "${FAKE_FAIL_BUILD:-}" ]; then case "$*" in *" build"*) exit 1 ;; esac; fi
 if [ -n "${FAKE_FAIL_MIGRATE:-}" ]; then

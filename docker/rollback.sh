@@ -85,6 +85,16 @@ if [ "$restore_data" = 1 ] && [ -z "$backup" ]; then
   echo "Restore a backup set that matches version ${target_release:-$target_commit} yourself: sh \"$SCRIPT_DIR/simplecrm\" restore /backups/db-<stamp>.dump" >&2
   exit 4
 fi
+if [ "$restore_data" = 1 ]; then
+  # The restore service mounts the backups volume at /backups.
+  backup="/backups/$(basename "$backup")"
+  # restore-compose stops api and web first: check the dump before anything changes.
+  if ! backup_dump_present "$backup"; then
+    echo "The pre-update backup $backup is no longer in the backups volume. Nothing was changed." >&2
+    echo "Restore a backup set that matches version ${target_release:-$target_commit} yourself: sh \"$SCRIPT_DIR/simplecrm\" restore /backups/db-<stamp>.dump" >&2
+    exit 4
+  fi
+fi
 
 resolve_app_image_refs
 cat <<EOF

@@ -118,11 +118,23 @@ latest_release_tag() {
     | tail -n 1
 }
 
-# Container path of the newest database dump in the backups volume (the one the
-# backup step just wrote), or nothing if it cannot be determined.
-latest_backup_dump() {
+# Marks the start of this update's backup inside the backups volume.
+mark_backup_start() {
   compose --profile backup run --rm --no-deps --entrypoint sh backup -c \
-    'ls -1t "${BACKUP_DIR:-/backups}"/db-*.dump 2>/dev/null | head -n 1' 2>/dev/null | tr -d '\r' | tail -n 1 || true
+    'dir="${BACKUP_DIR:-/backups}"; mkdir -p "$dir"; touch "$dir/.update-backup-start"' >/dev/null
+}
+
+# The newest database dump written after mark_backup_start, as the path the
+# restore service sees (/backups/<name>; the backup service mounts the volume
+# at BACKUP_DIR, which may differ), or nothing. Nothing also when retention
+# removed the new set right away (all BACKUP_RETENTION_* set to 0): an older
+# set must never pass for this update's backup.
+latest_backup_dump() {
+  _dump="$(compose --profile backup run --rm --no-deps --entrypoint sh backup -c \
+    'dir="${BACKUP_DIR:-/backups}"; set -- $(find "$dir" -maxdepth 1 -name "db-*.dump" -newer "$dir/.update-backup-start" 2>/dev/null); [ "$#" -gt 0 ] && ls -1t "$@" | head -n 1' \
+    2>/dev/null | tr -d '\r' | tail -n 1 || true)"
+  [ -n "$_dump" ] && printf '/backups/%s\n' "$(basename "$_dump")"
+  return 0
 }
 
 # Printed when the update stops after the source was changed: one command back
@@ -365,17 +377,22 @@ if [ "${SKIP_BACKUP:-0}" = "1" ]; then
   say "[2/6] Skipping backup (SKIP_BACKUP=1) — not recommended"
 else
   say "[2/6] Backing up the database"
+  mark_backup_start
   compose --profile backup run --rm backup
   BACKUP_DUMP="$(latest_backup_dump)"
-  if [ -n "$BACKUP_DUMP" ]; then
-    echo "Pre-update backup: $BACKUP_DUMP"
-    [ "$DATA_CHANGED" = 1 ] || ROLLBACK_BACKUP="$BACKUP_DUMP"
-    write_attempt
-    # Retention must not remove this set, the rollback set of a failed attempt,
-    # nor the one the last update kept for its rollback, while this runs.
-    protect_backup_stamps "$(backup_stamp_of "$ROLLBACK_BACKUP_BEFORE")" \
-      "$(backup_stamp_of "$ROLLBACK_BACKUP")" "$(backup_stamp_of "$BACKUP_DUMP")"
+  if [ -z "$BACKUP_DUMP" ]; then
+    echo "ERROR: the backup run left no new backup set in the backups volume." >&2
+    echo "Check its output above and BACKUP_RETENTION_DAILY/WEEKLY/MONTHLY (all 0 removes every set, the new one included)." >&2
+    echo "Nothing was built or migrated." >&2
+    exit 1
   fi
+  echo "Pre-update backup: $BACKUP_DUMP"
+  [ "$DATA_CHANGED" = 1 ] || ROLLBACK_BACKUP="$BACKUP_DUMP"
+  write_attempt
+  # Retention must not remove this set, the rollback set of a failed attempt,
+  # nor the one the last update kept for its rollback, while this runs.
+  protect_backup_stamps "$(backup_stamp_of "$ROLLBACK_BACKUP_BEFORE")" \
+    "$(backup_stamp_of "$ROLLBACK_BACKUP")" "$(backup_stamp_of "$BACKUP_DUMP")"
 fi
 
 set_stage build

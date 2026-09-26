@@ -682,6 +682,68 @@ describe('update: image generations, rollback and disk space', () => {
     }
   }));
 
+  // Codex-Review PR #195: Mit eigenem BACKUP_DIR liefert der Backup-Container einen anderen Pfad.
+  // Der restore-Dienst mountet das Volume immer unter /backups; nur dieser Pfad darf im Zustand stehen.
+  test('a custom BACKUP_DIR is recorded as the /backups path the restore service mounts', ranOrSkipped(() => {
+    const { root, checkout } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    try {
+      const updated = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: '/srv/sicherungen/db-2026-09-26T17-00-00Z.dump' },
+      });
+      expect(updated.status).toBe(0);
+      expect(stateOf(updated, 'state').rollback_backup).toBe('/backups/db-2026-09-26T17-00-00Z.dump');
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], { cwd: checkout, host });
+      expect(rollback.status).toBe(0);
+      expect(rollback.stdout).toContain('restored from /backups/db-2026-09-26T17-00-00Z.dump');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  // Codex-Review PR #195: Entfernt die Aufbewahrung (z. B. 0/0/0) den neuen Satz sofort wieder, wäre die
+  // neueste Sicherung eine ältere. Ohne frische Sicherung darf weder gebaut noch migriert werden.
+  test('no new backup set: the update stops before build and migrations', ranOrSkipped(() => {
+    const host = fakeHost(running);
+    try {
+      const result = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull'], { host, env: { FAKE_BACKUP_DUMP: '' } });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('left no new backup set');
+      expect(result.stderr).toContain('The database is unchanged');
+      expect(result.log).not.toMatch(/ build$/m);
+      expect(result.log).not.toContain('migrate.js');
+      expect(stateOf(result, 'attempt')).toMatchObject({ stage: 'backup', backup: '' });
+    } finally {
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
+  test('rollback checks that the backup still exists before it changes anything', ranOrSkipped(() => {
+    const { root, checkout } = checkoutWithTags(['v1.1.0']);
+    const host = fakeHost(running);
+    try {
+      const updated = runWithFakeDocker(['docker/simplecrm', 'update', '--version', 'v1.1.0'], {
+        cwd: checkout, host, env: { FAKE_BACKUP_DUMP: '/backups/db-2026-09-26T17-00-00Z.dump' },
+      });
+      expect(updated.status).toBe(0);
+      const release = git(checkout, 'rev-parse', 'HEAD');
+
+      const rollback = runWithFakeDocker(['docker/simplecrm', 'rollback', '--yes'], {
+        cwd: checkout, host, env: { FAKE_MISSING_BACKUP: '1' },
+      });
+      expect(rollback.status).toBe(4);
+      expect(rollback.stderr).toContain('is no longer in the backups volume');
+      expect(git(checkout, 'rev-parse', 'HEAD')).toBe(release);
+      expect(rollback.images['simplecrm/api:dev']).toBe('sha256:api1');
+      expect(rollback.log).not.toMatch(/ stop |--profile restore/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(host, { recursive: true, force: true });
+    }
+  }));
+
   test('rollback before the migrations only swaps the images back; the data stays', ranOrSkipped(() => {
     const { root, checkout, head } = checkoutWithTags(['v1.1.0']);
     const host = fakeHost(running);

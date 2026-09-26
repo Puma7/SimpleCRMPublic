@@ -335,7 +335,11 @@ If a step fails after the source was changed, the script prints the way back:
   its migrations may have run, the backup taken before them.
 - **Protected backup.** The pre-update backup of the last successful update is
   listed in `/backups/.protected-stamps`; backup retention keeps it until the
-  next successful update moves the protection to its own backup.
+  next successful update moves the protection to its own backup. The update
+  only continues when its backup run left a new set (retention with all
+  `BACKUP_RETENTION_*` at 0 would remove it at once; an older set never stands
+  in for it). Paths are recorded as the restore service sees them
+  (`/backups/<name>`), also with a custom `BACKUP_DIR`.
 - **`sh docker/simplecrm rollback [--yes]`.** After a failed or interrupted
   update it returns to the version that ran before; the data is restored only if
   the migrations may have run. Otherwise it undoes the last successful update:
