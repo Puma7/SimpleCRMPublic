@@ -27,6 +27,7 @@ import {
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { NonRetryableJobError } from './jobs/errors';
 import {
+  sanitizeSmtpResponse,
   sendSmtpMessage,
   SmtpDataRejectedError,
   SmtpPreDataSendError,
@@ -440,16 +441,15 @@ export function createPostgresWorkflowForwardCopyPort(
             { applySession: options.applyWorkspaceSession },
           );
         }
-        // A 5xx is final (RFC 5321): the same message would be rejected again.
-        const permanent = rejected && error.smtpCode >= 500;
+        const refusal = smtpRefusal(error);
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
-          error: permanent
-            ? permanentForwardRejectionMessage(smtpHost, error)
+          error: refusal
+            ? forwardRefusalMessage(smtpHost, refusal)
             : error instanceof Error ? error.message : String(error),
           duplicate: false,
           now: now(),
-          permanent,
+          permanent: refusal?.permanent === true,
         });
         return;
       }
@@ -938,16 +938,50 @@ async function failOrEnqueueForwardCopyContinuation(
   throw result.permanent ? new NonRetryableJobError(message) : new Error(message);
 }
 
-/** German, for the job's last error: what the server said and the usual cause. */
-function permanentForwardRejectionMessage(host: string, error: SmtpDataRejectedError): string {
-  const reply = error.message
+type SmtpRefusal = Readonly<{ code: number; stage: string; reply: string; permanent: boolean }>;
+
+/**
+ * Stages where a 5xx refuses this message for good (RFC 5321): the sender, a
+ * recipient or the content. A 5xx at CONNECT/EHLO/AUTH is a setup problem an
+ * admin may fix before the next attempt, so it keeps its retries.
+ */
+const FINAL_REFUSAL_STAGES = new Set(['MAIL_FROM', 'RCPT_TO', 'DATA', 'DATA_FINAL']);
+
+/** The server's explicit refusal, if the error is one; the reply text is redacted. */
+function smtpRefusal(error: unknown): SmtpRefusal | null {
+  let code: number | undefined;
+  let stage: string | undefined;
+  if (error instanceof SmtpDataRejectedError) {
+    code = error.smtpCode;
+    stage = 'DATA_FINAL';
+  } else if (error instanceof SmtpPreDataSendError && error.smtpCode !== undefined) {
+    code = error.smtpCode;
+    stage = error.stage;
+  }
+  if (code === undefined || !stage) return null;
+  // Strip the status prefixes of multi-line replies, then redact: content filters
+  // quote addresses and text of the forwarded mail back in their reply, and the
+  // message reaches the job log and forward_copy.error in later workflow steps.
+  const reply = sanitizeSmtpResponse((error as Error).message
     .split(/\r?\n/)
     .map((line) => line.replace(/^\d{3}[ -]/, '').trim())
     .filter(Boolean)
-    .join(' ');
-  return `Der Mailserver ${host} hat die Weiterleitung endgültig abgelehnt (SMTP ${error.smtpCode}): ${reply}. `
-    + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
-    + 'Es folgt kein weiterer Versuch.';
+    .join(' '));
+  return { code, stage, reply, permanent: code >= 500 && FINAL_REFUSAL_STAGES.has(stage) };
+}
+
+/** German, for the job's last error and forward_copy.error: what the server said and the usual cause. */
+function forwardRefusalMessage(host: string, refusal: SmtpRefusal): string {
+  if (!refusal.permanent) {
+    return `Der Mailserver ${host} hat die Weiterleitung vorübergehend abgelehnt (SMTP ${refusal.code}): ${refusal.reply}`;
+  }
+  const cause = refusal.stage === 'RCPT_TO'
+    ? 'Der Empfänger wurde abgelehnt (Adresse unbekannt oder gesperrt).'
+    : refusal.stage === 'MAIL_FROM'
+      ? 'Der Absender wurde abgelehnt; die Adresse muss zum Postfach gehören.'
+      : 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail).';
+  return `Der Mailserver ${host} hat die Weiterleitung endgültig abgelehnt (SMTP ${refusal.code}): ${refusal.reply}. `
+    + `${cause} Es folgt kein weiterer Versuch.`;
 }
 
 async function enqueueForwardCopyContinuation(

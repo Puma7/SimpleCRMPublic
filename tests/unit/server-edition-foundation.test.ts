@@ -12975,10 +12975,87 @@ describe('server edition foundation', () => {
     const temporary = await port.forwardCopy(plan).then(() => null, (error: unknown) => error);
     expect(temporary).toBeInstanceOf(Error);
     expect(isNonRetryableJobError(temporary)).toBe(false);
+    expect((temporary as Error).message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung vorübergehend abgelehnt (SMTP 451): 4.7.1 Try again later',
+    );
     expect(rows.forwardDedup).toEqual([]);
     reply = null;
     await port.forwardCopy(plan);
     expect(smtpSends).toHaveLength(1);
+  });
+
+  // Inhaltsfilter zitieren Adressen und Textstellen der Original-Mail in ihrer
+  // Antwort; die Meldung landet im Job-Log und in forward_copy.error.
+  test('postgres workflow forward-copy: refusals are redacted; a refused recipient is final, a failed login is not', async () => {
+    const now = new Date('2026-07-04T11:06:40.000Z');
+    let failure: Error = new SmtpDataRejectedError(
+      '554-5.7.1 Message from <kunde@example.com> rejected\n554 5.7.1 Spam phrase "Sonderangebot nur heute"',
+      554,
+    );
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 42, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 420, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        account_id: 7,
+        subject: 'Angebot',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        snippet: 'Angebot',
+        body_text: 'Sonderangebot nur heute.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: {
+        async readSecret(input: { kind: string }) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+        },
+        async writeSecret() { throw new Error('unexpected'); },
+        async deleteSecret() { return false; },
+        async rotateSecret() { return null; },
+      },
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async () => { throw failure; },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 42, messageId: 31, to: 'audit@example.com' };
+    const attempt = () => port.forwardCopy(plan).then(() => null, (error: unknown) => error as Error);
+
+    const content = await attempt();
+    expect(isNonRetryableJobError(content)).toBe(true);
+    expect(content!.message).toContain('(SMTP 554): 5.7.1 Message from <[email]> rejected 5.7.1 Spam phrase "[text]".');
+    expect(content!.message).not.toContain('kunde@example.com');
+    expect(content!.message).not.toContain('Sonderangebot');
+
+    failure = new SmtpPreDataSendError('550 5.1.1 <audit@example.com>: Recipient address rejected', { smtpCode: 550, stage: 'RCPT_TO' });
+    const recipient = await attempt();
+    expect(isNonRetryableJobError(recipient)).toBe(true);
+    expect(recipient!.message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 550): '
+      + '5.1.1 <[email]>: Recipient address rejected. '
+      + 'Der Empfänger wurde abgelehnt (Adresse unbekannt oder gesperrt). Es folgt kein weiterer Versuch.',
+    );
+
+    // A wrong password may be fixed before the next attempt: keep the retries.
+    failure = new SmtpPreDataSendError('535 5.7.8 Authentication failed', { smtpCode: 535, stage: 'AUTH' });
+    const login = await attempt();
+    expect(isNonRetryableJobError(login)).toBe(false);
+    expect(rows.forwardDedup).toEqual([]);
   });
 
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {
