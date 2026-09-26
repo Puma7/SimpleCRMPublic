@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-26
+
+Die Versionen v1.0.5 bis v1.0.9 wurden ohne eigenen Abschnitt getaggt, und die Release-Builds von v1.0.8 und v1.0.9 sind gescheitert (Version in `package.json` stand noch auf 0.1.7). Dieser Abschnitt fasst deshalb auch das Sicherheits- und Bug-Audit 2026-09 (PR #193) zusammen. Ältere, noch nicht versionierte Einträge stehen im folgenden Abschnitt.
+
+### Added
+- **Teilautomatisierung eingehender E-Mails** ([Konzept](docs/MAIL_TEILAUTOMATISIERUNG.md), [Anleitung](docs/USER_GUIDE_WORKFLOWS.md)):
+  - Baustein **KI-Entscheidung** (`ai.decide`) mit den Ausgängen Ja, Nein, Unsicher und KI-Fehler. Neuer Profil-Typ „OpenRouter Entscheidungsmodell (Decisions API)“, z. B. für `typesafe/jev-1.13`.
+  - „Verbindung testen“ für KI-Profile.
+  - Ausgang: Angehaltene Mails landen mit Grund im Posteingang. „Ohne Ausgangsprüfung senden“ gilt nur für den unveränderten, angehaltenen Inhalt.
+  - Kennzeichnung „gesendet von“ (Mensch, KI, KI freigegeben, Automatik, Relay) und virtueller Ordner „Gesendet (KI)“.
+  - Zeitplan-Workflows auch in der Server-Edition, mit Zeitzone je Workspace.
+  - Learnings: Sammeln, Auswerten per Knopf oder Zeitplan, Vorschlag als Änderungsansicht der Wissensbasis, Übernahme nach Freigabe.
+  - Vorlagenpaket „Teilautomatisierung“.
+
+### Fixed
+- Sicherheits- und Bug-Audit 2026-09: 164 Befunde behoben, dazu die Codex-Befunde aus PR #192 ([Abschlussbericht](.hermes/reports/audit-2026-09/abschlussbericht.md)).
+- Server-Oberfläche zeigt angehaltene Entwürfe an. Angehaltene automatische Antworten bleiben nicht mehr unsichtbar geplant. Ausgangsprüfungs-Jobs aus Workflows laufen wieder. Der Sync des Gesendet-Ordners legt keine Doppelzeilen mehr an ([Bericht](.hermes/reports/teilautomatisierung-2026-09.md)).
+- Release-Workflow: `package.json`-Version passt zum Tag, und der macOS-Build scheitert nicht mehr an nicht freigegebenen Build-Skripten (`@embedded-postgres/darwin-*`).
+- Einstellungen → Automatisierung: Ein abgelehntes Speichern der Workflow-Optionen meldet jetzt einen Fehler statt „gespeichert“. Der Knopf ist während des Speicherns gesperrt.
+- Desktop: Beim Speichern einer Wissensbasis bleibt der bisherige Suchindex erhalten, wenn das Neuanlegen scheitert. Vorher erschien die Wissensbasis allen KI-Bausteinen dann leer.
+
+### Upgrade (Server)
+- Migrationen `0052` bis `0057`. Vor `0052_jtl_key_uniqueness` ein Backup ziehen.
+- `TRUST_PROXY` akzeptiert nur noch IPs oder CIDRs.
+- `restore.sh` meldet sich als `simplecrm_app` an.
+- Zeitpläne brauchen `JOB_WORKER_ENABLED=true`. Bestehende Zeitplan-Workflows einmal im Server speichern.
+
+## [1.0.x] - nicht einzeln versioniert (seit 0.1.7)
+
 ### Added
 - **Login-Sicherheit (Server Edition):** Drei unabhängig schaltbare Layer für den öffentlichen Login — Cloudflare Turnstile CAPTCHA, 6-stelliges PIN-Keypad pro Benutzer, MFA per TOTP oder E-Mail-Code. Workspace-Toggles unter Einstellungen → Sicherheit; PIN/MFA-Verwaltung unter Einstellungen → Benutzer. Migration `0020_auth_login_security`.
 - **Login-Config API:** `GET /api/v1/auth/login-config` liefert pro E-Mail die aktiven Schichten (`pinRequired`, `mfaRequired`, CAPTCHA-Site-Key).
