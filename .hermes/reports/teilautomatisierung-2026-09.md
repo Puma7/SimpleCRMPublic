@@ -20,7 +20,7 @@ Eingehende Mails, die sich ohne Risiko beantworten lassen, beantwortet die KI; a
 ## 3. Entscheidungen
 
 - **Virtueller Ordner statt IMAP-Ordner** (Pro/Contra im Konzept 3.2): POP3 hat keine Ordner, SimpleCRM legt keine IMAP-Ordner an, die Mail bleibt im echten „Gesendet“ auch für andere Mailprogramme.
-- **Decisions API:** Jev und Span-01 laufen nicht über Chat Completions. Anfrage `POST https://openrouter.ai/api/alpha/decisions` mit `questions.decision.type = "noul"`; Antwort `answers.decision.noul` (0–1). Span-01-Format war aus der Umgebung nicht abrufbar; die Auswertung akzeptiert `noul`, `probability`, `p_present`, `yes`. Prüfung mit echtem Schlüssel über „Verbindung testen“.
+- **Decisions API:** Jev und Span-01 laufen nicht über Chat Completions. Anfrage `POST https://openrouter.ai/api/alpha/decisions` mit `questions.decision.type = "noul"`; Antwort `answers.decision.noul` (0–1). Span-01-Format war aus der Umgebung nicht abrufbar; die Auswertung akzeptiert `noul`, `probability`, `p_present`, `yes`, jeweils als Anteil 0–1 (Werte über 1 ⇒ „KI-Fehler“, Gatekeeper #2). Prüfung mit echtem Schlüssel über „Verbindung testen“.
 - **Überspringen der Ausgangsprüfung:** Standard „alle, die senden dürfen“ (Wunsch Pascal), aber nur für den unveränderten angehaltenen Inhalt; wer ändert, sendet normal und die Prüfung läuft neu.
 - **Learnings-Verwaltung:** Server nur Owner/Admin (Parität Desktop), weil Kandidaten Inhalte aus allen Postfächern enthalten. „Learning notieren“ darf jeder mit Leserecht auf die Mail.
 - **Cron-Semantik:** Tag des Monats UND Wochentag müssen passen (wie node-cron auf dem Desktop), damit ein Workflow in beiden Editionen gleich läuft.
@@ -52,6 +52,23 @@ Unabhängiges Review des gesamten Diffs (neue Routen, IPC, Jobs, KI-Aufrufe, Dat
 
 Zusätzlich beim Gesamtlauf gefunden: Antwort-Parser von `ai.decide` und der Learnings-Auswertung waren bei entarteten Modellantworten quadratisch — beide mit Schrittbudget begrenzt.
 
+### 5.1 PR-Gatekeeper-Audit und Codex-Reviews auf PR #194
+
+| # | Quelle | Befund | Stand |
+|---|---|---|---|
+| G1 | Gatekeeper | Fingerprint für „Ohne Ausgangsprüfung senden“ ohne Absenderkonto: nach Kontowechsel Versand über eine nie geprüfte Absender-Identität | behoben: Konto gehört zum Fingerprint (Server, Desktop, Entwurfsfenster); Kontowechsel ⇒ 409 |
+| G2 | Gatekeeper | Decisions API: Wert 1 als 100 % gelesen, Skala geraten (0–1 oder 0–100) | behoben: nur Anteile 0–1; Werte über 1 ⇒ Ausgang „KI-Fehler“ (im Ausgang fail-closed) |
+| G3 | Gatekeeper, Codex | Zeitplan-Takt prüfte nur die ersten 500 Zeitpläne | behoben (`40ab168`): Blättern per id |
+| G4 | Gatekeeper | Einreihung gespeichert, Bestätigung verloren ⇒ Zeitpunkt lief zweimal | behoben: der Lauf beansprucht seinen Zeitpunkt selbst (`workflow_schedule_run:<id>`, in der Lauf-Transaktion) |
+| G5 | Gatekeeper | „Workflow-Optionen speichern“ ohne Fehlerbehandlung (Fehler wurden als gespeichert gemeldet) | behoben: Fehlermeldung, gesperrter Knopf während des Speicherns |
+| Radar | Gatekeeper | Desktop: Suchindex der Wissensbasis nicht atomar ersetzt | behoben: SQLite-Transaktion |
+| C1 | Codex | Learnings: Einträge über der Obergrenze fielen aus „seit letzter Auswertung“ | behoben (`e20aeb5`) |
+| C2 | Codex | Cron-Mindestabstand ignorierte das Stundenfeld | behoben (`84ca62a`) |
+| C3 | Codex | Cron: 23 → 0 ignorierte die Datumsfelder | behoben: nur bei zwei passenden Folgetagen; Gegenprobe gegen die echten Termine |
+| C4 | Codex | Learnings fehlten bei fest gewählter Wissensbasis | behoben: kommen wie die übrigen Kontexte dazu |
+
+Jede Behebung mit vorher rotem Test.
+
 ## 6. Prüfungen
 
 Jede Fehlerbehebung mit vorher rotem Regressionstest; neue Funktionen mit Unit-, Embedded-Postgres- (als Nicht-root) und Renderer-Tests in beiden Editionen. Ende-zu-Ende: KI-Entscheidung im Ausgang (Mensch sendet → angehalten → ohne Prüfung senden; automatische Antwort → angehalten bzw. versendet als „KI“), Vorlagen je Ausgang, Zeitplan-Taktgeber mit parallelen Ticks, Learnings vom Versand bis zur Übernahme. Ergebnis des letzten Gesamtlaufs in Abschnitt 9.
@@ -72,15 +89,14 @@ Jede Fehlerbehebung mit vorher rotem Regressionstest; neue Funktionen mit Unit-,
 - Span-01: Antwortformat nicht verifiziert (siehe 3).
 - Electron-E2E und Docker-Compose-Smoke laufen nur in der CI (Pull Request auf `main`).
 
-## 9. Letzter Gesamtlauf (Stand `9c2adf1`)
+## 9. Letzter Gesamtlauf (Stand nach Gatekeeper-Fixes)
 
 | Prüfung | Ergebnis |
 |---|---|
 | Typecheck (core, server, Renderer, Electron) | grün |
-| ESLint auf allen 248 geänderten Dateien (`--max-warnings 0`) | grün |
-| Toolchain-Prüfung, Dangerous-Defaults | grün |
-| Unit + Integration inkl. Embedded Postgres (als Nicht-root), Server-Coverage-Ratchet | 549 Suiten, 5256 Tests grün; Ratchet erfüllt (81,04 / 74,13 / 80,85 / 81,04) |
-| UI-Coverage-Ratchet | 415 Suiten, 4204 Tests grün; Ratchet erfüllt (55,93 / 70,01 / 42,35 / 55,93) |
-| Mail-Suite mit Coverage-Schwelle | 224 Suiten, 1621 Tests grün; 93,65 % Zeilen / 83,73 % Branches (eine Datei scheiterte im Lauf nur an Dateirechten eines alten Temp-Verzeichnisses und ist nach Korrektur grün) |
-| Build (Web + Electron-Main) | grün |
+| ESLint auf den geänderten Dateien (`--max-warnings 0`) | grün |
+| Unit + Integration inkl. Embedded Postgres (als Nicht-root) | 550 Suiten, 5290 Tests grün (Stand vor Codex-Runde 2; danach die 25 betroffenen Suiten erneut grün) |
+| Mail-Suite mit Coverage-Schwelle | 224 Suiten, 1624 Tests grün; 93,72 % Zeilen / 83,69 % Branches |
 | Electron-E2E, Docker-Compose-Smoke | nicht lokal; laufen in der CI eines Pull Requests auf `main` |
+
+Frühere Läufe (Stand `9c2adf1`): Server-Coverage-Ratchet (81,04 / 74,13 / 80,85 / 81,04), UI-Coverage-Ratchet (55,93 / 70,01 / 42,35 / 55,93) und Build grün.
