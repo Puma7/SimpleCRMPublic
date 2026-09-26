@@ -14,6 +14,8 @@ import type {
 import {
   normalizeWorkflowScheduleTimeZone,
   resolveWorkflowScheduleTimeZone,
+  isOutboundReviewSkipPolicy,
+  parseOutboundReviewSkipPolicy,
   type MailPermission,
 } from '@simplecrm/core';
 import { MailAccessDeniedError } from '../mail-access/service';
@@ -42,6 +44,9 @@ const WORKFLOW_AUTOMATION_KEYS = [
   // Zeitzone der Zeitplan-Workflows (nur Server; der Desktop nutzt die
   // Zeitzone des Rechners). Gelesen vom Taktgeber jobs/workflow-schedule-tick.
   'workflow_schedule_timezone',
+  // „Ohne Ausgangsprüfung senden“: wer darf (all | admins | none). Die Route
+  // send-skip-outbound-review liest denselben Schlüssel.
+  'outbound_review_skip_policy',
 ] as const;
 
 const EMAIL_MISC_KEYS = [
@@ -298,6 +303,7 @@ async function handleWorkflowAutomationSettings(
       // Immer eine gueltige Zone: ungueltige oder fehlende Werte fallen wie im
       // Taktgeber auf Europe/Berlin zurueck.
       scheduleTimezone: resolveWorkflowScheduleTimeZone(loaded.values.get('workflow_schedule_timezone')),
+      outboundReviewSkipPolicy: parseOutboundReviewSkipPolicy(loaded.values.get('outbound_review_skip_policy')),
     });
   }
 
@@ -871,6 +877,7 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
     'autoReplyEnabled',
     'autoReplyMaxPerSenderPerDay',
     'scheduleTimezone',
+    'outboundReviewSkipPolicy',
   ]);
   const errors = unknownFieldErrors(payload.value, allowed);
   const values: Record<string, string | null> = {};
@@ -894,6 +901,17 @@ function parseWorkflowAutomationSettingsBody(body: unknown): SettingsPayloadPars
       });
     } else {
       values.auto_reply_max_per_sender_per_day = String(value);
+    }
+  }
+  if ('outboundReviewSkipPolicy' in payload.value) {
+    const value = payload.value.outboundReviewSkipPolicy;
+    if (!isOutboundReviewSkipPolicy(value)) {
+      errors.push({
+        field: 'outboundReviewSkipPolicy',
+        message: 'outboundReviewSkipPolicy muss all, admins oder none sein',
+      });
+    } else {
+      values.outbound_review_skip_policy = value;
     }
   }
   if ('httpAllowlist' in payload.value) {

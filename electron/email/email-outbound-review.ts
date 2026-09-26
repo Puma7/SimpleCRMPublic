@@ -46,6 +46,9 @@ export function returnOutboundDraftToInbox(
     bodyHtml,
   });
 
+  // updateComposeDraft löscht den RFC-3834-Marker bei jedem Inhaltsschreiben;
+  // der Banner ist aber keine menschliche Änderung — eine angehaltene
+  // automatische Antwort bleibt als solche gekennzeichnet (wie auf dem Server).
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
@@ -56,10 +59,11 @@ export function returnOutboundDraftToInbox(
            archived = 0,
            is_spam = 0,
            soft_deleted = 0,
-           scheduled_send_at = NULL
+           scheduled_send_at = NULL,
+           auto_submitted = ?
        WHERE id = ?`,
     )
-    .run(holdReason, messageId);
+    .run(holdReason, row.auto_submitted === 1 ? 1 : 0, messageId);
   clearScheduledSendActor(messageId);
 }
 

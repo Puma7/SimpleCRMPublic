@@ -267,6 +267,7 @@ const EMAIL_OBJECT_SCOPE_RESOLVERS: Record<string, (payload: unknown) => EmailCh
   'email:delete-spam-list-entry': (p) => rowScope(p, getSpamListEntry),
   'email:dismiss-uidvalidity-notice': uidValidityNoticeScope,
   'workflow:approve-draft-send': (p) => messageScope(field(p, 'draftId')),
+  'email:send-draft-skip-outbound-review': (p) => messageScope(field(p, 'draftId')),
   'workflow:dismiss-draft-approval': (p) => messageScope(field(p, 'draftId')),
   'workflow:update-knowledge-base': (p) => savedRowScope(p, getKnowledgeBaseById),
   'workflow:delete-knowledge-base': (p) => rowScope(p, getKnowledgeBaseById),

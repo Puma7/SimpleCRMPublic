@@ -34765,6 +34765,8 @@ describe('server edition foundation', () => {
       autoReplyMaxPerSenderPerDay: 3,
       // TA-P4: Zeitzone der Zeitplan-Workflows, ohne gespeicherten Wert der Standard.
       scheduleTimezone: 'Europe/Berlin',
+      // TA-P2: ungesetzt ⇒ Standard „alle, die senden dürfen“.
+      outboundReviewSkipPolicy: 'all',
     });
 
     // Der GET verlangt seit der Ausnahme vom Mail-Gate settings.view im Handler

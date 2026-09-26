@@ -104,7 +104,7 @@ import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
 import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
-import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
+import { OutboundHoldBanner } from "./outbound-hold-banner"
 
 type Props = {
   accounts: EmailAccount[]
@@ -1254,46 +1254,18 @@ export function MessageViewer(props: Props) {
                     {selectedMessage.subject || "(Ohne Betreff)"}
                   </h2>
                   {isOutboundHeld ? (
-                    <div
-                      role="alert"
-                      className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
-                    >
-                      <p className="font-semibold">Ausgangsprüfung — Versand blockiert</p>
-                      <p className="mt-1 text-[13px] leading-snug">
-                        {selectedMessage.outbound_block_reason || OUTBOUND_HOLD_FALLBACK_REASON}
-                      </p>
-                      {/* Die Run-Endpunkte verlangen workflows.view; ohne die Stufe
-                          endet der sichtbare Diagnosepfad garantiert im 403. */}
-                      {canViewWorkflows ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="mt-2 h-7 text-xs"
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              const run = await invokeRenderer(IPCChannels.Email.GetLatestWorkflowRunForMessage, {
-                                messageId: selectedMessage.id,
-                              }) as {
-                                id: number
-                              } | null
-                              if (run?.id) {
-                                setWorkflowRunDetailId(run.id)
-                                setWorkflowRunDetailOpen(true)
-                              } else {
-                                toast.info("Kein Workflow-Lauf für diese Nachricht gefunden.")
-                              }
-                            } catch {
-                              toast.error("Workflow-Details konnten nicht geladen werden.")
-                            }
-                          })()
-                        }}
-                      >
-                        Workflow-Details ansehen
-                      </Button>
-                      ) : null}
-                    </div>
+                    <OutboundHoldBanner
+                      message={selectedMessage}
+                      canViewWorkflows={canViewWorkflows}
+                      onShowWorkflowRun={(runId) => {
+                        setWorkflowRunDetailId(runId)
+                        setWorkflowRunDetailOpen(true)
+                      }}
+                      onSent={async () => {
+                        // Gesendet: der Entwurf verlässt den Posteingang.
+                        await advanceSelectionAfterMessageRemoved(selectedMessage.id)
+                      }}
+                    />
                   ) : null}
                   {isAwaitingApproval ? (
                     <div

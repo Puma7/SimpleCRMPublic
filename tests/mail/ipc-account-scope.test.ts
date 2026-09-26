@@ -205,6 +205,9 @@ describe('resolveEmailChannelAccountScope', () => {
     jest.mocked(getEmailMessageById).mockReturnValue({ account_id: 5 } as never);
     expect(resolveEmailChannelAccountScope('workflow:approve-draft-send', { draftId: 9 })).toEqual(accounts(5));
     expect(resolveEmailChannelAccountScope('workflow:dismiss-draft-approval', { draftId: 9 })).toEqual(accounts(5));
+    // TA-P2: „Ohne Ausgangsprüfung senden“ prüft den Kontozugriff des Entwurfs.
+    expect(resolveEmailChannelAccountScope('email:send-draft-skip-outbound-review', { draftId: 9 }))
+      .toEqual(accounts(5));
     expect(resolveEmailChannelAccountScope('workflow:test-on-message', { workflowId: 1, messageId: 9 }))
       .toEqual(accounts(5));
 

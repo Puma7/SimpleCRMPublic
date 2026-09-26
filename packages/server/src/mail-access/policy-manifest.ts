@@ -379,6 +379,9 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/messages/:messageId/scheduled-send', { PATCH: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/messages/:messageId/approve-draft-send', { POST: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/messages/:messageId/dismiss-draft-approval', { POST: permissionPolicy('mail.draft.edit', messagePath()) });
+  // „Ohne Ausgangsprüfung senden“: sendet den gespeicherten Entwurf wie approve-draft-send
+  // (Supplement im HTTP-Enforcer: mail.draft.edit, Eltern-Triage, Anhangsrechte).
+  assign('/api/v1/email/messages/:messageId/send-skip-outbound-review', { POST: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/threads/:threadId/messages', { GET: permissionPolicy('mail.metadata.read', threadPath()) });
 
   for (const path of [

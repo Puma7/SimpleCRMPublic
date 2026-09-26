@@ -9,6 +9,7 @@ import type { WorkflowExecutionDryRunResult } from '../../packages/server/src/jo
 import { createPostgresEmailComposeSenderPort } from '../../packages/server/src/mail-compose-send';
 import { createPostgresScheduledSendJobPort } from '../../packages/server/src/mail-scheduled-send';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { createPostgresOutboundReviewSkipPort } from '../../packages/server/src/mail-outbound-review-skip';
 import type { EmailComposeSenderApiPort } from '../../packages/server/src/api';
 import {
   OUTBOUND_HOLD_FALLBACK_REASON,
@@ -40,8 +41,11 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
     const { admin } = postgres;
     await admin.query(`INSERT INTO workspaces (id, name) VALUES ($1, 'Outbound Hold Test')`, [WORKSPACE_ID]);
     await admin.query(`
-      INSERT INTO email_accounts (id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username)
-      VALUES ($1, $2, $1, 'Support', 'support@example.test', 'imap.example.test', 'support')
+      INSERT INTO email_accounts (
+        id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username,
+        smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth
+      ) VALUES ($1, $2, $1, 'Support', 'support@example.test', 'imap.example.test', 'support',
+        'smtp.example.test', 587, true, 'support', false)
     `, [ACCOUNT_ID, WORKSPACE_ID]);
     await admin.query(`
       INSERT INTO email_folders (id, workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path)
@@ -163,6 +167,11 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
   }): EmailComposeSenderApiPort {
     return createPostgresEmailComposeSenderPort({
       db,
+      secrets: {
+        async readSecret() {
+          return Buffer.from('smtp-secret');
+        },
+      } as never,
       smtpSend: options.smtpSend,
       ...(options.workflowDryRun ? { workflowDryRun: options.workflowDryRun } : {}),
     });
@@ -287,5 +296,65 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
     expect(await takeWorkflowJobs()).toHaveLength(0);
     expect(await inboxIds()).toContain(5203);
     expect(smtpSend).not.toHaveBeenCalled();
+  });
+  test('„Ohne Ausgangsprüfung senden“: Freigabe für den aktuellen Inhalt, Versand ohne Workflow-Durchlauf und ohne Banner', async () => {
+    await postgres.admin.query(`DELETE FROM job_queue`);
+    await seedHoldWorkflow('Preisangabe fehlt');
+    await seedWorkflowScheduledDraft(5204);
+    // Erst endgültig anhalten (echter Pfad), dann überspringen.
+    await runScheduledTick(composeSender({ smtpSend: jest.fn() }));
+    for (const payload of await takeWorkflowJobs()) {
+      await createPostgresWorkflowExecutionJobPort({ db }).execute(
+        buildWorkflowExecutionJobPlan(payload, WORKSPACE_ID),
+      );
+    }
+    expect((await draftRow(5204)).outbound_block_reason).toBe('Preisangabe fehlt');
+
+    const skip = createPostgresOutboundReviewSkipPort({ db });
+    expect(await skip.readPolicy({ workspaceId: WORKSPACE_ID })).toBe('all');
+    const prepared = await skip.prepare({ workspaceId: WORKSPACE_ID, actorUserId: 'user-1', messageId: 5204 });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.values.bodyText).not.toContain(OUTBOUND_WARNING_MARKER);
+    const approved = await draftRow(5204);
+    expect(approved.outbound_hold).toBe(false);
+    expect(approved.body_text).not.toContain(OUTBOUND_WARNING_MARKER);
+    const skipMarker = await syncInfoValue('outbound_review_skipped:5204');
+    expect(skipMarker).not.toBeNull();
+    expect(skipMarker).toBe(await syncInfoValue('outbound_review_approved:5204'));
+
+    const smtpSend = jest.fn(async () => undefined);
+    const result = await composeSender({ smtpSend }).send({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: 'user-1',
+      values: prepared.values,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, messageId: 5204 }));
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+    const rfc822 = String((smtpSend.mock.calls[0] as unknown as [{ rfc822: string }])[0].rfc822);
+    expect(rfc822).not.toContain('AUSGANGSPR');
+    expect(rfc822).toContain('Antwort an den Kunden');
+    // Kein neuer Durchlauf der Ausgangs-Workflows.
+    expect(await takeWorkflowJobs()).toHaveLength(0);
+    const sent = await postgres.admin.query<{ folder_kind: string }>(
+      `SELECT folder_kind FROM email_messages WHERE workspace_id = $1 AND id = 5204`,
+      [WORKSPACE_ID],
+    );
+    expect(sent.rows[0]?.folder_kind).toBe('sent');
+  });
+
+  test('„Ohne Ausgangsprüfung senden“ nur für angehaltene lokale Entwürfe', async () => {
+    await seedDraft(5205, { hold: false, reason: null });
+    const skip = createPostgresOutboundReviewSkipPort({ db });
+    expect(await skip.prepare({ workspaceId: WORKSPACE_ID, actorUserId: 'user-1', messageId: 5205 }))
+      .toEqual({ ok: false, reason: 'not_held' });
+    expect(await skip.prepare({ workspaceId: WORKSPACE_ID, actorUserId: 'user-1', messageId: 999_999 }))
+      .toEqual({ ok: false, reason: 'not_found' });
+    await postgres.admin.query(
+      `INSERT INTO sync_info (workspace_id, key, value, last_updated) VALUES ($1, 'outbound_review_skip_policy', 'admins', now())`,
+      [WORKSPACE_ID],
+    );
+    expect(await skip.readPolicy({ workspaceId: WORKSPACE_ID })).toBe('admins');
   });
 });

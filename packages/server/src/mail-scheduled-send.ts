@@ -255,7 +255,8 @@ async function processScheduledDraft(input: {
   });
 }
 
-function recipientFieldFromJson(value: unknown): string {
+/** Gespeichertes Empfänger-JSON → Feldwert „Name <adresse>, …“ (auch für „Ohne Ausgangsprüfung senden“). */
+export function recipientFieldFromJson(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
   let parsed: unknown = value;
   if (typeof value === 'string') {
@@ -288,7 +289,7 @@ function scheduledAttachmentPathsPayload(value: unknown): { attachmentPaths?: re
   return paths.length > 0 ? { attachmentPaths: paths } : {};
 }
 
-function parseDraftAttachmentPaths(value: unknown): readonly string[] {
+export function parseDraftAttachmentPaths(value: unknown): readonly string[] {
   if (value === null || value === undefined || value === '') return [];
   let parsed: unknown = value;
   if (typeof value === 'string') {

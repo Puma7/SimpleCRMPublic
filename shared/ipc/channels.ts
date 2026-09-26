@@ -241,6 +241,8 @@ const EmailChannels = literal({
   SearchMessages: 'email:search-messages',
   ListConversationMessages: 'email:list-conversation-messages',
   SendCompose: 'email:send-compose',
+  /** „Ohne Ausgangsprüfung senden“: angehaltenen Entwurf ohne erneuten Ausgangs-Workflow senden. */
+  SendDraftSkipOutboundReview: 'email:send-draft-skip-outbound-review',
   BulkSoftDeleteMessages: 'email:bulk-soft-delete-messages',
   BulkSetMessagesArchived: 'email:bulk-set-messages-archived',
   BulkSetMessageSpam: 'email:bulk-set-message-spam',

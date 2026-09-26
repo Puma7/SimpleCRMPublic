@@ -111,4 +111,23 @@ describe('Auto-Antwort-Einstellungen der Workflow-Automation (Desktop-IPC)', () 
     expect(mockSyncInfo.has('auto_reply_max_per_sender_per_day')).toBe(false);
     expect(mockSyncInfo.has('auto_reply_enabled')).toBe(false);
   });
+  test('„Ausgangsprüfung überspringen erlauben“: Standard „all“, Speichern nur mit gültigem Wert (TA-P2)', async () => {
+    const owner = ownerEvent();
+    await expect(invoke(IPCChannels.Email.GetWorkflowAutomationSettings, owner)).resolves.toMatchObject({
+      outboundReviewSkipPolicy: 'all',
+    });
+
+    await expect(invoke(IPCChannels.Email.SetWorkflowAutomationSettings, owner, {
+      outboundReviewSkipPolicy: 'admins',
+    })).resolves.toEqual({ success: true });
+    expect(mockSyncInfo.get('outbound_review_skip_policy')).toBe('admins');
+    await expect(invoke(IPCChannels.Email.GetWorkflowAutomationSettings, owner)).resolves.toMatchObject({
+      outboundReviewSkipPolicy: 'admins',
+    });
+
+    await expect(invoke(IPCChannels.Email.SetWorkflowAutomationSettings, owner, {
+      outboundReviewSkipPolicy: 'everyone',
+    })).rejects.toThrow();
+    expect(mockSyncInfo.get('outbound_review_skip_policy')).toBe('admins');
+  });
 });

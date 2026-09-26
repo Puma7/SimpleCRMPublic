@@ -1580,6 +1580,24 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     ),
   );
 
+  // „Ohne Ausgangsprüfung senden“ (TA-P2): Senderechte wie SendCompose (rw am
+  // Konto des Entwurfs), die Rolle laut Einstellung prüft das Modul selbst.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.SendDraftSkipOutboundReview,
+      async (event: IpcMainInvokeEvent, payload: { draftId: number }) => {
+        const draftId = Number(payload?.draftId);
+        if (!Number.isFinite(draftId) || draftId <= 0) {
+          return { success: false as const, error: 'Ungültige Entwurfs-ID' };
+        }
+        const session = requireAuthSession(event);
+        const { sendDraftSkippingOutboundReview } = await import('../email/email-outbound-review-skip.js');
+        return sendDraftSkippingOutboundReview(draftId, { userId: session.userId, role: session.role });
+      },
+      { logger, accountAccess: 'rw' },
+    ),
+  );
+
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.TestSmtp,

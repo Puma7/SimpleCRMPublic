@@ -84,6 +84,56 @@ describe('renderer transport: Ausgang und Versand-Herkunft', () => {
   });
 });
 
+describe('renderer transport: Ohne Ausgangsprüfung senden (TA-P2)', () => {
+  beforeEach(() => {
+    resetRendererTransportForTests();
+    localStorage.clear();
+  });
+
+  test('ruft die Server-Route mit der Entwurfs-ID auf und liefert das Ergebnis wie SendCompose', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { success: true, warning: 'Kopie im Gesendet-Ordner fehlgeschlagen' },
+    }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await expect(transport.invoke(IPCChannels.Email.SendDraftSkipOutboundReview, { draftId: 41 }))
+      .resolves.toEqual({ success: true, warning: 'Kopie im Gesendet-Ordner fehlgeschlagen' });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/41/send-skip-outbound-review',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  test('Automatisierungs-Einstellung: Richtlinie lesen und schreiben', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          imapDeleteOptIn: false,
+          httpAllowlist: '',
+          senderWhitelist: '',
+          senderBlacklist: '',
+          spamScoreThreshold: '70',
+          autoReplyEnabled: false,
+          outboundReviewSkipPolicy: 'admins',
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const settings = await transport.invoke(IPCChannels.Email.GetWorkflowAutomationSettings) as Record<string, unknown>;
+    expect(settings.outboundReviewSkipPolicy).toBe('admins');
+
+    await transport.invoke(IPCChannels.Email.SetWorkflowAutomationSettings, { outboundReviewSkipPolicy: 'none' });
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      'https://crm.example.com/api/v1/workflow/settings/automation',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ outboundReviewSkipPolicy: 'none' }) }),
+    );
+    await expect(
+      transport.invoke(IPCChannels.Email.SetWorkflowAutomationSettings, { outboundReviewSkipPolicy: 'everyone' }),
+    ).rejects.toThrow('outbound review skip policy');
+  });
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,

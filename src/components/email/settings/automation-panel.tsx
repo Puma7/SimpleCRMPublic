@@ -23,6 +23,11 @@ import { AutomationMiscSettingsSection } from "./automation-misc-settings-sectio
 import { AutoReplySettingsSection } from "./auto-reply-settings-section"
 import { WorkflowScheduleTimezoneSection } from "./workflow-schedule-timezone-section"
 import { normalizeWorkflowScheduleTimeZone } from "../../../../packages/core/src/workflow/cron-schedule"
+import { OutboundReviewSkipSettingsSection } from "./outbound-review-skip-settings-section"
+import {
+  parseOutboundReviewSkipPolicy,
+  type OutboundReviewSkipPolicy,
+} from "../../../../packages/core/src/email/outbound-review-skip"
 import { hasLocalIpc, invokeIpc } from "../types"
 
 type ServerAutomationApiKey = {
@@ -63,6 +68,8 @@ export function AutomationPanel() {
   // null = Backend kennt keine Workspace-Zeitzone (Desktop: Zeitzone des
   // Rechners) → Feld ausblenden und beim Speichern weglassen.
   const [scheduleTimezone, setScheduleTimezone] = useState<string | null>(null)
+  const [outboundReviewSkipPolicy, setOutboundReviewSkipPolicy] =
+    useState<OutboundReviewSkipPolicy>("all")
   const [apiSettings, setApiSettings] = useState<AutomationApiSettings | null>(null)
   const [apiEnabled, setApiEnabled] = useState(false)
   const [apiPort, setApiPort] = useState("3847")
@@ -89,8 +96,10 @@ export function AutomationPanel() {
         autoReplyEnabled: boolean
         autoReplyMaxPerSenderPerDay?: number
         scheduleTimezone?: string
+        outboundReviewSkipPolicy?: string
       }
       setImapDeleteOptIn(wf.imapDeleteOptIn)
+      setOutboundReviewSkipPolicy(parseOutboundReviewSkipPolicy(wf.outboundReviewSkipPolicy))
       setHttpAllowlist(wf.httpAllowlist)
       setAutoReplyEnabled(wf.autoReplyEnabled === true)
       setAutoReplyMaxPerDay(
@@ -149,7 +158,8 @@ export function AutomationPanel() {
       autoReplyEnabled: boolean
       autoReplyMaxPerSenderPerDay?: number
       scheduleTimezone?: string
-    } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled }
+      outboundReviewSkipPolicy: OutboundReviewSkipPolicy
+    } = { imapDeleteOptIn, httpAllowlist, autoReplyEnabled, outboundReviewSkipPolicy }
     if (scheduleTimezone !== null) {
       // Dieselbe Pruefung wie der Server (IANA-Name, kanonische Schreibweise).
       const zone = normalizeWorkflowScheduleTimeZone(scheduleTimezone)
@@ -507,6 +517,12 @@ export function AutomationPanel() {
           onEnabledChange={setAutoReplyEnabled}
           maxPerDay={autoReplyMaxPerDay}
           onMaxPerDayChange={setAutoReplyMaxPerDay}
+          disabled={loading || !canEditWorkflowOptions}
+        />
+
+        <OutboundReviewSkipSettingsSection
+          policy={outboundReviewSkipPolicy}
+          onPolicyChange={setOutboundReviewSkipPolicy}
           disabled={loading || !canEditWorkflowOptions}
         />
 

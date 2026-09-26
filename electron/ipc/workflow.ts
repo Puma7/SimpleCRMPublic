@@ -30,6 +30,11 @@ import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { isImapDeleteOptInEnabled, setImapDeleteOptIn } from '../email/email-imap-move';
 import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 import {
+  loadOutboundReviewSkipPolicy,
+  saveOutboundReviewSkipPolicy,
+} from '../email/outbound-review-skip-settings';
+import { isOutboundReviewSkipPolicy } from '../../packages/core/src/email/outbound-review-skip';
+import {
   listWorkflowVersions,
   saveWorkflowVersion,
   getWorkflowVersion,
@@ -234,6 +239,7 @@ export function registerWorkflowHandlers(options: {
         spamScoreThreshold: readSyncInfo('workflow_spam_score_threshold') ?? '70',
         autoReplyEnabled: autoReply.enabled,
         autoReplyMaxPerSenderPerDay: autoReply.maxPerSenderPerDay,
+        outboundReviewSkipPolicy: loadOutboundReviewSkipPolicy(),
       };
     }, { logger }),
   );
@@ -251,8 +257,15 @@ export function registerWorkflowHandlers(options: {
           spamScoreThreshold?: string;
           autoReplyEnabled?: boolean;
           autoReplyMaxPerSenderPerDay?: number;
+          outboundReviewSkipPolicy?: string;
         },
       ) => {
+        if (payload.outboundReviewSkipPolicy !== undefined) {
+          if (!isOutboundReviewSkipPolicy(payload.outboundReviewSkipPolicy)) {
+            return { success: false as const, error: 'Ungültige Einstellung für „Ausgangsprüfung überspringen“' };
+          }
+          saveOutboundReviewSkipPolicy(payload.outboundReviewSkipPolicy);
+        }
         if (payload.imapDeleteOptIn !== undefined) {
           setImapDeleteOptIn(payload.imapDeleteOptIn);
         }

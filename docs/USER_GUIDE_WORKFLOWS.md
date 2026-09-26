@@ -156,6 +156,7 @@ Hält ein Ausgangs-Workflow eine Mail an (Baustein **„Versand sperren“**, KI
 
 - Gibt der Workflow keinen Grund an, steht dort **„Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.“**
 - Server-Edition: Während die Ausgangs-Workflows noch laufen, zeigt der Entwurf „Ausgangsprüfung wird serverseitig ausgeführt …“. Erst ein echter Block ersetzt diesen Hinweis durch den Grund.
+- Soll die Mail trotzdem so raus, gibt es im Hinweis und im Entwurfsfenster den Knopf **„Ohne Ausgangsprüfung senden“** (mit Rückfrage; der Versand wird protokolliert). Wer ihn sieht, legt **Einstellungen → Automatisierung → „Ausgangsprüfung überspringen erlauben“** fest.
 
 ### Ihr erster Workflow in fünf Schritten
 

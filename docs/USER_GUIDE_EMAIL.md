@@ -39,6 +39,14 @@ In der E-Mail-Unterleiste können Sie **Klassisch** / **Beta** wählen (wird ges
 - **An** und **Cc:** Eine oder mehrere Adressen, z. B. `a@firma.de` oder `Name <a@firma.de>`.
 - **HTML-Editor:** Formatierter Text; die Anwendung bereinigt den Inhalt aus Sicherheitsgründen.
 
+### Angehaltene Mails und „Ohne Ausgangsprüfung senden“
+
+Hält ein ausgehender Workflow eine Mail an, liegt der Entwurf im **Posteingang** mit dem gelben Hinweis **„Versand blockiert“** und dem Grund (ohne Grund: „Vom Workflow ohne Begründung angehalten – bitte E-Mail prüfen.“). Das gilt auch für automatische Antworten aus Workflows und für Mails mit **„Später senden“** — deren Planung wird dabei aufgehoben.
+
+- **Korrigieren und senden:** Entwurf öffnen, anpassen, **Senden** — die Ausgangs-Workflows prüfen erneut.
+- **Ohne Ausgangsprüfung senden:** Im Hinweis „Versand blockiert“ und im Entwurfsfenster eines angehaltenen Entwurfs. Nach der Rückfrage geht die Mail ohne erneuten Durchlauf der Ausgangs-Workflows raus. Jeder solche Versand wird protokolliert (Server: Audit-Log, Desktop: Protokoll).
+- **Wer das darf:** **Einstellungen → Automatisierung → „Ausgangsprüfung überspringen erlauben“**: *Alle, die senden dürfen* (Standard), *Nur Owner und Admin* oder *Niemand*. Ändern können die Einstellung nur Owner und Admin.
+
 ## Workflows (Kurz)
 
 - **Auslöser:** z. B. neue Mail, gesendete Mail, neuer Entwurf, **Zeitplan** (Cron).
@@ -59,7 +67,7 @@ Unter **E-Mail → Einstellungen**:
 
 ## Wenn etwas nicht klappt
 
-- **Versand blockiert:** Text der Meldung lesen — oft ein **ausgehender Workflow**. Inhalt anpassen oder Workflow in **E-Mail → Workflows** prüfen.
+- **Versand blockiert:** Text der Meldung lesen — oft ein **ausgehender Workflow**. Inhalt anpassen oder Workflow in **E-Mail → Workflows** prüfen; bei Bedarf **„Ohne Ausgangsprüfung senden“** (siehe oben).
 - **POP3:** Manche Server löschen Mails nach dem Abruf — das ist **Server-Verhalten**, nicht SimpleCRM.
 - **TLS/SMTP:** In den SMTP-Einstellungen Port und Verschlüsselung zum Anbieter passend wählen (z. B. 587 mit TLS vs. 465).
 

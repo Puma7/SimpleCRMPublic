@@ -140,6 +140,8 @@ import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useAuth } from "@/components/auth/auth-context"
 import { resolveComposeTeamMemberId } from "@shared/compose-sender-identity"
 import { prepareScheduledSend, scheduledSendPgpBlockReason } from "@shared/compose-scheduled-send"
+import { OutboundReviewSkipButton } from "./outbound-review-skip-button"
+import { useOutboundReviewSkipAllowed } from "./hooks/use-outbound-review-skip"
 
 type Props = {
   accounts: EmailAccount[]
@@ -358,6 +360,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [assigningIdentity, setAssigningIdentity] = useState(false)
   const [quotedHtml, setQuotedHtml] = useState("")
   const [sending, setSending] = useState(false)
+  // Geöffneter Entwurf ist vom Ausgang angehalten → „Ohne Ausgangsprüfung senden“.
+  const [draftHeld, setDraftHeld] = useState(false)
+  const outboundReviewSkipAllowed = useOutboundReviewSkipAllowed(draftHeld)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
   const scheduledSendPgpBlock = scheduledSendPgpBlockReason({ pgpEncrypt, pgpSign })
@@ -515,6 +520,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     const sessionKey = buildComposeSessionKey(composeIntent, accountIdAtOpen)
     if (initialisedDraftKeyRef.current === draftInitKey) return
     setComposeAccountId(accountIdAtOpen)
+    setDraftHeld(false)
     let cancelled = false
     setDraftBootstrapping(true)
     void (async () => {
@@ -532,6 +538,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           }
           initialisedDraftKeyRef.current = draftInitKey
           setComposeAccountId(existing.account_id)
+          setDraftHeld((existing.outbound_hold ?? 0) > 0)
           setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
             assignedTo: existing.assigned_to,
             userId: user?.id,
@@ -583,6 +590,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             initialisedDraftKeyRef.current = draftInitKey
             setDraftId(session.draftId)
             setComposeAccountId(resumed.account_id)
+            setDraftHeld((resumed.outbound_hold ?? 0) > 0)
             setComposeTeamMemberId(resolveComposeTeamMemberId(teamMembers, {
               assignedTo: resumed.assigned_to,
               userId: user?.id,
@@ -2365,6 +2373,19 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               >
                 Später senden
               </Button>
+              {draftHeld && outboundReviewSkipAllowed && draftId != null ? (
+                <OutboundReviewSkipButton
+                  draftId={draftId}
+                  size="default"
+                  disabled={sending || draftBootstrapping || uploadingAttachment}
+                  // Erst die Änderungen im Fenster speichern, dann den gespeicherten Stand senden.
+                  beforeSend={async () => Boolean(await saveDraft({ silent: true }))}
+                  onSent={async () => {
+                    const contextId = getComposeContextMessageId(composeIntent, replyToId)
+                    await finishComposeClose(contextId)
+                  }}
+                />
+              ) : null}
               <Button
                 type="button"
                 onClick={() => void handleSend()}

@@ -1106,6 +1106,21 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  set(IPCChannels.Email.SendDraftSkipOutboundReview, {
+    payload: z.object({ draftId: positiveInt }),
+    result: z.union([
+      z.object({
+        success: z.literal(true),
+        warning: z.string().optional(),
+        recoveredSentAppend: z.literal(true).optional(),
+      }),
+      z.object({
+        success: z.literal(false),
+        error: z.string().optional(),
+        workflowRunId: z.number().int().positive().nullable().optional(),
+      }),
+    ]),
+  });
   set(IPCChannels.Email.ListConversationLocks, {
     payload: z.object({
       messageIds: z.array(positiveInt).max(500),
@@ -1658,6 +1673,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   // Tageslimit der Auto-Antwort wie auf dem Server: Ganzzahl 1..50.
   const autoReplyMaxPerSenderPerDay = z.number().int().min(1).max(50);
+  // „Ohne Ausgangsprüfung senden“: alle | nur Owner/Admin | niemand.
+  const outboundReviewSkipPolicySchema = z.enum(['all', 'admins', 'none']);
   set(IPCChannels.Email.GetWorkflowAutomationSettings, {
     payload: voidPayload,
     result: z.object({
@@ -1668,6 +1685,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       spamScoreThreshold: z.string(),
       autoReplyEnabled: z.boolean(),
       autoReplyMaxPerSenderPerDay,
+      outboundReviewSkipPolicy: outboundReviewSkipPolicySchema,
     }),
   });
   set(IPCChannels.Email.SetWorkflowAutomationSettings, {
@@ -1679,6 +1697,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       spamScoreThreshold: z.string().optional(),
       autoReplyEnabled: z.boolean().optional(),
       autoReplyMaxPerSenderPerDay: autoReplyMaxPerSenderPerDay.optional(),
+      outboundReviewSkipPolicy: outboundReviewSkipPolicySchema.optional(),
     }),
     result: standardResult,
   });

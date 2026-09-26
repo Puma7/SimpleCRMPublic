@@ -167,6 +167,7 @@ import {
   createPostgresEmailComposeSenderPort,
   createPostgresEmailOutboundValidationPort,
 } from './mail-compose-send';
+import { createPostgresOutboundReviewSkipPort } from './mail-outbound-review-skip';
 import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresMailAccessPort } from './mail-access/postgres-mail-access-port';
@@ -669,6 +670,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       workflowDryRun,
     }),
     emailOutboundValidation,
+    emailOutboundReviewSkip: createPostgresOutboundReviewSkipPort({ db: options.db }),
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
     dmarcReporting: createPostgresDmarcReportingPort({ db: options.db }),

@@ -6,6 +6,7 @@ import type {
   EmailEvidenceEventType,
   EmailEvidenceSummary,
   MailPermission,
+  OutboundReviewSkipPolicy,
   WorkflowNodeCatalogEntry,
   WorkflowTemplate,
 } from '@simplecrm/core';
@@ -2618,6 +2619,27 @@ export type EmailComposeSendResult =
      */
     outboundHeld?: boolean;
   };
+
+/** „Ohne Ausgangsprüfung senden“ (TA-P2): Freigabe für den aktuellen Inhalt vorbereiten. */
+export type EmailOutboundReviewSkipPrepareResult =
+  | { ok: true; values: EmailComposeSendInput }
+  | { ok: false; reason: 'not_found' | 'not_local_draft' | 'not_held' };
+
+export type EmailOutboundReviewSkipApiPort = {
+  /** Einstellung `outbound_review_skip_policy` (Standard „all“). */
+  readPolicy(input: { workspaceId: string }): Promise<OutboundReviewSkipPolicy>;
+  /**
+   * Nur für lokale Entwürfe mit outbound_hold: Banner entfernen, Freigabe-Marker
+   * für den aktuellen Inhalt setzen (der normale Sendepfad erkennt ihn),
+   * Planung löschen, Übersprung-Marker schreiben. Liefert die Sendewerte des
+   * gespeicherten Entwurfs.
+   */
+  prepare(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<EmailOutboundReviewSkipPrepareResult>;
+};
 
 export type EmailComposeSenderApiPort = {
   send(input: {
@@ -5690,6 +5712,7 @@ export type ServerApiPorts = {
   emailComposeAttachments?: EmailComposeAttachmentUploadApiPort;
   emailComposeSender?: EmailComposeSenderApiPort;
   emailOutboundValidation?: EmailOutboundValidationApiPort;
+  emailOutboundReviewSkip?: EmailOutboundReviewSkipApiPort;
   emailDiagnostics?: EmailDiagnosticsApiPort;
   emailFolders?: EmailFolderApiPort;
   emailGdprExport?: EmailGdprExportApiPort;

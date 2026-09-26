@@ -2643,6 +2643,21 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       }>(body),
     }
   }],
+  [IPCChannels.Email.SendDraftSkipOutboundReview, ([payload]) => {
+    const input = objectPayload(payload, "outbound review skip payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/send-skip-outbound-review`,
+      // Antwort wie compose/send; 403/409 (Rolle, nicht angehalten) wirft der Transport.
+      transform: (body) => dataBody<{
+        success: boolean
+        error?: string
+        warning?: string
+        recoveredSentAppend?: true
+        workflowRunId?: number | null
+      }>(body),
+    }
+  }],
   [IPCChannels.Email.ListConversationLocks, ([payload]) => {
     const input = objectPayload(payload, "email conversation lock list payload")
     const messageIds = positiveIdArray(input.messageIds, "email message ids", 500)
@@ -3297,6 +3312,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       // Zeitzone der Zeitplan-Workflows (nur Server; der Desktop nutzt die
       // Zeitzone des Rechners und liefert das Feld nicht).
       scheduleTimezone?: string
+      /** „Ohne Ausgangsprüfung senden“: all | admins | none (Standard all). */
+      outboundReviewSkipPolicy?: "all" | "admins" | "none"
     }>(body),
   })],
   [IPCChannels.Email.SetWorkflowAutomationSettings, ([payload]) => ({
@@ -7133,7 +7150,15 @@ function mapWorkflowAutomationSettingsPayload(value: unknown): Record<string, un
     autoReplyMaxPerSenderPerDay: input.autoReplyMaxPerSenderPerDay === undefined ? undefined : boundedNumber(input.autoReplyMaxPerSenderPerDay, "workflow auto reply max per sender per day", 1, 50, true),
     // Gueltigkeit (IANA-Name) prueft der Server; hier nur Form und Laenge.
     scheduleTimezone: input.scheduleTimezone === undefined ? undefined : optionalTrimmedText(input.scheduleTimezone, "workflow schedule timezone", 64),
+    outboundReviewSkipPolicy: input.outboundReviewSkipPolicy === undefined
+      ? undefined
+      : outboundReviewSkipPolicyValue(input.outboundReviewSkipPolicy),
   })
+}
+
+function outboundReviewSkipPolicyValue(value: unknown): "all" | "admins" | "none" {
+  if (value === "all" || value === "admins" || value === "none") return value
+  throw new Error("outbound review skip policy muss all, admins oder none sein")
 }
 
 function mapMailSecuritySettingsPayload(value: unknown): Record<string, unknown> {

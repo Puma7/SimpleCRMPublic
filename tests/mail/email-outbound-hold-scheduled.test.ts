@@ -89,6 +89,15 @@ describe('Desktop: angehaltener geplanter Entwurf', () => {
     expect(row.body_text).toContain('Antwort an den Kunden');
   });
 
+  test('eine angehaltene automatische Antwort behält den RFC-3834-Marker', () => {
+    insertScheduledDraft(53);
+    db.prepare('UPDATE email_messages SET auto_submitted = 1 WHERE id = 53').run();
+
+    returnOutboundDraftToInbox(53, 'Preisangabe fehlt');
+
+    expect(getEmailMessageById(53)!.auto_submitted).toBe(1);
+  });
+
   test('Block ohne Begründung speichert und zeigt den einheitlichen Fallback-Text', () => {
     insertScheduledDraft(52);
 
