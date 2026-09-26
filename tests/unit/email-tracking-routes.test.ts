@@ -1,5 +1,8 @@
 import { createServerApi } from '../../packages/server/src/api/server-api';
-import { resetEmailTrackingRateLimitersForTests } from '../../packages/server/src/api/email-tracking-routes';
+import {
+  createEmailTrackingRateLimiter,
+  resetEmailTrackingRateLimitersForTests,
+} from '../../packages/server/src/api/email-tracking-routes';
 import {
   EmailTrackingIpInsightForbiddenError,
   EmailTrackingIpInsightNotFoundError,
@@ -142,6 +145,71 @@ describe('email tracking routes', () => {
     expect(calls).toBe(121);
   });
 
+  // F-A3a-05: a flood of throwaway tokens evicted a real token's counter (LRU), resetting its rate limit.
+  test('keeps an exhausted token limited while throwaway tokens flood the limiter', async () => {
+    const calls = new Map<string, number>();
+    const api = apiFor(makeTrackingPort({
+      async recordPublicOpen(input) { calls.set(input.token, (calls.get(input.token) ?? 0) + 1); },
+    }));
+    for (let index = 0; index < 120; index += 1) {
+      await api.handle({ method: 'GET', path: `/t/o/${TOKEN}.gif`, ip: '203.0.113.30' });
+    }
+    for (let index = 0; index < 10_050; index += 1) {
+      const randomToken = index.toString(36).padStart(43, 'x');
+      await api.handle({
+        method: 'GET',
+        path: `/t/o/${randomToken}.gif`,
+        ip: `2001:db8:${(index >> 8).toString(16)}:${(index & 0xff).toString(16)}::1`,
+      });
+    }
+    await api.handle({ method: 'GET', path: `/t/o/${TOKEN}.gif`, ip: '203.0.113.30' });
+
+    expect(calls.get(TOKEN)).toBe(120);
+  });
+
+  // F-A3a-05: the per-IP limits counted every IPv6 address separately, so rotating inside one /64 bypassed them.
+  test('counts IPv6 clients per /64 and IPv4-mapped clients as their IPv4 address', async () => {
+    let opens = 0;
+    const api = apiFor(makeTrackingPort({
+      async recordPublicOpen() { opens += 1; },
+    }));
+    for (let index = 0; index < 1_300; index += 1) {
+      const token = `v6${index.toString(36)}`.padEnd(43, 'y');
+      await api.handle({
+        method: 'GET',
+        path: `/t/o/${token}.gif`,
+        ip: `2001:db8:1:2:${(index >> 8).toString(16)}:${(index & 0xff).toString(16)}:0:1`,
+      });
+    }
+    expect(opens).toBe(1_200);
+
+    let clicks = 0;
+    const clickApi = apiFor(makeTrackingPort({
+      async resolvePublicClick() { clicks += 1; return { targetUrl: 'https://customer.example/invoice/7' }; },
+    }));
+    for (let index = 0; index < 601; index += 1) {
+      const token = `v4${index.toString(36)}`.padEnd(43, 'z');
+      await clickApi.handle({
+        method: 'GET',
+        path: `/t/c/${token}`,
+        ip: index % 2 === 0 ? '198.51.100.7' : '::ffff:198.51.100.7',
+      });
+    }
+    expect(clicks).toBe(600);
+  });
+
+  // F-A3a-05: the limiter map evicted live counters when full, so a key could be reset by flooding other keys.
+  test('never resets a live counter when the limiter map is full', () => {
+    const limiter = createEmailTrackingRateLimiter({ limit: 2, windowMs: 1_000, maxKeys: 3 });
+    expect(limiter.check('real', 0)).toBe(true);
+    expect(limiter.check('real', 0)).toBe(true);
+    expect(limiter.check('real', 0)).toBe(false);
+    for (let index = 0; index < 50; index += 1) limiter.check(`throwaway-${index}`, 10);
+
+    expect(limiter.check('real', 20)).toBe(false);
+    expect(limiter.check('real', 1_000)).toBe(true);
+  });
+
   test('does not charge the shared click IP bucket after a token is already exhausted', async () => {
     const api = apiFor(makeTrackingPort({
       async resolvePublicClick() { return { targetUrl: 'https://customer.example/invoice/7' }; },
@@ -167,6 +235,39 @@ describe('email tracking routes', () => {
 
     expect(unknown.status).toBe(404);
     expect(unsafe.status).toBe(404);
+  });
+
+  // F-A3a-04: deleted or unknown click links answered customers with a raw JSON error instead of a readable page.
+  test('answers unknown or deleted click links with a neutral German HTML page', async () => {
+    const unknown = await apiFor(makeTrackingPort()).handle({ method: 'GET', path: `/t/c/${TOKEN}` });
+    const malformed = await apiFor(makeTrackingPort()).handle({ method: 'GET', path: '/t/c/not-a-token' });
+
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers).toMatchObject({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+      'Content-Security-Policy': "default-src 'none'",
+      'X-Content-Type-Options': 'nosniff',
+    });
+    expect(typeof unknown.body).toBe('string');
+    expect(unknown.body).toContain('<html lang="de">');
+    expect(unknown.body).toContain('Link nicht mehr verfügbar');
+    expect(unknown.body).not.toContain('tracking_not_found');
+    expect(malformed).toEqual(unknown);
+  });
+
+  test('never redirects to a target taken from the request URL', async () => {
+    const api = apiFor(makeTrackingPort({
+      async resolvePublicClick() { return { targetUrl: 'https://customer.example/invoice/7' }; },
+    }));
+
+    const response = await api.handle({
+      method: 'GET',
+      path: `/t/c/${TOKEN}`,
+      query: { url: 'https://evil.example/', redirect: 'https://evil.example/' },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers?.Location).toBe('https://customer.example/invoice/7');
   });
 
   test('allows workspace users to read policy/timeline but only admins to mutate evidence', async () => {

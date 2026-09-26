@@ -20,7 +20,7 @@ describe('Electron E2E CI gate', () => {
     expect(workflow).toContain('gnome-keyring');
     expect(workflow).toContain('dbus-run-session');
     expect(workflow).toContain('gnome-keyring-daemon --unlock --components=secrets');
-    expect(workflow).toContain('actions/upload-artifact@v4');
+    expect(workflow).toMatch(/uses: actions\/upload-artifact@[0-9a-f]{40} # v4\./);
   });
 
   test('keeps no-sandbox opt-in and writes durable Electron diagnostics', () => {

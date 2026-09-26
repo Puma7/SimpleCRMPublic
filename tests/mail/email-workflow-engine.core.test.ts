@@ -111,6 +111,7 @@ import {
   runCompiledInboundRules,
   runCompiledOutboundRules,
   runDraftCreatedWorkflowsForMessage,
+  runInboundPostWorkflowSteps,
   runInboundWorkflowsForMessage,
   runScheduledWorkflowFire,
 } from '../../electron/email/email-workflow-engine';
@@ -333,6 +334,30 @@ describe('email-workflow-engine core', () => {
       expect(log).toContain('tag_attachment_meta:att');
       expect(log.some((l) => l.startsWith('ai_review_error:'))).toBe(true);
     });
+
+    // F-N-dwf-04: Der Mailtext wurde per String-replace eingesetzt; $&, $`, $' und $$ im Mailinhalt wirkten als Ersetzungsmuster.
+    test('ai_review inserts the mail text literally into the prompt template', async () => {
+      const mailText = "Betrag 5 $$ und $& sowie $` oder $'";
+      const msg = inboundRow({ subject: 'Pruefen', body_text: mailText });
+      mockListAiPrompts.mockReturnValue([
+        { id: 5, label: 'P', user_template: 'Pruefe: {{text}} Ende', target: 'full_body', profile_id: null, sort_order: 0 },
+      ]);
+      const def: WorkflowDefinitionV1 = {
+        version: 1,
+        rules: [
+          {
+            when: { field: 'subject', op: 'contains', value: 'Pruefen' },
+            then: [{ type: 'ai_review', promptId: 5 }],
+          },
+        ],
+      };
+      await runCompiledInboundRules(def, msg.id, msg, 1);
+      const user = String(mockRunChatCompletion.mock.calls[0]?.[1]);
+      expect(user.startsWith('Pruefe: ')).toBe(true);
+      expect(user.endsWith(' Ende')).toBe(true);
+      expect(user).toContain(mailText);
+      expect(user).not.toContain('{{text}}');
+    });
   });
 
   describe('runCompiledOutboundRules', () => {
@@ -414,6 +439,28 @@ describe('email-workflow-engine core', () => {
       };
       const skip = await runCompiledOutboundRules(skipDef, payload);
       expect(skip.log.some((l) => l.startsWith('skip:'))).toBe(true);
+    });
+
+    // F-N-redos-01: buildOutboundContext strippte bodyHtml per /<[^>]+>/g; unverschlossene '<' blockierten den Main-Prozess quadratisch.
+    test('strips draft HTML linearly for rule conditions', async () => {
+      const payload = {
+        ...outboundPayloadFromMessage(draftRow()),
+        bodyText: '',
+        bodyHtml: `<p>Hallo</p>Welt${'<'.repeat(60_000)}`,
+      };
+      const def: WorkflowDefinitionV1 = {
+        version: 1,
+        rules: [
+          {
+            when: { field: 'combined_text', op: 'contains', value: 'Hallo Welt' },
+            then: [{ type: 'stop' }],
+          },
+        ],
+      };
+      const started = Date.now();
+      const r = await runCompiledOutboundRules(def, payload);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(r.log).toEqual(['rule_matched', 'stop']);
     });
   });
 
@@ -533,6 +580,23 @@ describe('email-workflow-engine core', () => {
       expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
     });
 
+    // F-A7b-04: Bestandsmails aus dem Erst-Sync liefen durch alle Inbound-Workflows,
+    // bekamen KI-Antwortvorschläge und Abwesenheitsantworten.
+    test('historical messages get the security pipeline but no workflows or post-steps', async () => {
+      const row = inboundRow({ account_id: 7 });
+      const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
+      mockListWorkflowsByTrigger.mockReturnValue([wf]);
+      mockGetEmailMessageById.mockReturnValue(row);
+
+      await runInboundWorkflowsForMessage(row.id, { row, appliedWorkflowIds: new Set(), historical: true });
+
+      expect(mockRunMailSecurityPipeline).toHaveBeenCalledWith(row.id, row);
+      expect(mockExecuteWorkflowForTrigger).not.toHaveBeenCalled();
+      expect(mockTryClaimInboundWorkflowForMessage).not.toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
+    });
+
     test('skips post-steps when an inbound workflow defers on delay', async () => {
       const row = inboundRow();
       const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
@@ -552,6 +616,27 @@ describe('email-workflow-engine core', () => {
         appliedWorkflowIds: new Set(),
       });
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
+    });
+
+    // F-A9-14: Nach der Fortsetzung eines verzögerten Workflows holt
+    // processDueDelayedJobs die übersprungene Nachbearbeitung hierüber nach.
+    test('runInboundPostWorkflowSteps runs reply suggestion and vacation reply for the fresh row', async () => {
+      const row = inboundRow();
+      mockGetEmailMessageById.mockReturnValue(row);
+
+      await runInboundPostWorkflowSteps(row.id);
+
+      expect(mockEnsureReplySuggestion).toHaveBeenCalledWith(row.id, { row, trigger: 'inbound' });
+      expect(mockMaybeSendVacationAutoReply).toHaveBeenCalledWith(row.id, row);
+    });
+
+    test('runInboundPostWorkflowSteps skips when the continuation marked the mail as spam', async () => {
+      mockGetEmailMessageById.mockReturnValue(inboundRow({ is_spam: 1, spam_status: 'spam' }));
+
+      await runInboundPostWorkflowSteps(42);
+
       expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
       expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
     });

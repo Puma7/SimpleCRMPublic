@@ -11,7 +11,6 @@ ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-/data/attachments}"
 AUDIT_ARCHIVE_DIR="${AUDIT_ARCHIVE_DIR:-/data/audit-archive}"
-PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"
 
 if [ -z "$DUMP_PATH" ]; then
   echo "usage: restore.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
@@ -109,11 +108,37 @@ if [ -n "$METADATA_PATH" ] && ! backup_metadata_is_verifiable "$METADATA_PATH"; 
   fi
 fi
 
-if [ -n "$PG_RESTORE_ROLE" ]; then
-  pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
-else
-  pg_restore --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
-fi
+# Alles oder nichts: --single-transaction (impliziert --exit-on-error). Ohne
+# liefen die --clean-Drops einzeln durch, pg_restore uebersprang fehlerhafte
+# Eintraege, und bei einem Fehler blieb eine halb ersetzte Produktivdatenbank
+# zurueck; so rollt jeder Fehler zurueck und die Datenbank bleibt, wie sie war.
+#
+# Erweiterungen, die es in der Zieldatenbank schon gibt, bleiben deshalb
+# unangetastet: dort legt postgres-init sie als Admin an, und unter der
+# App-Rolle scheitern DROP EXTENSION (aus --clean) und COMMENT ON EXTENSION an
+# der Besitzerpruefung. In einer Transaktion rollte das jeden In-Place-Restore
+# zurueck. Fehlt eine Erweiterung (frische Datenbank), bleibt ihr Eintrag stehen
+# und wird wie bisher angelegt.
+#
+# DATABASE_URL meldet sich als App-Rolle an, nicht als Superuser mit --role:
+# SQL aus dem Dump kaeme per RESET ROLE sonst zur Anmelderolle zurueck. Das
+# wird geprueft, bevor irgendetwas aus dem Dump die Datenbank erreicht.
+assert_restricted_restore_session "$DATABASE_URL" 'restore'
+
+RESTORE_TOC="$(mktemp)"
+trap 'rm -f "$RESTORE_TOC"' EXIT
+existing_extensions="$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT string_agg(extname, ',') FROM pg_extension")"
+# Erst lesen, dann filtern: in einer Pipe ginge ein Fehler von pg_restore -l
+# verloren, und eine leere Liste stellte stillschweigend nichts wieder her.
+dump_toc="$(pg_restore -l "$DUMP_PATH")"
+printf '%s\n' "$dump_toc" | awk -v existing="$existing_extensions" '
+  BEGIN { n = split(existing, names, ","); for (i = 1; i <= n; i++) present[names[i]] = 1 }
+  $4 == "EXTENSION" && $5 == "-" && ($6 in present) { next }
+  $4 == "COMMENT" && $5 == "-" && $6 == "EXTENSION" && ($7 in present) { next }
+  { print }
+' > "$RESTORE_TOC"
+
+pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
 
 if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
   mkdir -p "$ATTACHMENTS_DIR"

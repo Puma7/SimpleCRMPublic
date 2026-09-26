@@ -71,7 +71,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'action',
     description:
-      'Leitet die Mail an einen oder mehrere Empfänger weiter (komma-/semikolongetrennt, max. 10). includeAttachments=true hängt die Original-Anhänge an (Limit 25 MB). runOutboundReview=false (Standard) sendet direkt; =true erzwingt die Ausgangsprüfung (derzeit fail-closed bei aktiven Outbound-Workflows). Anti-Loop: Auto-Submitted-Header + Dedup-Tabelle.',
+      'Leitet die Mail an einen oder mehrere Empfänger weiter (komma-/semikolongetrennt, max. 10). includeAttachments=true hängt die Original-Anhänge an (Limit 25 MB). runOutboundReview=false (Standard) sendet direkt; =true erzwingt die Ausgangsprüfung (derzeit fail-closed bei aktiven Outbound-Workflows). Anti-Loop: Kopien tragen „Auto-Submitted: auto-forwarded“, solche Mails werden nicht erneut weitergeleitet (Rechnungen mit auto-generated oder bulk schon); dazu die Dedup-Tabelle je Quellnachricht.',
     defaultConfig: { to: '', includeAttachments: false, runOutboundReview: false },
   },
   {

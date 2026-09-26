@@ -53,6 +53,22 @@ describe('email-forward-copy', () => {
     ]);
   });
 
+  // F-A5-01: forward_copy schrieb den Local-Part klein; die Zustellung an Kunde+Tag@... ging an eine andere Adresse.
+  test('keeps the delivery address exactly and normalizes only the dedup key', async () => {
+    expect(normalizeForwardCopyRecipients('Kunde+Rechnung@Firma.DE, kunde+rechnung@firma.de; Bank <Bank@X.de>')).toEqual([
+      'Kunde+Rechnung@firma.de',
+      'Bank@x.de',
+    ]);
+
+    expect(await sendWorkflowForwardCopy({ ...input, to: 'Kunde+Rechnung@Firma.DE, Bank@x.de' })).toEqual({ ok: true });
+    expect(mockSendSmtp).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ to: 'Kunde+Rechnung@firma.de, Bank@x.de' }),
+    );
+    // Derselbe Schluessel wie vor dem Fix: bestehende Dedup-Eintraege bleiben gueltig.
+    expect(mockDbRun).toHaveBeenCalledWith(10, 3, 'bank@x.de,kunde+rechnung@firma.de');
+  });
+
   test('returns error when recipient missing', async () => {
     expect(await sendWorkflowForwardCopy({ ...input, to: '  ' })).toEqual({
       ok: false,

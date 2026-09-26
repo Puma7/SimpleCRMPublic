@@ -33,9 +33,10 @@ export async function processNewMessagesAfterSync(
   accountId: number,
   items: SyncNewMessageItem[],
   folderId?: number,
-  opts?: { runInboundWorkflows?: boolean },
+  opts?: { runInboundWorkflows?: boolean; historical?: boolean },
 ): Promise<void> {
   const runInboundWorkflows = opts?.runInboundWorkflows !== false;
+  const historical = opts?.historical === true;
   const merged = [...items];
   if (folderId != null) {
     const pending = listMessagesPendingPostProcess(folderId);
@@ -75,8 +76,8 @@ export async function processNewMessagesAfterSync(
               throw new Error('raw RFC822 unavailable for attachment recovery');
             }
             assertInboundRfc822Base64Size(row.raw_rfc822_b64);
-            const { simpleParser } = await import('mailparser');
-            const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
+            const { parseInboundMailSource } = await import('./email-inbound-parse.js');
+            const parsed = await parseInboundMailSource(Buffer.from(row.raw_rfc822_b64, 'base64'));
             parsedAttachments = parsed.attachments;
           }
         }
@@ -116,6 +117,7 @@ export async function processNewMessagesAfterSync(
         await runInboundWorkflowsForMessage(item.localMsgId, {
           row,
           appliedWorkflowIds,
+          historical,
         });
         markMessagePostProcessDone(item.localMsgId);
       } catch (e) {

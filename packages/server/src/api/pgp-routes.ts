@@ -1,3 +1,4 @@
+import { isStrictBase64Payload } from '@simplecrm/core';
 import type {
   ApiErrorBody,
   ApiRequest,
@@ -133,7 +134,13 @@ export async function handlePgpReadRoute(
 ): Promise<ApiResponse | null> {
   for (const { registration, handler } of PGP_MAIL_ROUTE_REGISTRATIONS) {
     const match = registration.pattern.exec(req.path);
-    if (match) return handler(req, ports, match.slice(1));
+    if (!match) continue;
+    // Only inventoried methods pass the mail enforcer in server-api.ts; any other
+    // method must stop here, before a handler runs an unscoped lookup.
+    if (!(registration.methods as readonly string[]).includes(req.method)) {
+      return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    }
+    return handler(req, ports, match.slice(1));
   }
 
   return null;
@@ -1937,7 +1944,7 @@ function normalizeBase64AttachmentContent(
   if (typeof rawValue !== 'string') return { ok: false, message: `${field} muss ein Base64-String sein` };
   const normalized = rawValue.trim();
   if (!normalized) return { ok: false, message: `${field} darf nicht leer sein` };
-  if (normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) {
+  if (normalized.length % 4 !== 0 || !isStrictBase64Payload(normalized)) {
     return { ok: false, message: `${field} muss valides Base64 sein` };
   }
   return { ok: true, value: Buffer.from(normalized, 'base64') };

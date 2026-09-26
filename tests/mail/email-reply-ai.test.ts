@@ -199,6 +199,32 @@ describe('email-reply-ai', () => {
     expect(mockRunChat).toHaveBeenCalled();
   });
 
+  // F-N-dwf-05: Die Vorlage wurde in mehreren Durchlaeufen ersetzt; {{body}}/{{text}}/{{customer.*}} in Betreff, Absender oder Mailtext wurden erneut expandiert.
+  test('generateReplyDraftText interpolates the prompt template in a single pass', async () => {
+    mockListPrompts.mockReturnValue([
+      {
+        id: 1,
+        label: 'Reply',
+        user_template: 'Von {{from}} | Betreff {{subject}} | Text {{body}} | Kunde {{customer.name}}',
+        target: 'reply',
+        profile_id: null,
+        sort_order: 0,
+      },
+    ]);
+    const body = "Hilfe {{customer.email}} $& {{subject}} {{text}}{{text}} ende";
+    mockGetMessage.mockReturnValue(inboxRow({
+      subject: 'Frage {{body}}',
+      from_json: JSON.stringify({ value: [{ address: 'eve@test.de', name: 'Eve {{text}}' }] }),
+      body_text: body,
+    }));
+
+    await generateReplyDraftText(42);
+
+    expect(mockRunChat.mock.calls[0]?.[1]).toBe(
+      `Von Eve {{text}} <eve@test.de> | Betreff Frage {{body}} | Text ${body} | Kunde Acme GmbH`,
+    );
+  });
+
   test('generateAndStoreReplySuggestion persists result', async () => {
     mockGetMessage.mockReturnValue(inboxRow());
     const ok = await generateAndStoreReplySuggestion(42);

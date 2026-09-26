@@ -15,6 +15,7 @@ jest.mock('../../electron/email/email-store', () => ({
   setOutboundHold: jest.fn(),
   getEmailAccountById: jest.fn(),
   createComposeDraft: jest.fn(() => 42),
+  updateComposeDraft: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-crm-store', () => ({
@@ -64,6 +65,7 @@ jest.mock('../../electron/workflow/draft-send-prep', () => ({
 import {
   addMessageTag,
   createComposeDraft,
+  updateComposeDraft,
   setMessageAssignedTo,
   setMessageSpam,
   setMessageSpamStatus,
@@ -74,6 +76,7 @@ import {
   moveImapMessage,
 } from '../../electron/email/email-imap-move';
 import { getDb, updateDealStage } from '../../electron/sqlite-service';
+import { tryLinkMessageToCustomer } from '../../electron/email/email-crm-store';
 import { getWorkflowById } from '../../electron/email/email-workflow-store';
 import { scheduleDelayedJob } from '../../electron/workflow/delayed-jobs';
 import { executeWorkflowForTrigger } from '../../electron/workflow/workflow-executor';
@@ -156,6 +159,20 @@ describe('email.create_draft', () => {
     const r = await node.execute(ctx({ dryRun: true }), { bodyPrefix: 'x' }, 'n1');
     expect(r).toMatchObject({ status: 'ok', message: 'dry-run draft' });
     expect(createComposeDraft).not.toHaveBeenCalled();
+  });
+
+  // F-A9-12: der Entwurf hatte weder Empfaenger noch Antwortbezug, ein
+  // nachfolgendes email.send_draft verschickte deshalb nie etwas.
+  test('adressiert den Entwurf an Reply-To/Absender und verknuepft ihn als Antwort', async () => {
+    const message = {
+      ...baseMessage,
+      from_json: JSON.stringify([{ address: 'kunde@firma.de', name: 'Kunde' }]),
+      raw_headers: 'From: kunde@firma.de\r\nReply-To: Antwort <antwort@firma.de>\r\n',
+    };
+    await node.execute(ctx({ message: message as never }), { bodyPrefix: 'Danke' }, 'n1');
+    const input = (createComposeDraft as jest.Mock).mock.calls[0]![0];
+    expect(JSON.parse(input.toJson)).toEqual({ value: [{ address: 'antwort@firma.de' }] });
+    expect(updateComposeDraft).toHaveBeenCalledWith(42, { replyParentMessageId: 7 });
   });
 });
 
@@ -387,6 +404,41 @@ describe('crm.create_task', () => {
     await node.execute(ctx({ dryRun: true }), {}, 'n1');
     expect(runMock).not.toHaveBeenCalled();
   });
+
+  // F-A9-11: Bei CRM-Triggern (ohne Nachricht) wurde customer.id ignoriert; die
+  // Vorlage „Aufgabe bei Deal gewonnen“ lief still als 'skipped' ins Leere.
+  test('CRM-Trigger ohne Nachricht nutzt die Variable customer.id', async () => {
+    runMock.mockReturnValueOnce({ lastInsertRowid: 55, changes: 1 });
+    const c = ctx({
+      trigger: 'crm.deal_stage_changed',
+      direction: 'crm_event',
+      message: null,
+      messageId: null,
+      variables: { 'customer.id': 9, 'deal.id': 4 },
+    });
+    const r = await node.execute(c, { title: 'Deal abschließen', priority: 'high', daysUntilDue: 1 }, 'n1');
+    expect(r).toMatchObject({ status: 'ok', variables: { 'task.id': 55 } });
+    expect(runMock.mock.calls[0]![0]).toBe(9);
+  });
+});
+
+describe('crm.link_customer', () => {
+  const node = crmDefs.get('crm.link_customer')!;
+
+  // F-A9-11: „Kunde verknüpfen → Aufgabe“: der frisch verknüpfte Kunde war für
+  // Folgeknoten unsichtbar, weil link_customer customer.id nicht weitergab.
+  test('gibt den verknüpften Kunden als customer.id an Folgeknoten weiter', async () => {
+    jest.mocked(tryLinkMessageToCustomer).mockReturnValueOnce(21);
+    const r = await node.execute(ctx({ message: { ...baseMessage, customer_id: null } as never }), {}, 'n1');
+    expect(r).toMatchObject({ status: 'ok', variables: { 'customer.id': 21 } });
+  });
+
+  test('ohne gefundenen Kunden bleibt customer.id unverändert', async () => {
+    jest.mocked(tryLinkMessageToCustomer).mockReturnValueOnce(null);
+    const r = await node.execute(ctx({ message: { ...baseMessage, customer_id: null } as never }), {}, 'n1');
+    expect(r.status).toBe('ok');
+    expect(r.variables).toBeUndefined();
+  });
 });
 
 describe('crm.log_activity', () => {
@@ -409,6 +461,20 @@ describe('crm.log_activity', () => {
     await expect(node.execute(c, {}, 'n1')).resolves.toMatchObject({ status: 'skipped' });
     await node.execute(ctx({ dryRun: true }), {}, 'n1');
     expect(runMock).not.toHaveBeenCalled();
+  });
+
+  // F-A9-11: Bei CRM-Triggern (ohne Nachricht) wurde customer.id ignoriert.
+  test('CRM-Trigger ohne Nachricht nutzt die Variable customer.id', async () => {
+    const c = ctx({
+      trigger: 'task.due',
+      direction: 'crm_event',
+      message: null,
+      messageId: null,
+      variables: { 'customer.id': 9, 'task.id': 11 },
+    });
+    const r = await node.execute(c, { activityType: 'task', title: 'Fällig' }, 'n1');
+    expect(r.status).toBe('ok');
+    expect(runMock.mock.calls[0]![0]).toBe(9);
   });
 });
 
@@ -625,7 +691,8 @@ describe('workflow.subflow', () => {
       message: c.message,
       outbound: null,
       dryRun: false,
-      initialVariables: { 'ai.class': 'support' },
+      // F-A9-07: Die Subflow-Tiefe reist wie beim Server in den Kind-Lauf mit.
+      initialVariables: { 'ai.class': 'support', __subflow_depth: 1 },
     });
     expect(r).toMatchObject({ status: 'ok', variables: { 'subflow.status': 'ok' } });
   });

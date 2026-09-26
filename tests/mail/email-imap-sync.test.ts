@@ -1,3 +1,4 @@
+import { repeatedCidImageMail } from './helpers/cid-mime';
 import { createImapFlowMock } from './helpers/imap-flow-mock';
 import { createSqliteMock } from './helpers/sqlite-mock';
 
@@ -46,6 +47,10 @@ jest.mock('../../electron/email/email-sync-mutex', () => ({
 }));
 jest.mock('../../electron/email/email-sync-post-process', () => ({
   processNewMessagesAfterSync: jest.fn().mockResolvedValue(undefined),
+}));
+const mockPersistAttachments = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistParsedAttachments: (...args: unknown[]) => mockPersistAttachments(...args),
 }));
 const mockBackup = jest.fn(() => []);
 const mockRecordNotice = jest.fn();
@@ -192,6 +197,57 @@ describe('email-imap-sync', () => {
     expect(client.search).toHaveBeenCalledWith({ all: true }, { uid: true });
   });
 
+  // F-A7b-04: Der Erst-Sync eines neuen Ordners lieferte bis zu 2000 Bestandsmails als
+  // neu eingegangen an Workflows, KI-Vorschläge und Abwesenheitsantworten.
+  test('syncInboxImap marks mail of a never-synced folder as historical', async () => {
+    const { getFolderByAccountAndPath, insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    (getFolderByAccountAndPath as jest.Mock).mockReturnValueOnce(undefined);
+    client.search.mockResolvedValueOnce([1, 2, 3]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    await syncInboxImap(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ runInboundWorkflows: true, historical: true }),
+    );
+  });
+
+  test('syncInboxImap treats new mail of an empty but synced folder as live inbound', async () => {
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    Object.assign(mockFolder, { last_uid: 0, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([1]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    await syncInboxImap(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ runInboundWorkflows: true, historical: false }),
+    );
+  });
+
+  // F-A5-06 (Desktop-Paritaet): "UID n+1:*" liefert nach RFC 3501 immer die hoechste UID, auch wenn sie <= n ist; sie wurde bei jedem Poll neu geholt.
+  test('syncInboxImap does not refetch the already synced highest uid', async () => {
+    (mockFolder as { last_uid: number; uidvalidity: number; uidvalidity_str: string }).last_uid = 7;
+    (mockFolder as { uidvalidity_str: string }).uidvalidity_str = '1';
+    client.search.mockResolvedValueOnce([7]);
+
+    const r = await syncInboxImap(1);
+
+    expect(client.search).toHaveBeenCalledWith({ uid: '8:*' }, { uid: true });
+    expect(client.fetchOne).not.toHaveBeenCalled();
+    expect(r.fetched).toBe(0);
+  });
+
   test('syncInboxImap skips uid after repeated failures', async () => {
     (mockFolder as { last_uid: number }).last_uid = 1;
     client.search.mockResolvedValueOnce([2]);
@@ -209,5 +265,76 @@ describe('email-imap-sync', () => {
     mockShouldSkip.mockReturnValueOnce(false).mockReturnValueOnce(true);
     await syncInboxImap(1);
     expect(mockRecordFailure).toHaveBeenCalled();
+  });
+
+  // C-A71: simpleParser lief mit der Standard-CID-Expansion; ein vielfach referenziertes Inline-Bild blaehte body_html ohne Grenze auf.
+  test('syncInboxImap stores html with a bounded cid image expansion', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const realSimpleParser = (jest.requireActual('mailparser') as typeof import('mailparser')).simpleParser;
+    simpleParser.mockImplementationOnce((source: Buffer, options?: { keepCidLinks?: boolean }) =>
+      realSimpleParser(source, options));
+    const { source, html } = repeatedCidImageMail(100 * 1024, 200);
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2]);
+    client.fetchOne.mockResolvedValueOnce({ source, flags: new Set() });
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(1);
+    const stored = (insertOrUpdateEmailMessage as jest.Mock).mock.calls[0]![0] as { bodyHtml: string };
+    expect(stored.bodyHtml.length).toBeLessThanOrEqual(html.length + 16 * 1024 * 1024);
+    expect(stored.bodyHtml).toContain('<img src="data:image/png;base64,');
+    expect(stored.bodyHtml).toContain('<img src="cid:a">');
+    expect(simpleParser).toHaveBeenCalledWith(source, { keepCidLinks: true });
+  }, 30_000);
+
+  // C-A59: Die dekodierten Anhaenge aller neuen Mails lagen bis zum Ende der Ordnerschleife in newAfterSync (bis 2000 Mails beim Erst-Sync).
+  test('syncInboxImap stores attachments per message and hands no buffers to the post-process', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    const attachment = (n: number) => ({ filename: `a${n}.pdf`, contentType: 'application/pdf', content: Buffer.alloc(1024, n) });
+    const parsedWith = (n: number) => ({ messageId: `<m${n}@x>`, subject: `S${n}`, text: 'x', attachments: [attachment(n)] });
+    simpleParser.mockResolvedValueOnce(parsedWith(1)).mockResolvedValueOnce(parsedWith(2));
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2, 3]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock)
+      .mockReturnValueOnce({ id: 21, isNew: true })
+      .mockReturnValueOnce({ id: 22, isNew: true });
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(2);
+    expect(mockPersistAttachments.mock.calls).toEqual([[21, [attachment(1)]], [22, [attachment(2)]]]);
+    // Stored before the next message is inserted, not after the whole folder.
+    expect(mockPersistAttachments.mock.invocationCallOrder[0])
+      .toBeLessThan((insertOrUpdateEmailMessage as jest.Mock).mock.invocationCallOrder[1]!);
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items.map((i) => [i.localMsgId, i.parsedAttachments])).toEqual([[21, []], [22, []]]);
+  });
+
+  // C-A59: Scheitert das Speichern im Sync, holt die Nachverarbeitung die Anhaenge aus raw_rfc822_b64 nach, ohne die UID als Fehler zu zaehlen.
+  test('syncInboxImap leaves attachments to the post-process recovery when storing fails', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    simpleParser.mockResolvedValueOnce({ messageId: '<m@x>', text: 'x', attachments: [{ filename: 'a.pdf', content: Buffer.from('pdf') }] });
+    mockPersistAttachments.mockRejectedValueOnce(new Error('disk full'));
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValueOnce({ id: 31, isNew: true });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(1);
+    expect(mockRecordFailure).not.toHaveBeenCalled();
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items).toEqual([expect.objectContaining({ localMsgId: 31, parsedAttachments: undefined })]);
+    warn.mockRestore();
   });
 });

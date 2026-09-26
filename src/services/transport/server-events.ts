@@ -1,5 +1,5 @@
 import { getRendererTransport, type RendererTransport } from "./renderer-transport"
-import { getServerAccessToken } from "./server-auth-session"
+import { getServerAccessToken, onServerAccessTokenChange } from "./server-auth-session"
 
 const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = "simplecrm.access-token."
 const DEFAULT_RECONNECT_DELAY_MS = 5000
@@ -39,6 +39,7 @@ export function subscribeServerEvents(options: ServerEventSubscriptionOptions): 
   let closed = false
   let socket: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let connectAttempt = 0
   let since = options.since
   const reconnectDelayMs = normalizeReconnectDelay(options.reconnectDelayMs)
 
@@ -58,11 +59,12 @@ export function subscribeServerEvents(options: ServerEventSubscriptionOptions): 
   }
 
   const connect = async () => {
+    const attempt = ++connectAttempt
     try {
       const token = await (options.getAccessToken
         ? options.getAccessToken()
         : getServerAccessToken(undefined, undefined, transport.serverBaseUrl))
-      if (closed) return
+      if (closed || attempt !== connectAttempt) return
       const url = buildServerEventWebSocketUrl(transport.serverBaseUrl!, since)
       const protocols = buildServerEventProtocols(token)
       socket = protocols.length > 0
@@ -85,16 +87,40 @@ export function subscribeServerEvents(options: ServerEventSubscriptionOptions): 
         scheduleReconnect()
       }
     } catch (error) {
+      if (attempt !== connectAttempt) return
       options.onError?.(error)
       scheduleReconnect()
     }
   }
+
+  // The server authorizes the socket with the access token it was opened with and
+  // rejects it once that token is rotated or expires. Reconnect with the new token
+  // (and the replay cursor) as soon as the session is refreshed.
+  const reconnectWithCurrentToken = () => {
+    if (closed) return
+    clearReconnect()
+    const previous = socket
+    socket = null
+    if (previous) {
+      // Detach first: the replaced socket must neither deliver late frames nor
+      // schedule a second reconnect from its close.
+      previous.onmessage = null
+      previous.onerror = null
+      previous.onclose = null
+      previous.close()
+    }
+    void connect()
+  }
+  const stopTokenListener = options.getAccessToken
+    ? () => undefined
+    : onServerAccessTokenChange(reconnectWithCurrentToken)
 
   void connect()
 
   return {
     unsubscribe() {
       closed = true
+      stopTokenListener()
       clearReconnect()
       socket?.close()
       socket = null

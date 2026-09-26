@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from 'node:crypto';
+
 import type {
   ApiRequest,
   ApiResponse,
@@ -16,9 +18,11 @@ import {
   data,
   error,
   positiveIntFromPath,
+  rejectUnlessCrmWrite,
   requireAdmin,
   requirePrincipal,
 } from './http';
+import { rateLimitClientKey } from '../security/rate-limit-client-key';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -203,6 +207,9 @@ async function handleGetReturn(req: ApiRequest, ports: ServerApiPorts, id: numbe
 async function handleCreateReturn(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // The dispatcher only checks crm.read for the returns root segment.
+  const denied = rejectUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
   const parsed = parseCreateBody(req.body);
@@ -229,6 +236,8 @@ async function handleUpdateReturn(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
   const parsed = parseUpdateBody(req.body);
@@ -512,8 +521,9 @@ async function handlePortalSettings(req: ApiRequest, ports: ServerApiPorts): Pro
 // ============================================================================
 // Public portal (Phase 5/6 — UNAUTHENTICATED)
 //
-// Two endpoints, both behind the per-workspace portal token:
+// Three endpoints, all behind the per-workspace portal token:
 //   POST /api/v1/portal/returns/:token            — create a return (CAPTCHA)
+//   GET  /api/v1/portal/returns/:token/config     — CAPTCHA requirement for the form
 //   GET  /api/v1/portal/returns/:token/:returnNo  — public status lookup
 //
 // Token-in-path keeps the workspace resolution close to the URL the customer
@@ -538,24 +548,61 @@ export type PortalRateLimiter = {
   check(key: string, now?: number): { ok: true } | { ok: false; retryAfterSeconds: number };
 };
 
-export function createPortalRateLimiter(options: { limit: number; windowMs: number }): PortalRateLimiter {
+export function createPortalRateLimiter(options: {
+  limit: number;
+  windowMs: number;
+  maxKeys?: number;
+  overflowBuckets?: number;
+}): PortalRateLimiter {
+  // Keys stay ordered by their latest recorded hit, so expired keys are dropped
+  // from the front in amortised O(1) instead of scanning the whole map. At most
+  // maxKeys clients get an exact counter; beyond that (a flood of rotating
+  // addresses) new keys share a fixed table of keyed-hash counters. Memory
+  // stays bounded and live counters are never evicted, so a flood can only
+  // throttle, never reset a client.
   const hits = new Map<string, number[]>();
+  const maxKeys = options.maxKeys ?? 10_000;
+  const overflow: number[][] = Array.from({ length: options.overflowBuckets ?? 1_024 }, () => []);
+  const overflowSecret = randomBytes(32);
+  let overflowLiveUntil = Number.NEGATIVE_INFINITY;
+  const overflowSeries = (key: string) => overflow[
+    createHmac('sha256', overflowSecret).update(key).digest().readUInt32BE(0) % overflow.length
+  ]!;
   return {
     check(key, nowInput) {
       const now = nowInput ?? Date.now();
       const cutoff = now - options.windowMs;
-      const recent = (hits.get(key) ?? []).filter((t) => t > cutoff);
+      for (const [staleKey, series] of hits) {
+        if ((series[series.length - 1] ?? Number.NEGATIVE_INFINITY) > cutoff) break;
+        hits.delete(staleKey);
+      }
+      let series = hits.get(key);
+      let shared: number[] | null = null;
+      if (!series) {
+        // A key already counted in a live overflow bucket keeps that window,
+        // even if exact slots have freed up in the meantime.
+        const bucket = now < overflowLiveUntil ? overflowSeries(key) : null;
+        if (hits.size >= maxKeys || bucket?.some((t) => t > cutoff)) {
+          shared = bucket ?? overflowSeries(key);
+          series = shared;
+        } else {
+          series = [];
+        }
+      }
+      const recent = series.filter((t) => t > cutoff);
       if (recent.length >= options.limit) {
-        hits.set(key, recent);
+        if (shared) shared.splice(0, shared.length, ...recent);
+        else hits.set(key, recent);
         const oldest = recent[0] ?? now;
         return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((oldest + options.windowMs - now) / 1000)) };
       }
       recent.push(now);
-      hits.set(key, recent);
-      if (hits.size > 10_000) {
-        for (const [k, v] of hits) {
-          if (v.every((t) => t <= cutoff)) hits.delete(k);
-        }
+      if (shared) {
+        shared.splice(0, shared.length, ...recent);
+        overflowLiveUntil = now + options.windowMs;
+      } else {
+        hits.delete(key);
+        hits.set(key, recent);
       }
       return { ok: true };
     },
@@ -578,7 +625,7 @@ export async function handlePublicPortalRoute(
   // Hot path matchers — same pattern as the authenticated dispatcher above.
   const createMatch = /^\/api\/v1\/portal\/returns\/([^/]+)$/.exec(req.path);
   if (createMatch && req.method === 'POST') {
-    const limited = portalCreateLimiter.check(`create:${req.ip ?? 'unknown'}`);
+    const limited = portalCreateLimiter.check(`create:${rateLimitClientKey(req.ip)}`);
     if (!limited.ok) {
       return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
         retryAfterSeconds: limited.retryAfterSeconds,
@@ -586,9 +633,21 @@ export async function handlePublicPortalRoute(
     }
     return handlePortalCreate(req, ports, createMatch[1] ?? '');
   }
+  // Matched before the status lookup: generated return numbers are R-<hex>,
+  // so the literal "config" segment can never shadow a real return.
+  const configMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/config$/.exec(req.path);
+  if (configMatch && req.method === 'GET') {
+    const limited = portalLookupLimiter.check(`lookup:${rateLimitClientKey(req.ip)}`);
+    if (!limited.ok) {
+      return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
+        retryAfterSeconds: limited.retryAfterSeconds,
+      });
+    }
+    return handlePortalConfig(ports, configMatch[1] ?? '');
+  }
   const detailMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/([^/]+)$/.exec(req.path);
   if (detailMatch && req.method === 'GET') {
-    const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
+    const limited = portalLookupLimiter.check(`lookup:${rateLimitClientKey(req.ip)}`);
     if (!limited.ok) {
       return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
         retryAfterSeconds: limited.retryAfterSeconds,
@@ -598,7 +657,7 @@ export async function handlePublicPortalRoute(
   }
   // 405 on a wrong-method match against a known path; null otherwise so the
   // outer dispatcher can fall through to its 404.
-  if (createMatch || detailMatch) return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (createMatch || configMatch || detailMatch) return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   return null;
 }
 
@@ -631,16 +690,16 @@ async function handlePortalCreate(
   if ('status' in resolved) return resolved;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
-  // CAPTCHA: when the workspace has captcha enabled in its login security
-  // settings, the public create endpoint also requires a fresh challenge.
-  // When loginSecurity is NOT wired, portal create is rejected — public abuse
-  // must not rely on optional operator configuration.
+  // CAPTCHA: once Turnstile is configured, the public create endpoint requires a
+  // fresh challenge unless the portal token's workspace switched the portal
+  // CAPTCHA off. When loginSecurity is NOT wired, portal create is rejected —
+  // public abuse must not rely on optional operator configuration.
   let captchaStatus: 'passed' | 'not_required' | 'unavailable' = 'unavailable';
   if (!ports.loginSecurity) {
     return error(503, 'portal_captcha_unavailable', 'Oeffentliches Retouren-Portal ist ohne Login-Sicherheitskonfiguration nicht verfuegbar');
   }
-  const loginConfig = await ports.loginSecurity.getLoginConfig();
-  if (loginConfig?.captcha.enabled) {
+  const captcha = await portalCaptchaConfig(ports.loginSecurity, resolved.workspaceId);
+  if (captcha.captchaRequired) {
     const challenge = isRecord(req.body) && typeof req.body.captchaChallenge === 'string'
       ? req.body.captchaChallenge
       : undefined;
@@ -661,15 +720,49 @@ async function handlePortalCreate(
     input: parsed.input,
   });
   if (!result.ok) return error(400, 'create_failed', result.error);
+  // The portal caller is anonymous: audit_events.actor_user_id is a uuid
+  // referencing users, so the origin goes into the metadata instead.
   await ports.audit?.record({
     workspaceId: resolved.workspaceId,
-    actorUserId: 'portal',
+    actorUserId: null,
     action: 'returns.portal.create',
     entityType: 'returns',
     entityId: result.record.returnNumber,
-    metadata: { ip: req.ip ?? null, captcha: captchaStatus },
+    metadata: { actor: 'portal', ip: req.ip ?? null, captcha: captchaStatus },
   });
   return data(201, result.record);
+}
+
+/**
+ * The portal CAPTCHA follows the workspace behind the portal token — not the
+ * instance-wide login config, which is on as soon as ANY workspace enables
+ * its login CAPTCHA. It needs Turnstile configured on the instance and is then
+ * on by default (F-A3a-07): anonymous creates are the abuse surface, so only an
+ * explicit `portalCaptchaEnabled: false` of the workspace switches it off. The
+ * login CAPTCHA setting no longer decides it.
+ */
+async function portalCaptchaConfig(
+  loginSecurity: NonNullable<ServerApiPorts['loginSecurity']>,
+  workspaceId: string,
+): Promise<{ captchaRequired: boolean; siteKey: string | null }> {
+  const loginConfig = await loginSecurity.getLoginConfig();
+  const siteKey = loginConfig?.captcha.provider === 'turnstile' ? loginConfig.captcha.siteKey : null;
+  if (!siteKey) return { captchaRequired: false, siteKey: null };
+  const settings = await loginSecurity.getWorkspaceSettings(workspaceId);
+  return settings.portalCaptchaEnabled !== false
+    ? { captchaRequired: true, siteKey }
+    : { captchaRequired: false, siteKey: null };
+}
+
+async function handlePortalConfig(ports: ServerApiPorts, token: string): Promise<ApiResponse> {
+  const resolved = await resolvePortal(ports, token);
+  if ('status' in resolved) return resolved;
+  if (!ports.loginSecurity) {
+    return error(503, 'portal_captcha_unavailable', 'Oeffentliches Retouren-Portal ist ohne Login-Sicherheitskonfiguration nicht verfuegbar');
+  }
+  // Only these two fields leave the server: the site key is public by design.
+  const { captchaRequired, siteKey } = await portalCaptchaConfig(ports.loginSecurity, resolved.workspaceId);
+  return data(200, { captchaRequired, siteKey });
 }
 
 async function handlePortalLookup(

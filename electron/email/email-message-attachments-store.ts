@@ -4,6 +4,8 @@ import crypto from 'crypto';
 import { app } from 'electron';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
+import { resolveStoredAttachmentPath, toStoredAttachmentPath } from './attachment-storage-path';
+import { sanitizeAttachmentFilename } from '@simplecrm/core';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -23,23 +25,39 @@ function attachmentsRoot(): string {
   return root;
 }
 
+/** Display and on-disk name: keeps umlauts/Unicode, drops path parts and control characters. */
 function safeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._\-+ ]/g, '_').slice(0, 180) || 'attachment';
+  return sanitizeAttachmentFilename(name);
+}
+
+/**
+ * Absolute on-disk path for a stored `storage_path` (relative or legacy absolute),
+ * confined to the current attachments root; null when it cannot be mapped.
+ */
+export function resolveAttachmentStoragePath(storagePath: string): string | null {
+  return resolveStoredAttachmentPath(storagePath, getAttachmentsRootForExport());
+}
+
+/** Rows leave the store with an absolute path ('' when unresolvable = missing file). */
+function withResolvedStoragePath<T extends { storage_path: string }>(row: T): T {
+  return { ...row, storage_path: resolveAttachmentStoragePath(row.storage_path) ?? '' };
 }
 
 export function listAttachmentsForMessage(messageId: number): EmailAttachmentRow[] {
-  return getDb()
+  const rows = getDb()
     .prepare(
       `SELECT id, message_id, filename_display, content_type, size_bytes, storage_path, created_at
        FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE message_id = ? ORDER BY id ASC`,
     )
     .all(messageId) as EmailAttachmentRow[];
+  return rows.map(withResolvedStoragePath);
 }
 
 export function getAttachmentById(id: number): EmailAttachmentRow | undefined {
-  return getDb()
+  const row = getDb()
     .prepare(`SELECT * FROM ${EMAIL_MESSAGE_ATTACHMENTS_TABLE} WHERE id = ?`)
     .get(id) as EmailAttachmentRow | undefined;
+  return row ? withResolvedStoragePath(row) : undefined;
 }
 
 function sha256Hex(buf: Buffer): string {
@@ -87,7 +105,8 @@ function insertPreparedAttachments(
     return { storedCount: 0, writeFailures: [] };
   }
 
-  const dir = path.join(attachmentsRoot(), String(messageId));
+  const root = attachmentsRoot();
+  const dir = path.join(root, String(messageId));
   fs.mkdirSync(dir, { recursive: true });
 
   const written: { filePath: string; displayName: string; hash: string; contentType: string | null; size: number }[] = [];
@@ -127,7 +146,14 @@ function insertPreparedAttachments(
     let storedAny = false;
     const storedWritten: typeof written = [];
     for (const w of written) {
-      const r = ins.run(messageId, w.displayName, w.contentType, w.size, w.filePath, w.hash);
+      const r = ins.run(
+        messageId,
+        w.displayName,
+        w.contentType,
+        w.size,
+        toStoredAttachmentPath(root, w.filePath),
+        w.hash,
+      );
       if (r.changes > 0) {
         storedAny = true;
         storedCount += 1;
@@ -248,8 +274,9 @@ export async function persistParsedAttachments(
     .all(messageId) as { id: number; storage_path: string; content_sha256: string | null }[];
   const existingHashes = new Set<string>();
   for (const row of existingRows) {
-    if (fs.existsSync(row.storage_path)) {
-      const hash = row.content_sha256 ?? sha256Hex(fs.readFileSync(row.storage_path));
+    const filePath = resolveAttachmentStoragePath(row.storage_path);
+    if (filePath && fs.existsSync(filePath)) {
+      const hash = row.content_sha256 ?? sha256Hex(fs.readFileSync(filePath));
       existingHashes.add(hash);
       if (!row.content_sha256) {
         try {
@@ -362,15 +389,17 @@ export async function purgeAttachmentFilesForAccount(accountId: number): Promise
     .all(accountId) as { storage_path: string }[];
   const dirs = new Set<string>();
   for (const r of rows) {
-    if (r.storage_path) {
-      dirs.add(path.dirname(r.storage_path));
-      await fs.promises.unlink(r.storage_path).catch(() => undefined);
+    const filePath = resolveAttachmentStoragePath(r.storage_path);
+    if (filePath) {
+      dirs.add(path.dirname(filePath));
+      await fs.promises.unlink(filePath).catch(() => undefined);
     }
   }
-  const accountDir = path.join(attachmentsRoot(), String(accountId));
-  await fs.promises.rm(accountDir, { recursive: true, force: true }).catch(() => undefined);
+  // Folders are named after the message id (there are no per-account folders),
+  // so only the folders of this account's own messages are removed.
+  const root = path.resolve(attachmentsRoot());
   for (const d of dirs) {
-    if (d.startsWith(attachmentsRoot())) {
+    if (path.resolve(d).startsWith(root + path.sep)) {
       await fs.promises.rm(d, { recursive: true, force: true }).catch(() => undefined);
     }
   }

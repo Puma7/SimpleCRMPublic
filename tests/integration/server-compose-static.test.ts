@@ -22,16 +22,41 @@ type ResolvedCompose = Readonly<{
   services: Record<string, Readonly<{
     environment?: Record<string, string>;
     image?: string;
+    cap_drop?: readonly string[];
+    security_opt?: readonly string[];
     profiles?: string | readonly string[];
+    networks?: Record<string, { ipv4_address?: string }>;
+    ports?: readonly unknown[];
     volumes?: Readonly<{ source?: string; target?: string; read_only?: boolean }> | readonly Readonly<{
       source?: string;
       target?: string;
       read_only?: boolean;
     }>[];
   }>>;
+  networks?: Record<string, { ipam?: { config?: readonly { subnet?: string; ip_range?: string }[] } }>;
 }>;
 
 describe('server Compose GeoIP profile', () => {
+  test.each([
+    [{}, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', '172.31.255.2'],
+    [{ CADDY_PROXY_IP: '10.254.254.2', PROXY_SUBNET: '10.254.254.0/29', PROXY_DYNAMIC_RANGE: '10.254.254.4/30' }, '10.254.254.2', '10.254.254.0/29', '10.254.254.4/30', '10.254.254.2'],
+    [{ TRUST_PROXY: '192.0.2.10' }, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', '192.0.2.10'],
+    [{ TRUST_PROXY: 'false' }, '172.31.255.2', '172.31.255.0/29', '172.31.255.4/30', 'false'],
+  ] as const)('pins bundled proxy trust and supports explicit configuration %j', (proxyEnvironment, ip, subnet, ipRange, trust) => {
+    const tempDir = createComposeFixture({ proxyEnvironment });
+    try {
+      const resolved = resolveCompose(tempDir);
+      expect(resolved.services.caddy.networks).toEqual({ proxy: { ipv4_address: ip } });
+      expect(Object.keys(resolved.services.api.networks ?? {}).sort()).toEqual(['default', 'proxy']);
+      expect(resolved.services.api.environment?.TRUST_PROXY).toBe(trust);
+      expect(resolved.services.api.ports ?? []).toHaveLength(0);
+      expect(resolved.networks?.proxy.ipam?.config).toEqual([{ subnet, ip_range: ipRange }]);
+      expect(resolved.services.postgres.networks).not.toHaveProperty('proxy');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('resolves MaxMind credentials only into the optional updater service', () => {
     const accountId = 'geoip-updater-account-sentinel';
     const licenseKey = 'geoip-updater-license-sentinel';
@@ -125,9 +150,118 @@ describe('server Compose GeoIP profile', () => {
   });
 });
 
+describe('server Compose backup volume', () => {
+  // F-A12-08: Ein abweichender BACKUP_DIR liess backup/backup-scheduler neben das fest unter /backups eingehaengte Volume schreiben; die Backups verschwanden mit dem Container.
+  test('backup writers always write into the backups volume, whatever BACKUP_DIR says', () => {
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir, ['backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill']);
+      for (const serviceName of ['backup', 'backup-scheduler']) {
+        const service = resolved.services[serviceName];
+        expect(service.environment?.BACKUP_DIR).toBe(RUNTIME_SENTINELS.BACKUP_DIR);
+        expect(volumeList(service.volumes)).toContainEqual({
+          source: 'backups',
+          target: service.environment?.BACKUP_DIR,
+          readOnly: false,
+        });
+      }
+      // Die Leser suchen fest unter /backups im selben Volume.
+      for (const serviceName of ['restore', 'doctor', 'restore-drill']) {
+        expect(volumeList(resolved.services[serviceName].volumes)).toContainEqual({
+          source: 'backups',
+          target: '/backups',
+          readOnly: true,
+        });
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('server Compose restore identity', () => {
+  // C-A61: restore und restore-drill spielten den Dump als simplecrm_admin (Superuser) mit PG_RESTORE_ROLE ein; SQL aus dem Dump kam per RESET ROLE zum Superuser zurueck.
+  test('restores the dump through the application login, admin only manages the drill database', () => {
+    const appUrl = 'postgres://simplecrm_app:test-app-password@postgres:5432/simplecrm';
+    const tempDir = createComposeFixture({ extraEnvironment: { RESTORE_DRILL_MAINTENANCE_DATABASE_URL: '' } });
+    try {
+      const resolved = resolveCompose(tempDir, ['restore', 'restore-drill']);
+      const restore = resolved.services.restore.environment ?? {};
+      const drill = resolved.services['restore-drill'].environment ?? {};
+
+      expect(restore.DATABASE_URL).toBe(appUrl);
+      expect(restore.PG_RESTORE_ROLE).toBeUndefined();
+      // Der In-Place-Restore braucht die Admin-Zugangsdaten gar nicht.
+      expect(Object.values(restore).join('\n')).not.toMatch(/simplecrm_admin|test-admin-password/);
+
+      expect(drill.DATABASE_URL).toBe(appUrl);
+      expect(drill.PG_RESTORE_ROLE).toBeUndefined();
+      expect(drill.RESTORE_DRILL_MAINTENANCE_DATABASE_URL)
+        .toBe('postgres://simplecrm_admin:test-admin-password@postgres:5432/simplecrm');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('server Compose API least privilege', () => {
+  // F-A12-07: Der API-Container (auch migrate) lief als root mit vollem Capability-Set, pgadmin zog ungepinnt :latest.
+  test('runs the API image as the unprivileged node user without capabilities', () => {
+    const dockerfile = readFileSync(join(dockerRoot, 'api.Dockerfile'), 'utf8');
+    const finalStage = dockerfile.slice(dockerfile.lastIndexOf('\nFROM '));
+    expect(finalStage).toMatch(/^USER node$/m);
+    // Leere Named Volumes uebernehmen Besitzer und Rechte aus dem Image.
+    expect(finalStage).toMatch(
+      /mkdir -p \/app\/data\/attachments \/app\/data\/audit-archive \/app\/data\/logs[\s\S]*chown -R node:node \/app\/data/,
+    );
+    expect(finalStage.indexOf('chown -R node:node /app/data')).toBeLessThan(finalStage.indexOf('USER node'));
+
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir);
+      for (const serviceName of ['api', 'migrate']) {
+        const service = resolved.services[serviceName];
+        expect(service.security_opt).toEqual(expect.arrayContaining(['no-new-privileges:true']));
+        expect(service.cap_drop).toEqual(['ALL']);
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('pins third-party images to a release line instead of latest', () => {
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir, [
+        'geoip', 'backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill', 'monitor', 'pgadmin',
+      ]);
+      expect(resolved.services.pgadmin.image).toBe('dpage/pgadmin4:9');
+      for (const [serviceName, service] of Object.entries(resolved.services)) {
+        const image = service.image ?? '';
+        if (image.startsWith('simplecrm/')) continue;
+        const tag = /^[^:@]+:([^:@]+)(@sha256:[0-9a-f]{64})?$/.exec(image)?.[1];
+        expect({ serviceName, tag }).toEqual({ serviceName, tag: expect.stringMatching(/^(?!latest$)\S+$/) });
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // E40 (minio-Profil): minio/minio wird auf Docker Hub nicht mehr veroeffentlicht, das Profil liess sich nicht mehr ziehen.
+  test('ships no MinIO profile; S3-compatible storage stays external', () => {
+    const compose = readFileSync(join(dockerRoot, 'docker-compose.yml'), 'utf8');
+    const envExample = readFileSync(join(dockerRoot, '.env.example'), 'utf8');
+
+    expect(compose).not.toMatch(/minio/i);
+    expect(envExample).not.toMatch(/MINIO_/);
+  });
+});
+
 function createComposeFixture(options: Readonly<{
   broadGeoIpCredentials?: boolean;
   updaterCredentials?: Readonly<{ accountId: string; licenseKey: string }>;
+  proxyEnvironment?: Readonly<Record<string, string>>;
+  extraEnvironment?: Readonly<Record<string, string>>;
 }> = {}): string {
   const tempDir = mkdtempSync(join(tmpdir(), 'simplecrm-geoip-compose-'));
   copyFileSync(join(dockerRoot, 'docker-compose.yml'), join(tempDir, 'docker-compose.yml'));
@@ -138,6 +272,8 @@ function createComposeFixture(options: Readonly<{
     ACCESS_TOKEN_SECRET: 'test-access-token-secret',
     PUBLIC_BASE_URL: 'https://crm.example.test',
     ...RUNTIME_SENTINELS,
+    ...options.proxyEnvironment,
+    ...options.extraEnvironment,
     ...(options.broadGeoIpCredentials ? {
       GEOIPUPDATE_ACCOUNT_ID: 'legacy-account-sentinel',
       GEOIPUPDATE_LICENSE_KEY: 'legacy-license-sentinel',
@@ -162,6 +298,10 @@ function resolveCompose(composeRoot: string, profiles: readonly string[] = []): 
   delete env.GEOIPUPDATE_ACCOUNT_ID;
   delete env.GEOIPUPDATE_LICENSE_KEY;
   delete env.GEOIP_UPDATER_ENV_FILE;
+  delete env.TRUST_PROXY;
+  delete env.CADDY_PROXY_IP;
+  delete env.PROXY_SUBNET;
+  delete env.PROXY_DYNAMIC_RANGE;
   for (const variable of Object.keys(RUNTIME_SENTINELS)) delete env[variable];
   return JSON.parse(execFileSync(
     'docker',

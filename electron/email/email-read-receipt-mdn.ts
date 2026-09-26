@@ -5,13 +5,79 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { generateOutboundMessageId } from './email-outbound-threading';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
+import { encodeMailboxListHeader, encodeRfc2047 } from './mail-rfc822-compose';
+import { randomBytes } from 'crypto';
 import {
   dispositionNotificationMatchesSender,
   extractDispositionNotificationEmail,
 } from '../../packages/core/src/email';
 
+function headerValue(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function base64Lines(text: string): string {
+  return (Buffer.from(text, 'utf8').toString('base64').match(/.{1,76}/g) ?? []).join('\r\n');
+}
+
 /**
- * Send RFC 3798-style read receipt (MDN) for an inbound message.
+ * RFC 8098 MDN: multipart/report; report-type=disposition-notification with a
+ * human-readable text/plain part and the machine-readable
+ * message/disposition-notification part.
+ */
+export function buildReadReceiptMdnRfc822(input: {
+  from: string;
+  to: string;
+  subject: string;
+  messageId: string;
+  inReplyTo?: string;
+  references?: string;
+  humanText: string;
+  finalRecipient: string;
+  originalMessageId?: string;
+  date?: Date;
+}): Buffer {
+  const boundary = `mdn_${randomBytes(12).toString('hex')}`;
+  const headers = [
+    `From: ${encodeMailboxListHeader(input.from)}`,
+    `To: ${encodeMailboxListHeader(input.to)}`,
+    `Subject: ${encodeRfc2047(input.subject)}`,
+    `Date: ${(input.date ?? new Date()).toUTCString()}`,
+    `Message-ID: ${headerValue(input.messageId)}`,
+    ...(input.inReplyTo ? [`In-Reply-To: ${headerValue(input.inReplyTo)}`] : []),
+    ...(input.references ? [`References: ${headerValue(input.references)}`] : []),
+    'Auto-Submitted: auto-replied',
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/report; report-type=disposition-notification; boundary="${boundary}"`,
+  ];
+  const notification = [
+    'Reporting-UA: SimpleCRM',
+    `Final-Recipient: rfc822;${headerValue(input.finalRecipient)}`,
+    ...(input.originalMessageId ? [`Original-Message-ID: ${headerValue(input.originalMessageId)}`] : []),
+    'Disposition: manual-action/MDN-sent-manually; displayed',
+  ];
+  const lines = [
+    ...headers,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    base64Lines(input.humanText),
+    `--${boundary}`,
+    'Content-Type: message/disposition-notification',
+    'Content-Transfer-Encoding: 7bit',
+    '',
+    ...notification,
+    '',
+    `--${boundary}--`,
+    '',
+  ];
+  return Buffer.from(lines.join('\r\n'), 'utf8');
+}
+
+/**
+ * Send an RFC 8098 read receipt (MDN) for an inbound message.
  */
 export async function sendReadReceiptMdn(messageId: number): Promise<{ ok: true } | { ok: false; error: string }> {
   const row = getEmailMessageById(messageId);
@@ -80,10 +146,17 @@ export async function sendReadReceiptMdn(messageId: number): Promise<{ ok: true 
     messageId: outboundMid,
     inReplyTo: inReply,
     references,
-    headers: {
-      'Content-Type': 'multipart/report; report-type=disposition-notification',
-      'Auto-Submitted': 'auto-replied',
-    },
+    raw: buildReadReceiptMdnRfc822({
+      from,
+      to: recipient,
+      subject,
+      messageId: outboundMid,
+      inReplyTo: inReply,
+      references,
+      humanText: body,
+      finalRecipient: acc.email_address,
+      originalMessageId: inReply,
+    }),
   });
 
   const db = getDb();

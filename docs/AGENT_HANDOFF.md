@@ -1,9 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-26 (Workflow-Semantik Wellen 1–4 + Multinutzer-Server-Audit)
+**Last updated:** 2026-09-25 (Sicherheits- und Bug-Audit 2026-09, Branch `claude/jolly-cerf-hkvznl`)
 **Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
-**Current audit:** [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
+**Current audit:** [`.hermes/reports/audit-2026-09/abschlussbericht.md`](../.hermes/reports/audit-2026-09/abschlussbericht.md) (Register `findings.md`, Entscheidungen `freigabeliste.md`, `freigabeliste-2.md`, `freigabeliste-3.md`, Codex-Abgleich `codex-abgleich.md`); earlier: [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
 
@@ -53,7 +53,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | External links | Confirm before `app:open-external-url` |
 | Mail categories | Manual assignment in UI (#71) |
 | Sent folder | IMAP append for outbound (#75) |
-| Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
+| Toolchain | Node 24 LTS, pnpm 11.13.1, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Dedicated `ubuntu-22.04` CI gate with Chromium sandbox, Xvfb, isolated standalone user-data, first-run authentication, HTML/trace/video/screenshot artifacts, and Electron/renderer logs |
@@ -62,6 +62,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 | Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |
+| Audit 2026-09 | 196 Kandidaten → 164 behoben (je roter Regressionstest), 25 neue Befunde behoben; Freigaben E1–E42 und G1–G12 umgesetzt; PR #192 (Codex) gemergt, alle 110 Codex-Einträge abgeglichen (0 offen); Migrationen 0052–0054; API-Container läuft als `node`; Desktop-Rollen: Workflows, Wissensbasen, Konten, Verbindungstests, Backup/Restore nur Owner/Admin; siehe Abschlussbericht |
 
 ---
 
@@ -92,6 +93,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Settings: Konto-Overrides UI (Prompts/Canned/KB) | ✅ siehe `BACKLOG.md` |
 | IMAP multi-folder sync | `EMAIL_ROADMAP.md` |
 | Embeddings RAG | `WORKFLOW_VISION.md` (vision, not all 🔲 = todo) |
+| Audit 2026-09: Restpunkte (bewusst offen) | [`.hermes/reports/audit-2026-09/abschlussbericht.md`](../.hermes/reports/audit-2026-09/abschlussbericht.md), Abschnitte 4 und 7 |
 | Beta security and reliability audit | Code-Maßnahmen abgeschlossen; externe Release-Abnahmen siehe [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md), Abschnitt 6 |
 
 **Do not merge** stale branch `cursor/mail-category-dnd-and-ux-d125` (pre-main compose regressions).

@@ -1,5 +1,15 @@
 // Main Electron process
-const { app, BrowserWindow, dialog, protocol, globalShortcut, screen } = require('electron'); // Added 'protocol'
+const { app, BrowserWindow, dialog, protocol, screen } = require('electron'); // Added 'protocol'
+
+// Workflow-Regex laeuft im Main-Prozess auf Text, den Mail-Absender bestimmen.
+// Mit diesem V8-Flag wechselt ein Muster, das zu oft zurueckspringt, auf die
+// Engine mit linearer Laufzeit, statt die App einzufrieren (F-A13A14-04).
+// `js-flags` erreicht nur die Renderer: V8 laeuft im Main-Prozess schon, wenn
+// diese Datei startet. Fuer ihn setzt setFlagsFromString das Flag; es wirkt auf
+// jeden danach erzeugten RegExp, deshalb steht es vor den Modul-Imports.
+require('v8').setFlagsFromString('--enable-experimental-regexp-engine-on-excessive-backtracks');
+app.commandLine.appendSwitch('js-flags', '--enable-experimental-regexp-engine-on-excessive-backtracks');
+
 const path = require('path');
 const { pathToFileURL } = require('url');
 const windowStateKeeper = require('electron-window-state');
@@ -20,6 +30,10 @@ const {
 const {
   readElectronDeployConfig,
 } = require('../dist-electron/electron/setup/deploy-config');
+const {
+  registerWindowDevToolsShortcuts,
+} = require('../dist-electron/electron/security/devtools-shortcuts');
+const { resolveIsDevelopment } = require('../dist-electron/electron/security/runtime-mode');
 
 // Configure electron-log
 log.transports.file.resolvePath = () => path.join(app.getPath('userData'), 'logs/main.log');
@@ -51,7 +65,10 @@ log.transports.console.writeFn = (...args) => {
 };
 Object.assign(console, log.functions); // Override console functions
 
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = resolveIsDevelopment({
+  isPackaged: app.isPackaged,
+  nodeEnv: process.env.NODE_ENV,
+});
 
 const clearProductionRendererCache = async (windowInstance) => {
   if (isDevelopment) {
@@ -244,6 +261,18 @@ const ensureDevToolsWindow = () => {
   return devToolsWindow;
 };
 
+const toggleDevTools = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+  if (mainWindow.webContents.isDevToolsOpened()) {
+    mainWindow.webContents.closeDevTools();
+  } else {
+    ensureDevToolsWindow();
+    mainWindow.webContents.openDevTools({ activate: true });
+  }
+};
+
 // Determine mode AT THE TOP
 log.info(`\[Electron Main\] Initial check: process.env.NODE_ENV = ${process.env.NODE_ENV}, isDevelopment = ${isDevelopment}`);
 
@@ -380,6 +409,12 @@ async function createMainWindow() {
   });
 
   attachMainWindowSecurity(mainWindow.webContents);
+
+  // F12 / Cmd+Ctrl+Shift+I only for unpackaged builds (electron:dev, electron:start,
+  // electron:test:devtools) and bound to this window, never as OS-wide hotkeys.
+  if (!app.isPackaged) {
+    registerWindowDevToolsShortcuts(mainWindow.webContents, toggleDevTools);
+  }
 
   windowState.manage(mainWindow);
 
@@ -534,23 +569,6 @@ initializeApp()
 
       startAutomationApiServer(log).catch((err) => log.warn('[automation-api] start failed', err));
 
-      const toggleDevTools = () => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
-          return;
-        }
-        if (mainWindow.webContents.isDevToolsOpened()) {
-          mainWindow.webContents.closeDevTools();
-        } else {
-          ensureDevToolsWindow();
-          mainWindow.webContents.openDevTools({ activate: true });
-        }
-      };
-
-      const f12Registered = globalShortcut.register('F12', toggleDevTools);
-      const chordRegistered = globalShortcut.register('CommandOrControl+Shift+I', toggleDevTools);
-      log.info(`[Electron Main] Registered F12 DevTools shortcut: ${f12Registered}`);
-      log.info(`[Electron Main] Registered Cmd/Ctrl+Shift+I DevTools shortcut: ${chordRegistered}`);
-
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
           createMainWindow();
@@ -607,7 +625,6 @@ app.on('will-quit', () => {
     log.warn('[email] stop background', e);
   }
   stopAutomationApiServer().catch((err) => log.warn('[automation-api] stop failed', err));
-  globalShortcut.unregisterAll();
   if (typeof cleanupIpcHandlers === 'function') {
     try {
       cleanupIpcHandlers();

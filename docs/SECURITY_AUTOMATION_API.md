@@ -11,7 +11,7 @@ Stand: Implementierung Phase A/B.
 | LAN-Zugriff (bind 0.0.0.0) | Hoch | Opt-in mit Warnung; Default `127.0.0.1` |
 | CSRF vom Browser | Niedrig | Kein Cookie-Auth; CORS `Allow-Origin: null` |
 | Große Bodies (DoS) | Mittel | Max 1 MB Request-Body |
-| SQL-Injection über API | Mittel | Prepared Statements in sqlite-service (unverändert) |
+| SQL-Injection über API | Mittel | Prepared Statements in sqlite-service; Spaltennamen beim Kunden-Update (`PATCH /customers/:id`) nur per Allowlist, unbekannte Felder werden abgelehnt |
 | Workflow execute mutiert Daten | Hoch | Default `dryRun: true`; explizit `dryRun: false` für Schreibzugriff |
 | E-Mail HTML exfiltriert | Mittel | `body_html` nicht in API; `body_text` max 32k bei `includeBody=true` |
 | Keytar / Passwörter | Kritisch | Keine IMAP/SMTP/OAuth-Keys in API-Responses (`sanitizeAccount`) |

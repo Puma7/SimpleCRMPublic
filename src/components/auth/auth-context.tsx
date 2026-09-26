@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { toast } from "sonner"
 import { IPCChannels } from "@shared/ipc/channels"
 import { expandUserGroupCapabilities } from "@shared/user-capabilities"
 import {
@@ -86,7 +87,8 @@ type AuthState = {
    */
   mailAccessUnrestricted: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
-  logout: () => Promise<void>
+  /** Resolves true once signed out; false (after an error toast) when the logout failed. */
+  logout: () => Promise<boolean>
   refresh: (options?: { force?: boolean }) => Promise<void>
 }
 
@@ -454,17 +456,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     const transport = getRendererTransport()
     const serverAuth = getServerAuthClient(transport)
-    if (transport.kind === "http") {
-      if (serverAuth) {
-        await serverAuth.logout()
+    try {
+      if (transport.kind === "http") {
+        if (serverAuth) {
+          await serverAuth.logout()
+        }
+      } else if (hasElectron()) {
+        await invokeIpc(IPCChannels.Auth.Logout, undefined)
       }
-    } else if (hasElectron()) {
-      await invokeIpc(IPCChannels.Auth.Logout, undefined)
+    } catch (error) {
+      // The session was not revoked (the refresh cookie is still valid), so stay
+      // signed in instead of pretending a logout happened.
+      console.error("[auth] logout failed", error)
+      toast.error("Abmelden fehlgeschlagen – Sie sind weiterhin angemeldet. Bitte erneut versuchen.")
+      return false
     }
     setAuthenticated(false)
     setUser(null)
     setCapabilities([])
     setServerSessionExpiresAt(null)
+    return true
   }, [])
 
   const value = useMemo(

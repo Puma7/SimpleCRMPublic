@@ -49,6 +49,9 @@ import { emailTeamMemberLinkedUserMigration } from './0048_email_team_member_lin
 import { masterKeyFingerprintMigration } from './0049_master_key_fingerprint';
 import { mailAclShadowWithoutLegacyMigration } from './0050_mail_acl_shadow_without_legacy';
 import { emailAccountSyncScheduleMigration } from './0051_email_account_sync_schedule';
+import { jtlKeyUniquenessMigration } from './0052_jtl_key_uniqueness';
+import { taskAssignmentScopeOrphanBackfillMigration } from './0053_task_assignment_scope_orphan_backfill';
+import { emailAccountTrustedAuthservIdMigration } from './0054_email_account_trusted_authserv_id';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -104,6 +107,9 @@ export const serverMigrations: readonly SqlMigration[] = [
   masterKeyFingerprintMigration,
   mailAclShadowWithoutLegacyMigration,
   emailAccountSyncScheduleMigration,
+  jtlKeyUniquenessMigration,
+  taskAssignmentScopeOrphanBackfillMigration,
+  emailAccountTrustedAuthservIdMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

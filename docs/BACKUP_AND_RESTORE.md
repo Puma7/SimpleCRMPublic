@@ -25,6 +25,14 @@ This document covers the current Docker backup, restore, restore-drill, and doct
   check itself does not see. The same yardstick on both sides, or the warning
   contradicts the behaviour.
 
+The dump and the archives are written the same way, as `*.partial`, and only
+get their final names once all of them are complete; the manifest comes last.
+A run that fails or is stopped (`INT`/`TERM`) before the manifest exists removes
+everything it wrote, so a truncated dump is never picked by `restore` or counted
+by retention. A run killed hard (`SIGKILL`, e.g. after the `docker compose stop`
+grace period) can leave `*.partial` files behind; no script picks them up, and
+they can be deleted while no backup is running.
+
 If the counts cannot be taken, the backup still runs — the dump is the valuable
 part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
 before `pg_restore` touches anything, because such a backup cannot be checked
@@ -51,9 +59,33 @@ write to (append-only bucket, offline medium).
 
 Because of this, the restore path treats the metadata file as untrusted input:
 table names out of `backup-<stamp>.meta` are validated as identifiers and
-quoted by the server rather than pasted into SQL. `restore.sh` and
-`restore-drill.sh` connect as the admin role, so a manipulated backup must not
-be able to smuggle statements in through that file.
+quoted by the server rather than pasted into SQL, so a manipulated backup
+cannot smuggle statements in through that file. The row-count check only
+counts real tables in `public` (and calls only `pg_catalog` functions): a
+listed name that the dump turned into a view or any other object is reported as
+unreadable and fails the check instead of being evaluated.
+
+The dump itself is untrusted input too: `pg_restore` executes the SQL in the
+archive as written. So `restore.sh` and `restore-drill.sh` run `pg_restore` and
+the row-count check **logged in as the application role** (`simplecrm_app`,
+`NOSUPERUSER`, no `BYPASSRLS`, owner of the database and its objects) — not as
+the admin role with `--role`. A session that merely switched roles with
+`SET ROLE` could switch back with `RESET ROLE` and regain superuser rights,
+cluster-wide and, for the drill, on the production cluster. Before any dump
+SQL runs, both scripts check the login role (`session_user`) and refuse to
+continue if it is a superuser, bypasses row level security, or is a member of a
+role that does (or of `pg_execute_server_program`, `pg_read_server_files`,
+`pg_write_server_files`). The admin role is only used by the drill to create
+and drop its temporary database.
+
+Restoring as the application role limits what a manipulated dump can do; it
+does not make such a dump safe to restore. It still replaces the application's
+data and can leave behind whatever objects the application role may create.
+**Only restore backups you trust**, and keep copies somewhere the backup host
+cannot rewrite (see above). To look at a backup of unclear origin, run the
+drill against a separate, disposable PostgreSQL instance instead of the
+production cluster (`RESTORE_DRILL_DATABASE_URL` and
+`RESTORE_DRILL_MAINTENANCE_DATABASE_URL`, see [Restore Drill](#restore-drill)).
 
 ## What The Backup Does **Not** Contain
 
@@ -431,6 +463,14 @@ Doctor checks:
 - stale conversation-lock count;
 - latest backup set and SHA-256 manifest verification.
 
+The admin diagnosis in the app (**Einstellungen → Wartung → Diagnose**, `GET /api/v1/maintenance/doctor`)
+runs the same checks inside the API, but deliberately **without** the backup check in the Compose
+deployment: the API container does not mount the `backups` volume, because it would otherwise have
+read access to complete database dumps, attachment archives and audit archives. Its `backups` line
+therefore always warns (`backup directory not configured`, or `backup directory does not exist:
+/backups` when `BACKUP_DIR` is set in `docker/.env`). That warning is expected. Check backups with
+the `doctor` profile above: a short-lived container that mounts the volume read-only.
+
 ## Restore With Compose Orchestration
 
 Use the host-side orchestration script when running the Docker stack:
@@ -488,21 +528,38 @@ docker compose --profile restore-drill run --rm restore-drill
 
 The drill creates a temporary database, restores the dump, verifies the core schema by querying `workspaces`, validates archive tar files when supplied, and drops the temporary database on exit.
 
+The drill uses two connections with separate jobs. `DATABASE_URL` logs in as
+the application role (`simplecrm_app` with `PG_PASSWORD`); the drill database
+URL is derived from it, and `pg_restore` plus the row-count check run only
+there. `RESTORE_DRILL_MAINTENANCE_DATABASE_URL` is the admin connection that
+creates the temporary database (owned by `simplecrm_app`) and drops it again;
+in Compose it defaults to `simplecrm_admin` with `PG_ADMIN_PASSWORD`, so no
+extra setting is needed. To drill on a separate instance, set both
+`RESTORE_DRILL_MAINTENANCE_DATABASE_URL` (an admin login there) and
+`RESTORE_DRILL_DATABASE_URL` (a restricted login there, pointing at
+`RESTORE_DRILL_DB_NAME`). The drill refuses a `DATABASE_URL` or
+`RESTORE_DRILL_DATABASE_URL` that logs in as a superuser (see
+[What The Manifest Proves](#what-the-manifest-proves--and-what-it-does-not)).
+
 ## Direct Script Restore
 
-Inside a PostgreSQL client environment:
+Inside a PostgreSQL client environment, log in as the application role — not as
+the admin role:
 
 ```sh
-DATABASE_URL="postgres://simplecrm_admin:admin-password@postgres:5432/simplecrm" \
-PG_RESTORE_ROLE="simplecrm_app" \
+DATABASE_URL="postgres://simplecrm_app:app-password@postgres:5432/simplecrm" \
   sh docker/restore.sh /backups/db-STAMP.dump /backups/attachments-STAMP.tar /backups/audit-archive-STAMP.tar
 ```
 
-`restore.sh` uses:
+`restore.sh` checks that this login is neither a superuser nor able to become
+one, then runs:
 
 ```sh
-pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
+pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
 ```
+
+`PG_RESTORE_ROLE` is no longer used. An admin `DATABASE_URL` from older
+instructions is refused before anything is changed.
 
 ## Known Limits
 
@@ -511,9 +568,17 @@ pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$D
 
 ## Rolling Back To An Earlier Backup
 
-`restore.sh` runs `pg_restore --clean --if-exists --no-owner` with
-`PG_RESTORE_ROLE=simplecrm_app`, so restored objects are owned by the
-application role again and later migrations keep working.
+`restore.sh` runs `pg_restore --clean --if-exists --no-owner` logged in as
+`simplecrm_app`, so restored objects are owned by the application role again
+and later migrations keep working.
+
+The restore runs as **one transaction** (`--single-transaction`): any error rolls
+the whole restore back and leaves the database exactly as it was, instead of
+half replaced. Extensions that already exist in the target database
+(`pgcrypto`, `pg_trgm`, created by `postgres-init` as the admin role) are left
+alone — the application role cannot drop or comment on them, and inside one
+transaction that alone would roll back every in-place restore. In a fresh
+database without them, the dump creates them as before.
 
 Two things to know before you rely on it:
 
@@ -523,12 +588,15 @@ restore — objects created by later migrations are not in the archive and stay
 put. If such a newer table has a foreign key into an older one, the drop fails:
 restoring a pre-0038 dump onto a current database makes `pg_restore` try to
 `DROP TABLE workspaces` while `mail_acl_bindings` still references it, which
-errors out without `CASCADE` and aborts the whole restore. `restore-compose.sh`
+errors out without `CASCADE` and aborts the whole restore; the transaction is
+rolled back, so the database keeps its previous state. `restore-compose.sh`
 then stops before migrations and before restarting the services.
 
 **For a rollback across migrations, restore into an empty database.** Drop and
 recreate the database (or point `DATABASE_URL` at a fresh one) and restore
-there — that is the only way the newer objects actually disappear. The restore
+there — that is the only way the newer objects actually disappear. Dropping and
+creating the database is an admin step; create it with `OWNER simplecrm_app`,
+because the restore itself logs in as that role. The restore
 drill already works this way: it creates a throwaway database per run, which is
 why it passes where an in-place rollback would not.
 

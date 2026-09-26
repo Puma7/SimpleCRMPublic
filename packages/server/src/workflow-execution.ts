@@ -6,6 +6,7 @@ import {
   addressesFromRecipientJson,
   buildSpamDecision,
   buildFeaturePreview,
+  compileUserRegex,
   emailEvidenceWorkflowVariables,
   emailEvidenceSummaryWorkflowVariables,
   encodeOutboundApprovalMarker,
@@ -15,6 +16,7 @@ import {
   emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
+  isAutoForwardedMessage,
   isTrashMailboxName,
   isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
@@ -25,8 +27,14 @@ import {
   parseGraphDocument,
   parseSenderList,
   pickEdge,
+  stripHtmlTagsToText,
   workflowDirectionForTrigger,
+  workflowNodeRuntimeType,
   workflowTriggerNeedsMessage,
+  inboundChainStopReachableAfter,
+  workflowNodeDefersRun,
+  LOGIC_INMEMORY_NODE_TYPES,
+  READ_ONLY_WORKFLOW_NODE_TYPES,
   type WorkflowDirection,
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
@@ -45,6 +53,7 @@ import {
   type InboundWorkflowChainContext,
 } from './workflow-inbound-chain-context';
 import {
+  DELAYED_JOB_CHAIN_SETTLED_FIELD,
   cancelPendingWorkflowDelayedJobsForMessage,
   completeInboundDeferredJoinSibling,
   inboundJoinAllowsAdvance,
@@ -68,6 +77,9 @@ import {
 import {
   executeWorkflowAiDraftReply,
   executeWorkflowAiReviewDraft,
+  fingerprintReviewedDraft,
+  firstReplyAddress,
+  setDraftApprovalPending,
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
@@ -76,6 +88,7 @@ import { publishMailVisibilityInvalidation } from './mail-access/visibility-inva
 import type { ServerEventPort } from './api/types';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
+import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
 import type {
   EmailMessagesTable,
   EmailWorkflowRunsTable,
@@ -96,15 +109,40 @@ import {
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
+/**
+ * Node executions per run across all loop iterations. MAX_GRAPH_STEPS counts per
+ * path and each loop iteration starts its own path, so 500 items times a long
+ * body reached 250,000 executions (with run-step inserts and side effects).
+ * 10,000 still covers 500 items with a body of up to ~19 nodes.
+ */
+const MAX_GRAPH_TOTAL_STEPS = 10_000;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
 /** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
 const MAX_SUBFLOW_DEPTH = 8;
 /** Reserved variable carrying the current subflow chain depth across child runs. */
 const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
+/**
+ * Global cap on continuations (resumed runs) per workflow lineage. MAX_GRAPH_STEPS
+ * only bounds a single job; a cycle through an async node (HTTP/AI/delay back to
+ * an earlier node) otherwise re-queues itself forever. Each resume counts one hop.
+ * 100 leaves room for real graphs (a path rarely has more than a dozen async
+ * nodes; a delay-based reminder cycle still gets 100 rounds) while a runaway
+ * chain stops after 100 external calls instead of never.
+ */
+const MAX_WORKFLOW_CONTINUATION_HOPS = 100;
+/** Reserved variable counting the continuations of this lineage (rides in eventVariables). */
+const CONTINUATION_HOPS_VARIABLE = '__continuation_hops';
+/** Variables only the executor may set; nodes can neither write nor overwrite them. */
+const RESERVED_WORKFLOW_VARIABLES = [
+  SUBFLOW_DEPTH_VARIABLE,
+  READ_RECEIPT_REVIEW_ROUND_VARIABLE,
+  CONTINUATION_HOPS_VARIABLE,
+];
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -124,6 +162,7 @@ type WorkflowRow = Pick<
   Selectable<EmailWorkflowsTable>,
   | 'id'
   | 'source_sqlite_id'
+  | 'account_id'
   | 'trigger_name'
   | 'enabled'
   | 'definition_json'
@@ -269,6 +308,8 @@ type GraphRunResult = {
    * Used to init a join barrier so chain advance waits for every sibling.
    */
   deferredBranchCount?: number;
+  /** Knoten, an denen der Lauf deferiert hat (logic.delay, KI-, HTTP-Kindjobs …). */
+  deferredNodeIds?: string[];
   blockReason: string | null;
   log: string[];
 };
@@ -662,6 +703,35 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          // Die Kette wurde beim Eingang der Mail mit den damals zustaendigen
+          // Workflows festgelegt. Wurde dieser Workflow seitdem auf ein anderes
+          // Postfach umgehaengt oder vom Inbound-Trigger genommen, ist er fuer
+          // die Mail nicht mehr zustaendig — wie deaktiviert behandeln.
+          if (
+            trigger === 'inbound'
+            && message
+            && !resumeNodeId
+            && parseInboundWorkflowChain(jobContext.inboundWorkflowChain)
+            && (
+              workflow.trigger_name !== 'inbound'
+              || (workflow.account_id != null && Number(workflow.account_id) !== Number(message.account_id))
+            )
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:workflow_scope_changed'],
+              now,
+            });
+            await maybeEnqueueNextInboundWorkflow(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              actorUserId: input.actorUserId,
+              jobContext,
+              now,
+            });
+            return;
+          }
+
           if (
             trigger === 'inbound'
             && message
@@ -684,7 +754,12 @@ export function createPostgresWorkflowExecutionJobPort(
             });
             // Storniertes Delay-Geschwister: siehe unten — die Join-Barriere
             // zaehlt es weiterhin als pending und bliebe sonst fuer immer offen.
-            if (trigger === 'inbound' && message) {
+            // Ausnahme: ein manueller Abbruch hat Barriere und Kette bereits
+            // selbst abgeschlossen (settleInboundChainForCancelledDelayedJob);
+            // eine vorher schon gesperrte Fortsetzung darf das nicht wiederholen.
+            const settledByCancel = delayedJob.status === 'cancelled'
+              && Boolean(objectRecord(delayedJob.context_json)?.[DELAYED_JOB_CHAIN_SETTLED_FIELD]);
+            if (trigger === 'inbound' && message && !settledByCancel) {
               await completeInboundDeferredJoinSibling(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
@@ -853,6 +928,19 @@ export function createPostgresWorkflowExecutionJobPort(
                 reason: result.inboundChainStop
                   ? 'sibling_inbound_chain_stop'
                   : 'sibling_blocked',
+                now,
+              });
+            } else if (chain && !resumeNodeId && deferredOnlyByChainNeutralDelays(workflow, result)) {
+              // Nur Wartezeit, keine Entscheidung mehr: hinter keinem der
+              // Delays kann noch ein Knoten die Kette stoppen. Die naechste
+              // Prioritaetsstufe startet sofort statt erst nach Tagen; die
+              // Fortsetzung schliesst spaeter nur Join und Applied-Marker ab,
+              // ihr eigener Weiterschalt-Versuch scheitert am Hop-Claim.
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
                 now,
               });
             }
@@ -1174,6 +1262,7 @@ async function loadWorkflow(
     .select([
       'id',
       'source_sqlite_id',
+      'account_id',
       'trigger_name',
       'enabled',
       'definition_json',
@@ -1475,6 +1564,19 @@ async function runServerWorkflowGraph(
     if (!doc.nodes.some((node) => node.id === input.startNodeId)) {
       return blockedResult(`resume_node_missing:${input.startNodeId}`);
     }
+    const rawHops = input.context.variables[CONTINUATION_HOPS_VARIABLE];
+    const hops = (typeof rawHops === 'number' && Number.isInteger(rawHops) && rawHops >= 0 ? rawHops : 0) + 1;
+    input.context.variables[CONTINUATION_HOPS_VARIABLE] = hops;
+    if (hops > MAX_WORKFLOW_CONTINUATION_HOPS) {
+      const message = `Fortsetzungs-Limit ${MAX_WORKFLOW_CONTINUATION_HOPS} ueberschritten (moeglicher Kreis ueber einen asynchronen Knoten) — Lauf abgebrochen`;
+      return {
+        status: 'error',
+        blocked: false,
+        deferred: false,
+        blockReason: message,
+        log: [`graph_resume:${input.startNodeId}`, `error:continuation_hop_limit:${MAX_WORKFLOW_CONTINUATION_HOPS}`],
+      };
+    }
     return walkGraph(trx, {
       doc,
       context: input.context,
@@ -1513,6 +1615,8 @@ async function runServerWorkflowGraph(
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
   let deferredBranchCount = 0;
+  // One node budget for the whole run, shared by every trigger branch.
+  const totalSteps = { count: 0 };
   for (const [branchIndex, edge] of triggerEdges.entries()) {
     const branchContext = cloneServerWorkflowContext(input.context);
     branchContext.branchKey = edge.id || String(branchIndex);
@@ -1525,12 +1629,14 @@ async function runServerWorkflowGraph(
       dryRun: input.dryRun === true,
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
+      totalSteps,
     });
     if (branch.deferred) deferredBranchCount += 1;
     result = {
       ...branch,
       deferred: result.deferred === true || branch.deferred === true,
       deferredBranchCount,
+      deferredNodeIds: [...(result.deferredNodeIds ?? []), ...(branch.deferredNodeIds ?? [])],
       // Preserve an earlier sibling error — a later ok branch must not flip the
       // run back to success (would mark inbound applied and advance the chain).
       status: result.status === 'error' || branch.status === 'error' ? 'error' : branch.status,
@@ -1566,16 +1672,23 @@ async function walkGraph(
     allowRevisit?: boolean;
     stopBeforeNodeIds?: ReadonlySet<string>;
     inboundGate?: ServerInboundBranchGate;
+    /** Step counter of this walk; the block-port branch keeps counting (desktop parity). */
+    steps?: { count: number };
+    /** Node executions of the whole run, shared by every loop iteration. */
+    totalSteps?: { count: number };
+    /** Walk of a loop's each branch: deferring nodes are rejected there (F-A9-04). */
+    insideLoopBody?: boolean;
   },
 ): Promise<GraphRunResult> {
   const nodesById = new Map(input.doc.nodes.map((node) => [node.id, node]));
   const seen = input.seen ?? new Set<string>();
   let currentId: string | undefined = input.startNodeId;
-  let stepCount = 0;
+  const steps = input.steps ?? { count: 0 };
+  const totalSteps = input.totalSteps ?? { count: 0 };
 
   while (currentId) {
     if (input.stopBeforeNodeIds?.has(currentId)) break;
-    if (stepCount++ >= MAX_GRAPH_STEPS) {
+    if (steps.count++ >= MAX_GRAPH_STEPS || totalSteps.count++ >= MAX_GRAPH_TOTAL_STEPS) {
       return blockedResult('graph_step_limit:server_workflow_execution', input.log);
     }
     if (input.allowRevisit !== true && seen.has(currentId)) {
@@ -1637,7 +1750,10 @@ async function walkGraph(
           continue;
         }
 
-        const stopBeforeNodeIds = new Set<string>([currentId]);
+        // Stop points of enclosing loops stay active, otherwise nested loops
+        // restart each other (L1 -> L2 -> L1) without bound.
+        const stopBeforeNodeIds = new Set<string>(input.stopBeforeNodeIds);
+        stopBeforeNodeIds.add(currentId);
         if (doneEdge?.target) stopBeforeNodeIds.add(doneEdge.target);
         for (let index = 0; index < activeItems.length; index += 1) {
           const item = activeItems[index]!;
@@ -1656,6 +1772,8 @@ async function walkGraph(
             allowRevisit: true,
             stopBeforeNodeIds,
             inboundGate: input.inboundGate,
+            insideLoopBody: true,
+            totalSteps,
           });
           if (branchResult.status !== 'ok' || branchResult.blocked || branchResult.deferred) {
             return branchResult;
@@ -1668,16 +1786,32 @@ async function walkGraph(
     }
 
     const started = Date.now();
-    const result = withNodeChainStop(node, await executeServerNode(
-      trx,
-      input.doc,
-      input.context,
-      node,
-      input.log,
-      input.now,
-      input.ports,
-      input.dryRun,
-    ));
+    // Eine Fortsetzung kennt den Schleifenzustand nicht: die uebrigen Eintraege
+    // gingen verloren, eine Rueckkante startete die Schleife endlos neu. Deshalb
+    // vor dem Einreihen abbrechen statt still nur den ersten Eintrag zu bearbeiten.
+    // Die Ausgangs-Vorschau fuehrt KI-Pruefungen synchron aus; dort deferieren sie nicht.
+    const previewRunsReviewSynchronously = input.dryRun
+      && input.context.previewOutbound
+      && ['ai.outbound_review', 'ai.review', 'ai_review'].includes(nodeRuntimeType(node));
+    const loopBodyDeferral = input.insideLoopBody === true
+      && !previewRunsReviewSynchronously
+      && workflowNodeDefersRun(input.doc, node, 'server');
+    const result = withNodeChainStop(node, loopBodyDeferral
+      ? {
+        status: 'error',
+        port: 'error',
+        message: `„${node.id}“ läuft asynchron weiter und ist im Je-Eintrag-Zweig einer Schleife nicht erlaubt — Knoten hinter den Fertig-Ausgang der Schleife verschieben`,
+      }
+      : await executeServerNode(
+        trx,
+        input.doc,
+        input.context,
+        node,
+        input.log,
+        input.now,
+        input.ports,
+        input.dryRun,
+      ));
     const durationMs = Math.max(0, Date.now() - started);
     if (!input.dryRun) {
       await insertRunStep(trx, input.context, node, {
@@ -1690,12 +1824,14 @@ async function walkGraph(
     }
 
     if (result.variables) {
-      const subflowDepth = input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      const reserved = RESERVED_WORKFLOW_VARIABLES.map((name) => [name, input.context.variables[name]] as const);
       Object.assign(input.context.variables, result.variables);
-      if (subflowDepth === undefined) {
-        delete input.context.variables[SUBFLOW_DEPTH_VARIABLE];
-      } else {
-        input.context.variables[SUBFLOW_DEPTH_VARIABLE] = subflowDepth;
+      for (const [name, value] of reserved) {
+        if (value === undefined) {
+          delete input.context.variables[name];
+        } else {
+          input.context.variables[name] = value;
+        }
       }
     }
     // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
@@ -1755,6 +1891,9 @@ async function walkGraph(
         const branch = await walkGraph(trx, {
           ...input,
           startNodeId: blockEdge.target,
+          seen,
+          steps,
+          totalSteps,
         });
         if (branch.blocked || branch.status === 'blocked') return branch;
         if (branch.deferred) {
@@ -1791,6 +1930,7 @@ async function walkGraph(
         // Ordinary logic.stop ends only this workflow; only spam short-circuit
         // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
         inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
+        ...(result.deferred === true ? { deferredNodeIds: [node.id] } : {}),
         blockReason: null,
         log: input.log,
       };
@@ -1948,7 +2088,7 @@ async function executeServerNode(
   }
   if (type === 'logic.set_variable') {
     const name = String(config.name ?? 'var').trim() || 'var';
-    if (name === SUBFLOW_DEPTH_VARIABLE) {
+    if (RESERVED_WORKFLOW_VARIABLES.includes(name)) {
       return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
     }
     const value = config.value;
@@ -2044,6 +2184,7 @@ async function executeServerNode(
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
     if (dryRunResult) return dryRunResult;
+    if (!DRY_RUN_LIVE_NODE_TYPES.has(type)) return dryRunFailClosedResult(type, log);
   }
   if (type === 'ai.reply_suggestion') {
     const result = await scheduleAiReplySuggestionJob(trx, context, config, now);
@@ -2185,6 +2326,25 @@ async function executeServerNode(
   if (type === 'email.send_draft') {
     if (dryRun) {
       return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
+    }
+    // Wie bei release_outbound: der Einstieg der Fortsetzung hat den Marker
+    // schon gelesen, ein Geschwisterzweig kann die Kette seitdem gestoppt haben.
+    if (
+      context.direction === 'inbound'
+      && context.messageId !== null
+      && await isInboundSiblingAborted(trx, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        workflowId: context.workflowId,
+        chain: context.inboundWorkflowChain ?? null,
+        fanOutRunId: inboundFanOutRunId(context),
+      })
+    ) {
+      return {
+        status: 'skipped',
+        port: 'default',
+        message: 'skip:sibling_terminal_abort',
+      };
     }
     return await sendWorkflowDraft(trx, context, config, now);
   }
@@ -2508,6 +2668,46 @@ function unsupportedWorkflowNodeResult(type: string, log: string[]): NodeResult 
   };
 }
 
+/**
+ * Knotentypen, die im Dry-Run nach dryRunMutatingNodeResult live laufen. Die
+ * Vorschau committet unter der System-Rolle; eine reine Denylist liess den
+ * Vorlagen-Alias set_category und ai.pick_canned live laufen (C-A64). Alles,
+ * was weder hier steht noch simuliert wird, faellt auf
+ * dryRunFailClosedResult — ein neuer schreibender Knoten wirkt so in der
+ * Vorschau nie live.
+ */
+const DRY_RUN_LIVE_NODE_TYPES: ReadonlySet<string> = new Set([
+  ...READ_ONLY_WORKFLOW_NODE_TYPES,
+  ...LOGIC_INMEMORY_NODE_TYPES,
+  // Eigener Dry-Run-Zweig in executeServerNode.
+  'logic.delay',
+  'ai.draft_reply',
+  'ai.review_draft',
+  'email.release_outbound',
+  'email.send_draft',
+  // Nur Auswertung bzw. Halte-Ergebnis, kein Schreibzugriff.
+  'email.hold_outbound',
+  'hold_outbound',
+  'email.auto_reply',
+  'ai.spam_score',
+  'ai.agent_tool',
+  // Lesen live aus dem externen ERP. Ob die Vorschau das darf, ist eine offene
+  // Produktentscheidung; bis dahin bleibt das bisherige Verhalten.
+  'mssql.query',
+  'jtl.order_context',
+]);
+
+/**
+ * Knoten ohne Live-Freigabe und ohne eigene Simulation: Bekannte Server-Knoten
+ * werden simuliert, unbekannte und nicht serverfaehige bleiben wie im echten
+ * Lauf "nicht unterstuetzt".
+ */
+function dryRunFailClosedResult(type: string, log: string[]): NodeResult {
+  const knownServerNode = isServerWorkflowNodeTypeSupported(type)
+    && listBuiltinWorkflowNodeCatalog().some((entry) => entry.type === type);
+  return knownServerNode ? dryRunSideEffectResult(type, log) : unsupportedWorkflowNodeResult(type, log);
+}
+
 function dryRunMutatingNodeResult(
   type: string,
   config: Record<string, unknown>,
@@ -2537,6 +2737,10 @@ function dryRunMutatingNodeResult(
       return dryRunAsyncContinuationResult(type, config, node, log, {
         'ai.agent.status': 'dry_run',
       });
+    case 'ai.pick_canned':
+      return dryRunAsyncContinuationResult(type, config, node, log, {
+        'ai.pick_canned.status': 'dry_run',
+      });
     case 'email.tag':
     case 'tag': {
       const tag = String(config.tag ?? node.data.tag ?? '').trim();
@@ -2544,7 +2748,8 @@ function dryRunMutatingNodeResult(
         ? dryRunSideEffectResult(type, log, { variables: { 'email.last_tag': tag } })
         : { status: 'skipped', port: 'default', message: 'leerer Tag' };
     }
-    case 'email.set_category': {
+    case 'email.set_category':
+    case 'set_category': {
       const path = String(config.path ?? '').trim();
       return path
         ? dryRunSideEffectResult(type, log, { variables: { 'email.category_path': path } })
@@ -3094,7 +3299,7 @@ async function scheduleAiClassificationJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3163,7 +3368,7 @@ async function scheduleAiReviewJob(
     direction: context.direction,
     ...workflowJobProvenance(context),
     blockKeyword: blockKeyword.value,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (parseMode) payload.parseMode = parseMode;
@@ -3194,10 +3399,15 @@ async function scheduleAiReviewJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
+    // BLOCK (und block/error ohne Kante) setzt den Graphen nicht fort.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(
+      context,
+      terminalChainStamp(context, node),
+    );
   }
 
   const jobRow = await trx
@@ -3251,7 +3461,7 @@ async function scheduleAiTransformTextJob(
     workspaceId: context.workspaceId,
     targetVariable: targetVariable.value,
     ...workflowJobProvenance(context),
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3265,7 +3475,7 @@ async function scheduleAiTransformTextJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3362,6 +3572,35 @@ function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowG
   return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
 }
 
+/** Workflow- und Kettenkontext eines terminalen Kindjobs; wozu jedes Feld dient, steht in workflow-inbound-terminal-child. */
+function terminalChainStamp(context: ServerWorkflowContext, node: WorkflowGraphNode): Record<string, unknown> {
+  return {
+    workflowId: context.workflowId,
+    context: { ...inboundChainFieldsFromContext(context) },
+    terminalWorkflowCompletion: true,
+    terminalNodeId: terminalNodeExecutionId(context, node),
+    triggerName: context.trigger,
+  };
+}
+
+/**
+ * Terminal-Kontext fuer einen deferierten KI-Knoten, dessen Urteils-Port keine
+ * Kante hat: dort endet der Zweig im Kindjob wie bei einem terminalen Knoten.
+ * Verschachtelt in der Payload, damit failJob und terminalChildCompletionKey
+ * den Job nicht selbst als terminal behandeln.
+ */
+function unwiredPortChainPayload(
+  context: ServerWorkflowContext,
+  terminalStamp: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    workspaceId: context.workspaceId,
+    ...(context.messageId !== null ? { messageId: context.messageId } : {}),
+    ...workflowJobProvenance(context),
+    ...terminalStamp,
+  };
+}
+
 /**
  * Zweig-Identitaet auf oberster Payload-Ebene eines deferierten Kindjobs.
  *
@@ -3415,7 +3654,7 @@ async function scheduleAiAgentJob(
       triggerName: context.trigger,
     }),
     createDraft,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3436,7 +3675,7 @@ async function scheduleAiAgentJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3495,7 +3734,7 @@ async function scheduleAiDraftReplyJob(
     messageId: context.messageId,
     runId: context.runId,
     ...workflowJobProvenance(context),
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
     // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
@@ -3528,7 +3767,7 @@ async function scheduleAiDraftReplyJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3590,6 +3829,7 @@ async function scheduleAiReviewDraftJob(
   const successResumeNodeId = portResumeTargets.send || defaultResume || undefined;
   // Still defer when only a HOLD edge exists so the parent waits for the review.
   const deferAnchor = successResumeNodeId || portResumeTargets.hold || undefined;
+  const terminalStamp = terminalChainStamp(context, node);
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
@@ -3600,16 +3840,9 @@ async function scheduleAiReviewDraftJob(
     runId: context.runId,
     ...workflowJobProvenance(context),
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
-    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
-    // in workflow-inbound-terminal-child.
-    ...(deferAnchor ? {} : {
-      workflowId: context.workflowId,
-      context: { ...inboundChainFieldsFromContext(context) },
-      terminalWorkflowCompletion: true,
-      terminalNodeId: terminalNodeExecutionId(context, node),
-      triggerName: context.trigger,
-    }),
-    eventStrings: context.strings,
+    // Kindjob schliesst Kette und Marker selbst ab.
+    ...(deferAnchor ? {} : terminalStamp),
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     portResumeTargets: Object.fromEntries(
       Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
@@ -3638,10 +3871,13 @@ async function scheduleAiReviewDraftJob(
       // Prefer success path; hold-only graphs temporarily park the hold id here
       // as a deferral anchor — the job handler must not use it for SEND.
       resumeNodeId: deferAnchor,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
+    // Hat der Port des Urteils keine Kante (etwa SEND bei nur einer HOLD-Kante),
+    // endet der Zweig im Kindjob wie bei einem terminalen Review-Knoten.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(context, terminalStamp);
   }
 
   const jobRow = await trx
@@ -3708,7 +3944,7 @@ async function scheduleAiPickCannedJob(
       triggerName: context.trigger,
     }),
     createDraft,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3720,7 +3956,7 @@ async function scheduleAiPickCannedJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3768,6 +4004,10 @@ async function createWorkflowComposeDraft(
     '---',
     context.strings.combined_text ?? '',
   ].filter((part) => part.length > 0).join('\n\n');
+  // Antwort an Reply-To bzw. Absender der aktuellen Nachricht, verknuepft wie
+  // bei ai.agent/ai.draft_reply — sonst kann email.send_draft den Entwurf nie
+  // verschicken (kein Empfaenger) und er haengt an keinem Verlauf.
+  const replyTo = context.message ? firstReplyAddress(context.message) : null;
   const draft = await createPostgresComposeDraftInTransaction(trx, {
     workspaceId: context.workspaceId,
     accountId,
@@ -3775,10 +4015,19 @@ async function createWorkflowComposeDraft(
       accountId,
       subject: replySubject(context.strings.subject),
       bodyText: body,
+      ...(replyTo ? { toJson: { value: [{ address: replyTo }] } } : {}),
     },
   });
   if (!draft.ok) {
     return { status: 'error', port: 'error', message: `Entwurf konnte nicht erstellt werden: ${draft.reason}` };
+  }
+  if (context.messageId !== null) {
+    await trx
+      .updateTable('email_messages')
+      .set({ reply_parent_message_id: context.messageId })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', Number(draft.message.id))
+      .execute();
   }
   return {
     status: 'ok',
@@ -3817,7 +4066,7 @@ async function scheduleWorkflowHttpRequestJob(
     ...workflowJobProvenance(context),
     url: url.value,
     timeoutMs: timeoutMs.value,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (method.value === 'POST') {
@@ -3848,7 +4097,7 @@ async function scheduleWorkflowHttpRequestJob(
       ...(!resumeNodeId && errorResumeNodeId
         ? { completeOnSuccess: true, terminalNodeId: payload.terminalNodeId as string }
         : {}),
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3899,6 +4148,11 @@ async function scheduleWorkflowForwardCopyJob(
   const to = workflowForwardCopyRecipient(config.to);
   if (!to.ok) return { status: 'error', port: 'error', message: to.message };
   if (!to.value) return { status: 'skipped', port: 'default', message: 'Empfaenger fehlt' };
+  // Anti-Loop: eine zurueckkommende Weiterleitungskopie ist eine neue Nachricht
+  // und faellt nicht unter die Dedup-Tabelle (Quellnachricht, Workflow, Ziel).
+  if (isAutoForwardedMessage(context.message?.raw_headers)) {
+    return { status: 'skipped', port: 'default', message: 'skip:auto_forwarded_source' };
+  }
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
@@ -3909,7 +4163,7 @@ async function scheduleWorkflowForwardCopyJob(
     to: to.value,
     includeAttachments: config.includeAttachments === true,
     runOutboundReview: config.runOutboundReview === true,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (resumeNodeId) {
@@ -3919,7 +4173,7 @@ async function scheduleWorkflowForwardCopyJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3987,7 +4241,7 @@ async function scheduleWorkflowDmarcIngestJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -5385,7 +5639,7 @@ function workflowDelayContext(
 ): Record<string, unknown> {
   return {
     resumeNodeId,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     ...inboundChainFieldsFromContext(context),
   };
@@ -5564,6 +5818,12 @@ async function releaseWorkflowOutboundHold(
   }
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  // Pruefrunde einer Lesebestaetigung: die Nachricht ist die eingegangene Mail,
+  // kein Entwurf. Die Freigabe gilt nur der Lesebestaetigung (SEND); Betreff,
+  // Text und Versandzeit der Mail bleiben unberuehrt.
+  if (typeof context.variables[READ_RECEIPT_REVIEW_ROUND_VARIABLE] === 'string') {
+    return { status: 'ok', port: 'default', message: 'read_receipt_review:send' };
   }
   const autoSend = config.autoSend === true;
 
@@ -5757,15 +6017,42 @@ async function sendWorkflowDraft(
   }
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id', 'scheduled_send_at'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', draftId)
+    // Sperrt gegen ein paralleles Speichern (PATCH compose-draft), damit der
+    // Abgleich mit der geprueften Fassung unten bis zum Commit gilt.
+    .forUpdate()
     .executeTakeFirst();
   if (!draftRow) {
     return { status: 'error', port: 'error', message: `Entwurf ${draftId} nicht gefunden` };
   }
   if (draftRow.folder_kind !== 'draft' || (draftRow.uid as number) >= 0) {
     return { status: 'error', port: 'error', message: `Nachricht ${draftId} ist kein Entwurf` };
+  }
+
+  // Nach einem SEND der KI-Gegenpruefung laeuft dieser Knoten als eigener,
+  // spaeterer Job. Wurde der Entwurf dazwischen geaendert, ist die neue Fassung
+  // ungeprueft: nicht senden, sondern wie die Gegenpruefung selbst zur
+  // manuellen Freigabe zurueckstellen. Vor der Auto-Antwort-Reservierung, damit
+  // der zurueckgestellte Entwurf keinen Tages-Slot verbraucht.
+  // Ein noch eingeplanter Entwurf ist seitdem unveraendert (jedes Speichern
+  // nimmt die Planung zurueck): so bleibt die erneute Zustellung dieser
+  // Fortsetzung, deren erster Lauf Betreff und Text selbst angepasst hat, ein No-op.
+  const reviewedFingerprint = context.variables['ai.review.fingerprint'];
+  if (
+    typeof reviewedFingerprint === 'string'
+    && Number(context.variables['ai.review.draft_id']) === draftId
+    && draftRow.scheduled_send_at == null
+    && fingerprintReviewedDraft(draftRow) !== reviewedFingerprint
+  ) {
+    await setDraftApprovalPending(
+      trx,
+      context.workspaceId,
+      draftId,
+      'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben',
+    );
+    return { status: 'skipped', port: 'default', message: 'send_draft_changed_after_review' };
   }
 
   if (context.direction === 'inbound') {
@@ -6178,7 +6465,7 @@ async function enqueueWorkflowSubflow(
     ...workflowJobProvenance(context),
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: { ...context.variables, [SUBFLOW_DEPTH_VARIABLE]: subflowDepth + 1 },
       subflowParent: {
         workflowId: context.workflowId,
@@ -7204,6 +7491,10 @@ async function buildWorkflowContext(
     if (Number.isFinite(inReplyTo) && inReplyTo > 0) {
       variables['outbound.in_reply_to_message_id'] = inReplyTo;
     }
+    // Pruefrunde einer Lesebestaetigung: die Runde reist ab hier in allen
+    // Job-Payloads und Fortsetzungen mit (siehe mail-read-receipt-responder).
+    const readReceiptRound = readReceiptReviewRoundFromJobContext(input.jobContext);
+    if (readReceiptRound) variables[READ_RECEIPT_REVIEW_ROUND_VARIABLE] = readReceiptRound;
   }
   return {
     workspaceId: input.workspaceId,
@@ -7308,7 +7599,7 @@ function stringsFromOutbound(context: Record<string, unknown>): WorkflowStringCo
   const subject = String(outbound?.subject ?? '');
   const bodyText = String(outbound?.bodyText ?? '');
   const bodyHtml = typeof outbound?.bodyHtml === 'string' ? outbound.bodyHtml : '';
-  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(bodyHtml);
   const to = String(outbound?.to ?? '');
   const cc = String(outbound?.cc ?? '');
   const bcc = String(outbound?.bcc ?? '');
@@ -7413,7 +7704,9 @@ function safeRegexTest(pattern: string, value: string, ci: boolean): boolean {
   if (pattern.length > MAX_REGEX_PATTERN_LEN) return false;
   try {
     if (!safeRegex(pattern)) return false;
-    return new RegExp(pattern, ci ? 'i' : '').test(value);
+    // Nicht new RegExp(pattern, 'i'): mit Flag i stellt V8 nie auf die lineare
+    // Engine um (F-A13A14-04).
+    return compileUserRegex(pattern, ci ? 'i' : '')(value);
   } catch {
     return false;
   }
@@ -7467,14 +7760,12 @@ function isAddressField(field: string): boolean {
   return field === 'from_address' || field === 'to_address' || field === 'cc_address';
 }
 
+// Must resolve exactly like the side-effect/permission guards in
+// @simplecrm/core: they only accept a string nodeType, and a looser coercion
+// here (String(['email.forward_copy'])) let a graph pass the guard as
+// logic.merge and run as the side-effecting node it names.
 function nodeRuntimeType(node: WorkflowGraphNode): string {
-  if (node.type === 'registry') {
-    return String(node.data.nodeType ?? 'registry.unknown');
-  }
-  if (node.type === 'action') {
-    return String(node.data.nodeType ?? node.data.actionType ?? 'action');
-  }
-  return node.type;
+  return workflowNodeRuntimeType(node);
 }
 
 function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBranchGate | undefined {
@@ -7528,6 +7819,24 @@ function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeRes
     inboundChainStop: true,
     message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
   };
+}
+
+/**
+ * Hat der Lauf ausschliesslich an logic.delay-Knoten deferiert, hinter denen auf
+ * keinem Pfad mehr ein kettenstoppender Knoten folgt? KI-, HTTP- und andere
+ * Kindjobs zaehlen nicht dazu: sie bleiben seriell wie bisher.
+ */
+function deferredOnlyByChainNeutralDelays(workflow: WorkflowRow, result: GraphRunResult): boolean {
+  const nodeIds = result.deferredNodeIds ?? [];
+  if (nodeIds.length === 0) return false;
+  const doc = parseWorkflowGraph(workflow.graph_json);
+  if (!doc) return false;
+  return nodeIds.every((nodeId) => {
+    const node = doc.nodes.find((candidate) => candidate.id === nodeId);
+    return node !== undefined
+      && nodeRuntimeType(node) === 'logic.delay'
+      && !inboundChainStopReachableAfter(doc, nodeId);
+  });
 }
 
 /**
@@ -7969,10 +8278,39 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
 }
 
 const MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH = 128 * 1024;
+const MAX_CONTINUATION_BODY_TEXT_LENGTH = 48_000;
+
+/**
+ * Mailtext fuer Job-Payloads und Fortsetzungen kuerzen. body_text steht dort
+ * zweimal (auch in combined_text); ungekuerzt scheiterte jeder deferierte
+ * Knoten ab etwa 64 KB an der Kontextgrenze. Die KI-Jobs kuerzen fuer den
+ * Prompt ohnehin weiter; der synchrone Teil des Laufs behaelt den vollen Text.
+ * Nur Knoten nach der Fortsetzung sehen den gekuerzten Text (body_truncated).
+ */
+function boundedContinuationStrings(strings: WorkflowStringContext): WorkflowStringContext {
+  const body = strings.body_text ?? '';
+  if (body.length <= MAX_CONTINUATION_BODY_TEXT_LENGTH) return strings;
+  let cut = MAX_CONTINUATION_BODY_TEXT_LENGTH;
+  // Kein halbes Surrogatpaar stehen lassen: jsonb lehnt ein einzelnes \ud83d ab.
+  const last = body.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  const boundedBody = body.slice(0, cut);
+  // combined_text aus denselben Teilen neu bauen, nur mit gekuerztem Body.
+  const combined = strings.combined_text ?? '';
+  const bodyAt = combined.indexOf(body);
+  return {
+    ...strings,
+    body_text: boundedBody,
+    combined_text: bodyAt < 0
+      ? combined
+      : `${combined.slice(0, bodyAt)}${boundedBody}${combined.slice(bodyAt + body.length)}`,
+    body_truncated: 'true',
+  };
+}
 
 function workflowContinuationContextError(context: ServerWorkflowContext): string | null {
   if (
-    JSON.stringify(context.strings).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+    JSON.stringify(boundedContinuationStrings(context.strings)).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
     || JSON.stringify(context.variables).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
   ) {
     return `Continuation-Kontext ueberschreitet ${MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH} JSON-Zeichen`;

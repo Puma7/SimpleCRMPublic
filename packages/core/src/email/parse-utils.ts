@@ -165,20 +165,151 @@ export function decodeHtmlEntities(text: string): string {
 }
 
 /**
+ * Same result as `input.replace(/<tag[\s\S]*?<\/tag>/gi, replacement)`, but
+ * linear: the lazy regex rescans to the end of the input for every unclosed
+ * `<tag`, which is quadratic on hostile mail bodies/attachments. Once one
+ * opening tag has no closing tag, no later one can have one either, so we stop
+ * there.
+ */
+export function replaceElementBlocks(input: string, tag: string, replacement = ' '): string {
+  const open = new RegExp(`<${tag}`, 'gi');
+  const close = new RegExp(`<\\/${tag}>`, 'gi');
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    open.lastIndex = cursor;
+    const start = open.exec(input);
+    if (!start) break;
+    close.lastIndex = start.index + start[0].length;
+    const end = close.exec(input);
+    if (!end) break;
+    out += `${input.slice(cursor, start.index)}${replacement}`;
+    cursor = end.index + end[0].length;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/**
+ * Same result as `input.replace(/<[^>]+>/g, replacement)` in linear time (see
+ * replaceElementBlocks): a `<` without any later `>` ends the scan.
+ */
+export function replaceTags(input: string, replacement = ' '): string {
+  let out = '';
+  let cursor = 0;
+  let from = 0;
+  for (;;) {
+    const lt = input.indexOf('<', from);
+    if (lt === -1) break;
+    const gt = input.indexOf('>', lt + 1);
+    if (gt === -1) break;
+    from = gt + 1;
+    // `<>` does not match `<[^>]+>`.
+    if (gt === lt + 1) continue;
+    out += `${input.slice(cursor, lt)}${replacement}`;
+    cursor = from;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/**
+ * Same result as `html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()`
+ * in linear time; for callers that need exactly that legacy tag strip (no
+ * style/script removal, no entity decoding).
+ */
+export function stripHtmlTagsToText(html: string): string {
+  return replaceTags(html).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Strip HTML down to searchable plain text (style/script content removed).
  * Used as body_text fallback for HTML-only mail so search/FTS can see it.
  * HTML entities are decoded after the tag strip (before whitespace collapse)
  * so text like `M&uuml;ller` or `Rechnung&nbsp;2026` becomes searchable.
  */
 export function plainTextFromHtml(html: string, cap = 500_000): string {
-  const stripped = html
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ');
+  const stripped = replaceTags(
+    replaceElementBlocks(replaceElementBlocks(html, 'style'), 'script'),
+  );
   const text = decodeHtmlEntities(stripped)
     .replace(/\s+/g, ' ')
     .trim();
   return text.length > cap ? text.slice(0, cap) : text;
+}
+
+/** Lower bound of the {@link cidInlineBudgetBytes} budget. */
+export const CID_INLINE_MIN_BUDGET_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Budget for the data: URLs {@link inlineCidImages} may add to one message:
+ * 16 MiB or twice the raw RFC822 size, whichever is larger. The base64 form of
+ * an image is at most about 4/3 of the size its part takes in the source, so
+ * images referenced once always fit.
+ */
+export function cidInlineBudgetBytes(rawBytes: number): number {
+  return Math.max(CID_INLINE_MIN_BUDGET_BYTES, 2 * rawBytes);
+}
+
+export type CidInlineAttachment = {
+  cid?: string;
+  contentType?: string;
+  content?: Buffer | Uint8Array;
+};
+
+// Same patterns as mailparser's updateImageLinks (lib/mail-parser.js), so the
+// result matches its default output (keepCidLinks: false) byte for byte.
+const CID_REFERENCE_SOURCE = /\bcid:([^'"\s]{1,256})/.source;
+const INLINE_IMAGE_CONTENT_TYPE = /^image\/[\w]+$/i;
+
+/**
+ * Replaces `cid:` references to image attachments with
+ * `data:<contentType>;base64,<content>` like mailparser's default, but in one
+ * linear pass and within `maxExpandedBytes` of added data: URLs. mailparser
+ * inlines every reference without a limit: a 157 KB mail referencing one image
+ * a thousand times became 136 million characters of HTML, slightly larger mail
+ * an uncatchable RangeError (C-A71). A reference whose URL no longer fits stays
+ * `cid:`; the viewer shows it as a blocked inline image.
+ */
+export function inlineCidImages(
+  html: string,
+  attachments: readonly CidInlineAttachment[] | undefined,
+  maxExpandedBytes: number,
+): string {
+  if (!attachments?.length || !html.includes('cid:')) return html;
+  // Like mailparser: the first image attachment carrying the content id wins.
+  const imageByCid = new Map<string, { contentType: string; content: Buffer }>();
+  for (const { cid, contentType, content } of attachments) {
+    if (typeof cid !== 'string' || imageByCid.has(cid) || content == null) continue;
+    if (typeof contentType !== 'string' || !INLINE_IMAGE_CONTENT_TYPE.test(contentType)) continue;
+    imageByCid.set(cid, {
+      contentType,
+      content: Buffer.isBuffer(content) ? content : Buffer.from(content),
+    });
+  }
+  if (imageByCid.size === 0) return html;
+
+  const urlByCid = new Map<string, string>();
+  const reference = new RegExp(CID_REFERENCE_SOURCE, 'g');
+  let remaining = maxExpandedBytes;
+  let out = '';
+  let copied = 0;
+  for (let m = reference.exec(html); m; m = reference.exec(html)) {
+    const cid = m[1]!;
+    const image = imageByCid.get(cid);
+    if (!image) continue;
+    let url = urlByCid.get(cid);
+    if (url === undefined) {
+      // Sized before encoding, so an image that cannot fit is never encoded.
+      const urlLength = `data:${image.contentType};base64,`.length + 4 * Math.ceil(image.content.length / 3);
+      if (urlLength > remaining) continue;
+      url = `data:${image.contentType};base64,${image.content.toString('base64')}`;
+      urlByCid.set(cid, url);
+    }
+    if (url.length > remaining) continue;
+    remaining -= url.length;
+    out += html.slice(copied, m.index) + url;
+    copied = m.index + m[0].length;
+  }
+  return copied === 0 ? html : out + html.slice(copied);
 }
 
 export function snippetFromParsed(textBody: string | null, htmlBody: string | null): string | null {
@@ -217,7 +348,7 @@ export function formatMailparserHeaderValue(val: unknown): string {
     const o = val as Record<string, unknown>;
     if (typeof o.text === 'string' && o.text.trim()) return o.text.trim();
     if (typeof o.html === 'string' && o.html.trim()) {
-      return o.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      return stripHtmlTagsToText(o.html);
     }
     if (Array.isArray(o.value)) {
       const parts = o.value
@@ -262,11 +393,17 @@ export function formatMailparserHeaderValue(val: unknown): string {
 
 /** Serialize RFC822 headers from mailparser for support/debug display. */
 export function rawHeadersFromParsed(parsed: {
-  headerLines?: string[];
+  headerLines?: ReadonlyArray<string | { key?: string; line?: string }>;
   headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
 }): string | null {
   if (parsed.headerLines?.length) {
-    return parsed.headerLines.join('\n');
+    // mailparser delivers `{ key, line }` objects (line = original, still
+    // folded header text); joining the objects directly stored
+    // "[object Object]" and blinded Auto-Submitted/List-* checks.
+    const lines = parsed.headerLines
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.line ?? ''))
+      .filter((line) => line.length > 0);
+    if (lines.length > 0) return lines.join('\n');
   }
   const headers = parsed.headers;
   if (!headers) return null;

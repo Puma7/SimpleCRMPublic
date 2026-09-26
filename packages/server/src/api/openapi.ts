@@ -84,7 +84,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/customers/{id}': {
         get: { summary: 'Get customer' },
         patch: { summary: 'Update customer' },
-        delete: { summary: 'Delete customer' },
+        delete: { summary: 'Delete customer (409 customer_has_dependents with counts unless ?cascade=true)' },
       },
       '/products': {
         get: { summary: 'List products' },
@@ -125,7 +125,18 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Remove deal product by link id' },
       },
       '/tasks': {
-        get: { summary: 'List tasks' },
+        get: {
+          summary: 'List tasks',
+          parameters: [
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+            { name: 'cursor', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0 }, description: 'Not combinable with cursor' },
+            { name: 'search', in: 'query', schema: { type: 'string', maxLength: 200 } },
+            { name: 'customerId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'completed', in: 'query', schema: { type: 'boolean' } },
+            { name: 'priority', in: 'query', schema: { type: 'string', maxLength: 50 }, description: 'Exact priority, e.g. High' },
+          ],
+        },
         post: { summary: 'Create task' },
       },
       '/tasks/{id}': {
@@ -204,9 +215,14 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       },
       '/email/accounts/test-imap': { post: { summary: 'Test IMAP connection' } },
       '/email/accounts/test-pop3': { post: { summary: 'Test POP3 connection' } },
-      '/email/accounts/test-smtp': { post: { summary: 'Test SMTP connection' } },
+      '/email/accounts/test-smtp': {
+        post: {
+          summary: 'Test SMTP connection',
+          description: 'Optional boolean `tls` (TLS switch, ad-hoc test with password): true requires STARTTLS before AUTH unless `secure` or port 465. Omitted: STARTTLS only when offered.',
+        },
+      },
       '/email/accounts/{id}/sync': { post: { summary: 'Queue account sync' } },
-      '/email/accounts/{id}/sync-lock': { delete: { summary: 'Release stale account sync job locks' } },
+      '/email/accounts/{id}/sync-lock': { delete: { summary: 'Release stale account sync job locks (legacy job queue only; with Graphile: 503, orphaned locks are released by the worker)' } },
       '/email/accounts/{id}/vacation-test': { post: { summary: 'Test vacation responder' } },
       '/email/accounts/{id}/inbox-archive-recovery': {
         get: { summary: 'Preview inbox archive recovery' },
@@ -287,7 +303,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/messages/{id}/remote-content-policy': { patch: { summary: 'Update remote content policy' } },
       '/email/messages/{id}/remote-content-policy/consume': { post: { summary: 'Consume one-shot remote content allow' } },
       '/email/messages/{id}/compose-draft': {
-        patch: { summary: 'Update compose draft' },
+        patch: { summary: 'Update compose draft (optional accountId moves it to another account)' },
         delete: { summary: 'Delete compose draft' },
       },
       '/email/messages/{id}/compose-draft-recovery-state': { get: { summary: 'Get compose draft recovery state' } },
@@ -561,8 +577,8 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Delete workflow knowledge chunk' },
       },
       '/workflow-delayed-jobs': {
-        get: { summary: 'List workflow delayed jobs' },
-        post: { summary: 'Create workflow delayed job' },
+        // POST answers 405: delayed jobs are only created by logic.delay in a run.
+        get: { summary: 'List workflow delayed jobs (created by logic.delay only; POST returns 405)' },
       },
       '/workflow-delayed-jobs/{id}': {
         get: { summary: 'Get workflow delayed job' },

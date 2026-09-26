@@ -19,7 +19,8 @@ describe('workflow save gate', () => {
     priority: 100,
   };
   const unchanged = { ...baseline };
-  const sideEffects = { canManageWorkflows: false, hasSideEffects: true };
+  // Baseline und Kandidat teilen denselben Seiteneffekt-Graphen.
+  const sideEffects = { canManageWorkflows: false, hasSideEffects: true, baselineHasSideEffects: true };
 
   test('omits execution fields for a name-only save without workflows.manage', () => {
     const decision = decideWorkflowSaveGate(baseline, unchanged, sideEffects);
@@ -56,13 +57,14 @@ describe('workflow save gate', () => {
     expect(
       decideWorkflowSaveGate(baseline, { ...unchanged, graphJson: '{"version":1}' }, sideEffects).blocked,
     ).toBe(true);
-    // enabled: true -> false ist keine Manage-Pflicht mehr (needsManage haengt am
-    // NEUEN Zustand), aber es bleibt eine Aenderung und darf nicht weggelassen
-    // werden — sonst wuerde das Deaktivieren still verschluckt.
+    // G2 (C-A20): Einen AKTIVEN Seiteneffekt-Workflow stillzulegen verlangt
+    // serverseitig workflows.manage, symmetrisch zum Aktivieren — frueher hing
+    // needsManage nur am NEUEN Zustand und das Deaktivieren lief ohne manage
+    // durch. Weggelassen werden darf es trotzdem nie.
     const disabling = decideWorkflowSaveGate(baseline, { ...unchanged, enabled: false }, sideEffects);
     expect(disabling.executionChanged).toBe(true);
     expect(disabling.omitExecutionFields).toBe(false);
-    expect(disabling.blocked).toBe(false);
+    expect(disabling.blocked).toBe(true);
   });
 
   test('a changed priority is an execution change: it reorders live workflows', () => {
@@ -76,6 +78,7 @@ describe('workflow save gate', () => {
     const decision = decideWorkflowSaveGate(baseline, unchanged, {
       canManageWorkflows: true,
       hasSideEffects: true,
+      baselineHasSideEffects: true,
     });
 
     expect(decision.omitExecutionFields).toBe(false);
@@ -86,9 +89,35 @@ describe('workflow save gate', () => {
     const decision = decideWorkflowSaveGate(
       baseline,
       { ...unchanged, cronExpr: '*/5 * * * *' },
-      { canManageWorkflows: false, hasSideEffects: false },
+      { canManageWorkflows: false, hasSideEffects: false, baselineHasSideEffects: false },
     );
 
+    expect(decision.omitExecutionFields).toBe(false);
+    expect(decision.blocked).toBe(false);
+  });
+
+  // C-A20: Das Gate sah nur den neuen Graphen — ein harmloser Ersatz fuer einen
+  // aktiven Seiteneffekt-Graphen ging ohne workflows.manage an den Server.
+  test('replacing an active side-effect graph with a harmless one needs workflows.manage', () => {
+    const decision = decideWorkflowSaveGate(
+      baseline,
+      { ...unchanged, graphJson: '{"version":1,"nodes":[{"id":"trigger-1","type":"trigger"}],"edges":[]}' },
+      { canManageWorkflows: false, hasSideEffects: false, baselineHasSideEffects: true },
+    );
+
+    expect(decision.executionChanged).toBe(true);
+    expect(decision.omitExecutionFields).toBe(false);
+    expect(decision.blocked).toBe(true);
+  });
+
+  test('an inactive side-effect draft stays editable without workflows.manage', () => {
+    const decision = decideWorkflowSaveGate(
+      { ...baseline, enabled: false },
+      { ...unchanged, enabled: false, graphJson: '{"version":1}' },
+      sideEffects,
+    );
+
+    expect(decision.executionChanged).toBe(true);
     expect(decision.omitExecutionFields).toBe(false);
     expect(decision.blocked).toBe(false);
   });

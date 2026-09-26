@@ -1,4 +1,4 @@
-import type { WorkflowGraphDocument, WorkflowGraphNode } from './email-workflow-graph';
+import type { WorkflowGraphDocument, WorkflowGraphEdge, WorkflowGraphNode } from './email-workflow-graph';
 
 // Mirror of packages/core/src/workflow/graph-validate.ts for the electron /
 // renderer transport (which uses the shared graph types, not @simplecrm/core).
@@ -132,10 +132,25 @@ export function findOutboundGraphTraps(
   if (!triggerNode) return [];
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
-  const outgoing = (id: string) =>
-    doc.edges
-      .filter((edge) => edge.source === id)
-      .sort((a, b) => a.id.localeCompare(b.id));
+  // Kanten einmal je Quelle gruppiert, damit ein Schritt nicht alle Kanten des
+  // Graphen durchsucht.
+  const edgesBySource = new Map<string, WorkflowGraphEdge[]>();
+  for (const edge of doc.edges) {
+    const list = edgesBySource.get(edge.source);
+    if (list) list.push(edge);
+    else edgesBySource.set(edge.source, [edge]);
+  }
+  const outgoingCache = new Map<string, WorkflowGraphEdge[]>();
+  const outgoing = (id: string) => {
+    let outs = outgoingCache.get(id);
+    if (!outs) {
+      outs = (edgesBySource.get(id) ?? [])
+        .filter((edge) => edge.source === id)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      outgoingCache.set(id, outs);
+    }
+    return outs;
+  };
 
   const issues: OutboundGraphIssue[] = [];
   const seen = new Set<string>();
@@ -150,13 +165,21 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
+  // Jeder Zustand (Knoten, holdPath) wird nur einmal untersucht: Wieder
+  // zusammenlaufende Bedingungen verdoppeln sonst je Ebene die Zahl der Pfade,
+  // 20 Ebenen blockierten den Event-Loop fuer Sekunden (C-A63). `onPath`
+  // erkennt Zyklen wie zuvor die Pfadmenge. Ohne Zyklus ist das Ergebnis
+  // dasselbe; mit Zyklus bleibt es nicht leer, nennt aber evtl. weniger Knoten.
+  const onPath = new Set<string>([triggerNode.id]);
+  const finished = new Set<string>();
+
+  const walk = (nodeId: string, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId });
       return;
     }
-    if (pathVisited.has(nodeId)) {
+    if (onPath.has(nodeId)) {
       add({ code: 'dead_end', nodeId });
       return;
     }
@@ -166,54 +189,61 @@ export function findOutboundGraphTraps(
       return;
     }
     if (isHoldNode(node)) return;
-    const next = new Set(pathVisited).add(nodeId);
-    const outs = outgoing(nodeId);
+    const state = `${holdPath ? 'hold' : 'send'}:${nodeId}`;
+    if (finished.has(state)) return;
+    finished.add(state);
+    onPath.add(nodeId);
+    try {
+      const outs = outgoing(nodeId);
 
-    if (isYesNoBranchNode(node)) {
-      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
-      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
-      return;
-    }
-
-    const portBranch = namedPortBranch(node);
-    if (portBranch) {
-      for (const port of portBranch.ports) {
-        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
-        // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
-        // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
-        // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
-        // und das Speichern scheitert mit 422.
-        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
-        const isReleasePort = portBranch.releasePorts.includes(port);
-        if (edge) {
-          walk(edge.target, next, holdPath || !isReleasePort);
-        } else if (isReleasePort) {
-          add({ code: 'dead_end', nodeId });
-        }
+      if (isYesNoBranchNode(node)) {
+        const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+        const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+        if (yesEdge) walk(yesEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+        if (noEdge) walk(noEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+        return;
       }
-      return;
-    }
 
-    if (outs.length === 0) {
+      const portBranch = namedPortBranch(node);
+      if (portBranch) {
+        for (const port of portBranch.ports) {
+          const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+          // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
+          // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
+          // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
+          // und das Speichern scheitert mit 422.
+          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
+          const isReleasePort = portBranch.releasePorts.includes(port);
+          if (edge) {
+            walk(edge.target, holdPath || !isReleasePort);
+          } else if (isReleasePort) {
+            add({ code: 'dead_end', nodeId });
+          }
+        }
+        return;
+      }
+
+      if (outs.length === 0) {
+        if (!holdPath) add({ code: 'dead_end', nodeId });
+        return;
+      }
+      const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+      if (defaultEdge) {
+        walk(defaultEdge.target, holdPath);
+        return;
+      }
+      // Every outgoing edge is labeled and none is a default/unlabeled edge, so
+      // pickEdge(..., 'default') returns undefined: the runtime stops here and the
+      // draft is never released — a dead end.
       if (!holdPath) add({ code: 'dead_end', nodeId });
-      return;
+    } finally {
+      onPath.delete(nodeId);
     }
-    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
-    if (defaultEdge) {
-      walk(defaultEdge.target, next, holdPath);
-      return;
-    }
-    // Every outgoing edge is labeled and none is a default/unlabeled edge, so
-    // pickEdge(..., 'default') returns undefined: the runtime stops here and the
-    // draft is never released — a dead end.
-    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
-  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target);
   if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;
@@ -377,6 +407,163 @@ export function workflowGraphHasChainStopNode(graph: unknown): boolean {
     if (sideEffectRuntimeType(node) === 'logic.stop_after_spam') return true;
   }
   return false;
+}
+
+/**
+ * Kann dieser Knoten zur Laufzeit die Inbound-Kette stoppen (inboundChainStop)?
+ * Dieselben Wege wie workflowGraphHasChainStopNode: `stopFurtherWorkflows` am
+ * Knoten (nodeRequestsChainStop bzw. email.mark_spam/set_spam_status) und
+ * `logic.stop_after_spam`. Ein Platzhalter im Schalter zaehlt vorsichtshalber
+ * mit, denn sein Wert steht erst zur Laufzeit fest.
+ */
+function nodeMayStopInboundChain(node: WorkflowGraphNode): boolean {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+    ? (data.config as Record<string, unknown>)
+    : {};
+  const flagMayBeOn = (value: unknown) =>
+    chainStopFlagEnabled(value) || (typeof value === 'string' && value.includes('{{'));
+  if (flagMayBeOn(config[NODE_CHAIN_STOP_CONFIG_KEY]) || flagMayBeOn(data[NODE_CHAIN_STOP_CONFIG_KEY])) {
+    return true;
+  }
+  return runtimeType(node) === 'logic.stop_after_spam';
+}
+
+/**
+ * Kann hinter `nodeId` auf irgendeinem Pfad noch ein Knoten die Inbound-Kette
+ * stoppen? Folgt jeder Kante (auch Fehler-/Nein-Zweigen) und jedem
+ * `resumeNodeId`, also auch Pfaden hinter weiteren deferierten Knoten.
+ *
+ * Grundlage fuer logic.delay in der Server-Kette: Kann hinter dem Delay nichts
+ * mehr stoppen, schaltet die Kette sofort weiter; sonst wartet sie seriell bis
+ * zum Ende der Verzoegerung. Im Zweifel (unlesbarer Graph, Platzhalter als
+ * Resume-Ziel) gilt der Stopp als erreichbar — dann bleibt es seriell.
+ */
+export function inboundChainStopReachableAfter(doc: WorkflowGraphDocument, nodeId: string): boolean {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return true;
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const successors = (id: string): string[] | null => {
+    const targets = doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target);
+    const data = (byId.get(id)?.data ?? {}) as Record<string, unknown>;
+    const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+      ? (data.config as Record<string, unknown>)
+      : data;
+    const resume = typeof config.resumeNodeId === 'string' ? config.resumeNodeId.trim() : '';
+    if (resume.includes('{{')) return null;
+    if (resume) targets.push(resume);
+    return targets;
+  };
+  const start = successors(nodeId);
+  if (start === null) return true;
+  const queue = [...start];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (!node) continue;
+    if (nodeMayStopInboundChain(node)) return true;
+    const next = successors(id);
+    if (next === null) return true;
+    queue.push(...next);
+  }
+  return false;
+}
+
+/**
+ * logic.delay-Knoten eines Inbound-Workflows, hinter denen noch ein Knoten die
+ * Kette stoppen kann. In der Server-Edition warten nachrangige
+ * Inbound-Workflows dort bis zum Ende der Verzoegerung (Hinweis im Editor).
+ */
+export function findInboundDelaysHoldingChain(
+  doc: WorkflowGraphDocument,
+  opts?: { effectiveTrigger?: string },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes)) return [];
+  if ((opts?.effectiveTrigger ?? triggerKind(doc)) !== 'inbound') return [];
+  return doc.nodes
+    .filter((node) => runtimeType(node) === 'logic.delay')
+    .filter((node) => inboundChainStopReachableAfter(doc, node.id))
+    .map((node) => node.id);
+}
+
+const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'logic.delay',
+  'ai.agent',
+  'ai.pick_canned',
+  'ai.draft_reply',
+  'ai.review_draft',
+]);
+const SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'ai.classify',
+  'ai.review',
+  'ai_review',
+  'ai.outbound_review',
+  'ai.transform_text',
+  'http.request',
+  'email.forward_copy',
+  'forward_copy',
+  'email.ingest_dmarc_report',
+]);
+const DESKTOP_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set(['logic.delay']);
+
+export type WorkflowRuntimeEdition = 'server' | 'desktop';
+
+/** Setzt dieser Knoten den Lauf asynchron fort? Siehe core workflowNodeDefersRun. */
+export function workflowNodeDefersRun(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  edition: WorkflowRuntimeEdition,
+): boolean {
+  const type = runtimeType(node);
+  if (edition === 'desktop') return DESKTOP_ALWAYS_DEFERRING_NODE_TYPES.has(type);
+  if (SERVER_ALWAYS_DEFERRING_NODE_TYPES.has(type)) return true;
+  if (!SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES.has(type) || !Array.isArray(doc?.edges)) return false;
+  const outs = doc.edges.filter((edge) => edge.source === node.id);
+  if (type === 'http.request') return outs.length > 0;
+  // Wie resolveResumeNodeAfter: OK- oder Standardkante.
+  return outs.some((edge) => loopEdgeLabel(edge) === 'ok' || edgeIsDefaultLabel(edge));
+}
+
+function loopEdgeLabel(edge: { label?: string | null }): string {
+  return (edge.label ?? '').toLowerCase();
+}
+
+/**
+ * Knoten im Je-Eintrag-Zweig einer Schleife, die den Lauf deferieren wuerden
+ * (F-A9-04). Mirror von core findLoopBodyDeferringNodes; Kantenwahl wie pickEdge.
+ */
+export function findLoopBodyDeferringNodes(
+  doc: WorkflowGraphDocument,
+  opts: { edition: WorkflowRuntimeEdition },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const found: string[] = [];
+  for (const loopNode of doc.nodes) {
+    if (runtimeType(loopNode) !== 'logic.loop') continue;
+    const loopEdges = doc.edges
+      .filter((edge) => edge.source === loopNode.id)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const isDone = (edge: { label?: string | null }) => ['done', 'fertig', 'end'].includes(loopEdgeLabel(edge));
+    const eachEdge = loopEdges.find((edge) => ['each', 'je', 'loop'].includes(loopEdgeLabel(edge)))
+      ?? loopEdges.find((edge) => !isDone(edge));
+    if (!eachEdge) continue;
+    const doneTarget = loopEdges.find(isDone)?.target;
+    const seen = new Set<string>([loopNode.id, ...(doneTarget ? [doneTarget] : [])]);
+    const queue = [eachEdge.target];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const node = byId.get(id);
+      if (!node) continue;
+      if (workflowNodeDefersRun(doc, node, opts.edition) && !found.includes(id)) found.push(id);
+      queue.push(...doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target));
+    }
+  }
+  return found;
 }
 
 /**

@@ -55,12 +55,17 @@ sofort für alle Mitglieder, weil Capabilities pro Request aufgelöst werden.
 
 Der ACL-Rollout kennt `shadow` und `enforce`.
 
-**Im Shadow-Modus gewährt eine Delegation gar nichts.** Wer ein Postfach sehen
-darf, entscheidet dort weiterhin die Legacy-ACL (`user_account_access`); die
-Bindings können nur zusätzlich **einschränken**. Die Sichtbarkeitsfilter
-(Zuweisung, Kategorie, Tag) greifen dabei bereits echt — sonst wären
-konfigurierte Bindings wirkungslos und der Vergleich aussagelos. Wer in einem
-Shadow-Workspace einen Filter setzt, verändert also sofort die Sichtbarkeit.
+**Im Shadow-Modus gewährt eine Delegation keine Lese- und Senderechte.** Wer ein
+Postfach sehen, darin Entwürfe schreiben oder daraus senden darf, entscheidet
+dort weiterhin die Legacy-ACL (`user_account_access`); für diese Rechte können
+die Bindings nur zusätzlich **einschränken**. Alle übrigen Rechte (Triage,
+Kommentieren, verdächtige Anhänge laden, Als Konto senden, Löschen, Exportieren,
+Konto verwalten, Delegation verwalten) kennt die Legacy-ACL nicht: über sie
+entscheidet auch im Shadow-Modus allein die Delegation, sie wirken also
+**sofort**. Die Sichtbarkeitsfilter (Zuweisung, Kategorie, Tag) greifen dabei
+bereits echt — sonst wären konfigurierte Bindings wirkungslos und der Vergleich
+aussagelos. Wer in einem Shadow-Workspace einen Filter setzt, verändert also
+sofort die Sichtbarkeit.
 
 Das ist die wichtigste Falle des Modus: Eine vollständige Delegation lässt sich
 anlegen, speichern und in der Liste betrachten — und die betroffenen Benutzer
@@ -68,8 +73,12 @@ haben trotzdem ein leeres Postfach, weil die Legacy-Seite sie nicht kennt. In
 der Server-Edition schreibt **nichts** in `user_account_access`; die Tabelle
 füllt sich nur beim Import aus einer SQLite-Desktop-Installation. Für einen
 Workspace ohne diesen Import ist die Legacy-Antwort deshalb konstant „nein".
-Das Delegations-Panel weist im Shadow-Modus ausdrücklich darauf hin, und
-`doctor.sh` meldet solche Workspaces als `mail_acl_shadow_without_legacy`.
+Das Delegations-Panel weist im Shadow-Modus ausdrücklich darauf hin. Die
+Readiness-API (`GET /api/v1/email/acl-rollout/readiness`) liefert dazu
+`delegationGrantsReadSendAccess` (Lese- und Senderechte wirken erst mit
+`enforce`) und `nonComparableRightsEffective` (die übrigen Rechte wirken sofort);
+`delegationGrantsAccess` bleibt als gleichbedeutendes Altfeld zu
+`delegationGrantsReadSendAccess` erhalten. `doctor.sh` meldet solche Workspaces als `mail_acl_shadow_without_legacy`.
 Migration `0050_mail_acl_shadow_without_legacy` räumt bestehende Fälle auf: sie
 setzt genau die Workspaces auf `enforce`, die im Shadow-Modus stehen und keine
 einzige Legacy-Zeile haben — dort ist der Vergleich beweisbar leer.
@@ -86,7 +95,11 @@ einzige Legacy-Zeile haben — dort ist der Vergleich beweisbar leer.
   samt Zähler fest.
 - `access_regressions_present` — der Wechsel würde jemandem Zugriff **nehmen**
   (`legacyAllowNewDeny > 0`). Das bleibt gesperrt, auch mit Bestätigung: erst
-  die Delegation so ergänzen, dass niemand verliert.
+  die Delegation so ergänzen, dass niemand verliert. Sichtbarkeitsfilter, die
+  im Shadow-Modus schon greifen, zählen nicht dazu — ihre Wirkung ändert der
+  Wechsel nicht. Ein gefiltertes Ordner- oder Nachrichten-Binding neben
+  Legacy-Vollzugriff zählt dagegen: den Rest des Kontos gibt es danach nicht
+  mehr.
 
 Der Wechsel ist einmalig; einen Weg zurück nach `shadow` gibt es nicht.
 

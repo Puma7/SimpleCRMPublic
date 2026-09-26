@@ -8,6 +8,7 @@ import { securityVariablesFromRow } from '../email/mail-security-store';
 import type { WorkflowContext, WorkflowStringContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 import { interpolateWorkflowPlaceholders } from '../../packages/core/src/workflow/interpolate';
+import { stripHtmlTagsToText } from '../../packages/core/src/email/parse-utils';
 
 /** Metadata-only context for GDPR-conscious KI nodes (no body_text). */
 export function buildMetadataContextFromMessage(row: EmailMessageRow): WorkflowStringContext {
@@ -51,7 +52,7 @@ export function buildStringContextFromMessage(row: EmailMessageRow): WorkflowStr
 }
 
 export function buildStringContextFromOutbound(payload: OutboundDraftPayload): WorkflowStringContext {
-  const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(payload.bodyHtml ?? '');
   const attCount = payload.attachmentCount ?? 0;
   const attNames =
     payload.attachmentPaths?.map((p) => path.basename(p)).filter(Boolean).join('\n') ?? '';

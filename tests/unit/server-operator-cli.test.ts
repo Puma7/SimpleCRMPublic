@@ -187,3 +187,121 @@ describe('operator CLI compose-project consistency', () => {
     }
   }));
 });
+
+describe('several compose files (SMTP relay override)', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+
+  // N-int-01: update, restore und der Wrapper nutzten nur die Basisdatei; mit aktivem Relay-Override verlor die API bei jedem Update die Relay-Ports und das TLS-Material.
+  test('a colon-separated COMPOSE_FILE reaches every compose call as separate -f flags', ranOrSkipped(() => {
+    const base = join(repoRoot, 'docker', 'docker-compose.yml');
+    const relay = join(repoRoot, 'docker', 'docker-compose.relay.yml');
+    const env = { COMPOSE_FILE: `${base}:${relay}` };
+    for (const args of [
+      ['docker/simplecrm', 'ps'],
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      ['docker/simplecrm', 'restore'],
+    ]) {
+      const res = runWithFakeDocker(args, { env });
+      expect(res.status).toBe(0);
+      const composeCalls = res.log.split('\n').filter((line) => line.startsWith('compose -p'));
+      expect(composeCalls.length).toBeGreaterThan(0);
+      for (const line of composeCalls) {
+        expect(line).toContain(`--project-directory ${join(repoRoot, 'docker')} -f ${base} -f ${relay} `);
+      }
+      expect(new Set(res.projectFlags)).toEqual(new Set(['docker']));
+    }
+  }));
+
+  test('update warns when the relay is enabled but its override is not part of COMPOSE_FILE', ranOrSkipped(() => {
+    const relay = join(repoRoot, 'docker', 'docker-compose.relay.yml');
+    const base = join(repoRoot, 'docker', 'docker-compose.yml');
+    const missing = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { SMTP_RELAY_ENABLED: 'true' } },
+    );
+    expect(missing.status).toBe(0);
+    expect(missing.stderr).toContain('COMPOSE_FILE does not include docker-compose.relay.yml');
+
+    const included = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { SMTP_RELAY_ENABLED: 'true', COMPOSE_FILE: `${base}:${relay}` } },
+    );
+    expect(included.status).toBe(0);
+    expect(included.stderr).not.toContain('docker-compose.relay.yml');
+  }));
+});
+
+describe('TRUST_PROXY preflight', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+
+  // Merge von PR #192: Die API lehnt Hop-Zahlen wie TRUST_PROXY=1 jetzt beim Start ab. Ein Update mit dieser alten .env-Zeile haette die API in eine Neustartschleife geschickt.
+  test('update stops before touching the stack when TRUST_PROXY is an old hop count', ranOrSkipped(() => {
+    const blocked = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '1' } });
+    expect(blocked.status).not.toBe(0);
+    expect(blocked.stderr).toContain('TRUST_PROXY=1');
+    expect(blocked.log).not.toContain(' build');
+    expect(blocked.log).not.toContain('stop api');
+
+    const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '172.31.255.2' } });
+    expect(ok.status).toBe(0);
+  }));
+});
+
+describe('API volume ownership after the switch to a non-root image', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+  const ownershipFix = /run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c find \/app\/data\/attachments \/app\/data\/audit-archive \/app\/data\/logs .* -exec chown -h node:node/;
+
+  // F-A12-07: Das API-Image laeuft jetzt als node; Volumes aelterer root-Versionen (und frisch restaurierte Anhaenge) gehoerten root, die API konnte dort nicht schreiben.
+  test('update hands the writable volumes to node after building and before restarting the API', ranOrSkipped(() => {
+    const update = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup']);
+    expect(update.status).toBe(0);
+    const lines = update.log.split('\n');
+    const fix = lines.findIndex((line) => ownershipFix.test(line));
+    expect(fix).toBeGreaterThan(lines.findIndex((line) => line.endsWith(' build')));
+    expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+  }));
+
+  // F-A12-07 (Nachtrag): Seit dem Wechsel auf node liest das Relay seinen TLS-Schluessel als uid 1000; ein root-only key.pem schaltete das Relay nach dem Update still ab.
+  test('update warns when the relay TLS key is not readable for the node user', ranOrSkipped(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'simplecrm-relay-tls-'));
+    try {
+      const key = join(dir, 'key.pem');
+      writeFileSync(key, 'not a real key\n');
+      chmodSync(key, 0o600);
+      const warned = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+        { env: { SMTP_RELAY_TLS_DIR: dir } },
+      );
+      expect(warned.status).toBe(0);
+      expect(warned.stderr).toContain(`${key} is not readable for uid 1000`);
+
+      chmodSync(key, 0o644);
+      const readable = runWithFakeDocker(
+        ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+        { env: { SMTP_RELAY_TLS_DIR: dir } },
+      );
+      expect(readable.status).toBe(0);
+      expect(readable.stderr).not.toContain('is not readable for uid 1000');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }));
+
+  test('restore hands restored attachments to node before restarting the API', ranOrSkipped(() => {
+    const restore = runWithFakeDocker(['docker/simplecrm', 'restore']);
+    expect(restore.status).toBe(0);
+    const lines = restore.log.split('\n');
+    const fix = lines.findIndex((line) => ownershipFix.test(line));
+    expect(fix).toBeGreaterThan(lines.findIndex((line) => line.includes('--profile restore run --rm restore')));
+    expect(fix).toBeLessThan(lines.findIndex((line) => line.endsWith('up -d api caddy')));
+  }));
+});

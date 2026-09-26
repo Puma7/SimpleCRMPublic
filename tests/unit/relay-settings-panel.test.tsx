@@ -43,7 +43,6 @@ function relayFixture() {
     maxRecipients: 25,
     maxMessageBytes: 26214400,
     rateLimitPerMin: 60,
-    allowArbitraryRecipients: false,
     followupWorkflowId: null,
     createdAt: '2026-07-01T10:00:00.000Z',
     allowedAccounts: [

@@ -31,7 +31,8 @@ describe('server edition AP-12 operator docs', () => {
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('sh ./simplecrm logs api caddy'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('npm run doctor:server'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('JSON access logs in the `caddy_logs` volume'));
-    expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile minio up -d minio'));
+    expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('external S3-compatible service'));
+    expect(readRepoFile('docs/SETUP_SERVER.md')).not.toEqual(expect.stringContaining('--profile minio'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile monitor up -d monitor'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile pgadmin up -d pgadmin'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('127.0.0.1'));
@@ -86,12 +87,26 @@ describe('server edition AP-12 operator docs', () => {
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_DAILY=7'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_WEEKLY=4'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_MONTHLY=12'));
-    expect(envExample).toEqual(expect.stringContaining('MINIO_ROOT_PASSWORD=CHANGE_ME_minio_root_password'));
+    expect(envExample).not.toEqual(expect.stringContaining('MINIO_'));
     expect(envExample).toEqual(expect.stringContaining('UPTIME_KUMA_BIND=127.0.0.1'));
     expect(envExample).toEqual(expect.stringContaining('PGADMIN_DEFAULT_PASSWORD=CHANGE_ME_pgadmin_password'));
     expect(envExample).toEqual(expect.stringContaining('MASTER_KEY must decode to exactly 32 bytes'));
     expect(envExample).toEqual(expect.stringContaining('ACCESS_TOKEN_SECRET must decode to at least 32 bytes'));
     expect(gitignore).toEqual(expect.stringContaining('!docker/.env.example'));
+  });
+
+  // F-A2c-03: Dass die Laufzeitrolle Eigentuemerin aller Objekte ist und FORCE RLS damit nur Selbstbeschraenkung, stand nirgends als Restrisiko.
+  test('documents the schema-owning runtime role as a residual risk with its planned split', () => {
+    const threatModel = readRepoFile('docs/THREAT_MODEL.md');
+    const residualRisks = threatModel.slice(
+      threatModel.indexOf('## Known Residual Risks'),
+      threatModel.indexOf('## Workflows Driven By Untrusted Mail'),
+    );
+
+    expect(residualRisks).toEqual(expect.stringContaining('`simplecrm_app`'));
+    expect(residualRisks).toEqual(expect.stringContaining('FORCE ROW LEVEL SECURITY'));
+    expect(residualRisks).toEqual(expect.stringContaining('NO FORCE ROW LEVEL SECURITY'));
+    expect(residualRisks).toEqual(expect.stringContaining('REASSIGN OWNED BY simplecrm_app'));
   });
 
   test('keeps AP-12 server documentation files trackable despite the markdown ignore rule', () => {
@@ -138,7 +153,11 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('string_agg(DISTINCT key_id'));
     expect(metadata).not.toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY='));
     // Fehlende Tabellen duerfen ein Backup nicht verhindern.
-    expect(metadata).toEqual(expect.stringContaining("to_regclass(format('public.%I', :'tbl')) IS NULL"));
+    // C-A55: Gezaehlt wird nur eine echte Tabelle; to_regclass allein nahm auch
+    // eine View aus dem Dump, die dann als Admin ausgewertet wurde.
+    expect(metadata).toEqual(expect.stringContaining("AND c.relname = :'tbl'"));
+    expect(metadata).toEqual(expect.stringContaining("AND c.relkind IN ('r', 'p'))"));
+    expect(metadata).not.toEqual(expect.stringContaining("to_regclass(format('public.%I', :'tbl'))"));
     // Und die Anweisung muss ueber stdin laufen: mit -c reicht psql den Text
     // unveraendert an den Server durch und ersetzt :'tbl' ueberhaupt nicht —
     // die Zaehlung liefe dann fuer jede Tabelle auf einen Fehler hinaus.
@@ -185,7 +204,7 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).not.toMatch(/to_regclass\('public\.\$2'\)/);
     expect(metadata).not.toMatch(/FROM \$2/);
     expect(metadata).toEqual(expect.stringContaining("-v tbl=\"$2\""));
-    expect(metadata).toEqual(expect.stringContaining("format('public.%I', :'tbl')"));
+    expect(metadata).toEqual(expect.stringContaining("FROM public.%I', :'tbl')"));
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_identifier "$2" ||'));
     expect(metadata).toEqual(expect.stringContaining('which is not a valid table name'));
     // Und die Zahl muss eine Zahl sein. Wurde 'n/a' uebersprungen und alles
@@ -203,7 +222,10 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_partial_path'));
     expect(metadata).toMatch(/meta_path="\$\(backup_metadata_partial_path/);
     expect(backup).toMatch(/write_backup_metadata[\s\S]*?pg_dump -Fc[\s\S]*?publish_backup_metadata/);
-    expect(backup).toEqual(expect.stringContaining("trap 'rm -f \"$BACKUP_DIR/$METADATA_FILE.partial\"'"));
+    // Aufgeraeumt wird sie im EXIT-Trap zusammen mit dem unfertigen Dump und
+    // den Archiven (F-A12-03); Verhalten in server-backup-restore-scripts.test.ts.
+    expect(backup).toMatch(/discard_unfinished_backup\(\) \{\s*\n\s*rm -f \\\s*\n\s*"\$BACKUP_DIR\/\$METADATA_FILE\.partial"/);
+    expect(backup).toEqual(expect.stringContaining('trap discard_unfinished_backup EXIT'));
     // Und die Pruefbarkeit wird VOR dem Zerstoerenden entschieden: hinterher
     // waeren die Produktivdaten schon ersetzt und der Abbruch liesse die
     // Anwendung ausgeschaltet zurueck.
@@ -310,10 +332,9 @@ describe('server edition AP-12 operator docs', () => {
     const compose = readRepoFile('docker/docker-compose.yml');
     const setupServer = readRepoFile('docs/SETUP_SERVER.md');
 
-    expect(compose).toEqual(expect.stringContaining('profiles: ["minio"]'));
+    expect(compose).not.toEqual(expect.stringContaining('profiles: ["minio"]'));
     expect(compose).toEqual(expect.stringContaining('profiles: ["monitor"]'));
     expect(compose).toEqual(expect.stringContaining('profiles: ["pgadmin"]'));
-    expect(compose).toEqual(expect.stringContaining('"${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"'));
     expect(compose).toEqual(expect.stringContaining('"${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"'));
     expect(compose).toEqual(expect.stringContaining('"${PGADMIN_BIND:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"'));
     expect(setupServer).toEqual(expect.stringContaining('The standard stack intentionally starts only Caddy, API, migrations, and PostgreSQL'));

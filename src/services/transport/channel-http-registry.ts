@@ -9,6 +9,7 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from "@shared/signature-template"
+import { escapeHtmlText } from "@shared/compose-body"
 import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
@@ -82,6 +83,7 @@ type ListResult<T> = {
 type CustomerRecord = {
   id: number
   sourceSqliteId?: number | null
+  jtlKkunde?: number | null
   customerNumber?: string | null
   name?: string | null
   firstName?: string | null
@@ -319,6 +321,7 @@ type EmailAccountRecord = {
   vacationBodyText?: string | null
   requestReadReceipt?: boolean | number | null
   imapDeleteOptIn?: boolean | number | null
+  trustedAuthservId?: string | null
   updatedAt?: string | null
 }
 
@@ -1210,23 +1213,38 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  [IPCChannels.Db.DeleteCustomer, ([id]) => ({
+  [IPCChannels.Db.DeleteCustomer, ([id, options]) => ({
     method: "DELETE",
     path: `/api/v1/customers/${positiveId(id, "customer id")}`,
+    // Without the confirmation the server answers 409 customer_has_dependents
+    // (with the counts in the error details) while deals, tasks or appointments exist.
+    query: isRecord(options) && options.cascade === true ? { cascade: true } : undefined,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Db.GetTasksForCustomer, ([customerId]) => ({
-    method: "GET",
-    path: "/api/v1/tasks",
-    query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
-    transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
-  })],
-  [IPCChannels.Db.GetDealsForCustomer, ([customerId]) => ({
-    method: "GET",
-    path: "/api/v1/deals",
-    query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
-    transform: (body) => listItems<DealRecord>(body).map(mapDealRecord),
-  })],
+  [IPCChannels.Db.GetTasksForCustomer, ([customerId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: "/api/v1/tasks",
+      query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<TaskRecord>(body, context, request)).map(mapTaskRecord),
+    }
+  }],
+  [IPCChannels.Db.GetDealsForCustomer, ([customerId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: "/api/v1/deals",
+      query: { limit: DEFAULT_LIST_LIMIT, customerId: positiveId(customerId, "customer id") },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<DealRecord>(body, context, request)).map(mapDealRecord),
+    }
+  }],
 
   [IPCChannels.Products.GetAll, () => ({
     method: "GET",
@@ -1295,7 +1313,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Deals.GetAll, ([params]) => {
     const input = objectPayload(params ?? {}, "deal list params")
     const filter = objectPayload(input.filter ?? {}, "deal filter")
-    return {
+    const request: HttpRequestSpec = {
       method: "GET",
       path: "/api/v1/deals",
       query: {
@@ -1304,7 +1322,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         stage: filter.stage,
         customerId: filter.customerId ?? filter.customer_id,
       },
-      transform: (body) => listItems<DealRecord>(body).map(mapDealRecord),
+    }
+    // The deal overview asks for all deals (limit 10000) and pages on the
+    // client; the server caps a page at 100, so follow the cursor up to the
+    // requested number instead of stopping after the first page.
+    const requestedLimit = Number(input.limit)
+    const maxItems = Number.isSafeInteger(requestedLimit) && requestedLimit > 0 ? requestedLimit : DEFAULT_LIST_LIMIT
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<DealRecord>(body, context, request, maxItems)).map(mapDealRecord),
     }
   }],
   [IPCChannels.Deals.GetById, ([id]) => ({
@@ -1344,12 +1371,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/deals/${positiveId(id, "deal id")}`,
     transform: () => ({ success: true }),
   })],
-  [IPCChannels.Deals.GetTasks, ([dealId]) => ({
-    method: "GET",
-    path: `/api/v1/deals/${positiveId(dealId, "deal id")}/tasks`,
-    query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
-  })],
+  [IPCChannels.Deals.GetTasks, ([dealId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/deals/${positiveId(dealId, "deal id")}/tasks`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+    }
+    return {
+      ...request,
+      transform: async (body, context) =>
+        (await collectPagedListItems<TaskRecord>(body, context, request)).map(mapTaskRecord),
+    }
+  }],
   [IPCChannels.Deals.GetProducts, ([dealId]) => ({
     method: "GET",
     path: `/api/v1/deals/${positiveId(dealId, "deal id")}/products`,
@@ -1400,13 +1433,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Tasks.GetAll, ([params]) => {
     const input = objectPayload(params ?? {}, "task list params")
     const filter = objectPayload(input.filter ?? {}, "task filter")
+    const offset = offsetValue(input.offset)
     return {
       method: "GET",
       path: "/api/v1/tasks",
       query: {
         limit: limitValue(input.limit),
+        offset: offset > 0 ? offset : undefined,
         search: filter.query,
         completed: filter.completed,
+        priority: optionalTextQueryValue(filter.priority, "task priority", 50),
       },
       transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
     }
@@ -1598,7 +1634,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/calendar-events",
     query: { limit: DEFAULT_LIST_LIMIT },
-    transform: (body) => listItems<CalendarEventRecord>(body).map(mapCalendarEventRecord),
+    // The calendar shows every event like the desktop edition, so follow the
+    // cursor past the server's 100-row page instead of keeping the lowest ids.
+    transform: async (body, context) => {
+      const items = await collectPagedListItems<CalendarEventRecord>(body, context, {
+        method: "GET",
+        path: "/api/v1/calendar-events",
+        query: { limit: DEFAULT_LIST_LIMIT },
+      })
+      return items.map(mapCalendarEventRecord)
+    },
   })],
   [IPCChannels.Calendar.AddCalendarEvent, ([eventData]) => {
     const input = objectPayload(eventData, "calendar entry payload")
@@ -1854,6 +1899,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       return {
         mode: result.mode === "enforce" ? "enforce" as const : "shadow" as const,
         delegationGrantsAccess: result.delegationGrantsAccess === true,
+        delegationGrantsReadSendAccess: result.delegationGrantsReadSendAccess === true,
+        nonComparableRightsEffective: result.nonComparableRightsEffective !== false,
       }
     },
   })],
@@ -1929,6 +1976,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         host: stringPayloadField(input.host, "smtp host"),
         port: positiveId(input.port, "smtp port"),
         secure: requiredBoolean(input.secure, "smtp secure flag"),
+        tls: optionalBoolean(input.tls, "smtp tls flag"),
         user: stringPayloadField(input.user, "smtp user"),
         password: input.password === undefined || input.password === null ? "" : String(input.password),
         smtpUseImapAuth: optionalBoolean(input.smtpUseImapAuth, "smtp imap auth flag"),
@@ -2640,6 +2688,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.ScheduleDraftSend, ([payload]) => {
     const input = objectPayload(payload, "email scheduled-send payload")
+    const pgpEncrypt = optionalBoolean(input.pgpEncrypt, "pgp encrypt flag")
+    const pgpSign = optionalBoolean(input.pgpSign, "pgp sign flag")
     return {
       method: "PATCH",
       path: `/api/v1/email/messages/${positiveId(input.messageId, "email message id")}/scheduled-send`,
@@ -2647,6 +2697,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         sendAt: input.sendAt === null || input.sendAt === undefined
           ? null
           : stringPayloadField(input.sendAt, "scheduled send timestamp"),
+        // Mitgeben, damit der Server einen Zeitversand mit PGP ablehnt statt Klartext zu senden.
+        ...(pgpEncrypt === undefined ? {} : { pgpEncrypt }),
+        ...(pgpSign === undefined ? {} : { pgpSign }),
       },
       transform: () => ({ success: true }),
     }
@@ -3155,7 +3208,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           if (fallbackTeamMember?.signatureHtml?.trim()) {
             rawHtml = fallbackTeamMember.signatureHtml.trim()
           } else if (fallbackTeamMember?.displayName?.trim()) {
-            rawHtml = `<p>Mit freundlichen Grüßen<br/>${fallbackTeamMember.displayName}</p>`
+            rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(fallbackTeamMember.displayName)}</p>`
           }
         }
         const accountsBody = await context.fetchJson({
@@ -3166,7 +3219,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           .map(mapEmailAccountRecord)
           .find((row) => row.id === accountId)
         if (!rawHtml && account?.display_name?.trim()) {
-          rawHtml = `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>`
+          rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(account.display_name)}</p>`
         }
         if (!rawHtml) return { html: null }
         if (!rawHtml.includes('{{')) return { html: rawHtml }
@@ -4615,6 +4668,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody<unknown>(body),
     }
   }],
+  [IPCChannels.Returns.PortalConfig, ([payload]) => {
+    const input = objectPayload(payload, "portal config payload")
+    const token = String(input.token ?? "")
+    return {
+      method: "GET",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}/config`,
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
   [IPCChannels.Returns.PortalLookup, ([payload]) => {
     const input = objectPayload(payload, "portal lookup payload")
     const token = String(input.token ?? "")
@@ -4964,7 +5026,7 @@ function inviteExpiryDaysValue(value: unknown): number {
 function mapCustomerRecord(record: CustomerRecord) {
   return {
     id: record.id,
-    jtl_kKunde: record.sourceSqliteId ?? record.id,
+    jtl_kKunde: record.jtlKkunde ?? undefined,
     customerNumber: record.customerNumber ?? undefined,
     name: record.name ?? "",
     firstName: record.firstName ?? undefined,
@@ -5044,15 +5106,18 @@ async function attachCustomerCustomFields<T extends { id: number }>(
     customers.map((customer) => [customer.id, {}]),
   )
 
-  const body = await context.fetchJson({
+  const request: HttpRequestSpec = {
     method: "GET",
     path: "/api/v1/customer-custom-field-values",
     query: {
       limit: DEFAULT_LIST_LIMIT,
       customerIds: customers.map((customer) => customer.id).join(","),
     },
-  })
-  const values = listItems<CustomFieldValueRecord>(body)
+  }
+  // One value per customer and field easily exceeds the server's 100-row page,
+  // so read every page instead of dropping the later customers' values.
+  const body = await context.fetchJson(request)
+  const values = await collectPagedListItems<CustomFieldValueRecord>(body, context, request)
   for (const value of values) {
     const customerId = Number(value.customerId ?? 0)
     const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))
@@ -5447,6 +5512,7 @@ function mapEmailAccountRecord(record: EmailAccountRecord) {
     vacation_body_text: record.vacationBodyText ?? null,
     request_read_receipt: record.requestReadReceipt ? 1 : 0,
     imap_delete_opt_in: record.imapDeleteOptIn ? 1 : 0,
+    trusted_authserv_id: record.trustedAuthservId ?? null,
     created_at: record.updatedAt ?? "",
     updated_at: record.updatedAt ?? "",
   }
@@ -5483,6 +5549,7 @@ function mapEmailAccountMutationPayload(value: Record<string, any>): Record<stri
     vacationBodyText: value.vacationBodyText === undefined ? undefined : nullableTrimmedText(value.vacationBodyText, "vacation body", 10000),
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "read receipt request flag"),
     imapDeleteOptIn: optionalBoolean(value.imapDeleteOptIn, "imap delete opt-in flag"),
+    trustedAuthservId: value.trustedAuthservId === undefined ? undefined : nullableTrimmedText(value.trustedAuthservId, "trusted authserv id", 253),
   })
 }
 
@@ -5497,6 +5564,7 @@ function mapComposeDraftCreatePayload(value: Record<string, any>): Record<string
 
 function mapComposeDraftUpdatePayload(value: Record<string, any>): Record<string, unknown> {
   return pruneUndefined({
+    accountId: value.accountId === undefined ? undefined : positiveId(value.accountId, "email account id"),
     subject: value.subject === undefined ? undefined : composeTextValue(value.subject, "compose subject", 1000),
     bodyText: value.bodyText === undefined ? undefined : composeTextValue(value.bodyText, "compose body", 2_000_000),
     bodyHtml: value.bodyHtml === undefined ? undefined : composeTextValue(value.bodyHtml, "compose html", 2_000_000),
@@ -6295,7 +6363,9 @@ function workflowImportMutationBody(value: unknown): Record<string, unknown> {
     graph,
     cronExpr: workflow.cron_expr,
     scheduleAccountId: workflow.schedule_account_id,
-    enabled: workflow.enabled,
+    // Importe bleiben deaktiviert, bis jemand den Graphen geprueft und selbst
+    // aktiviert hat (wie der Desktop-Import) — sonst liefe eine fremde Datei sofort.
+    enabled: false,
     executionMode: workflow.execution_mode ?? "graph",
     engineVersion: workflow.engine_version ?? 1,
   }

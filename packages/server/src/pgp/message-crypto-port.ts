@@ -1,4 +1,11 @@
+import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
+import {
+  PGP_SIGNED_PARTIAL_STATUS,
+  extractArmoredPgpSignedMessage,
+  pgpCleartextSignatureCoversMessage,
+  type PgpSignatureStatus,
+} from '@simplecrm/core';
 
 import type {
   PgpAttachmentDecryptPortResult,
@@ -45,6 +52,12 @@ const PGP_MESSAGE_END = '-----END PGP MESSAGE-----';
 const PGP_SIGNED_MESSAGE_BEGIN = '-----BEGIN PGP SIGNED MESSAGE-----';
 const PGP_SIGNATURE_END = '-----END PGP SIGNATURE-----';
 const PGP_SIGNATURE_BEGIN = '-----BEGIN PGP SIGNATURE-----';
+/**
+ * openpgp inflates compressed data packets without limit by default, so a
+ * small ciphertext could expand to gigabytes in the API process. No decrypted
+ * plaintext needs to be larger than the largest inbound mail we accept.
+ */
+const PGP_DECRYPT_CONFIG = { maxDecompressedMessageSize: MAX_INBOUND_RFC822_BYTES };
 const ENCRYPTABLE_TRUST_LEVELS = ['verified', 'tofu', 'imported'] as const;
 const VERIFIED_SIGNATURE_TRUST_LEVELS = ['verified', 'tofu'] as const;
 
@@ -121,6 +134,7 @@ export function createPostgresPgpMessageCryptoPort(
         const decrypted = await openpgp.decrypt({
           message,
           decryptionKeys: decryptedKey,
+          config: PGP_DECRYPT_CONFIG,
         });
 
         return {
@@ -181,7 +195,7 @@ export function createPostgresPgpMessageCryptoPort(
           ? peers.find((peer) => fingerprintMatchesSignature(peer.fingerprint, signerKeyId))
           : undefined;
         const signerFingerprint = matchedPeer?.fingerprint ?? signerKeyId;
-        let status = signatureValid ? 'signed_valid' : 'signed_invalid';
+        let status: PgpSignatureStatus = signatureValid ? 'signed_valid' : 'signed_invalid';
         let valid = signatureValid;
         if (signatureValid) {
           if (!matchedPeer) {
@@ -192,6 +206,16 @@ export function createPostgresPgpMessageCryptoPort(
             status = isEncryptableTrustLevel(matchedPeer.trustLevel)
               ? 'signed_untrusted_key'
               : 'signed_unknown_key';
+          } else if (!pgpCleartextSignatureCoversMessage({
+            bodyText: message.body_text,
+            bodyHtml: message.body_html,
+            armoredBlock: armoredMessage,
+            signedText: cleartextMessage.getText(),
+          })) {
+            // Unsigned text around the block (or a differing HTML part) would
+            // otherwise be shown under the sender's valid signature.
+            valid = false;
+            status = PGP_SIGNED_PARTIAL_STATUS;
           }
         }
 
@@ -255,6 +279,7 @@ export function createPostgresPgpMessageCryptoPort(
           message,
           decryptionKeys: decryptedKey,
           format: 'binary',
+          config: PGP_DECRYPT_CONFIG,
         });
 
         return {
@@ -843,19 +868,6 @@ function extractArmoredPgpMessage(...bodies: Array<string | null>): string | nul
     return end < 0
       ? body.slice(begin).trim()
       : body.slice(begin, end + PGP_MESSAGE_END.length).trim();
-  }
-  return null;
-}
-
-function extractArmoredPgpSignedMessage(...bodies: Array<string | null>): string | null {
-  for (const body of bodies) {
-    if (!body) continue;
-    const begin = body.indexOf(PGP_SIGNED_MESSAGE_BEGIN);
-    if (begin < 0) continue;
-    const end = body.indexOf(PGP_SIGNATURE_END, begin);
-    return end < 0
-      ? body.slice(begin).trim()
-      : body.slice(begin, end + PGP_SIGNATURE_END.length).trim();
   }
   return null;
 }

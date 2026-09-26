@@ -32,6 +32,7 @@ import {
   resetRendererTransportForTests,
   verifyServerPgpAttachment,
   uploadServerComposeAttachment,
+  copyServerComposeAttachment,
   buildServerAuthSession,
   saveServerAuthSession,
 } from '@/services/transport';
@@ -122,6 +123,26 @@ describe('renderer transport', () => {
       2,
       'https://crm.example.com/api/v1/auth/audit-chain/verify',
       expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  // F-A5-03: "Spaeter senden" mit PGP verschickte die Mail im Klartext; die PGP-Flags erreichten den Server nie.
+  test('forwards PGP flags on scheduled-send so the server can reject the schedule', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await transport.invoke(IPCChannels.Email.ScheduleDraftSend, {
+      messageId: 44,
+      sendAt: '2026-06-04T15:00:00.000Z',
+      pgpEncrypt: true,
+      pgpSign: true,
+    });
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/scheduled-send',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: true, pgpSign: true }),
+      }),
     );
   });
 
@@ -651,6 +672,7 @@ describe('renderer transport', () => {
             {
               id: 42,
               sourceSqliteId: 7,
+              jtlKkunde: 7,
               customerNumber: 'K-7',
               name: 'Meyer',
               email: 'meyer@example.com',
@@ -668,6 +690,7 @@ describe('renderer transport', () => {
             {
               id: 43,
               sourceSqliteId: 8,
+              jtlKkunde: 8,
               customerNumber: 'K-8',
               name: 'Schulz',
               email: 'schulz@example.com',
@@ -724,6 +747,30 @@ describe('renderer transport', () => {
     ]);
   });
 
+  // F-A11b-01: Tasks.GetAll verwarf offset und Prioritaetsfilter; jede Seite zeigte dieselben Aufgaben.
+  test('maps the task list page offset and priority filter to the server query', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await transport.invoke(IPCChannels.Tasks.GetAll, { limit: 10, offset: 10, filter: { priority: 'High', completed: false } });
+
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe('/api/v1/tasks');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      limit: '10',
+      offset: '10',
+      priority: 'High',
+      completed: 'false',
+    });
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    await transport.invoke(IPCChannels.Tasks.GetAll, { limit: 10, offset: 0, filter: {} });
+    expect(Object.fromEntries(new URL(String(fetchImpl.mock.calls[1]?.[0])).searchParams)).toEqual({ limit: '10' });
+  });
+
   test('maps paginated customer IPC calls without treating offsets as cursors', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
@@ -732,6 +779,7 @@ describe('renderer transport', () => {
             {
               id: 43,
               sourceSqliteId: 8,
+              jtlKkunde: 8,
               customerNumber: 'K-8',
               name: 'Schulz',
               email: 'schulz@example.com',
@@ -870,6 +918,53 @@ describe('renderer transport', () => {
       expect.objectContaining({ method: 'GET' }),
     );
     expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });
+  });
+
+  // F-A11b-06: custom field values were read from the first server page only
+  // (100 rows), so grouping and export lost the values of later customers.
+  test('follows the cursor when loading custom field values', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 42, sourceSqliteId: 7, name: 'Meyer', status: 'Lead' },
+            { id: 43, sourceSqliteId: 8, name: 'Schulz', status: 'Lead' },
+          ],
+          nextCursor: null,
+          total: 2,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 9, name: 'vip_status', label: 'VIP', active: true }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 99, customerId: 42, fieldId: 9, value: 'Gold' }], nextCursor: 99 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 100, customerId: 43, fieldId: 9, value: 'Silber' }], nextCursor: null },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields: true,
+      limit: 50,
+      offset: 0,
+    }) as { items: Array<{ customFields?: Record<string, string> }> };
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerIds=42%2C43&cursor=99',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result.items.map((item) => item.customFields)).toEqual([
+      { vip_status: 'Gold' },
+      { vip_status: 'Silber' },
+    ]);
   });
 
   test('maps customer updates with custom fields to server HTTP routes', async () => {
@@ -1032,6 +1127,120 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/products?limit=100&search=ABC&cursor=13',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  // F-A10-04: the calendar read only the first server page (the 100 lowest
+  // ids) and dropped nextCursor, so newer appointments never showed up.
+  test('collects every calendar event page instead of the first 100', async () => {
+    const event = (id: number) => ({
+      id,
+      title: `Termin ${id}`,
+      startDate: '2026-07-01T09:00:00.000Z',
+      endDate: '2026-07-01T10:00:00.000Z',
+      allDay: false,
+    });
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: Array.from({ length: 100 }, (_, index) => event(index + 1)), nextCursor: 100 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [event(101)], nextCursor: null } }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const events = await transport.invoke(IPCChannels.Calendar.GetCalendarEvents) as Array<{ id: number; title: string }>;
+
+    expect(events).toHaveLength(101);
+    expect(events[100]).toEqual(expect.objectContaining({ id: 101, title: 'Termin 101' }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/calendar-events?limit=100&cursor=100',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  // F-A11b-03: the deal overview asks for up to 10000 deals, but the mapping
+  // capped the request at one server page (100, lowest ids) and dropped
+  // nextCursor; the customer/deal detail lists had the same one-page cut.
+  test('collects deal and detail list pages beyond the first 100', async () => {
+    const deal = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, name: `Deal ${id}`, value: '10', stage: 'Angebot' });
+    const task = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, title: `Aufgabe ${id}`, priority: 'Medium', completed: false });
+    const twoPages = (make: (id: number) => object) => [
+      jsonResponse({ data: { items: Array.from({ length: 100 }, (_, index) => make(index + 1)), nextCursor: 100 } }),
+      jsonResponse({ data: { items: [make(101)], nextCursor: null } }),
+    ];
+    const fetchImpl = jest.fn();
+    for (const response of [...twoPages(deal), ...twoPages(deal), ...twoPages(task), ...twoPages(task)]) {
+      fetchImpl.mockResolvedValueOnce(response);
+    }
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const allDeals = await transport.invoke(IPCChannels.Deals.GetAll, { limit: 10000, offset: 0, filter: {} }) as Array<{ id: number }>;
+    const customerDeals = await transport.invoke(IPCChannels.Db.GetDealsForCustomer, 2) as Array<{ id: number }>;
+    const customerTasks = await transport.invoke(IPCChannels.Db.GetTasksForCustomer, 2) as Array<{ id: number }>;
+    const dealTasks = await transport.invoke(IPCChannels.Deals.GetTasks, 7) as Array<{ id: number }>;
+
+    for (const list of [allDeals, customerDeals, customerTasks, dealTasks]) {
+      expect(list).toHaveLength(101);
+      expect(list[100]).toEqual(expect.objectContaining({ id: 101 }));
+    }
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://crm.example.com/api/v1/deals?limit=100',
+      'https://crm.example.com/api/v1/deals?limit=100&cursor=100',
+      'https://crm.example.com/api/v1/deals?limit=100&customerId=2',
+      'https://crm.example.com/api/v1/deals?limit=100&customerId=2&cursor=100',
+      'https://crm.example.com/api/v1/tasks?limit=100&customerId=2',
+      'https://crm.example.com/api/v1/tasks?limit=100&customerId=2&cursor=100',
+      'https://crm.example.com/api/v1/deals/7/tasks?limit=100',
+      'https://crm.example.com/api/v1/deals/7/tasks?limit=100&cursor=100',
+    ]);
+  });
+
+  // F-A10-10: the server refuses a customer delete with dependents (409 with
+  // counters) until the client confirms with ?cascade=true.
+  test('maps the customer delete confirmation and surfaces the 409 counters', async () => {
+    const dependents = { deals: 1, tasks: 2, appointments: 0 };
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'customer_has_dependents', message: 'Konflikt', details: { dependents } },
+      }, 409))
+      .mockResolvedValueOnce(jsonResponse({ data: { deleted: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Db.DeleteCustomer, 7)).rejects.toMatchObject({
+      status: 409,
+      code: 'customer_has_dependents',
+      details: { dependents },
+    });
+    await expect(transport.invoke(IPCChannels.Db.DeleteCustomer, 7, { cascade: true })).resolves.toEqual({ success: true });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [url, (init as RequestInit).method])).toEqual([
+      ['https://crm.example.com/api/v1/customers/7', 'DELETE'],
+      ['https://crm.example.com/api/v1/customers/7?cascade=true', 'DELETE'],
+    ]);
+  });
+
+  test('keeps a small deal list request to the requested number of deals', async () => {
+    const deal = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, name: `Deal ${id}`, value: '10', stage: 'Angebot' });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { items: [deal(1), deal(2)], nextCursor: 2 },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const deals = await transport.invoke(IPCChannels.Deals.GetAll, { limit: 2 }) as Array<{ id: number }>;
+
+    expect(deals.map((entry) => entry.id)).toEqual([1, 2]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test('collects product search payloads above the server page limit', async () => {
@@ -1953,11 +2162,28 @@ describe('renderer transport', () => {
     })).toBe(false);
   });
 
+  // F-A10-12: Die Registry setzte jtl_kKunde = sourceSqliteId; Kunden ohne JTL-Bezug bekamen eine falsche
+  // JTL-Kundennummer und einen aktiven Auftrag-Button.
+  test('maps the JTL customer key only from jtlKkunde, never from the SQLite source id', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { id: 42, sourceSqliteId: 7, jtlKkunde: null, name: 'Lokal', status: 'Active' },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const customer = await transport.invoke(IPCChannels.Db.GetCustomer, 42) as { jtl_kKunde?: number };
+
+    expect(customer.jtl_kKunde).toBeUndefined();
+  });
+
   test('maps single customer lookup to server HTTP route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
         id: 42,
         sourceSqliteId: 7,
+        jtlKkunde: 7,
         customerNumber: 'K-7',
         name: 'Meyer',
         firstName: 'Anna',
@@ -2673,6 +2899,7 @@ describe('renderer transport', () => {
             vacationSubject: 'Away',
             vacationBodyText: 'Back later',
             requestReadReceipt: true,
+            trustedAuthservId: 'mx.example.com',
             updatedAt: '2026-06-03T10:00:00.000Z',
           },
         ],
@@ -2686,6 +2913,7 @@ describe('renderer transport', () => {
     await expect(transport.invoke(IPCChannels.Email.ListAccounts)).resolves.toEqual([
       expect.objectContaining({
         id: 1,
+        trusted_authserv_id: 'mx.example.com',
         source_sqlite_id: 1,
         display_name: 'Shop 1',
         email_address: 'shop1@example.com',
@@ -3029,6 +3257,44 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/email/accounts/7/vacation-test',
       expect.objectContaining({ method: 'POST' }),
     );
+  });
+
+  // C-A66: TestSmtp verwarf den TLS-Schalter des Formulars, der Server testete ad hoc ohne erzwungenes STARTTLS.
+  test('forwards the SMTP TLS switch to the connection test (G10)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.TestSmtp, {
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: true,
+      user: 'user@example.com',
+      password: 'secret',
+      smtpUseImapAuth: false,
+    })).resolves.toEqual({ success: true });
+    await expect(transport.invoke(IPCChannels.Email.TestSmtp, {
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: 'yes',
+      user: 'user@example.com',
+      password: 'secret',
+    })).rejects.toThrow('Invalid smtp tls flag');
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1].body))).toEqual({
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      tls: true,
+      user: 'user@example.com',
+      password: 'secret',
+      smtpUseImapAuth: false,
+    });
   });
 
   test('maps server-created email account records to positive database IDs', async () => {
@@ -4185,6 +4451,24 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-A11a-04: Der Kontowechsel im Verfasser haengt den Entwurf per PATCH compose-draft um.
+  test('maps the compose draft account move to the PATCH body', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.UpdateComposeDraft, {
+      messageId: 44,
+      accountId: 8,
+    })).resolves.toEqual({ success: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/compose-draft',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ accountId: 8 }) }),
+    );
+  });
+
   test('uploads server-client compose attachments through the HTTP transport', async () => {
     const fetchImpl = jest.fn().mockResolvedValue({
       ok: true,
@@ -4226,6 +4510,46 @@ describe('renderer transport', () => {
           contentBase64: 'aW52b2ljZSBkYXRh',
           contentType: 'application/pdf',
         }),
+      }),
+    );
+  });
+
+  // F-A6-05: Weiterleiten kopiert gespeicherte Anhaenge per Anhang-ID in den Entwurf, ohne serverseitige Pfade zu kennen.
+  test('copies a stored attachment into a server-client draft by attachment id', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: {
+          success: true,
+          path: 'workspace-a/compose-drafts/44/abc-invoice.pdf',
+          filename: 'invoice.pdf',
+          sizeBytes: 12,
+        },
+      }),
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchImpl,
+    });
+    configureRendererTransportFromDeployConfig({
+      mode: 'server-client',
+      server: { baseUrl: 'https://crm.example.com/' },
+    });
+
+    await expect(copyServerComposeAttachment({
+      draftMessageId: 44,
+      sourceAttachmentId: 701,
+    })).resolves.toEqual({
+      path: 'workspace-a/compose-drafts/44/abc-invoice.pdf',
+      filename: 'invoice.pdf',
+      sizeBytes: 12,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/compose-attachments',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sourceAttachmentId: 701 }),
       }),
     );
   });
@@ -6259,6 +6583,9 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/workflows/by-source/-23',
       expect.objectContaining({ method: 'GET' }),
     );
+    // F-A9-13 (Server, E28): Der Import uebernahm `enabled` aus der Datei; ein
+    // fremder Workflow war sofort aktiv. Importe starten wie auf dem Desktop
+    // deaktiviert, auch wenn das Bundle `enabled: true` traegt.
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
       'https://crm.example.com/api/v1/workflows',
@@ -6272,7 +6599,7 @@ describe('renderer transport', () => {
           graph: null,
           cronExpr: null,
           scheduleAccountId: null,
-          enabled: true,
+          enabled: false,
           executionMode: 'graph',
           engineVersion: 1,
         }),
@@ -8625,8 +8952,12 @@ describe('renderer transport', () => {
       IPCChannels.Email.PreviewRestoreLocalMailBackup,
       IPCChannels.Email.RestoreLocalMailBackup,
       IPCChannels.Email.PickComposeAttachments,
+      IPCChannels.Email.RegisterDroppedComposeAttachments,
       IPCChannels.Email.OpenAttachmentPath,
       IPCChannels.Email.SaveAttachmentToDisk,
+
+      // Desktop-only trust action for peer keys; the server has PATCH /pgp/peer-keys/:id but no UI mapping yet.
+      IPCChannels.Pgp.SetPeerKeyTrust,
 
       // Native workflow/knowledge file-dialog variants remain local; browser mode uses upload/download helpers.
       IPCChannels.Email.ExportWorkflowBundleToFile,
@@ -8679,6 +9010,43 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/email/accounts',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  // F-N-fe-02: Die Fallback-Signatur setzte Team- und Kontonamen roh ins HTML; ein Name mit <img>/<a> wurde wirksames Markup.
+  test('GetComposeSignature escapes display names in the fallback signatures', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 'agent-1', displayName: 'Anna <img src="https://x.example/p.png">', signatureHtml: null }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: "Shop & O'Neil <b>", emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Mit freundlichen Grüßen<br/>Anna &lt;img src=&quot;https://x.example/p.png&quot;&gt;</p>',
+    });
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Mit freundlichen Grüßen<br/>Shop &amp; O&#39;Neil &lt;b&gt;</p>',
+    });
   });
 
   test('GetComposeSignature selects the requested team member fallback', async () => {

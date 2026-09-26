@@ -18,6 +18,8 @@ import type {
   ServerEventPort,
 } from '../api/types';
 import { SERVER_EVENT_TYPES } from '../api/types';
+import type { UserGroupCapability } from '../api/capabilities';
+import { requireAdmin, requireCapability } from '../api/http';
 import {
   assertMailEventPolicy,
   MAIL_EVENT_POLICY_MANIFEST,
@@ -33,6 +35,7 @@ import {
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
 import type { MailJobAuthorization, QueuedJob } from '../jobs/types';
+import { isDraftLocalAttachmentPath } from './draft-attachment-path';
 import { MailAccessDeniedError } from './service';
 import type {
   MailAccessActor,
@@ -183,6 +186,14 @@ export async function enforceMailJobPolicy(
     // skipped. (The default-account case — email.account_id = the context message's account —
     // is covered by the resource-gated draft.create recheck further down.)
     await assertWorkflowExecuteDraftCreateAccountPrivilege(job, actor.actor, requiredPorts);
+    // Same for send_draft targets (C-A69): the check needs no resources, and a message-less
+    // (e.g. webhook) run would otherwise return below and mutate the target draft unchecked.
+    try {
+      await assertWorkflowExecuteSendDraftStaticTargetPrivilege(job, actor.actor, requiredPorts);
+    } catch (error) {
+      if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
+      throw error;
+    }
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   // A compose-originated (user) ai.pick_canned loads canned templates under the
@@ -371,7 +382,6 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
-      await assertWorkflowExecuteSendDraftStaticTargetPrivilege(job, actor.actor, requiredPorts);
     }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
@@ -926,9 +936,8 @@ async function assertScheduledSendDraftAndAttachmentAccess(
     draftId,
   });
   if (!paths || paths.length === 0) return;
-  const draftLocalPrefix = `${job.workspaceId}/compose-drafts/${draftId}/`;
   for (const path of paths) {
-    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+    if (isDraftLocalAttachmentPath(path, job.workspaceId, draftId)) continue;
     const owners = await ports.mailResourceLookup.resolve({
       workspaceId: job.workspaceId,
       target: { kind: 'attachment_path', path },
@@ -1061,6 +1070,44 @@ function reduceCrmEventPayload(payload: ServerEvent['payload']): ServerEvent['pa
   return reduced;
 }
 
+type NonMailEventReadPolicy =
+  | Readonly<{ kind: 'authenticated' }>
+  | Readonly<{ kind: 'owner_admin' }>
+  | Readonly<{ kind: 'capability'; capability: UserGroupCapability }>;
+
+// Read gate per event family (the event type before its first '.') for every family the
+// CRM reduction does not cover. Each entry mirrors the REST read route of the family, so
+// the event stream (live and replay) never hands a subscriber what a GET would refuse.
+// A family that also has a mail event policy (workflow_delayed_job) must pass both, like
+// its REST route. A registered family missing here and in the mail event manifest reaches
+// owners/admins only.
+export const NON_MAIL_EVENT_READ_POLICY: Readonly<Record<string, NonMailEventReadPolicy>> = Object.freeze({
+  // /api/v1/ai/profiles and /api/v1/ai/prompts serve every authenticated user
+  // (compose/settings); the event payloads are subsets of the sanitized records.
+  ai_profile: { kind: 'authenticated' },
+  ai_prompt: { kind: 'authenticated' },
+  // Workflow lists/details, versions, knowledge bases/chunks and delayed jobs are
+  // GET-gated by rejectUnlessWorkflowView (workflow-routes.ts, workflow-runtime-routes.ts).
+  workflow: { kind: 'capability', capability: 'workflows.view' },
+  workflow_version: { kind: 'capability', capability: 'workflows.view' },
+  workflow_knowledge_base: { kind: 'capability', capability: 'workflows.view' },
+  workflow_knowledge_chunk: { kind: 'capability', capability: 'workflows.view' },
+  workflow_delayed_job: { kind: 'capability', capability: 'workflows.view' },
+  // Automation-key list/detail/create/revoke are requireAdmin (credential recon).
+  automation_api_key: { kind: 'owner_admin' },
+});
+
+function mayReadEventFamily(type: string, principal: AuthenticatedPrincipal): boolean {
+  const family = type.slice(0, type.indexOf('.'));
+  const policy = Object.prototype.hasOwnProperty.call(NON_MAIL_EVENT_READ_POLICY, family)
+    ? NON_MAIL_EVENT_READ_POLICY[family]
+    : undefined;
+  if (!policy) return MAIL_EVENT_POLICY_TYPES.has(type as never) || requireAdmin(principal);
+  if (policy.kind === 'authenticated') return true;
+  if (policy.kind === 'owner_admin') return requireAdmin(principal);
+  return requireCapability(principal, policy.capability);
+}
+
 export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
@@ -1070,6 +1117,9 @@ export async function filterMailEventForPrincipal(
   // to { id } plus safe relation keys so live refresh still works without
   // leaking field content over WS.
   if (shouldReduceCrmEventPayload(event)) {
+    // Every CRM read route sits behind crm.read (central dispatcher check for the
+    // CRM root segments, crm-route-inventory.ts); owners/admins hold it implicitly.
+    if (!requireCapability(context.principal, 'crm.read')) return null;
     return {
       ...event,
       payload: reduceCrmEventPayload(event.payload),
@@ -1107,8 +1157,10 @@ export async function filterMailEventForPrincipal(
       throw error;
     }
   }
+  if (!SERVER_EVENT_TYPE_SET.has(event.type)) return null;
+  if (!mayReadEventFamily(event.type, context.principal)) return null;
   const policy = mailEventPolicyOrNull(event.type);
-  if (!policy) return SERVER_EVENT_TYPE_SET.has(event.type) ? event : null;
+  if (!policy) return event;
   const sanitized = sanitizeMailEventPayload(event);
   if (!context.ports.mailAccess || !context.ports.mailResourceLookup) return null;
   const requiredPorts = {

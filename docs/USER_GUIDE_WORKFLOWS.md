@@ -26,6 +26,8 @@ Sie finden die Workflows unter **E-Mail → Workflows** (Unterleiste im E-Mail-B
 | **CRM-Ereignisse** | z. B. Kunde angelegt, Deal-Phase geändert, Aufgabe fällig, Termin beginnt |
 | **Webhook (eingehend)** | wenn ein externes System die Automations-Schnittstelle aufruft (für Fortgeschrittene) |
 
+**Entwurf erstellt**, **Zeitplan** und die **CRM-Ereignisse** gibt es nur in der Desktop-Edition. Die Server-Edition bietet sie nicht an, blendet das Zeitplan-Feld aus und lehnt das Speichern mit einem solchen Auslöser ab; bestehende Workflows bleiben lesbar und lassen sich umstellen oder deaktivieren.
+
 ## Der Editor in 5 Minuten
 
 Der Editor hat drei Bereiche:
@@ -70,7 +72,10 @@ Ein Workflow läuft nur, wenn der Schalter **„Aktiv“** eingeschaltet ist (be
 ### Gut zu wissen
 
 - **Konto-Auswahl:** Oben links im Editor wählen Sie, ob Sie globale Workflows (für alle Konten) oder die eines bestimmten Kontos sehen.
-- **Import/Export:** Über die Knöpfe **„Import“**/**„Export“** lassen sich Workflows als Datei sichern oder auf einen anderen Rechner übertragen.
+- **Import/Export:** Über die Knöpfe **„Import“**/**„Export“** lassen sich Workflows als Datei sichern oder auf einen anderen Rechner übertragen. Ein importierter Workflow ist zunächst **deaktiviert** (Desktop- und Server-Edition) — prüfen Sie ihn im Editor und schalten Sie ihn dann auf **„Aktiv“**.
+- **Sehr lange Mails (Server):** Nach einem KI-, HTTP- oder Verzögerungs-Schritt arbeitet der Workflow mit den ersten 48 000 Zeichen des Mailtexts weiter (Platzhalter `{{body_truncated}}` ergibt dann `true`). Bedingungen, die das Ende einer sehr langen Mail prüfen sollen, gehören deshalb vor diesen Schritt.
+- **Schleifen:** Im Zweig **„Je Eintrag“** einer Schleife dürfen keine Schritte stehen, die später weiterlaufen: eine Verzögerung, auf dem Server außerdem KI-, HTTP-, Weiterleitungs- und DMARC-Schritte mit Folgeknoten. Der Lauf endet sonst mit Fehler, der Editor warnt beim Speichern. Solche Schritte gehören hinter den Ausgang **„Fertig“**.
+- **Neues Konto oder neuer Ordner:** Beim allerersten Abruf gelten die vorhandenen Mails als Bestand. Sie werden auf Spam geprüft, lösen aber keine eingehenden Workflows, KI-Antwortvorschläge oder Abwesenheitsantworten aus. Ab dem zweiten Abruf laufen neue Mails normal. Wer Workflows bewusst auf den Bestand anwenden will, nutzt unter **„Erweitert“** den Knopf **„Inbound-Backfill“**.
 - **Referenz:** Der Knopf **„Referenz“** öffnet ein Nachschlagewerk aller Bausteine, Auslöser und Variablen mit Erklärungen.
 - **JSON-Ansicht:** Das Code-Symbol oben öffnet den **Workflow-Quelltext** — Tab **„Graph (JSON)“** zeigt den Roh-Graph (nur Lesen), Tab **„Kompiliert“** die Regel-Definition.
 
@@ -85,6 +90,8 @@ Wenn mehrere Workflows auf **„E-Mail eingehend“** reagieren, entscheidet die
 | KI-Agent / Auto-Antwort | 50+ |
 
 Auf dem Server werden eingehende Workflows **nacheinander** ausgeführt; ist die Mail danach als Spam oder „Spam prüfen“ markiert, werden nachfolgende Workflows übersprungen.
+
+Eine **Verzögerung** hält die nachrangigen Workflows nur dann auf, wenn danach noch ein Knoten die Kette stoppen kann („Weitere Workflows stoppen“ oder „Stopp nach Spam“). Dann warten sie bis zum Ende der Verzögerung, und der Editor weist beim Speichern darauf hin. Ohne einen solchen Knoten starten die nachrangigen Workflows sofort, der verzögerte Teil läuft später für sich weiter. Eine Verzögerung hinter einem KI- oder HTTP-Schritt hält die Kette weiterhin an.
 
 ### Ausgehende KI-Qualitätsprüfung — was die Ausgänge bedeuten
 
@@ -192,7 +199,7 @@ Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie*
 
 Beispiele: Ein Gate-Schritt mit Ergebnis „Blockiert“ nennt den Grund — etwa dass die KI sich nicht sicher genug war (Kürzel `low_confidence`, siehe Tabelle unten). Bei der Gegenprüfung zeigt der Ausgang **Senden** bzw. **Prüfen**, wie die Prüf-KI entschieden hat.
 
-**Gefahrlos testen:** Unter **„Erweitert (Zeitplan, Test, Backfill)“** können Sie eine Nachrichten-Nummer eintragen und **Test** klicken — der Workflow wird nur simuliert (es wird nichts gesendet, getaggt oder verschoben), und Sie sehen das Ergebnis Schritt für Schritt.
+**Gefahrlos testen:** Unter **„Erweitert (Zeitplan, Test, Backfill)“** können Sie eine Nachrichten-Nummer eintragen und **Test** klicken — der Workflow wird nur simuliert (es wird nichts gesendet, getaggt oder verschoben), und Sie sehen das Ergebnis Schritt für Schritt. Ausnahme in der Server-Edition: **MSSQL (Read-only)** (`mssql.query`) und **JTL Bestell-Kontext** lesen auch im Test live aus der JTL-Datenbank. Verwenden Sie für die MSSQL-Verbindung deshalb einen Benutzer, der nur lesen darf (`db_datareader`, siehe [SETUP_SERVER.md](SETUP_SERVER.md#jtl-wawi--mssql-connection-optional)).
 
 ## Häufige Fragen
 
@@ -206,6 +213,9 @@ Schauen Sie in die Lauf-Historie: Der Gate-Schritt nennt den Grund (`auto_reply:
 | `automated_sender` | Mail war selbst automatisch erzeugt oder ein Newsletter | Gewollt — Schutz vor Antwort-Schleifen |
 | `rate_limited` | Tageslimit für diesen Absender erreicht | Gewollt; bei Bedarf Limit in den Einstellungen erhöhen |
 | `low_confidence` | Die KI war sich bei der Einordnung nicht sicher genug | Mindest-Sicherheit im Gate senken — oder die Mail bewusst manuell beantworten |
+
+**Ein Workflow zu „Aufgabe fällig“ ist fehlgeschlagen. Wird er wiederholt?**
+Nein, und das ist Absicht (Desktop-Edition). Die Auslöser **Aufgabe fällig**, **Termin beginnt** und **Kunde angelegt** starten einen Workflow je Aufgabe mit ihrem Fälligkeitsdatum, je Termin bzw. je Kunde genau einmal, auch wenn der Lauf mit einem Fehler endet oder blockiert wird. Die Schritte vor dem Fehler haben dann schon gewirkt (eine angelegte Aufgabe, ein Webhook-Aufruf, ein KI-Aufruf); ein Neustart bei jedem Prüfdurchlauf (alle zwei Minuten) würde sie vervielfachen. Den Fehler finden Sie in der **Lauf-Historie** des Workflows. Nach der Korrektur lösen Sie ihn für eine Aufgabe erneut aus, indem Sie deren Fälligkeitsdatum ändern: Jede Kombination aus Aufgabe und Fälligkeitsdatum löst einmal aus. Nur wenn gar kein Lauf zustande kam (etwa weil der Start mit einer Ausnahme abbrach), versucht es der nächste Durchlauf erneut.
 
 **Warum wartet ein Entwurf auf Freigabe, obwohl er gut aussieht?**
 Die Gegenprüfung ist absichtlich streng: Im Zweifel, bei ungewöhnlichen Antworten der Prüf-KI oder bei technischen Fehlern hält sie den Entwurf **immer** an, statt zu senden. Die Begründung steht im Banner — mit „Jetzt senden“ geben Sie ihn mit einem Klick frei.

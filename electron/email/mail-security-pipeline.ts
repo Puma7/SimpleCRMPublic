@@ -1,4 +1,5 @@
-import { getEmailMessageById, type EmailMessageRow } from './email-store';
+import { incomingMailHost, resolveTrustedAuthservId } from '@simplecrm/core';
+import { getEmailAccountById, getEmailMessageById, type EmailMessageRow } from './email-store';
 import { verifyMailAuthentication } from './mail-auth-verify';
 import { checkMessageWithRspamd } from './rspamd-client';
 import {
@@ -45,6 +46,7 @@ export async function runMailSecurityPipeline(
       rawHeaders: row.raw_headers,
       bodyText: row.body_text,
       bodyHtml: row.body_html,
+      trustedAuthservId: trustedAuthservIdForAccount(row.account_id),
     });
   }
 
@@ -74,4 +76,20 @@ export async function runMailSecurityPipeline(
     spam,
     preWorkflow,
   };
+}
+
+// RFC 8601 §5 (F-A5-12): the Authentication-Results fallback only trusts the
+// account's own receiving side. The desktop has no setting for it and always
+// uses the default, the domain of the incoming server (IMAP, or POP3 host).
+function trustedAuthservIdForAccount(accountId: number | null | undefined): string | null {
+  if (accountId == null) return null;
+  const account = getEmailAccountById(accountId);
+  if (!account) return null;
+  return resolveTrustedAuthservId({
+    incomingHost: incomingMailHost({
+      protocol: account.protocol,
+      imapHost: account.imap_host,
+      pop3Host: account.pop3_host,
+    }),
+  });
 }

@@ -126,6 +126,13 @@ function parseWorkflowRunLog(value: unknown): string[] {
   return [String(value)];
 }
 
+/** `undefined` = unknown run; `message_id` is null for runs without a message (cron, webhook). */
+export function getWorkflowRunMessageId(runId: number): { message_id: number | null } | undefined {
+  return getDb()
+    .prepare(`SELECT message_id FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE id = ?`)
+    .get(runId) as { message_id: number | null } | undefined;
+}
+
 export function getWorkflowRunLog(runId: number): string[] {
   const row = getDb()
     .prepare(

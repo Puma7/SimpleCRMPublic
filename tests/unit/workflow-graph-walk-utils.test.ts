@@ -47,6 +47,24 @@ describe('pickEdge (condition branches)', () => {
   });
 });
 
+describe('pickEdge (logic.loop)', () => {
+  // F-A9-06: Der each-Fallback lieferte die Fertig-Kante, dadurch lief „Fertig“ je Eintrag.
+  it('does not treat the done edge as each fallback', () => {
+    const onlyDone = [{ id: 'e1', source: 'loop', target: 'after', label: 'done' }];
+    expect(pickEdge(onlyDone, 'each')).toBeUndefined();
+    expect(pickEdge(onlyDone, 'done')?.target).toBe('after');
+  });
+
+  it('keeps unlabeled edges as each fallback even when the done edge sorts first', () => {
+    const edges = [
+      { id: 'a-done', source: 'loop', target: 'after', label: 'fertig' },
+      { id: 'b-body', source: 'loop', target: 'body' },
+    ];
+    expect(pickEdge(edges, 'each')?.target).toBe('body');
+    expect(pickEdge(edges, 'done')?.target).toBe('after');
+  });
+});
+
 describe('pickEdge (logic.switch)', () => {
   it('matches case-insensitive port labels', () => {
     const edges = [

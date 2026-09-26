@@ -98,8 +98,9 @@ describe('server edition repository boundaries', () => {
   test('CI installs the pinned pnpm release through the stable setup action', () => {
     const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
 
-    expect(ci).toContain('uses: pnpm/action-setup@v5');
-    expect(ci).not.toContain('uses: pnpm/action-setup@v6');
+    // Per Commit-SHA gepinnt (F-A12-04); die Version steht im Kommentar.
+    expect(ci).toMatch(/uses: pnpm\/action-setup@[0-9a-f]{40} # v5\./);
+    expect(ci).not.toMatch(/uses: pnpm\/action-setup@\S+ # v6\./);
   });
 
   test('pnpm permits the embedded PostgreSQL build used by Linux CI', () => {
@@ -177,7 +178,8 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-12}');
     expect(compose).toContain('./backup-retention.sh:/app/backup-retention.sh:ro');
     expect(compose).toContain('DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm');
-    expect(compose).toContain('PG_RESTORE_ROLE: simplecrm_app');
+    // C-A61: restore und restore-drill melden sich als App-Rolle an statt als Superuser mit --role.
+    expect(compose).not.toContain('PG_RESTORE_ROLE');
     expect(compose).toContain('audit_archives:/app/data/audit-archive');
     expect(compose).toContain('SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}');
     expect(compose).toContain('server_logs:/app/data/logs');
@@ -194,15 +196,12 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('./restore-drill.sh:/app/restore-drill.sh:ro');
     expect(compose).toContain('RESTORE_DRILL_DUMP_PATH');
     expect(compose).toContain('RESTORE_DRILL_AUDIT_ARCHIVE_PATH');
-    expect(compose).toContain('image: minio/minio:latest');
-    expect(compose).toContain('profiles: ["minio"]');
-    expect(compose).toContain('command: ["server", "/data", "--console-address", ":9001"]');
-    expect(compose).toContain('"${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"');
-    expect(compose).toContain('"${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"');
+    // Das minio-Profil ist entfernt (E40), S3-kompatibler Speicher bleibt extern.
+    expect(compose).not.toContain('minio');
     expect(compose).toContain('image: louislam/uptime-kuma:1');
     expect(compose).toContain('profiles: ["monitor"]');
     expect(compose).toContain('"${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"');
-    expect(compose).toContain('image: dpage/pgadmin4:latest');
+    expect(compose).toContain('image: dpage/pgadmin4:9');
     expect(compose).toContain('profiles: ["pgadmin"]');
     expect(compose).toContain('"${PGADMIN_BIND:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"');
     expect(compose).toContain('PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"');
@@ -211,7 +210,6 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('backups:');
     expect(compose).toContain('caddy_logs:');
     expect(compose).toContain('server_logs:');
-    expect(compose).toContain('minio_data:');
     expect(compose).toContain('uptime_kuma_data:');
     expect(compose).toContain('pgadmin_data:');
     expect(ci).toContain('PUBLIC_DOMAIN: localhost');
@@ -273,8 +271,10 @@ describe('server edition repository boundaries', () => {
     expect(restore).toContain('verify_backup_file "$DUMP_PATH" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('checksum mismatch for $file_name');
-    expect(restore).toContain('PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"');
-    expect(restore).toContain('pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner');
+    expect(restore).not.toContain('PG_RESTORE_ROLE');
+    expect(restore).not.toContain('--role=');
+    expect(restore).toContain('assert_restricted_restore_session "$DATABASE_URL" \'restore\'');
+    expect(restore).toContain('pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"');
     expect(restore).toContain('validate_tar_archive "$ATTACHMENTS_ARCHIVE"');
     expect(restore).toContain('validate_tar_archive "$AUDIT_ARCHIVE"');
     expect(restore).toContain('if ($1 !~ /^[-d]/)');
@@ -294,9 +294,13 @@ describe('server edition repository boundaries', () => {
     expect(restoreDrill).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restoreDrill).toContain('tar -tf "$AUDIT_ARCHIVE"');
     expect(restoreDrill).toContain('CREATE DATABASE \\"$DRILL_DB_SQL\\" OWNER \\"$PG_APP_USER_SQL\\"');
-    expect(restoreDrill).toContain('pg_restore --role="$PG_RESTORE_ROLE" --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
+    expect(restoreDrill).not.toContain('--role=');
+    expect(restoreDrill).toContain('assert_restricted_restore_session "$DRILL_DATABASE_URL" \'restore drill\'');
+    expect(restoreDrill).toContain('pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
     expect(restoreDrill).toContain('DROP DATABASE IF EXISTS');
-    expect(restoreDrill).toContain('SELECT count(*) FROM workspaces');
+    // C-A55: kein rohes count(*) als Admin ueber einen Namen aus dem Dump.
+    expect(restoreDrill).toContain('backup_metadata_count "$DRILL_DATABASE_URL" workspaces');
+    expect(restoreDrill).not.toContain('SELECT count(*) FROM workspaces');
     expect(postgresInit).toContain('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE');
     expect(postgresInit).toContain('ALTER DATABASE %I OWNER TO %I');
     expect(postgresInit).toContain('CREATE EXTENSION IF NOT EXISTS pgcrypto');
@@ -323,7 +327,8 @@ describe('server edition repository boundaries', () => {
     expect(caddyfile).toContain('X-Content-Type-Options nosniff');
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
-    expect(caddyfile).toContain('format json');
+    // Still JSON, now through the redacting filter encoder (F-A1-09).
+    expect(caddyfile).toContain('wrap json');
     // Static SPA serving with client-side routing fallback, backend paths proxied.
     expect(caddyfile).toContain('root * /srv/dist');
     expect(caddyfile).toContain('try_files {path} /index.html');
@@ -358,9 +363,7 @@ describe('server edition repository boundaries', () => {
     expect(envExample).toContain('AUDIT_ARCHIVE_DIR=/app/data/audit-archive');
     expect(envExample).toContain('RESTORE_DRILL_DB_NAME=');
     expect(envExample).toContain('RESTORE_DRILL_AUDIT_ARCHIVE_PATH=');
-    expect(envExample).toContain('MINIO_ROOT_PASSWORD=CHANGE_ME_minio_root_password');
-    expect(envExample).toContain('MINIO_API_BIND=127.0.0.1');
-    expect(envExample).toContain('MINIO_CONSOLE_PORT=9001');
+    expect(envExample).not.toContain('MINIO_');
     expect(envExample).toContain('UPTIME_KUMA_BIND=127.0.0.1');
     expect(envExample).toContain('UPTIME_KUMA_PORT=3001');
     expect(envExample).toContain('PGADMIN_DEFAULT_PASSWORD=CHANGE_ME_pgadmin_password');
@@ -374,11 +377,15 @@ describe('server edition repository boundaries', () => {
   test('api Docker image keeps runtime node dependencies for server CLI commands', () => {
     const dockerfile = readFileSync(join(__dirname, '..', '..', 'docker', 'api.Dockerfile'), 'utf8');
     expect(dockerfile).toContain('pnpm install --frozen-lockfile --node-linker=hoisted --ignore-scripts');
-    // --ignore-scripts is load-bearing: without it prune re-runs the desktop-only
-    // postinstall (electron install), which fails in the prod image. Regression guard.
-    expect(dockerfile).toContain('pnpm prune --prod --ignore-scripts');
-    expect(dockerfile).toContain('COPY --from=build /app/node_modules ./node_modules');
-    expect(dockerfile).toContain('CMD ["node", "packages/server/dist/server.js"]');
+    // A clean production stage avoids workspace pruning and desktop postinstall.
+    expect(dockerfile).toContain('FROM base AS prod-deps');
+    expect(dockerfile).toContain('pnpm install --prod --frozen-lockfile --node-linker=hoisted --ignore-scripts');
+    expect(dockerfile).toContain('COPY --from=prod-deps /app/node_modules ./node_modules');
+    expect(dockerfile).toContain('COPY --from=build /app/packages/server/dist ./packages/server/dist');
+    // Das V8-Flag gehoert zum Start (ReDoS-Schutz, F-A13A14-04, E1).
+    expect(dockerfile).toContain(
+      'CMD ["node", "--enable-experimental-regexp-engine-on-excessive-backtracks", "packages/server/dist/server.js"]',
+    );
   });
 
   test('server package declares Fastify 5 and Pino as direct server dependencies', () => {
@@ -1961,6 +1968,13 @@ describe('server edition repository boundaries', () => {
       });
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toBe('image/gif');
+
+      // F-A3a-04: a deleted/unknown click link reaches the recipient as a readable German HTML page, not JSON.
+      const click = await app.inject({ method: 'GET', url: `/t/c/${token}`, headers: { origin: 'null' } });
+      expect(click.statusCode).toBe(404);
+      expect(click.headers['content-type']).toBe('text/html; charset=utf-8');
+      expect(click.body).toContain('Link nicht mehr verfügbar');
+      expect(click.body).not.toContain('tracking_not_found');
     } finally {
       await app.close();
     }
@@ -1998,6 +2012,9 @@ describe('server edition repository boundaries', () => {
           },
         },
         syncInfo: {
+          async claimIfExpired() {
+            return true;
+          },
           async getMany(input) {
             syncGetCalls.push(input);
             return [];

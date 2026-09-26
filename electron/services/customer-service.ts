@@ -6,6 +6,7 @@ import {
   deleteCustomer,
   searchCustomers,
 } from '../sqlite-service';
+import { CustomerHasDependentsError } from '../customer-dependents-error';
 
 export const CustomerService = {
   list(includeCustomFields = false) {
@@ -42,8 +43,15 @@ export const CustomerService = {
     }
   },
 
-  delete(id: number) {
-    const ok = deleteCustomer(id);
-    return { success: ok, error: ok ? undefined : 'Kunde nicht gefunden' };
+  delete(id: number, options: { cascade?: boolean } = {}) {
+    try {
+      const ok = deleteCustomer(id, { cascade: options.cascade === true });
+      return { success: ok, error: ok ? undefined : 'Kunde nicht gefunden' };
+    } catch (e) {
+      if (e instanceof CustomerHasDependentsError) {
+        return { success: false as const, error: e.code, dependents: e.dependents };
+      }
+      throw e;
+    }
   },
 };

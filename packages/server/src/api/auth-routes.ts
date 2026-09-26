@@ -9,6 +9,7 @@ import {
   shouldResetFailureCounterAfterSuccess,
 } from '../auth';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import { isForbiddenUserMutation } from './capabilities';
 import {
   data,
   error,
@@ -25,6 +26,16 @@ import {
   hasValidRefreshCsrf,
   readRefreshCredential,
 } from './auth-session-cookie';
+import {
+  isUsableInitialSetupToken,
+  MIN_INITIAL_SETUP_TOKEN_LENGTH,
+} from '../security/initial-setup-token';
+import {
+  passwordCheckEmail,
+  passwordCheckLockResponse,
+  recordFailedPasswordCheck,
+  recordSuccessfulPasswordCheck,
+} from './password-check-lockout';
 
 const DEFAULT_AUDIT_LIMIT = 100;
 const MAX_AUDIT_LIMIT = 500;
@@ -218,7 +229,10 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
     });
     const penalty = calculateLoginPenalty(failedAttempts);
     if (user) {
-      await ports.audit?.record({
+      // Not awaited: only existing accounts get this audit row, and waiting for
+      // its transaction made their failed logins measurably slower than those of
+      // unknown e-mail addresses (account enumeration by response time).
+      void Promise.resolve(ports.audit?.record({
         workspaceId: user.workspaceId,
         actorUserId: user.id,
         action: 'auth.login_failed',
@@ -230,6 +244,10 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
           failedAttempts,
           penaltyKind: penalty.kind,
         },
+      })).catch((auditError: unknown) => {
+        console.warn(
+          `[auth] auth.login_failed audit write failed for user ${user.id}: ${auditError instanceof Error ? auditError.message : String(auditError)}`,
+        );
       });
     }
     const locked = penalty.kind === 'permanent';
@@ -294,7 +312,9 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   }
 
   await ports.auth.recordSuccessfulLogin({ userId: user.id, email, ip });
-  const tokens = await ports.auth.issueTokenPair({ user, device });
+  // Ein seit der Pruefung oben gewechseltes Passwort liefert keine Sitzung mehr.
+  const tokens = await ports.auth.issueTokenPair({ user, device, expectedPasswordHash: user.passwordHash });
+  if (!tokens) return error(401, 'invalid_credentials', 'Ungültige Zugangsdaten');
   await ports.audit?.record({
     workspaceId: user.workspaceId,
     actorUserId: user.id,
@@ -323,7 +343,17 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
   }
 
   const rotated = await ports.auth.rotateRefreshToken({ refreshToken: credential.refreshToken });
-  if (!rotated) {
+  if (rotated && 'reuseDetected' in rotated) {
+    await ports.audit?.record({
+      workspaceId: rotated.workspaceId,
+      actorUserId: rotated.userId,
+      action: 'auth.refresh_token_reuse_detected',
+      entityType: 'user',
+      entityId: rotated.userId,
+      metadata: { ip: req.ip ?? '0.0.0.0' },
+    });
+  }
+  if (!rotated || 'reuseDetected' in rotated) {
     return error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen');
   }
 
@@ -384,7 +414,9 @@ async function handleSaveUser(
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    actorIsAdmin: requireAdmin(principal),
+    actorRole: principal.role,
+    actorCapabilities: principal.capabilities ?? [],
+    ...(principal.sessionId ? { actorSessionId: principal.sessionId } : {}),
     ...saveValues,
   });
   if (!result.ok) {
@@ -392,6 +424,8 @@ async function handleSaveUser(
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
     if (result.code === 'role_change_forbidden') return error(403, 'forbidden', 'Nur Owner/Admins dürfen Rollen vergeben oder ändern');
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
+    if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -458,6 +492,23 @@ async function handleSaveUser(
   return data(parsed.values.id ? 200 : 201, publicAdminUser(savedUser));
 }
 
+/** G3: shared with the 2FA routes, which also change an account. */
+export function ownerManagementRequiresOwnerError(): ApiResponse {
+  return error(
+    403,
+    'owner_management_requires_owner',
+    'Nur Owner dürfen die Owner-Rolle vergeben oder entziehen und Owner-Konten ändern oder löschen.',
+  );
+}
+
+function targetMorePrivilegedError(): ApiResponse {
+  return error(
+    403,
+    'target_more_privileged',
+    'Dieses Konto hat Rechte oder Postfach-Freigaben, die Sie selbst nicht besitzen. Nur Administratoren dürfen es ändern oder löschen.',
+  );
+}
+
 async function handleDeleteUser(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -490,7 +541,8 @@ async function handleDeleteUser(
   const result = await ports.auth.deleteUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    actorIsAdmin: requireAdmin(principal),
+    actorRole: principal.role,
+    actorCapabilities: principal.capabilities ?? [],
     id,
   });
   if (!result.ok) {
@@ -498,6 +550,8 @@ async function handleDeleteUser(
     if (result.code === 'role_change_forbidden') {
       return error(403, 'forbidden', 'Nur Administratoren dürfen privilegierte Konten löschen');
     }
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
+    if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -576,23 +630,35 @@ async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Pro
   if (!currentPassword || !newPassword) {
     return error(400, 'validation_error', 'currentPassword und newPassword sind erforderlich');
   }
-  if (newPassword.length < 10) {
-    return error(400, 'validation_error', 'Das neue Passwort muss mindestens 10 Zeichen haben');
+  // Same length rules as initial setup, invitations and admin resets.
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return error(400, 'validation_error', `Das neue Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben`);
   }
+  if (newPassword.length > MAX_PASSWORD_LENGTH) {
+    return error(400, 'validation_error', `Das neue Passwort darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben`);
+  }
+
+  const ip = req.ip ?? '0.0.0.0';
+  const email = await passwordCheckEmail(ports, principal);
+  const locked = await passwordCheckLockResponse(ports, email, ip);
+  if (locked) return locked;
 
   const result = await ports.auth.changePassword({
     workspaceId: principal.workspaceId,
     userId: principal.userId,
     currentPassword,
     newPassword,
+    ...(principal.sessionId ? { currentSessionId: principal.sessionId } : {}),
   });
   if (!result.ok) {
     if (result.code === 'invalid_current') {
+      await recordFailedPasswordCheck(ports, { principal, email, ip, action: 'auth.password_change_failed' });
       return error(403, 'invalid_current_password', 'Aktuelles Passwort ist falsch');
     }
     return error(400, 'validation_error', 'Passwort konnte nicht geaendert werden');
   }
 
+  await recordSuccessfulPasswordCheck(ports, { principal, email, ip });
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -612,6 +678,8 @@ async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): P
 
   const parsed = parseInvitationCreateBody(req.body);
   if ('response' in parsed) return parsed.response;
+  // An accepted owner invitation grants the owner role, which only an owner may do (G3).
+  if (isForbiddenUserMutation(principal.role, parsed.values.role)) return ownerManagementRequiresOwnerError();
 
   const result = await ports.auth.createInvitation({
     workspaceId: principal.workspaceId,
@@ -700,6 +768,7 @@ async function handleAcceptInvitation(
   });
   if (!result.ok) {
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
     return invitationErrorResponse(result.code);
   }
 
@@ -1131,6 +1200,13 @@ function verifyInitialSetupToken(
       503,
       'initial_setup_token_required',
       'INITIAL_SETUP_TOKEN muss auf dem Server gesetzt sein, bevor das erste Owner-Konto angelegt werden kann.',
+    );
+  }
+  if (!isUsableInitialSetupToken(expected)) {
+    return error(
+      503,
+      'initial_setup_token_required',
+      `INITIAL_SETUP_TOKEN ist ein Platzhalter oder kuerzer als ${MIN_INITIAL_SETUP_TOKEN_LENGTH} Zeichen. Bitte einen zufaelligen Wert setzen und den Server neu starten.`,
     );
   }
 

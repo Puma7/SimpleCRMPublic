@@ -89,10 +89,12 @@ export function MessageAiSuggestions({
   }, [message.id])
 
   useEffect(() => {
-    void invokeRenderer(IPCChannels.Email.EnsureReplySuggestion, {
+    // Hintergrundaufruf wie loadSuggestion: eine Ablehnung (z. B. nur Lese-Freigabe
+    // auf dem Konto) laesst die Anzeige unveraendert.
+    invokeRenderer(IPCChannels.Email.EnsureReplySuggestion, {
       messageId: message.id,
       trigger: "open",
-    })
+    }).catch(() => undefined)
     void loadSuggestion()
   }, [message.id, loadSuggestion])
 

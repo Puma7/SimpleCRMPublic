@@ -3,9 +3,14 @@ import { readFile } from 'node:fs/promises';
 import type { Kysely } from 'kysely';
 
 import {
-  parseDmarcReportAttachment,
-  summarizeDmarcRecords,
-  type DmarcRecordRow,
+  countDmarcRecordTags,
+  createDmarcRecordAggregator,
+  decompressReportAttachment,
+  MAX_DECOMPRESSED_BYTES,
+  MAX_DMARC_RECORDS_PER_REPORT,
+  parseDmarcXml,
+  type DmarcRecordAggregator,
+  type DmarcReportSummary,
 } from './dmarc/parse-aggregate-report';
 import type { ServerDatabase } from './db';
 import { resolveAttachmentStoragePath } from './db/postgres-mail-read-ports';
@@ -31,6 +36,20 @@ import {
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 /** Total read budget across all of a message's attachments. */
 const MAX_TOTAL_ATTACHMENT_BYTES = 40 * 1024 * 1024;
+/** Total decompressed budget across all of a message's report attachments. The
+ *  compressed budget above does not bound it (gzip expands ~1000:1), so without
+ *  it every extra attachment adds another full-size parse + DB insert. A real
+ *  RUA mail carries one report, so the per-report cap is enough for the mail. */
+const MAX_TOTAL_DECOMPRESSED_BYTES = MAX_DECOMPRESSED_BYTES;
+/** DEFLATE expands at most ~1032:1. A failed decompression is charged to the
+ *  budget above with the most it could have inflated before failing (up to the
+ *  per-attachment cap): a bomb spends the budget, a small corrupt file hardly. */
+const MAX_DEFLATE_EXPANSION = 1032;
+/** Report attachments examined per message; a real RUA mail carries one. */
+const MAX_REPORT_ATTACHMENTS_PER_MESSAGE = 20;
+/** The per-report record limit (E13) applies to all reports of a message
+ *  together, so splitting records across reports does not multiply it. */
+const MAX_DMARC_RECORDS_PER_MESSAGE = MAX_DMARC_RECORDS_PER_REPORT;
 /** Only attachments whose name ends in one of these are considered reports. */
 const REPORT_ATTACHMENT_PATTERN = /\.(xml|xml\.gz|gz|zip)$/i;
 
@@ -83,7 +102,8 @@ type IngestSummary = {
   reportCount: number;
   newReportCount: number;
   domain: string;
-  records: DmarcRecordRow[];
+  /** Running totals instead of the records, so no report's rows are kept. */
+  aggregator: DmarcRecordAggregator;
 };
 
 export function createPostgresWorkflowDmarcIngestPort(
@@ -98,7 +118,12 @@ export function createPostgresWorkflowDmarcIngestPort(
 
   return {
     async ingest(input): Promise<void> {
-      let summary: IngestSummary = { reportCount: 0, newReportCount: 0, domain: '', records: [] };
+      let summary: IngestSummary = {
+        reportCount: 0,
+        newReportCount: 0,
+        domain: '',
+        aggregator: createDmarcRecordAggregator(),
+      };
       try {
         const attachments = await withWorkspaceTransaction(
           options.db,
@@ -142,11 +167,19 @@ async function ingestAttachments(args: {
   receivedAt: Date;
 }): Promise<IngestSummary> {
   const { input, attachments, attachmentsRoot, readAttachmentFile, store, receivedAt } = args;
-  const summary: IngestSummary = { reportCount: 0, newReportCount: 0, domain: '', records: [] };
+  const summary: IngestSummary = {
+    reportCount: 0,
+    newReportCount: 0,
+    domain: '',
+    aggregator: createDmarcRecordAggregator(),
+  };
   if (!attachmentsRoot) return summary;
 
   const nameFilter = input.attachmentNameFilter?.trim().toLowerCase() || null;
   let total = 0;
+  let decompressedTotal = 0;
+  let reportAttachments = 0;
+  let recordTotal = 0;
 
   for (const attachment of attachments) {
     const lowerName = attachment.filename.toLowerCase();
@@ -155,6 +188,13 @@ async function ingestAttachments(args: {
 
     const resolved = resolveAttachmentStoragePath(attachmentsRoot, attachment.storagePath);
     if (!resolved) continue;
+    if (reportAttachments >= MAX_REPORT_ATTACHMENTS_PER_MESSAGE) {
+      console.warn(
+        `workflow.dmarc_ingest: message ${input.messageId} has more than ${MAX_REPORT_ATTACHMENTS_PER_MESSAGE} report attachments, ignoring the rest`,
+      );
+      break;
+    }
+    reportAttachments += 1;
 
     let bytes: Buffer;
     try {
@@ -167,13 +207,43 @@ async function ingestAttachments(args: {
     if (next > MAX_TOTAL_ATTACHMENT_BYTES) break;
     total = next;
 
+    let xml: Buffer;
+    try {
+      xml = await decompressReportAttachment(attachment.filename, bytes);
+    } catch {
+      // Corrupt or over-limit archive — not a report, but the inflating is spent.
+      decompressedTotal += Math.min(MAX_DECOMPRESSED_BYTES, bytes.length * MAX_DEFLATE_EXPANSION);
+      if (decompressedTotal >= MAX_TOTAL_DECOMPRESSED_BYTES) break;
+      continue;
+    }
+    const nextDecompressed = decompressedTotal + xml.length;
+    if (nextDecompressed > MAX_TOTAL_DECOMPRESSED_BYTES) break;
+    decompressedTotal = nextDecompressed;
+
     // Guard each report independently: a single malformed/oversized report must
     // not abort the whole batch (which would leave the workflow unresumed). The
     // parser already returns null for non-DMARC XML; this also catches a persist
     // that throws (e.g. a value the DB rejects) so the remaining reports still
     // ingest and the summary/continuation stay accurate.
     try {
-      const report = await parseDmarcReportAttachment(attachment.filename, bytes);
+      const xmlText = xml.toString('utf8');
+      // Vor dem Parse zaehlen: ein Report mit zu vielen Records wird nicht erst
+      // sekundenlang synchron geparst und eingefuegt (F-A3b-01).
+      const recordTags = countDmarcRecordTags(xmlText);
+      if (recordTags > MAX_DMARC_RECORDS_PER_REPORT) {
+        console.warn(
+          `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${recordTags} records exceed the limit of ${MAX_DMARC_RECORDS_PER_REPORT}`,
+        );
+        continue;
+      }
+      if (recordTotal + recordTags > MAX_DMARC_RECORDS_PER_MESSAGE) {
+        console.warn(
+          `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${recordTags} records exceed the per-message limit of ${MAX_DMARC_RECORDS_PER_MESSAGE} (${recordTotal} already taken)`,
+        );
+        continue;
+      }
+      recordTotal += recordTags;
+      const report = parseDmarcXml(xmlText);
       if (!report) continue;
 
       const persisted = await store.persistReport({
@@ -186,7 +256,7 @@ async function ingestAttachments(args: {
       summary.reportCount += 1;
       if (persisted.isNew) summary.newReportCount += 1;
       if (!summary.domain) summary.domain = report.domain;
-      summary.records.push(...report.records);
+      summary.aggregator.add(report.records);
     } catch (error) {
       console.warn(
         `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${error instanceof Error ? error.message : String(error)}`,
@@ -225,7 +295,7 @@ async function enqueueDmarcIngestContinuation(
   const continuation = input.continuation;
   if (!continuation) return;
 
-  const aggregate = summarizeDmarcRecords(summary.records);
+  const aggregate = summary.aggregator.summary();
   await withWorkspaceTransaction(
     options.db,
     { workspaceId: input.workspaceId, role: 'system' },
@@ -271,7 +341,7 @@ function workflowContinuationPayload(payload: Record<string, unknown>, trustedSe
 
 function dmarcIngestVariables(
   summary: IngestSummary,
-  aggregate: ReturnType<typeof summarizeDmarcRecords>,
+  aggregate: DmarcReportSummary,
 ): Record<string, unknown> {
   return {
     'dmarc.ok': summary.reportCount > 0,

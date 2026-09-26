@@ -384,6 +384,38 @@ describe('local restore preview and file picker', () => {
       expect(relaunchMock).not.toHaveBeenCalled();
     });
 
+    // F-A7b-03: Scheiterte das Umbenennen des Anhangordners, blieb die DB weggeschoben und es entstand eine leere DB.
+    test('rolls the database back when renaming the attachments folder fails', async () => {
+      const token = await previewToken();
+      const dbPath = path.join(root, 'user-data', 'database.sqlite');
+      const attachmentRoot = path.join(root, 'attachments');
+      fs.writeFileSync(dbPath, 'old-database');
+      fs.mkdirSync(attachmentRoot, { recursive: true });
+      fs.writeFileSync(path.join(attachmentRoot, 'old.txt'), 'old-attachment');
+      const realRename = fs.renameSync;
+      const renameSpy = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (String(from) === attachmentRoot) {
+          throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+        }
+        return realRename(from, to);
+      });
+
+      const result = await restoreLocalMailBackup({
+        zipPath,
+        previewToken: token,
+        confirmPhrase: RESTORE_CONFIRM_PHRASE,
+        createPreBackup: false,
+      });
+
+      renameSpy.mockRestore();
+      expect(result).toEqual({ ok: false, error: 'EPERM: operation not permitted' });
+      expect(fs.readFileSync(dbPath, 'utf8')).toBe('old-database');
+      expect(fs.readdirSync(path.dirname(dbPath)).some((name) => name.includes('.pre-restore-'))).toBe(false);
+      expect(fs.readFileSync(path.join(attachmentRoot, 'old.txt'), 'utf8')).toBe('old-attachment');
+      expect(reopenDatabaseMock).toHaveBeenCalledTimes(1);
+      expect(relaunchMock).not.toHaveBeenCalled();
+    });
+
     test('recovers stopped services when closing the database fails', async () => {
       const token = await previewToken();
       fs.writeFileSync(path.join(root, 'user-data', 'database.sqlite'), 'old-database');

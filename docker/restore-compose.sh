@@ -7,7 +7,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 # the same value plain `docker compose -f docker/docker-compose.yml` and the
 # simplecrm helper use — so a direct invocation restores the SAME stack the rest
 # of the tooling targets, and the project .env isn't shadowed by the caller's PWD.
-COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+# COMPOSE_FILE may list several files separated by ':' like Docker Compose's own
+# variable, e.g. the base file plus docker-compose.relay.yml. The first one is
+# the main file and decides the project directory.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "${COMPOSE_FILE%%:*}")" && pwd)"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 RESTORE_API_HEALTH_TIMEOUT_SECONDS="${RESTORE_API_HEALTH_TIMEOUT_SECONDS:-180}"
 
@@ -45,8 +48,26 @@ if [ -n "${3:-}" ]; then
   export RESTORE_AUDIT_ARCHIVE_PATH="$3"
 fi
 
+# One -f per entry of COMPOSE_FILE, in order. POSIX sh has no arrays: append
+# the flags behind the arguments, then rotate the arguments to the end.
 compose() {
-  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"
+  _argc=$#
+  _ifs=$IFS
+  IFS=':'
+  for _file in $COMPOSE_FILE; do set -- "$@" -f "$_file"; done
+  IFS=$_ifs
+  while [ "$_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _argc=$((_argc - 1)); done
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" "$@"
+}
+
+# The API image runs as the unprivileged node user (uid 1000). Hand it the
+# writable volumes: attachments and audit archives unpacked by the restore
+# service run as root, and files from older root-run images, would otherwise
+# stay root-owned and the API could not write there. Only entries with another
+# owner are touched. Same step as in update.sh.
+fix_api_volume_ownership() {
+  compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c \
+    'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
 }
 
 wait_for_api_health() {
@@ -104,6 +125,7 @@ compose up -d postgres
 
 echo "running restore service"
 compose --profile restore run --rm restore
+fix_api_volume_ownership
 
 echo "running migrations after restore"
 compose run --rm migrate

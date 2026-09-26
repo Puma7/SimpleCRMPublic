@@ -3,6 +3,7 @@ import {
   buildOutboundWarningBanner,
   extractDraftBodyForOutboundBlock,
   parseOutboundReviewResponse,
+  stripOutboundWarningFromHtml,
 } from '../../packages/core/src/email';
 
 describe('email outbound review', () => {
@@ -100,5 +101,74 @@ describe('email outbound review', () => {
     const r = extractDraftBodyForOutboundBlock(row);
     expect(r.plain).toBe('Eigentlicher Inhalt');
     expect(r.plain).not.toContain(OUTBOUND_WARNING_MARKER);
+  });
+
+  // F-N-redos-01: Banner-Entfernung und HTML->Text liefen per Lazy-Regex quadratisch bis kubisch; ein praeparierter Entwurf (z. B. zitierte Mail) blockierte den Prozess.
+  test('stripping banners and HTML stays linear on hostile drafts', () => {
+    const hostile = [
+      '<div'.repeat(20_000),
+      '<div>AUSGANGSPRÜFUNG'.repeat(1_000),
+      `<p>x</p>${'<script'.repeat(10_000)}${'<style'.repeat(10_000)}`,
+    ];
+    for (const html of hostile) {
+      const started = Date.now();
+      const r = extractDraftBodyForOutboundBlock({ body_text: '', body_html: html });
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(r.plain.length).toBeGreaterThan(0);
+    }
+  });
+
+  // F-N-redos-01: Die linearen Scans muessen exakt das Ergebnis der bisherigen Regex-Kette liefern.
+  test('banner and HTML stripping match the previous regex chain', () => {
+    const legacyStrip = (html: string): string => {
+      let inner = (html ?? '').trim();
+      if (!inner) return '';
+      for (let i = 0; i < 5; i++) {
+        const next = inner.replace(/<div[^>]*>[\s\S]*?AUSGANGSPRÜFUNG[\s\S]*?<\/div>/gi, '').trim();
+        if (next === inner) break;
+        inner = next;
+      }
+      return inner;
+    };
+    const legacyPlain = (html: string): string => html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const banner = buildOutboundWarningBanner('Falscher <Name>').html;
+    const samples = [
+      '',
+      '<p>Hallo</p>',
+      `${banner}<p>Eigentlicher Inhalt</p>`,
+      `${banner}${banner}<div>Gruss</div>`,
+      '<DIV class="w">ausgangsprüfung</DIV>Rest',
+      '<div><div>AUSGANGSPRÜFUNG</div></div>Rest</div>',
+      '<div>ohne Marker</div><div>AUSGANGSPRÜFUNG ohne Ende',
+      '<script>eins</script><style>zwei</style>drei<br/>vier</p>fuenf',
+    ];
+    const tokens = [
+      '<div', '<DIV class="x">', '>', 'AUSGANGSPRÜFUNG', 'ausgangsprüfung', '</div>', '</DIV>', 'x', ' ',
+      '<script', '</script>', '<Style>', '</STYLE>', '<br>', '<br />', '</p>', '<', '\n',
+    ];
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    };
+    for (let n = 0; n < 3000; n++) {
+      const count = Math.floor(random() * 14);
+      let html = '';
+      for (let i = 0; i < count; i++) html += tokens[Math.floor(random() * tokens.length)];
+      samples.push(html);
+    }
+    for (const html of samples) {
+      const stripped = legacyStrip(html);
+      expect(stripOutboundWarningFromHtml(html)).toBe(stripped);
+      const r = extractDraftBodyForOutboundBlock({ body_text: '', body_html: html });
+      expect(r.plain).toBe(stripped.trim() ? legacyPlain(stripped) : '');
+    }
   });
 });

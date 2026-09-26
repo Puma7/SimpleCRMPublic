@@ -67,7 +67,14 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
       );
     },
 
-    async resolveScopeActorContext(input): Promise<MailScopeActorContext> {
+    async resolveScopeActorContext(input, evaluationContext): Promise<MailScopeActorContext> {
+      if (evaluationContext) {
+        return resolveActorContext(
+          requirePostgresMailAclRolloutTransaction(evaluationContext, input.workspaceId),
+          input.workspaceId,
+          input.userId,
+        );
+      }
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.userId, role: 'user' },
@@ -76,7 +83,14 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
       );
     },
 
-    async resolveMessageVisibilityFacts(input): Promise<MailMessageVisibilityFacts | null> {
+    async resolveMessageVisibilityFacts(input, evaluationContext): Promise<MailMessageVisibilityFacts | null> {
+      if (evaluationContext) {
+        return resolveMessageFacts(
+          requirePostgresMailAclRolloutTransaction(evaluationContext, input.workspaceId),
+          input.workspaceId,
+          input.messageId,
+        );
+      }
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },

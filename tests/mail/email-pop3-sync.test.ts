@@ -1,3 +1,5 @@
+import { repeatedCidImageMail } from './helpers/cid-mime';
+
 const mockGetSyncInfo = jest.fn(() => null as string | null);
 const mockSetSyncInfo = jest.fn();
 const mockAssertInboundRfc822Size = jest.fn();
@@ -68,6 +70,10 @@ jest.mock('../../electron/email/email-sync-mutex', () => ({
 jest.mock('../../electron/email/email-sync-post-process', () => ({
   processNewMessagesAfterSync: jest.fn().mockResolvedValue(undefined),
 }));
+const mockPersistAttachments = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistParsedAttachments: (...args: unknown[]) => mockPersistAttachments(...args),
+}));
 jest.mock('mailparser', () => ({
   simpleParser: jest.fn().mockResolvedValue({
     messageId: '<p@x>',
@@ -129,6 +135,39 @@ describe('email-pop3-sync', () => {
     const r = await syncInboxPop3(1);
     expect(r.fetched).toBe(1);
     expect(mockRetr).toHaveBeenCalledWith(1);
+  });
+
+  // F-A7b-04: Der Erst-Sync eines POP3-Postfachs (unbegrenzt) lief komplett durch
+  // Inbound-Workflows, KI-Vorschläge und Abwesenheitsantworten.
+  test('marks mail as historical while no UIDL of the mailbox is known yet', async () => {
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    mockUidl.mockResolvedValue([['1', 'uidl-old-1'], ['2', 'uidl-old-2']]);
+
+    await syncInboxPop3(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ historical: true }),
+    );
+  });
+
+  test('treats new mail as live inbound once the mailbox was synced before', async () => {
+    const { getFolderByAccountAndPath } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    // Leeres Postfach, aber schon synchronisiert: die UIDL-Liste ist gespeichert.
+    (getFolderByAccountAndPath as jest.Mock).mockReturnValueOnce({ ...mockFolder, pop3_uidl_str: '[]' });
+    mockUidl.mockResolvedValue([['1', 'uidl-new']]);
+
+    await syncInboxPop3(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ historical: false }),
+    );
   });
 
   test('testPop3Connection returns error on failure', async () => {
@@ -198,5 +237,69 @@ describe('email-pop3-sync', () => {
 
     expect(mockRetr).toHaveBeenCalledTimes(1);
     expect(persisted).toBe(JSON.stringify(['uidl-oversized']));
+  });
+
+  // C-A71: simpleParser lief mit der Standard-CID-Expansion; ein vielfach referenziertes Inline-Bild blaehte body_html ohne Grenze auf.
+  test('stores html with a bounded cid image expansion', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const realSimpleParser = (jest.requireActual('mailparser') as typeof import('mailparser')).simpleParser;
+    simpleParser.mockImplementationOnce((source: Buffer, options?: { keepCidLinks?: boolean }) =>
+      realSimpleParser(source, options));
+    const { source, html } = repeatedCidImageMail(100 * 1024, 200);
+    mockUidl.mockResolvedValue([['1', 'uidl-cid']]);
+    mockRetr.mockResolvedValueOnce(source);
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+
+    const r = await syncInboxPop3(1);
+
+    expect(r.fetched).toBe(1);
+    const stored = (insertOrUpdateEmailMessage as jest.Mock).mock.calls[0]![0] as { bodyHtml: string };
+    expect(stored.bodyHtml.length).toBeLessThanOrEqual(html.length + 16 * 1024 * 1024);
+    expect(stored.bodyHtml).toContain('<img src="data:image/png;base64,');
+    expect(stored.bodyHtml).toContain('<img src="cid:a">');
+    expect(simpleParser).toHaveBeenCalledWith(source, { keepCidLinks: true });
+  }, 30_000);
+
+  // C-A59: Die dekodierten Anhaenge aller neuen Mails lagen bis zum Ende der Schleife in newAfterSync (ohne Mengengrenze).
+  test('stores attachments per message and hands no buffers to the post-process', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    const attachment = (n: number) => ({ filename: `a${n}.pdf`, contentType: 'application/pdf', content: Buffer.alloc(1024, n) });
+    const parsedWith = (n: number) => ({ messageId: `<p${n}@x>`, subject: `P${n}`, text: 't', attachments: [attachment(n)] });
+    simpleParser.mockResolvedValueOnce(parsedWith(1)).mockResolvedValueOnce(parsedWith(2));
+    mockUidl.mockResolvedValue([['1', 'uidl-att-1'], ['2', 'uidl-att-2']]);
+    (insertOrUpdateEmailMessage as jest.Mock)
+      .mockReturnValueOnce({ id: 61, isNew: true })
+      .mockReturnValueOnce({ id: 62, isNew: true });
+
+    const r = await syncInboxPop3(1);
+
+    expect(r.fetched).toBe(2);
+    expect(mockPersistAttachments.mock.calls).toEqual([[61, [attachment(1)]], [62, [attachment(2)]]]);
+    // Stored before the next message is inserted, not after the whole mailbox.
+    expect(mockPersistAttachments.mock.invocationCallOrder[0])
+      .toBeLessThan((insertOrUpdateEmailMessage as jest.Mock).mock.invocationCallOrder[1]!);
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items.map((i) => [i.localMsgId, i.parsedAttachments])).toEqual([[61, []], [62, []]]);
+  });
+
+  // C-A59: Scheitert das Speichern im Sync, holt die Nachverarbeitung die Anhaenge aus raw_rfc822_b64 nach; die Mail bleibt abgerufen.
+  test('leaves attachments to the post-process recovery when storing fails', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    simpleParser.mockResolvedValueOnce({ messageId: '<p@x>', text: 't', attachments: [{ filename: 'a.pdf', content: Buffer.from('pdf') }] });
+    mockPersistAttachments.mockRejectedValueOnce(new Error('disk full'));
+    mockUidl.mockResolvedValue([['1', 'uidl-att-fail']]);
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValueOnce({ id: 71, isNew: true });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await syncInboxPop3(1);
+
+    expect(r.fetched).toBe(1);
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items).toEqual([expect.objectContaining({ localMsgId: 71, parsedAttachments: undefined })]);
+    warn.mockRestore();
   });
 });

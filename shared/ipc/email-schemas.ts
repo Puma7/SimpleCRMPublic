@@ -248,6 +248,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       host: nonEmptyString,
       port: z.number().int().positive(),
       secure: z.boolean(),
+      tls: z.boolean().optional(),
       user: nonEmptyString,
       password: z.string().optional(),
       smtpUseImapAuth: z.boolean().optional(),
@@ -277,6 +278,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       messageId: positiveInt,
       sendAt: z.string().nullable(),
+      pgpEncrypt: z.boolean().optional(),
+      pgpSign: z.boolean().optional(),
     }),
     result: standardResult,
   });
@@ -357,8 +360,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.GetEmailMiscSettings, {
     payload: voidPayload,
     result: z.object({
-      webhookSecret: z.string(),
+      // Klartext nur fuer Owner/Admin; alle anderen sehen nur hasSecret.
+      webhookSecret: z.string().optional(),
       maxAttachmentMb: z.string(),
+      hasSecret: z.boolean(),
     }),
   });
   set(IPCChannels.Email.SetEmailMiscSettings, {
@@ -889,7 +894,6 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     maxRecipients: positiveInt,
     maxMessageBytes: positiveInt,
     rateLimitPerMin: positiveInt,
-    allowArbitraryRecipients: z.boolean(),
     followupWorkflowId: positiveInt.nullable(),
     createdAt: z.string(),
     allowedAccounts: z.array(smtpRelayAllowedAccountSchema),
@@ -903,7 +907,6 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     maxRecipients: z.number().int().min(1).max(1000).optional(),
     maxMessageBytes: positiveInt.optional(),
     rateLimitPerMin: positiveInt.optional(),
-    allowArbitraryRecipients: z.boolean().optional(),
     followupWorkflowId: positiveInt.nullable().optional(),
   };
   set(IPCChannels.Email.ListSmtpRelays, {
@@ -1042,6 +1045,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.UpdateComposeDraft, {
     payload: z.object({
       messageId: positiveInt,
+      /** Moves the local draft to this account (composer "Von" switch). */
+      accountId: positiveInt.optional(),
       subject: z.string().optional(),
       bodyText: z.string().optional(),
       bodyHtml: z.string().optional(),
@@ -1237,6 +1242,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.PickComposeAttachments, {
     payload: voidPayload,
+    result: z.object({ success: z.literal(true), paths: z.array(z.string()) }).passthrough(),
+  });
+  set(IPCChannels.Email.RegisterDroppedComposeAttachments, {
+    payload: z.object({ paths: z.array(z.string().min(1).max(4096)).min(1).max(100) }).strict(),
     result: z.object({ success: z.literal(true), paths: z.array(z.string()) }).passthrough(),
   });
 
@@ -1635,6 +1644,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  // Tageslimit der Auto-Antwort wie auf dem Server: Ganzzahl 1..50.
+  const autoReplyMaxPerSenderPerDay = z.number().int().min(1).max(50);
   set(IPCChannels.Email.GetWorkflowAutomationSettings, {
     payload: voidPayload,
     result: z.object({
@@ -1643,6 +1654,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string(),
       senderBlacklist: z.string(),
       spamScoreThreshold: z.string(),
+      autoReplyEnabled: z.boolean(),
+      autoReplyMaxPerSenderPerDay,
     }),
   });
   set(IPCChannels.Email.SetWorkflowAutomationSettings, {
@@ -1652,6 +1665,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string().optional(),
       senderBlacklist: z.string().optional(),
       spamScoreThreshold: z.string().optional(),
+      autoReplyEnabled: z.boolean().optional(),
+      autoReplyMaxPerSenderPerDay: autoReplyMaxPerSenderPerDay.optional(),
     }),
     result: standardResult,
   });
@@ -1782,7 +1797,9 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   const oauthAppResult = z.object({
     success: z.literal(true),
     clientId: z.string().optional(),
+    // Klartext nur fuer Owner/Admin; alle anderen sehen nur hasSecret.
     clientSecret: z.string().optional(),
+    hasSecret: z.boolean(),
   });
   set(IPCChannels.Email.GetGoogleOAuthApp, { payload: voidPayload, result: oauthAppResult });
   set(IPCChannels.Email.SetGoogleOAuthApp, {

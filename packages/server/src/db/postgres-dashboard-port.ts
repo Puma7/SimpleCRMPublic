@@ -1,3 +1,4 @@
+import { CLOSED_DEAL_STAGES, WON_DEAL_STAGES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
@@ -7,6 +8,7 @@ import type {
   DashboardUpcomingTaskRecord,
 } from '../api/types';
 import type { ServerDatabase } from './schema';
+import { taskVisibilityExpression } from './postgres-core-crm-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -49,7 +51,9 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
               .selectFrom('customers')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
-              .where('updated_at', '>=', oneMonthAgo)
+              // date_added like the desktop dateAdded: every JTL sync refreshes
+              // updated_at, which would make all synced customers look new.
+              .where('date_added', '>=', oneMonthAgo)
               .executeTakeFirstOrThrow(),
             trx
               .selectFrom('deals')
@@ -64,12 +68,14 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
               .selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .executeTakeFirstOrThrow(),
             trx
               .selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('due_date', '>=', todayStart)
               .where('due_date', '<', tomorrowStart)
@@ -77,8 +83,8 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
             trx
               .selectFrom('deals')
               .select((eb) => [
-                eb.fn.count<number>('id').filterWhere('stage', '=', 'Closed Won').as('won'),
-                eb.fn.count<number>('id').filterWhere('stage', 'in', ['Closed Won', 'Closed Lost']).as('total'),
+                eb.fn.count<number>('id').filterWhere('stage', 'in', WON_DEAL_STAGES).as('won'),
+                eb.fn.count<number>('id').filterWhere('stage', 'in', CLOSED_DEAL_STAGES).as('total'),
               ])
               .where('workspace_id', '=', input.workspaceId)
               .executeTakeFirstOrThrow(),
@@ -134,6 +140,7 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
         async (trx) => {
           const rows = await trx
             .selectFrom('tasks')
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .leftJoin('customers', (join) => join
               .onRef('customers.id', '=', 'tasks.customer_id')
               .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
@@ -167,8 +174,6 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
     },
   };
 }
-
-const CLOSED_DEAL_STAGES = ['Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost'] as const;
 
 function normalizeLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit <= 0 || limit > 25) {

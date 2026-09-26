@@ -18,8 +18,11 @@ const mockAddMessageTag = jest.fn();
 const mockCreateComposeDraft = jest.fn(() => 42);
 const mockUpdateComposeDraft = jest.fn();
 const mockSendWorkflowForwardCopy = jest.fn(async () => ({ ok: true as const }));
-const mockAssertWorkflowHttpUrlAllowed = jest.fn(async () => ({ ok: true as const }));
-const mockFetch = jest.fn(async () => ({
+const mockAssertWorkflowHttpUrlAllowed = jest.fn(async () => ({
+  ok: true as const,
+  addresses: ['93.184.216.34'],
+}));
+const mockSendWorkflowHttpRequest = jest.fn(async () => ({
   ok: true,
   status: 200,
   text: async () => 'OK',
@@ -121,6 +124,7 @@ jest.mock('../../electron/email/email-forward-copy', () => ({
 jest.mock('../../electron/workflow/http-request-guard', () => ({
   assertWorkflowHttpUrlAllowed: (...args: unknown[]) =>
     mockAssertWorkflowHttpUrlAllowed(...(args as [])),
+  sendWorkflowHttpRequest: (...args: unknown[]) => mockSendWorkflowHttpRequest(...(args as [])),
 }));
 
 import { listBuiltinWorkflowNodeCatalog } from '../../packages/core/src/workflow/node-catalog';
@@ -178,10 +182,9 @@ beforeEach(() => {
   mockRunChatCompletion.mockResolvedValue('OK');
   mockCreateComposeDraft.mockReturnValue(42);
   mockSendWorkflowForwardCopy.mockResolvedValue({ ok: true });
-  mockAssertWorkflowHttpUrlAllowed.mockResolvedValue({ ok: true });
+  mockAssertWorkflowHttpUrlAllowed.mockResolvedValue({ ok: true, addresses: ['93.184.216.34'] });
   mockDbRun.mockReturnValue({ lastInsertRowid: 99 });
-  mockFetch.mockResolvedValue({ ok: true, status: 200, text: async () => 'OK' });
-  (globalThis as { fetch: unknown }).fetch = mockFetch;
+  mockSendWorkflowHttpRequest.mockResolvedValue({ ok: true, status: 200, text: async () => 'OK' });
 });
 
 describe('Interpolations-Inventar (Schema-Flag interpolate:true)', () => {
@@ -317,10 +320,12 @@ describe('Pre-Pass löst {{Platzhalter}} vor execute() auf (echter Interpreter)'
       'https://api.example.com/hook?betreff=Frage zu Bestellung 1234',
       '',
     );
-    const [url, init] = mockFetch.mock.calls[0]! as unknown as [string, { method: string; body?: string }];
-    expect(url).toBe('https://api.example.com/hook?betreff=Frage zu Bestellung 1234');
-    expect(init.method).toBe('POST');
-    expect(init.body).toBe('{"betreff":"Frage zu Bestellung 1234"}');
+    const [request] = mockSendWorkflowHttpRequest.mock.calls[0]! as unknown as [
+      { url: string; method: string; body?: string },
+    ];
+    expect(request.url).toBe('https://api.example.com/hook?betreff=Frage zu Bestellung 1234');
+    expect(request.method).toBe('POST');
+    expect(request.body).toBe('{"betreff":"Frage zu Bestellung 1234"}');
   });
 
   test('ai.agent: systemPrompt erreicht die KI mit aufgelöstem {{subject}}', async () => {
@@ -347,6 +352,6 @@ describe('Pre-Pass löst {{Platzhalter}} vor execute() auf (echter Interpreter)'
       .map((c) => c[0] as { nodeType: string; status: string; message: string | null })
       .find((s) => s.nodeType === 'mssql.query');
     expect(step?.status).toBe('error');
-    expect(step?.message).toBe('Query muss mit SELECT beginnen');
+    expect(step?.message).toBe('Query muss mit SELECT oder WITH beginnen');
   });
 });

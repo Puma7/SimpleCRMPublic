@@ -15,7 +15,12 @@ import {
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import type { MailVacationAutoReplyJobPort } from './jobs';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
-import { resolveConfiguredSmtpHost, SMTP_HOST_MISSING_ERROR } from '@simplecrm/core';
+import {
+  AUTO_REPLY_NOREPLY_RE,
+  isUnsafeAutoReplyTarget,
+  resolveConfiguredSmtpHost,
+  SMTP_HOST_MISSING_ERROR,
+} from '@simplecrm/core';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -467,10 +472,13 @@ async function planVacationAutoReply(input: {
   if (!account.vacationEnabled) return { ok: false };
   if (message.uid < 0 && !message.pop3Uidl) return { ok: false };
   if (!messageIsVacationEligible(message)) return { ok: false };
-  if (isAutoSubmitted(message.rawHeaders)) return { ok: false };
+  // Same loop guard as the workflow auto-replies: value-based RFC 3834
+  // headers, mailing lists (RFC 2369) and automated sender addresses.
+  if (isUnsafeAutoReplyTarget(message.rawHeaders)) return { ok: false };
 
   const sender = extractSenderEmail(message.fromJson);
   if (!sender || sender === account.emailAddress.trim().toLowerCase()) return { ok: false };
+  if (AUTO_REPLY_NOREPLY_RE.test(sender)) return { ok: false };
 
   const keys = [
     vacationSentKey(account.id, sender),
@@ -788,14 +796,6 @@ function messageIsVacationEligible(message: VacationMessage): boolean {
   if (message.spamScoreLabel === 'spam' || message.spamScoreLabel === 'review') return false;
   if (message.archived || message.softDeleted) return false;
   return message.folderKind === 'inbox';
-}
-
-function isAutoSubmitted(rawHeaders: string | null): boolean {
-  const headers = (rawHeaders ?? '').toLowerCase();
-  return headers.includes('auto-submitted:')
-    || headers.includes('x-auto-response-suppress:')
-    || headers.includes('precedence: bulk')
-    || headers.includes('precedence: junk');
 }
 
 function vacationSentKey(accountId: number, sender: string): string {

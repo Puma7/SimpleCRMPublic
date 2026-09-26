@@ -27,8 +27,13 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Set these in `docker/.env`:
 
-- `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles.
+- `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles
+  (backup, doctor, and the restore drill's create/drop of its temporary database).
 - `PG_PASSWORD`: strong PostgreSQL password for the non-superuser `simplecrm_app` role used by API and migrations.
+  The `restore` and `restore-drill` profiles also log in with it: `pg_restore` and the check after it run
+  as this role, never as the admin role, so SQL from a manipulated dump cannot switch back to a superuser
+  (see [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md#what-the-manifest-proves--and-what-it-does-not)).
+  Only restore backups you trust.
 - `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes. **Generate it, do not
   invent it** — a base64-encoded passphrase decodes to 32 bytes just as well and is
   guessable. A key that looks like text or repeats itself is warned about, and refused
@@ -105,12 +110,20 @@ For a real domain, use:
 curl -fsS https://crm.example.com/health
 ```
 
+For any `PUBLIC_DOMAIN` other than `localhost`/`127.0.0.1`, Caddy sends
+`Strict-Transport-Security: max-age=31536000` (HSTS, one year). After the first HTTPS visit a
+browser refuses plain `http://` for that host, which closes the first-visit SSL-stripping gap.
+Only point `PUBLIC_DOMAIN` at a host that will keep serving HTTPS. `includeSubDomains` and
+`preload` are deliberately not set: they would also force HTTPS on your other subdomains or put
+the domain on the browsers' preload list. Add them in `docker/Caddyfile` only if every subdomain
+serves HTTPS. `localhost` is excluded because browsers apply HSTS to every port of a host, so a
+local smoke test would otherwise lock other local `http://localhost` services.
+
 ## Optional Profiles
 
 The standard stack intentionally starts only Caddy, API, migrations, and PostgreSQL. The optional services from the implementation plan are opt-in:
 
 ```sh
-docker compose --profile minio up -d minio
 docker compose --profile monitor up -d monitor
 docker compose --profile pgadmin up -d pgadmin
 docker compose --profile geoip up -d geoip-updater
@@ -118,13 +131,22 @@ docker compose --profile geoip up -d geoip-updater
 
 Profiles:
 
-- `minio`: S3-compatible storage drill for future attachment growth. Console defaults to `http://127.0.0.1:9001`.
 - `monitor`: Uptime Kuma on `http://127.0.0.1:3001`.
 - `pgadmin`: pgAdmin on `http://127.0.0.1:5050` for setup/debug only. Never expose this publicly.
 - `geoip`: updates local MaxMind GeoLite2 Country and ASN MMDB files once the MaxMind account ID
   and license key are set in the ignored `docker/.env.geoip` file. Create it with
   `cp .env.geoip.example .env.geoip`. The updater alone receives those credentials; the API
   reads the resulting volume only at `/var/lib/simplecrm/geoip`.
+
+There is no `minio` profile any more: the `minio/minio` image is no longer published on Docker
+Hub, so the profile could not be pulled. SimpleCRM keeps attachments in the `attachments` volume
+and has no S3 backend. If you need S3-compatible object storage, for example as an off-host
+target for copies of the `backups` volume or to try out a later attachment backend, use an
+external S3-compatible service (managed, or an instance you run and patch outside this stack).
+The API does not talk to it, so nothing in `docker/.env` changes. An installation that used the
+old profile still has a `minio` container and a `minio_data` volume: Compose reports the
+container as an orphan; remove it with `docker rm -f <project>-minio-1` and delete the volume
+with `docker volume rm <project>_minio_data` once you have copied out what you still need.
 
 The profile ports bind to `127.0.0.1` by default. Change the bind variables only behind a firewall or private VPN, and replace every `CHANGE_ME` profile password before starting the service.
 
@@ -143,14 +165,57 @@ health probes, OpenAPI and the
 WebSocket event stream to the `api` service. Open `PUBLIC_BASE_URL` in a browser;
 because the bundle is served by the server itself, it talks to the same origin
 automatically (no `?serverUrl=` query and no extra `CORS_ALLOWED_ORIGINS` entry
-needed for the served app).
+needed for the served app). The served app ignores a `?serverUrl=` pointing to another
+origin and drops a foreign server URL an older build stored in the browser; the login page
+offers "Server-Verbindung zurücksetzen" to clear the stored connection.
 
 Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
-bearer-like tracking tokens. Keep this rule when replacing the bundled proxy. Configure
-`TRUST_PROXY` only for known proxy hops; IP-based classification and abuse limits use the
-resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
+bearer-like tracking tokens. It also redacts the other bearer-like secrets before a line is
+written: the access token the event stream sends as WebSocket subprotocol
+(`Sec-WebSocket-Protocol`, request and response) and invitation tokens in
+`/api/v1/auth/invitations/<token>` and `/login?invite=<token>`; the API redacts invitation
+tokens in its own request log as well. Keep these rules when replacing the bundled proxy. Configure
+`TRUST_PROXY` only for trusted proxy addresses (see "Reverse proxy trust and upgrades" below);
+IP-based classification and abuse limits use the resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
 the legal basis, HTTPS privacy notice and retention choices under the e-mail settings. See
 [EMAIL_EVIDENCE_TRACKING.md](EMAIL_EVIDENCE_TRACKING.md).
+
+### Reverse proxy trust and upgrades
+
+The bundled Compose stack trusts only Caddy's fixed address
+(`CADDY_PROXY_IP=172.31.255.2`) on a dedicated proxy network
+(`PROXY_SUBNET=172.31.255.0/29`). Automatic allocation uses only
+`PROXY_DYNAMIC_RANGE=172.31.255.4/30`, leaving Caddy's address free even when the
+API starts first. Keep the API port unpublished. Caddy replaces
+untrusted incoming forwarding headers by default. Other services stay on the
+default network; the API connects to both networks.
+
+Before upgrading, remove the old `TRUST_PROXY=1` from `docker/.env`. Compose then
+uses Caddy's address automatically. Numeric hop counts are rejected at startup
+because different network paths can bypass them; `docker/update.sh` stops before
+rebuilding anything while such a value is still set. Recreate the stack with
+`docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --build`
+so the new network configuration takes effect. This does not remove data volumes.
+If the default proxy subnet overlaps your LAN, VPN or existing Docker networks,
+choose a free private subnet and change `PROXY_SUBNET`, `PROXY_DYNAMIC_RANGE`
+and `CADDY_PROXY_IP` to matching values before starting. The dynamic range must
+be inside the subnet and must not contain Caddy's address. For example, use
+`10.254.254.0/29`, `10.254.254.4/30` and `10.254.254.2`. For multiple stacks, use a different subnet
+for each stack.
+
+For your own Caddy, nginx, Traefik or other reverse proxy, set `TRUST_PROXY` to
+the IPs/CIDRs from which the API actually receives proxy connections, for example
+`TRUST_PROXY=192.0.2.10,2001:db8::10` (replace these documentation addresses).
+With multiple proxy layers, configure trusted upstreams and forwarding header
+handling at each proxy. Prefer exact proxy addresses or a dedicated proxy
+subnet; do not trust a whole company LAN whose clients can reach the API.
+Restrict API access to the proxies at the network/firewall layer.
+
+For direct API access use `TRUST_PROXY=false` (also the default outside Compose;
+`0` is accepted). `true` retains compatibility but trusts every peer and should
+not be used on an API reachable by untrusted clients. After changing a proxy,
+verify that two clients have distinct addresses and that client-supplied
+`X-Forwarded-For` cannot replace their observed addresses.
 
 On first start the app runs the initial setup flow, which calls:
 
@@ -167,6 +232,35 @@ curl -fsS -X POST "$PUBLIC_BASE_URL/api/v1/auth/initial-setup" \
   -H "X-Initial-Setup-Token: $INITIAL_SETUP_TOKEN" \
   -d '{"email":"owner@example.com","password":"change-me-min-12-chars","workspaceName":"Acme"}'
 ```
+
+## JTL-Wawi / MSSQL Connection (Optional)
+
+Owners and admins configure the MSSQL connection to the JTL-Wawi database in the app under
+**Einstellungen**; the password is kept in the encrypted secret store. The same login is used by
+the JTL sync, the workflow nodes `mssql.query` and `jtl.order_context`, and "JTL Auftrag
+erstellen" on the deal page.
+
+- **Use a read-only login.** Give it only the `db_datareader` role on the JTL database: no
+  `db_datawriter`, no `db_ddladmin` or `db_owner`, no server role such as `sysadmin`, never
+  `sa`. `mssql.query` checks that a query is read-only (`SELECT`/`WITH`), but that is a text
+  filter; the database permissions are the boundary that still holds if a statement gets past it.
+
+  ```sql
+  CREATE LOGIN simplecrm_read WITH PASSWORD = '<strong password>';
+  USE eazybusiness; -- your JTL database
+  CREATE USER simplecrm_read FOR LOGIN simplecrm_read;
+  ALTER ROLE db_datareader ADD MEMBER simplecrm_read;
+  ```
+
+- **Dry runs read live.** On the server, `mssql.query` ("MSSQL (Read-only)") and
+  `jtl.order_context` ("JTL Bestell-Kontext") also run in a workflow dry run ("Dry-Run testen")
+  and query the real JTL database, so the preview shows real rows; other side effects are only
+  simulated. The desktop edition simulates `mssql.query` in a dry run.
+- **Exception "JTL Auftrag erstellen":** creating a JTL order from a deal writes into the
+  `Verkauf` order tables and runs `Verkauf.spAuftragEckdatenBerechnen`, so it fails with a pure
+  `db_datareader` login. If you need it, grant only the permissions it requires (never
+  `db_owner`, `sysadmin` or `sa`) and keep in mind that `mssql.query`, including dry runs, then
+  runs with those permissions too.
 
 ## Server Doctor
 
@@ -186,7 +280,9 @@ docker compose exec api node packages/server/dist/cli/doctor.js --no-color
 ```
 
 The API container already has `DATABASE_URL`; it does not mount the backup volume, so omit
-`--backup-dir` there. For a host installation after building packages, use:
+`--backup-dir` there. The same holds for the admin diagnosis in the app: it deliberately reports the
+backup check as a warning, because the API is not meant to read dumps (see
+[BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md#check-backups)). For a host installation after building packages, use:
 
 ```sh
 pnpm run build:packages
@@ -251,8 +347,34 @@ If you prefer to drive it yourself (rebuild `caddy` too — it contains the web 
 cd docker
 docker compose build api migrate caddy
 docker compose run --rm migrate          # apply pending migrations first
+docker compose stop api
+# one-time after the switch to the non-root API image, see below; a no-op later
+docker compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+  --entrypoint sh api -c 'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
 docker compose up -d
 ```
+
+### Non-root API container
+
+The `api` image (also used by `migrate`) runs as the unprivileged `node` user (uid 1000) of the
+Node base image, with `no-new-privileges` and all Linux capabilities dropped. Its writable volumes
+(`attachments`, `audit_archives`, `server_logs`) must therefore belong to uid 1000. Fresh volumes
+get that owner from the image. Volumes of an existing installation were written by the earlier
+root-run image: `docker/update.sh` hands them over right after stopping the old API (only entries
+with another owner are changed, so later runs are a cheap no-op), and `restore-compose.sh` does the
+same after unpacking a backup, because the restore service extracts archives as root. If you update
+with the manual steps above, run the `chown` step once before starting the new API — otherwise the
+API cannot write attachments or its log file.
+
+The SMTP relay (`docker-compose.relay.yml`) now reads its TLS key as uid 1000 too: make
+`relay-tls/key.pem` readable for that user (for example `chown 1000 relay-tls/key.pem`), otherwise
+the API logs `[smtp-relay] TLS key/cert could not be read` and does not start the relay. Binding
+587/465 without capabilities relies on `net.ipv4.ip_unprivileged_port_start=0`, which the relay
+override sets.
+
+Image tags: the stack follows fixed release lines instead of `latest` — `postgres:18-alpine`,
+`caddy:2` and `node:24`/`node:24-alpine` (image builds), `louislam/uptime-kuma:1` (`monitor`) and
+`dpage/pgadmin4:9` (`pgadmin`); `geoip-updater` is pinned by digest.
 
 ### "Checksum mismatch for server migration ..."
 
@@ -277,7 +399,6 @@ Data lives in Docker volumes:
 - `audit_archives`
 - `caddy_logs`
 - `backups`
-- `minio_data` when the `minio` profile is used
 - `uptime_kuma_data` when the `monitor` profile is used
 - `pgadmin_data` when the `pgadmin` profile is used
 

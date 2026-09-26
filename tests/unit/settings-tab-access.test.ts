@@ -26,6 +26,15 @@ describe('settings tab access', () => {
     expect(isSettingsTabAvailable({ adminOnly: true }, { ...personal, isAdmin: true })).toBe(false);
   });
 
+  // F-A7b-01: Im Desktop sah jede lokale Rolle Export und Backup, deren IPC jetzt Owner/Admin verlangt.
+  test('desktop admin-only tabs are hidden from non-admin desktop roles only', () => {
+    const desktopAgent = { serverClientMode: false, personalOnly: false, isAdmin: false };
+    expect(isSettingsTabAvailable({ desktopAdminOnly: true }, desktopAgent)).toBe(false);
+    expect(isSettingsTabAvailable({ desktopAdminOnly: true }, { ...desktopAgent, isAdmin: true })).toBe(true);
+    // Der Server regelt denselben Tab ueber die Mail-ACL, nicht ueber die Rolle.
+    expect(isSettingsTabAvailable({ desktopAdminOnly: true }, server)).toBe(true);
+  });
+
   test('server-only tabs stay hidden in standalone electron', () => {
     const desktop = { serverClientMode: false, personalOnly: false, isAdmin: true };
     expect(isSettingsTabAvailable({ serverOnly: true }, desktop)).toBe(false);

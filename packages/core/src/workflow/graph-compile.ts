@@ -143,6 +143,51 @@ function outgoingEdges(edges: WorkflowGraphEdge[], sourceId: string): WorkflowGr
   return coreOutgoing(edges, sourceId);
 }
 
+/**
+ * Jeder Pfad durch eine Bedingung mit getrennten Ja-/Nein-Zielen wird eine
+ * eigene Regel. Laufen die Zweige wieder zusammen, ergeben n Bedingungen 2^n
+ * Regeln (20 Ebenen: rund 1 Mio. Regeln und Sekunden im Event-Loop, C-A82).
+ * Das Budget bricht solche Graphen mit einem klaren Fehler ab; die
+ * mitgelieferten Vorlagen brauchen hoechstens zwei Regeln.
+ */
+const MAX_COMPILED_RULES = 2000;
+const MAX_COMPILE_WALK_STEPS = 200_000;
+const GRAPH_TOO_COMPLEX_MESSAGE =
+  `Workflow-Graph zu komplex: zu viele Verzweigungspfade (höchstens ${MAX_COMPILED_RULES} Regeln). `
+  + 'Bitte Bedingungen zusammenfassen oder den Workflow aufteilen.';
+
+type CompileWalk = {
+  outgoing: (sourceId: string) => WorkflowGraphEdge[];
+  steps: number;
+};
+
+/** Kanten einmal je Quelle gruppiert, damit ein Schritt nicht alle Kanten durchsucht. */
+function createCompileWalk(edges: WorkflowGraphEdge[]): CompileWalk {
+  const bySource = new Map<string, WorkflowGraphEdge[]>();
+  for (const edge of edges) {
+    const list = bySource.get(edge.source);
+    if (list) list.push(edge);
+    else bySource.set(edge.source, [edge]);
+  }
+  const cache = new Map<string, WorkflowGraphEdge[]>();
+  return {
+    steps: 0,
+    outgoing: (sourceId) => {
+      let outs = cache.get(sourceId);
+      if (!outs) {
+        outs = outgoingEdges(bySource.get(sourceId) ?? [], sourceId);
+        cache.set(sourceId, outs);
+      }
+      return outs;
+    },
+  };
+}
+
+function spendCompileSteps(walk: CompileWalk, steps: number): void {
+  walk.steps += steps;
+  if (walk.steps > MAX_COMPILE_WALK_STEPS) throw new Error(GRAPH_TOO_COMPLEX_MESSAGE);
+}
+
 function edgeIsYes(edge: WorkflowGraphEdge): boolean {
   const label = (edge.label ?? '').toLowerCase();
   return !label || label === 'yes' || label === 'ja' || label === 'true';
@@ -175,12 +220,14 @@ type CompileState = {
 function walkFrom(
   nodeId: string,
   nodesById: Map<string, WorkflowGraphNode>,
-  edges: WorkflowGraphEdge[],
+  walk: CompileWalk,
   state: CompileState,
   visited: Set<string>,
   rules: WorkflowRule[],
 ): void {
   let currentId: string | undefined = nodeId;
+  // Jeder Zweig kopiert die Pfadmenge; das zaehlt mit ins Budget.
+  spendCompileSteps(walk, visited.size + 1);
   const localVisited = new Set(visited);
 
   while (currentId && !localVisited.has(currentId)) {
@@ -190,7 +237,8 @@ function walkFrom(
 
     if (node.type === 'condition' && isConditionData(node.data)) {
       const condition = conditionFromNode(node.data);
-      const outs = outgoingEdges(edges, currentId);
+      const outs = walk.outgoing(currentId);
+      spendCompileSteps(walk, 1 + outs.length);
       let yesEdge = outs.find((edge) => edgeIsYes(edge));
       let noEdge = outs.find((edge) => edgeIsNo(edge));
       if (outs.length >= 2 && !noEdge) {
@@ -202,7 +250,7 @@ function walkFrom(
         walkFrom(
           yesEdge.target,
           nodesById,
-          edges,
+          walk,
           { conditions: [...state.conditions, condition], then: [] },
           new Set(localVisited),
           rules,
@@ -210,7 +258,7 @@ function walkFrom(
         walkFrom(
           noEdge.target,
           nodesById,
-          edges,
+          walk,
           { conditions: [...state.conditions, invertConditionItem(condition)], then: [] },
           new Set(localVisited),
           rules,
@@ -237,7 +285,8 @@ function walkFrom(
       }
     }
 
-    const outs = outgoingEdges(edges, currentId);
+    const outs = walk.outgoing(currentId);
+    spendCompileSteps(walk, 1 + outs.length);
     if (outs.length === 0) break;
     currentId = pickEdge(outs, 'ok')?.target
       ?? (outs.find((edge) => edgeIsYes(edge)) ?? outs[0])?.target;
@@ -249,14 +298,19 @@ function walkFrom(
 function flushRule(state: CompileState, rules: WorkflowRule[]): void {
   if (state.then.length === 0 && state.conditions.length === 0) return;
   if (state.conditions.length === 0) {
-    rules.push({ when: null, then: [...state.then] });
+    pushRule(rules, { when: null, then: [...state.then] });
     return;
   }
   const when =
     state.conditions.length === 1
         ? state.conditions[0]!
         : { all: state.conditions };
-  rules.push({ when: when as WorkflowRule['when'], then: [...state.then] });
+  pushRule(rules, { when: when as WorkflowRule['when'], then: [...state.then] });
+}
+
+function pushRule(rules: WorkflowRule[], rule: WorkflowRule): void {
+  if (rules.length >= MAX_COMPILED_RULES) throw new Error(GRAPH_TOO_COMPLEX_MESSAGE);
+  rules.push(rule);
 }
 
 export function compileGraphToDefinition(document: WorkflowGraphDocument): WorkflowDefinitionV1 {
@@ -272,8 +326,9 @@ export function compileGraphToDefinition(document: WorkflowGraphDocument): Workf
   }
 
   const rules: WorkflowRule[] = [];
+  const walk = createCompileWalk(document.edges);
   for (const edge of outs) {
-    walkFrom(edge.target, nodesById, document.edges, { conditions: [], then: [] }, new Set(), rules);
+    walkFrom(edge.target, nodesById, walk, { conditions: [], then: [] }, new Set(), rules);
   }
 
   return { version: 1, rules };

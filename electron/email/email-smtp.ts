@@ -4,11 +4,14 @@ import { resolveConfiguredSmtpHost, SMTP_HOST_MISSING_ERROR } from '@simplecrm/c
 import { getEmailAccountById } from './email-store';
 import { getEmailPassword } from './email-keytar';
 import { resolveImapAuth } from './email-imap-auth';
+import { SmtpDeliveryAmbiguousError } from './email-smtp-errors';
 
 export async function testSmtpConnection(input: {
   host: string;
   port: number;
   secure: boolean;
+  /** Account TLS switch; without implicit TLS it requires STARTTLS (as sendSmtpForAccount). Default true. */
+  tls?: boolean;
   user: string;
   pass?: string;
   accessToken?: string;
@@ -20,10 +23,14 @@ export async function testSmtpConnection(input: {
     ? { type: 'OAuth2', user: input.user, accessToken: input.accessToken }
     : { user: input.user, pass: input.pass ?? '' };
 
+  // STARTTLS must not stay opportunistic: a stripped EHLO would otherwise
+  // send the stored password in clear text.
+  const requireTLS = !input.secure && (input.tls ?? true);
   const transporter = nodemailer.createTransport({
     host,
     port: input.port,
     secure: input.secure,
+    requireTLS,
     auth,
   });
   try {
@@ -84,6 +91,11 @@ export async function sendSmtpForAccount(
     requestReadReceipt?: boolean;
     /** Extra RFC5322 headers (merged with built-in headers). */
     headers?: Record<string, string>;
+    /**
+     * Complete RFC 5322 message sent as-is (e.g. multipart/report MDN); the
+     * other content fields then only describe the envelope.
+     */
+    raw?: Buffer;
   },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
@@ -96,6 +108,13 @@ export async function sendSmtpForAccount(
   const secure = useTls && port === 465;
   const requireTLS = useTls && port !== 465;
 
+  // nodemailer logs `tnx: 'message'` once the complete DATA stream (incl. the
+  // terminating dot) was written. A failure after that point without an
+  // explicit reply to the message leaves the delivery outcome unknown.
+  let messageBodySubmitted = false;
+  const markBodySubmitted = (entry: unknown) => {
+    if ((entry as { tnx?: unknown } | null)?.tnx === 'message') messageBodySubmitted = true;
+  };
   const transporter = nodemailer.createTransport({
     host,
     port,
@@ -104,28 +123,55 @@ export async function sendSmtpForAccount(
     connectionTimeout: 90_000,
     socketTimeout: 120_000,
     auth: await smtpAuthForAccount(acc),
+    logger: {
+      level: () => undefined,
+      trace: () => undefined,
+      debug: () => undefined,
+      info: markBodySubmitted,
+      warn: () => undefined,
+      error: () => undefined,
+      fatal: () => undefined,
+    },
   });
 
-  await transporter.sendMail({
-    from: mail.from,
-    to: mail.to,
-    cc: mail.cc || undefined,
-    bcc: mail.bcc || undefined,
-    subject: mail.subject,
-    text: mail.text,
-    html: mail.html,
-    encoding: 'utf-8',
-    messageId: mail.messageId,
-    inReplyTo: mail.inReplyTo,
-    references: mail.references,
-    headers: {
-      ...(mail.headers ?? {}),
-      ...(mail.requestReadReceipt ? { 'Disposition-Notification-To': mail.from } : {}),
-    },
-    attachments: mail.attachments?.map((a) => ({
-      filename: a.filename,
-      path: a.path,
-      cid: a.cid,
-    })),
-  });
+  try {
+    if (mail.raw) {
+      await transporter.sendMail({
+        envelope: {
+          from: acc.email_address,
+          to: [mail.to, mail.cc, mail.bcc].filter((value): value is string => Boolean(value?.trim())),
+        },
+        raw: mail.raw,
+      });
+      return;
+    }
+    await transporter.sendMail({
+      from: mail.from,
+      to: mail.to,
+      cc: mail.cc || undefined,
+      bcc: mail.bcc || undefined,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      encoding: 'utf-8',
+      messageId: mail.messageId,
+      inReplyTo: mail.inReplyTo,
+      references: mail.references,
+      headers: {
+        ...(mail.headers ?? {}),
+        ...(mail.requestReadReceipt ? { 'Disposition-Notification-To': mail.from } : {}),
+      },
+      attachments: mail.attachments?.map((a) => ({
+        filename: a.filename,
+        path: a.path,
+        cid: a.cid,
+      })),
+    });
+  } catch (error) {
+    // EMESSAGE = explicit 4xx/5xx reply to the message: not accepted, not ambiguous.
+    if (messageBodySubmitted && (error as { code?: unknown } | null)?.code !== 'EMESSAGE') {
+      throw new SmtpDeliveryAmbiguousError(error instanceof Error ? error.message : String(error));
+    }
+    throw error;
+  }
 }

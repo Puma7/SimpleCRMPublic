@@ -132,6 +132,12 @@ export function registerEmailNodes(register: Reg): void {
       const { row, messageId } = requireMessage(ctx);
       const to = String(config.to ?? '').trim();
       if (!to) return { status: 'skipped' };
+      // Anti-Loop: eine zurückkommende Weiterleitungskopie ist eine neue
+      // Nachricht und fällt nicht unter die Dedup-Tabelle (message, workflow, dest).
+      const { isAutoForwardedMessage } = await import('../../email/email-automation-headers.js');
+      if (isAutoForwardedMessage(row.raw_headers)) {
+        return { status: 'skipped', message: 'skip:auto_forwarded_source' };
+      }
       if (ctx.dryRun) return { status: 'ok', message: `dry-run forward ${to}` };
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');
@@ -184,16 +190,22 @@ export function registerEmailNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { bodyPrefix: '' },
     execute: async (ctx, config) => {
-      const { row } = requireMessage(ctx);
+      const { row, messageId } = requireMessage(ctx);
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run draft' };
-      const { createComposeDraft } = await import('../../email/email-store.js');
+      const { createComposeDraft, updateComposeDraft } = await import('../../email/email-store.js');
+      const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse.js');
       const prefix = String(config.bodyPrefix ?? '');
       const body = `${prefix}\n\n---\n${ctx.strings.combined_text}`.trim();
+      // Antwort an Reply-To bzw. Absender, verknuepft wie bei ai.agent — sonst
+      // kann email.send_draft den Entwurf nie verschicken (kein Empfaenger).
+      const toJson = recipientJsonFromField(primaryReplyRecipient(row));
       const id = createComposeDraft({
         accountId: row.account_id,
         subject: row.subject?.startsWith('Re:') ? row.subject : `Re: ${row.subject ?? ''}`,
         bodyText: body,
+        ...(toJson ? { toJson } : {}),
       });
+      updateComposeDraft(id, { replyParentMessageId: messageId });
       return { status: 'ok', variables: { 'draft.id': id } };
     },
   });

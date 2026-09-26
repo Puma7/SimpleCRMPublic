@@ -73,6 +73,42 @@ describe('server mail job provenance', () => {
     ]);
   });
 
+  // F-D3-01: a sync only needs mail.metadata.read since a3cf44a. Carrying the
+  // clicking user into the follow-ups made spam/security scoring, inbound
+  // workflows, vacation replies and reply suggestions fail authorization for
+  // every profile without triage/draft/send, and those messages were never
+  // processed again. The follow-ups process new arrivals the scheduler would
+  // process anyway, so they always run as the trusted service.
+  test('post-sync follow-ups of a user-initiated sync still run with trusted service provenance', async () => {
+    const enqueued: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const postProcess = createPostgresMailSyncPostProcessor({
+      db: makePostSyncDb([31]),
+      applyWorkspaceSession: async () => undefined,
+      jobQueue: {
+        async enqueue(input) {
+          enqueued.push(input as { type: string; payload: Record<string, unknown> });
+          return undefined;
+        },
+      },
+    });
+
+    await postProcess.afterSync({
+      workspaceId: WORKSPACE_ID,
+      accountId: 7,
+      protocol: 'imap',
+      actorUserId: USER_ID,
+      syncStartedAt: new Date('2026-07-19T10:00:00.000Z'),
+      syncFinishedAt: new Date('2026-07-19T10:01:00.000Z'),
+      result: { inboundMessageIds: [31] },
+    });
+
+    expect(enqueued.map((item) => item.type)).toEqual(['mail.spam.score', 'ai.reply_suggestion', 'mail.vacation.auto_reply']);
+    for (const item of enqueued) {
+      expect(item.payload[TRUSTED_SERVICE_JOB_MARKER_FIELD]).toEqual(expect.stringMatching(/^simplecrm:trusted-service:/));
+      expect(item.payload).not.toHaveProperty('actorUserId');
+    }
+  });
+
   test('inbound workflow system producer stamps queued workflow executions with trusted service provenance', async () => {
     const enqueued: unknown[] = [];
     await enqueueInboundWorkflowsAfterSpam(

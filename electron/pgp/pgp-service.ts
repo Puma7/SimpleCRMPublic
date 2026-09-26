@@ -1,4 +1,10 @@
 import { randomUUID } from 'crypto';
+import {
+  MAX_INBOUND_RFC822_BYTES,
+  PGP_SIGNED_PARTIAL_STATUS,
+  extractArmoredPgpSignedMessage,
+  pgpCleartextSignatureCoversMessage,
+} from '@simplecrm/core';
 import { getDb } from '../sqlite-service';
 import { PGP_IDENTITIES_TABLE, PGP_PEER_KEYS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { LOCAL_OWNER_USER_ID } from '../mail-roadmap-migrations';
@@ -19,6 +25,13 @@ function loadOpenPgp(): Promise<OpenPgpModule> {
   openPgpPromise ??= import('openpgp');
   return openPgpPromise;
 }
+
+/**
+ * openpgp inflates compressed data packets without limit by default, so a small
+ * ciphertext could expand to gigabytes in the main process. No decrypted
+ * plaintext needs to be larger than the largest inbound mail we accept.
+ */
+const PGP_DECRYPT_CONFIG = { maxDecompressedMessageSize: MAX_INBOUND_RFC822_BYTES };
 
 /** Keys trusted for outbound encryption (manual import counts as explicit trust). */
 const ENCRYPT_TRUST_LEVELS = "('verified', 'tofu', 'imported')";
@@ -45,6 +58,26 @@ export async function listPgpIdentities(userId: string = LOCAL_OWNER_USER_ID) {
     .all(userId);
 }
 
+/**
+ * E-mail of the key's primary user id (fallback: first user id with an e-mail).
+ * `user.userID` is a UserIDPacket object, not a string.
+ */
+async function peerKeyEmail(key: OpenPgpPublicKey): Promise<string | null> {
+  const normalize = (value: string | undefined) => value?.trim().toLowerCase() || null;
+  try {
+    const { user } = await key.getPrimaryUser();
+    const email = normalize(user.userID?.email);
+    if (email) return email;
+  } catch {
+    // No valid primary user self-signature: fall back to the raw user ids.
+  }
+  for (const user of key.users) {
+    const email = normalize(user.userID?.email);
+    if (email) return email;
+  }
+  return null;
+}
+
 export async function importPublicKeyArmored(
   armor: string,
   userId: string = LOCAL_OWNER_USER_ID,
@@ -53,12 +86,14 @@ export async function importPublicKeyArmored(
   const openpgp = await loadOpenPgp();
   const key = await openpgp.readKey({ armoredKey: armor });
   const fp = key.getFingerprint().toLowerCase();
+  const email = await peerKeyEmail(key);
+  if (!email) throw new Error('Der Schlüssel enthält keine E-Mail-Adresse in der User-ID.');
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   db.prepare(
     `INSERT OR REPLACE INTO ${PGP_PEER_KEYS_TABLE} (email, fingerprint, public_key_armor, source, trust_level)
      VALUES (?, ?, ?, ?, 'imported')`,
-  ).run(String(key.users[0]?.userID ?? 'unknown'), fp, armor, source);
+  ).run(email, fp, armor, source);
   return { fingerprint: fp };
 }
 
@@ -150,6 +185,7 @@ export async function decryptMessageBody(
   const { data } = await openpgp.decrypt({
     message,
     decryptionKeys: decryptedKey,
+    config: PGP_DECRYPT_CONFIG,
   });
   const text = typeof data === 'string' ? data : new TextDecoder().decode(data as Uint8Array);
   return { text, status: 'decrypted' };
@@ -251,12 +287,15 @@ export async function verifySignedMessage(
     from_json: string | null;
   };
   if (!row) throw new Error('Nachricht nicht gefunden');
-  const armored =
+  // Only the signed block itself is verified; text after it is not covered by
+  // the signature and is checked separately below.
+  const armored = extractArmoredPgpSignedMessage(
     (row.body_text ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
-      ? row.body_text!
+      ? row.body_text
       : (row.body_html ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
-        ? row.body_html!
-        : null;
+        ? row.body_html
+        : null,
+  );
   if (!armored) throw new Error('Keine signierte PGP-Nachricht');
   let senderEmail = '';
   try {
@@ -282,16 +321,22 @@ export async function verifySignedMessage(
   const verificationKeys = await Promise.all(
     peers.map((p) => openpgp.readKey({ armoredKey: p.public_key_armor })),
   );
-  const message = await openpgp.readMessage({ armoredMessage: armored });
+  // Cleartext signatures ('BEGIN PGP SIGNED MESSAGE') need readCleartextMessage (as on the server).
+  const message = await openpgp.readCleartextMessage({ cleartextMessage: armored });
   const verification = await openpgp.verify({ message, verificationKeys });
   const sig0 = verification.signatures[0];
   let valid = false;
   let fp: string | undefined;
   if (sig0) {
+    // The signature carries a 16-hex key id (possibly of a subkey); map it to the
+    // peer key that contains it and report that key's full fingerprint.
+    const matchedIndex = verificationKeys.findIndex((key) => key.getKeys(sig0.keyID).length > 0);
+    fp = matchedIndex >= 0
+      ? peers[matchedIndex].fingerprint?.toLowerCase()
+      : sig0.keyID?.toHex?.()?.toLowerCase();
     try {
       await sig0.verified;
       valid = true;
-      fp = sig0.keyID?.toHex?.()?.toLowerCase();
     } catch {
       valid = false;
     }
@@ -308,6 +353,17 @@ export async function verifySignedMessage(
         : 'signed_unknown_key';
     }
   }
+  if (valid && !pgpCleartextSignatureCoversMessage({
+    bodyText: row.body_text,
+    bodyHtml: row.body_html,
+    armoredBlock: armored,
+    signedText: message.getText(),
+  })) {
+    // Unsigned text after the block (or a differing HTML part) would otherwise
+    // be shown under the sender's valid signature.
+    valid = false;
+    status = PGP_SIGNED_PARTIAL_STATUS;
+  }
   db.prepare(
     `UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ?, pgp_signer_fingerprint = ? WHERE id = ?`,
   ).run(status, fp ?? null, messageId);
@@ -322,6 +378,30 @@ export function listPgpPeerKeys() {
       `SELECT id, email, fingerprint, trust_level, source, created_at FROM ${PGP_PEER_KEYS_TABLE} ORDER BY email`,
     )
     .all();
+}
+
+export type PgpPeerKeyTrustLevel = 'verified' | 'imported';
+
+/**
+ * Nach einem Fingerprint-Abgleich ausserhalb der Mail: 'verified' laesst gueltige
+ * Signaturen dieses Schluessels als vertrauenswuerdig gelten, 'imported' nimmt das
+ * zurueck. Der Schluessel bleibt in beiden Stufen fuer die Verschluesselung nutzbar.
+ */
+export function setPgpPeerKeyTrust(
+  id: number,
+  trustLevel: PgpPeerKeyTrustLevel,
+  actorUserId: string,
+): { trustLevel: PgpPeerKeyTrustLevel } {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const verified = trustLevel === 'verified';
+  const result = db
+    .prepare(
+      `UPDATE ${PGP_PEER_KEYS_TABLE} SET trust_level = ?, verified_at = ?, verified_by_user_id = ? WHERE id = ?`,
+    )
+    .run(trustLevel, verified ? new Date().toISOString() : null, verified ? actorUserId : null, id);
+  if (result.changes === 0) throw new Error('PGP-Schlüssel nicht gefunden');
+  return { trustLevel };
 }
 
 export function deletePgpPeerKey(id: number): void {

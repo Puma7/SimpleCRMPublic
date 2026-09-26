@@ -18,7 +18,7 @@ import type {
   AuthUserRecord,
   TokenPair,
 } from '../api';
-import { expandUserGroupCapabilities, isForbiddenUserMutation } from '../api/capabilities';
+import { expandUserGroupCapabilities, isForbiddenUserMutation, isTargetMorePrivileged } from '../api/capabilities';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
@@ -31,6 +31,9 @@ export const DEFAULT_INVITATION_TTL_DAYS = 7;
 export const MAX_INVITATION_TTL_DAYS = 30;
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_DAYS = 30;
+// A rotated refresh token presented again within this window is a lost response
+// or a parallel tab and is only rejected; later it is treated as stolen.
+export const REFRESH_TOKEN_REUSE_GRACE_MS = 60_000;
 const INITIAL_OWNER_SETUP_LOCK_KEY = 'simplecrm.initial_owner_setup';
 const AUTH_INVITATION_EMAIL_LOCK_PREFIX = 'simplecrm.auth_invitation.email';
 
@@ -171,7 +174,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         { workspaceId: input.workspaceId, role: 'admin' },
         async (trx) => trx
           .selectFrom('users')
-          .select(['id', 'role', 'disabled_at'])
+          .select(['id', 'email', 'role', 'disabled_at'])
           .where('id', '=', input.userId)
           .executeTakeFirst(),
         { applySession: options.applyWorkspaceSession },
@@ -179,6 +182,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       if (!row) return null;
       return {
         id: row.id,
+        email: row.email,
         role: row.role,
         disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
       };
@@ -198,11 +202,10 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           if (!input.id) {
             if (!input.password) return { ok: false as const, code: 'password_required' as const };
-            // Only admins may create privileged accounts; delegated user
-            // managers (users.manage) can create ordinary users only.
-            if (isForbiddenUserMutation(input.actorIsAdmin, input.role)) {
-              return { ok: false as const, code: 'role_change_forbidden' as const };
-            }
+            // Only admins may create privileged accounts, only owners an owner;
+            // delegated user managers (users.manage) can create ordinary users only.
+            const createDenial = isForbiddenUserMutation(input.actorRole, input.role);
+            if (createDenial) return { ok: false as const, code: createDenial };
             const created = await trx
               .insertInto('users')
               .values({
@@ -235,12 +238,17 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           // Delegated user managers may edit ordinary users only — never change
           // a role, and never mutate an existing admin/owner account (e.g. reset
-          // its password or disable an owner).
-          if (isForbiddenUserMutation(input.actorIsAdmin, input.role, existing.role)) {
-            return { ok: false as const, code: 'role_change_forbidden' as const };
+          // its password or disable an owner). Admins may not touch owner
+          // accounts or grant the owner role (G3).
+          const updateDenial = isForbiddenUserMutation(input.actorRole, input.role, existing.role);
+          if (updateDenial) return { ok: false as const, code: updateDenial };
+          if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
+            return { ok: false as const, code: 'target_more_privileged' as const };
           }
 
-          const nextActive = input.isActive !== false;
+          // isActive is optional: an update that does not send it (a rename by an API
+          // client, a stale form) must not re-enable a user another admin disabled.
+          const nextActive = input.isActive ?? existing.disabled_at === null;
           if (existing.role === 'owner' && (input.role !== 'owner' || !nextActive)) {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
             if (otherOwnerCount < 1) {
@@ -254,7 +262,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               email: input.email,
               display_name: input.displayName,
               role: input.role,
-              disabled_at: input.isActive === false ? now() : null,
+              ...(input.isActive === undefined ? {} : { disabled_at: input.isActive ? null : now() }),
               updated_at: now(),
               ...(input.publicName === undefined ? {} : { public_name: input.publicName }),
               ...(input.password ? { password_hash: await hashPassword(input.password) } : {}),
@@ -273,6 +281,11 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             ])
             .executeTakeFirst();
           if (!updated) return { ok: false as const, code: 'not_found' as const };
+          // An admin password reset must lock out whoever still holds a session of
+          // this user (the admin's own session only matters on a self-reset).
+          if (input.password) {
+            await revokeUserSessions(trx, input.workspaceId, input.id, now(), input.actorSessionId);
+          }
           return { ok: true as const, user: mapAdminUser(updated) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -288,9 +301,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           if (!existing) return { ok: false as const, code: 'not_found' as const };
           // Delegated user managers (users.manage but not admin) may only delete
           // ordinary users — never an admin/owner account, whose deletion would
-          // revoke that principal's sessions. Mirrors the saveUser guard.
-          if (isForbiddenUserMutation(input.actorIsAdmin, existing.role, existing.role)) {
-            return { ok: false as const, code: 'role_change_forbidden' as const };
+          // revoke that principal's sessions; admins never an owner account.
+          // Mirrors the saveUser guard.
+          const deleteDenial = isForbiddenUserMutation(input.actorRole, existing.role, existing.role);
+          if (deleteDenial) return { ok: false as const, code: deleteDenial };
+          if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
+            return { ok: false as const, code: 'target_more_privileged' as const };
           }
           if (existing.role === 'owner') {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
@@ -334,6 +350,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             .where('id', '=', input.userId)
             .where('workspace_id', '=', input.workspaceId)
             .execute();
+          // A password change is how a user ends a compromised session, so every
+          // other session must stop working now; only the caller's own survives.
+          await revokeUserSessions(trx, input.workspaceId, input.userId, now(), input.currentSessionId);
           return { ok: true as const };
         },
         { applySession: options.applyWorkspaceSession },
@@ -421,6 +440,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         const invite = await selectInvitationByToken(trx, input.token);
         const lookup = invitationLookupResult(invite, now());
         if (!lookup.ok) return lookup;
+        // G3: Die Owner-Rolle vergibt nur ein Owner. Eine Owner-Einladung gilt deshalb nur,
+        // solange der Einladende aktiver Owner ist; das faengt auch Einladungen, die ein
+        // Admin vor G3 erstellt hat. Ohne Einladenden wird abgelehnt.
+        if (invite!.role === 'owner' && !(await isActiveOwner(trx, invite!.workspace_id, invite!.invited_by_user_id))) {
+          return { ok: false as const, code: 'owner_management_requires_owner' as const };
+        }
 
         const existingUser = await selectUserByEmail(trx, invite!.workspace_id, invite!.email);
         if (existingUser) return { ok: false as const, code: 'duplicate_email' as const };
@@ -665,13 +690,28 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           userId: input.user.id,
           role: input.user.role,
         },
-        async (trx) => issueTokenPair(
-          trx as unknown as Kysely<ServerDatabase>,
-          options.accessTokenSigner,
-          input.user,
-          input.device,
-          now(),
-        ),
+        async (trx) => {
+          if (input.expectedPasswordHash !== undefined) {
+            // FOR SHARE waits for a running password change (UPDATE users, then
+            // revokeUserSessions). Before it, the change's revocation sees this
+            // session; after it, the old hash no longer matches.
+            const current = await trx
+              .selectFrom('users')
+              .select('password_hash')
+              .where('workspace_id', '=', input.user.workspaceId)
+              .where('id', '=', input.user.id)
+              .forShare()
+              .executeTakeFirst();
+            if (!current || current.password_hash !== input.expectedPasswordHash) return null;
+          }
+          return issueTokenPair(
+            trx as unknown as Kysely<ServerDatabase>,
+            options.accessTokenSigner,
+            input.user,
+            input.device,
+            now(),
+          );
+        },
         { applySession: options.applyWorkspaceSession },
       );
     },
@@ -701,7 +741,6 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
         if (
           !existing
-          || existing.revoked_at
           || existing.disabled_at
           || toDate(existing.expires_at).getTime() <= now().getTime()
         ) {
@@ -710,6 +749,28 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         if (!verifyRefreshTokenHash(input.refreshToken, existing.token_hash)) {
           return null;
         }
+        if (existing.revoked_at) {
+          // A rotated token must never come back: whoever still holds it copied
+          // it. Revoke every session of the user, the thief's branch included.
+          if (!(await isRotatedRefreshTokenReplay(trx, existing, now()))) return null;
+          await revokeUserSessions(trx, existing.workspace_id, existing.user_id, now());
+          return { reuseDetected: true as const, userId: existing.user_id, workspaceId: existing.workspace_id };
+        }
+
+        // Serialize with a password change or admin reset (UPDATE users, then
+        // revokeUserSessions), as in issueTokenPair. Without it, a revocation
+        // that started while this rotation held its token row waited for the
+        // row, skipped it as revoked and missed the successor, which its
+        // statement snapshot could not see yet. Lock the user before the token
+        // row, otherwise the two transactions deadlock.
+        const lockedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('workspace_id', '=', existing.workspace_id)
+          .where('id', '=', existing.user_id)
+          .forShare()
+          .executeTakeFirst();
+        if (!lockedUser) return null;
 
         const revokedAt = now();
         const revokeResult = await trx
@@ -740,7 +801,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             options.accessTokenSigner,
             user,
             undefined,
-            now(),
+            revokedAt,
+            // Links the successor to its predecessor (see isRotatedRefreshTokenReplay).
+            revokedAt,
           ),
         };
       });
@@ -787,6 +850,7 @@ async function issueTokenPair(
   user: AuthUserRecord,
   device: string | undefined,
   now: Date,
+  createdAt?: Date,
 ): Promise<TokenPair> {
   const refreshToken = randomToken(REFRESH_TOKEN_BYTES);
   const expiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -799,6 +863,7 @@ async function issueTokenPair(
       token_hash: hashRefreshToken(refreshToken),
       device: device ?? null,
       expires_at: expiresAt,
+      ...(createdAt ? { created_at: createdAt } : {}),
     })
     .returning(['id'])
     .executeTakeFirst();
@@ -1020,6 +1085,50 @@ async function withCrossWorkspaceAuthTransaction<T>(
   );
 }
 
+// Reads the target's group capabilities and mail ACL bindings (direct or through
+// a group) inside the caller's mutation transaction, so the decision and the
+// write see the same memberships. The actor's own account is never "more
+// privileged" than the actor.
+async function delegatedTargetIsMorePrivileged(
+  trx: Transaction<ServerDatabase>,
+  input: Readonly<{
+    workspaceId: string;
+    actorUserId: string;
+    actorRole: 'owner' | 'admin' | 'user';
+    actorCapabilities?: readonly string[];
+  }>,
+  targetId: string,
+): Promise<boolean> {
+  if (input.actorRole !== 'user' || targetId === input.actorUserId) return false;
+  const permissionRows = await trx
+    .selectFrom('user_group_members')
+    .innerJoin('user_group_permissions', (join) => join
+      .onRef('user_group_permissions.group_id', '=', 'user_group_members.group_id')
+      .onRef('user_group_permissions.workspace_id', '=', 'user_group_members.workspace_id'))
+    .select('user_group_permissions.permission as permission')
+    .where('user_group_members.workspace_id', '=', input.workspaceId)
+    .where('user_group_members.user_id', '=', targetId)
+    .execute();
+  const binding = await trx
+    .selectFrom('mail_acl_bindings')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where((eb) => eb.or([
+      eb('subject_user_id', '=', targetId),
+      eb('subject_group_id', 'in', eb
+        .selectFrom('user_group_members')
+        .select('group_id')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('user_id', '=', targetId)),
+    ]))
+    .limit(1)
+    .executeTakeFirst();
+  return isTargetMorePrivileged(input.actorCapabilities, {
+    grantedCapabilities: permissionRows.map((row) => String(row.permission)),
+    hasMailAclBindings: binding !== undefined,
+  });
+}
+
 async function selectUserById(
   db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
   workspaceId: string,
@@ -1104,6 +1213,23 @@ function normalizeAuthEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+async function isActiveOwner(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  workspaceId: string,
+  userId: string | null | undefined,
+): Promise<boolean> {
+  if (!userId) return false;
+  const row = await db
+    .selectFrom('users')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', userId)
+    .where('role', '=', 'owner')
+    .where('disabled_at', 'is', null)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
 async function countActiveOwners(
   db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
   workspaceId: string,
@@ -1118,6 +1244,50 @@ async function countActiveOwners(
     .where('id', '!=', exceptId)
     .executeTakeFirst();
   return Number(row?.count ?? 0);
+}
+
+/**
+ * Whether a revoked refresh-token row was revoked by a rotation (and not by logout,
+ * a password change or an admin) and the grace period is over. refresh_tokens has
+ * no parent column, so rotation stamps the successor's created_at with exactly the
+ * predecessor's revoked_at; other revocations create no such row.
+ */
+async function isRotatedRefreshTokenReplay(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  existing: { token_id: string; user_id: string; workspace_id: string; revoked_at: Date | string | null },
+  now: Date,
+): Promise<boolean> {
+  if (!existing.revoked_at) return false;
+  const revokedAt = toDate(existing.revoked_at);
+  if (now.getTime() - revokedAt.getTime() < REFRESH_TOKEN_REUSE_GRACE_MS) return false;
+  const successor = await db
+    .selectFrom('refresh_tokens')
+    .select('id')
+    .where('workspace_id', '=', existing.workspace_id)
+    .where('user_id', '=', existing.user_id)
+    .where('created_at', '=', revokedAt)
+    .where('id', '!=', existing.token_id)
+    .executeTakeFirst();
+  return Boolean(successor);
+}
+
+// Access tokens are bound to their refresh-token row (resolveAccessTokenPrincipal
+// rejects a revoked row), so revoking the rows ends both token kinds at once.
+async function revokeUserSessions(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  workspaceId: string,
+  userId: string,
+  revokedAt: Date,
+  keepSessionId?: string,
+): Promise<void> {
+  let query = db
+    .updateTable('refresh_tokens')
+    .set({ revoked_at: revokedAt })
+    .where('workspace_id', '=', workspaceId)
+    .where('user_id', '=', userId)
+    .where('revoked_at', 'is', null);
+  if (keepSessionId) query = query.where('id', '!=', keepSessionId);
+  await query.execute();
 }
 
 function randomToken(bytes: number): string {

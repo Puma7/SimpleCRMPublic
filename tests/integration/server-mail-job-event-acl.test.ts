@@ -1,8 +1,10 @@
 import { EventEmitter } from 'node:events';
 
 import {
+  type AuthenticatedPrincipal,
   createFastifyServer,
   createInMemoryServerEventBus,
+  type FastifyPrincipalResolver,
   type ServerApiPorts,
   type ServerEvent,
 } from '../../packages/server/src/api';
@@ -24,7 +26,9 @@ describe('server mail event ACL', () => {
     await events.publish(nonMailEvent('customer-replay', 'customer.updated'));
     const app = createFastifyServer({
       ports: makeEventPorts(events),
-      allowHeaderPrincipalFallback: true,
+      // user-a holds crm.read, user-b does not: CRM invalidations need it like the
+      // CRM read routes (C-A19-Folge).
+      resolvePrincipal: (request) => headerPrincipal(request, { 'user-a': ['crm.read'] }),
     });
     let userA: Awaited<ReturnType<typeof app.injectWS>> | null = null;
     let userB: Awaited<ReturnType<typeof app.injectWS>> | null = null;
@@ -54,7 +58,7 @@ describe('server mail event ACL', () => {
       await events.publish(mailMessageEvent(41, { state: 'updated', subject: 'HIDDEN_B' }));
       await events.publish(mailMessageEvent(42, { state: 'updated', subject: 'HIDDEN_A' }));
 
-      await waitFor(() => userAMessages.length === 4 && userBMessages.length === 3);
+      await waitFor(() => userAMessages.length === 4 && userBMessages.length === 1);
 
       expect(userAMessages.map((event) => [event.type, event.entityId])).toEqual([
         ['email_message.updated', '40'],
@@ -62,11 +66,12 @@ describe('server mail event ACL', () => {
         ['customer.created', 'customer-1'],
         ['email_message.updated', '41'],
       ]);
+      // Without crm.read neither the replayed nor the live customer event arrives.
       expect(userBMessages.map((event) => [event.type, event.entityId])).toEqual([
-        ['customer.updated', 'customer-replay'],
-        ['customer.created', 'customer-1'],
         ['email_message.updated', '42'],
       ]);
+      expect(userAMessages.find((event) => event.entityId === 'customer-1')?.payload)
+        .toEqual({ id: 'customer-1' });
 
       const serialized = JSON.stringify([...userAMessages, ...userBMessages]);
       for (const canary of [
@@ -91,6 +96,19 @@ describe('server mail event ACL', () => {
     }
   });
 });
+
+function headerPrincipal(
+  request: Parameters<FastifyPrincipalResolver>[0],
+  capabilitiesByUser: Readonly<Record<string, readonly string[]>>,
+): AuthenticatedPrincipal | undefined {
+  const userId = request.headers['x-simplecrm-user-id'];
+  const workspaceId = request.headers['x-simplecrm-workspace-id'];
+  if (typeof userId !== 'string' || typeof workspaceId !== 'string' || request.headers['x-simplecrm-role'] !== 'user') {
+    return undefined;
+  }
+  const capabilities = capabilitiesByUser[userId];
+  return { userId, workspaceId, role: 'user', ...(capabilities ? { capabilities } : {}) };
+}
 
 function makeEventPorts(events: ReturnType<typeof createInMemoryServerEventBus>): ServerApiPorts {
   return {

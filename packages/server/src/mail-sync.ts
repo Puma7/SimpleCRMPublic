@@ -141,6 +141,8 @@ export type ServerMailSyncFolder = Readonly<{
   uidvalidityStr: string | null;
   lastUid: number;
   pop3UidlStr: string | null;
+  /** Letzter abgeschlossener Sync; null = nie synchronisiert, fehlt = unbekannt. */
+  lastSyncedAt?: Date | string | null;
 }>;
 
 
@@ -419,6 +421,7 @@ async function syncImapAccount(input: {
   });
 
   const inboundMessageIds: number[] = [];
+  const historicalMessageIds: number[] = [];
   const automatedEvidenceMessageIds: number[] = [];
   try {
     await client.connect();
@@ -434,6 +437,7 @@ async function syncImapAccount(input: {
         const result = await syncImapFolder({ ...input, client, spec });
         if (spec.runPostSync) {
           inboundMessageIds.push(...result.newMessageIds);
+          historicalMessageIds.push(...result.historicalMessageIds);
           automatedEvidenceMessageIds.push(...result.automatedEvidenceMessageIds);
         }
       } catch (error) {
@@ -445,10 +449,26 @@ async function syncImapAccount(input: {
   }
 
   const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  const historicalIds = uniquePositiveIds(historicalMessageIds);
   return {
     inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    ...(historicalIds.length > 0 ? { historicalMessageIds: historicalIds } : {}),
     ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
   };
+}
+
+/**
+ * F-A7b-04: Ein Ordner, der vor diesem Lauf nie synchronisiert wurde, liefert
+ * nur Bestand (neues Konto bzw. neuer Ordner). Nur wenn der Store den Zeitpunkt
+ * kennt (lastSyncedAt === null) und auch sonst kein Sync-Stand existiert; ein
+ * leeres, schon synchronisiertes Postfach hat uidvalidity bzw. einen Zeitstempel.
+ */
+function mailSyncFolderNeverSynced(folder: ServerMailSyncFolder): boolean {
+  return folder.lastSyncedAt === null
+    && folder.lastUid === 0
+    && folder.uidvalidity === null
+    && folder.uidvalidityStr === null
+    && folder.pop3UidlStr === null;
 }
 
 async function syncImapFolder(input: {
@@ -461,12 +481,14 @@ async function syncImapFolder(input: {
   spec: ImapFolderSyncSpec;
   now: () => Date;
   inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
-}): Promise<{ newMessageIds: number[]; automatedEvidenceMessageIds: number[] }> {
+}): Promise<{ newMessageIds: number[]; historicalMessageIds: number[]; automatedEvidenceMessageIds: number[] }> {
   let folder = await input.store.getOrCreateFolder({
     workspaceId: input.plan.workspaceId,
     account: input.account,
     path: input.spec.path,
   });
+  // Vor einem moeglichen UIDVALIDITY-Reset bestimmen: der Reset selbst bleibt unveraendert.
+  const historical = mailSyncFolderNeverSynced(folder);
   let lastUid = folder.lastUid;
   let uidValidityNum: number | null | undefined;
   let uidValidityStr: string | null | undefined;
@@ -484,7 +506,6 @@ async function syncImapFolder(input: {
   let sortedSet = new Set<number>();
   let imapUidToId = new Map<number, number>();
   let toProcess: number[] = [];
-  const fetchedMessages: FetchedImapMessage[] = [];
   const skippedUids = new Set<number>();
   const pendingUidKey = `email_imap_pending_uids:${input.account.id}:${folder.id}`;
   // Messages over the hard RFC822 cap can never import; retrying them would
@@ -494,6 +515,12 @@ async function syncImapFolder(input: {
   let pendingUids = new Set<number>();
   let oversizedUids = new Set<number>();
   let chainEnd = lastUid;
+  const context: ServerMailSyncUpsertContext = {
+    imapUidToId,
+    reconcileSeenFromServer: true,
+  };
+  const newMessageIds: number[] = [];
+  const automatedEvidenceMessageIds: number[] = [];
 
   const lock = await input.client.getMailboxLock(input.spec.path);
   try {
@@ -541,7 +568,10 @@ async function syncImapFolder(input: {
       uids = searchResult === false ? [] : searchResult;
     } else if (lastUid > 0) {
       const searchResult = await input.client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
-      uids = searchResult === false ? [] : searchResult;
+      // RFC 3501 §6.4.8: "n:*" always contains the highest existing UID, even
+      // when it is below n; without this filter the newest message is refetched
+      // and re-upserted on every poll.
+      uids = (searchResult === false ? [] : searchResult).filter((uid) => uid > lastUid);
     } else {
       const searchResult = await input.client.search({ all: true }, { uid: true });
       const allUids = searchResult === false ? [] : searchResult;
@@ -575,6 +605,7 @@ async function syncImapFolder(input: {
       folderId: folder.id,
       uids: sorted,
     }));
+    context.imapUidToId = imapUidToId;
     // Known-oversized UIDs are never fetched again; marking them skipped lets
     // the sync cursor advance past them so the search range shrinks.
     for (const uid of sorted) {
@@ -585,6 +616,7 @@ async function syncImapFolder(input: {
     chainEnd = lastUid;
 
     for (const uid of toProcess) {
+      let item: FetchedImapMessage;
       try {
         const fetched = await input.client.fetchOne(
           String(uid),
@@ -594,12 +626,12 @@ async function syncImapFolder(input: {
         if (!fetched || !fetched.source) throw new Error(`empty source for UID ${uid}`);
         const source = sourceToBuffer(fetched.source);
         assertInboundRfc822Size(source.length);
-        fetchedMessages.push({
+        item = {
           uid,
           source,
           flags: fetched.flags,
           threadId: fetched.threadId == null ? null : String(fetched.threadId),
-        });
+        };
       } catch (error) {
         skippedUids.add(uid);
         if (error instanceof InboundMessageTooLargeError) {
@@ -610,20 +642,18 @@ async function syncImapFolder(input: {
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
+        continue;
       }
+      // Import each message before fetching the next: collecting every new
+      // source of the folder first (up to 80 MiB each, unbounded count) let a
+      // flooded mailbox or a long backlog exhaust the process.
+      await importFetchedMessage(item);
     }
   } finally {
     lock.release();
   }
 
-  const context: ServerMailSyncUpsertContext = {
-    imapUidToId,
-    reconcileSeenFromServer: true,
-  };
-  const newMessageIds: number[] = [];
-  const automatedEvidenceMessageIds: number[] = [];
-
-  for (const item of fetchedMessages) {
+  async function importFetchedMessage(item: FetchedImapMessage): Promise<void> {
     try {
       const parsed = await input.parser(item.source);
       const upserted = await input.store.upsertMessage({
@@ -713,7 +743,8 @@ async function syncImapFolder(input: {
   });
 
   return {
-    newMessageIds: fullInbox ? [] : newMessageIds,
+    newMessageIds: fullInbox || historical ? [] : newMessageIds,
+    historicalMessageIds: !fullInbox && historical ? newMessageIds : [],
     automatedEvidenceMessageIds,
   };
 }
@@ -771,6 +802,8 @@ async function syncPop3Account(input: {
     workspaceId: input.plan.workspaceId,
     folderId: folder.id,
   }));
+  // F-A7b-04: noch keine UIDLs bekannt und nie synchronisiert: alles ist Bestand.
+  const historical = known.size === 0 && mailSyncFolderNeverSynced(folder);
   const context: ServerMailSyncUpsertContext = {
     pop3UidlToId: known,
     nextPop3Uid: await input.store.allocateNextPop3Uid({
@@ -851,8 +884,10 @@ async function syncPop3Account(input: {
   }
 
   const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  const newIds = uniquePositiveIds(inboundMessageIds);
   return {
-    inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    inboundMessageIds: historical ? [] : newIds,
+    ...(historical && newIds.length > 0 ? { historicalMessageIds: newIds } : {}),
     ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
   };
 }
@@ -2042,11 +2077,19 @@ export async function replacePostgresMailSyncAttachments(input: {
     });
   }
 
+  let replacedStoragePaths: string[] = [];
   try {
     await withWorkspaceTransaction(
       input.db,
       { workspaceId: input.workspaceId, role: 'system' },
       async (trx) => {
+        const previous = await trx
+          .selectFrom('email_message_attachments')
+          .select('storage_path')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('message_id', '=', input.messageId)
+          .execute();
+        replacedStoragePaths = previous.map((row) => row.storage_path);
         await trx
           .deleteFrom('email_message_attachments')
           .where('workspace_id', '=', input.workspaceId)
@@ -2062,6 +2105,17 @@ export async function replacePostgresMailSyncAttachments(input: {
     await Promise.allSettled(writtenPaths.map((filePath) => rm(filePath, { force: true })));
     throw error;
   }
+
+  // Without this the replaced files stay on disk (and in every backup) with no
+  // DB row referencing them. Only files this sync wrote for this message are
+  // removed; anything outside <ws>/mail-sync/<messageId>/ is left alone.
+  await removeReplacedMailSyncAttachmentFiles({
+    attachmentsRoot: input.attachmentsRoot,
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    storagePaths: replacedStoragePaths,
+    keepPaths: new Set(writtenPaths),
+  });
 
   if (rows.length > 0) {
     // Best-effort Textextraktion fuer die Suche (pdf/docx/txt/html) — non-fatal,
@@ -2079,6 +2133,28 @@ export async function replacePostgresMailSyncAttachments(input: {
       ))
       .catch(() => undefined);
   }
+}
+
+async function removeReplacedMailSyncAttachmentFiles(input: {
+  attachmentsRoot: string;
+  workspaceId: string;
+  messageId: number;
+  storagePaths: readonly string[];
+  keepPaths: ReadonlySet<string>;
+}): Promise<void> {
+  const messageDir = resolveAttachmentStoragePath(
+    input.attachmentsRoot,
+    [input.workspaceId, 'mail-sync', String(input.messageId)].join('/'),
+  );
+  if (!messageDir) return;
+  const removable: string[] = [];
+  for (const storagePath of input.storagePaths) {
+    const resolved = resolveAttachmentStoragePath(input.attachmentsRoot, storagePath);
+    if (!resolved || input.keepPaths.has(resolved)) continue;
+    if (!resolveAttachmentStoragePath(messageDir, resolved)) continue;
+    removable.push(resolved);
+  }
+  await Promise.allSettled(removable.map((filePath) => rm(filePath, { force: true })));
 }
 
 function resolveImapSyncFolders(
@@ -2204,13 +2280,31 @@ function createDefaultImapClient(input: Parameters<ServerMailSyncImapClientFacto
   });
 }
 
-function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
+const POP3_CAPA_MAX_LINES = 1_000;
+// RFC 5322 allows 998 characters per line; anything near 1 MiB without a line
+// end is a hostile or broken server. The whole buffer holds at most one
+// maximum-size message (plus a reserve) that nobody has read yet.
+const POP3_MAX_LINE_CHARS = 1024 * 1024;
+const POP3_MAX_BUFFERED_CHARS = MAX_INBOUND_RFC822_BYTES + POP3_MAX_LINE_CHARS;
+// The line timeout alone let a server stretch one answer indefinitely, each
+// line just in time. Whole answers get a deadline, as in the other line
+// clients: CAPA twice the line timeout; UIDL/RETR enough for a maximum-size
+// message at a slow but steady 32 KiB/s (about 43 min), so large mails still load.
+const POP3_CAPA_DEADLINE_FACTOR = 2;
+const POP3_MIN_BYTES_PER_SECOND = 32 * 1024;
+const POP3_MULTILINE_DEADLINE_MS = Math.ceil(MAX_INBOUND_RFC822_BYTES / POP3_MIN_BYTES_PER_SECOND) * 1000;
+
+export function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
   return new LineProtocolPop3Client(input);
 }
 
 class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   private socket: net.Socket | null = null;
   private buffer = '';
+  /** Characters after the last line feed in `buffer` (all of it without one). */
+  private partialLineChars = 0;
+  /** No CRLF starts before this offset in `buffer` (an earlier search found none). */
+  private crlfSearchFrom = 0;
   private waiters: Array<(line: string) => void> = [];
   private errorWaiters: Array<(error: Error) => void> = [];
   private closedError: Error | null = null;
@@ -2225,20 +2319,70 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
       ?? validateAuthValue(this.input.password, 'Passwort');
     if (unsafeUser) throw new Error(unsafeUser);
     this.socket = await connectSocket(this.input);
-    this.socket.setEncoding('latin1');
-    this.socket.on('data', this.onData);
-    this.socket.on('error', this.onError);
-    this.socket.on('end', this.onEnd);
+    this.attach(this.socket);
     const greeting = await this.readLine();
     assertPop3Ok(greeting);
+    // Like IMAP (ImapFlow with secure=false): without implicit TLS, upgrade via
+    // STLS whenever the server offers it, so USER/PASS do not travel in plaintext.
+    if (!this.input.tls && await this.offersStls()) {
+      if (/^\+OK\b/i.test(await this.command('STLS'))) await this.upgradeToTls();
+    }
     assertPop3Ok(await this.command(`USER ${this.input.user}`));
     assertPop3Ok(await this.command(`PASS ${this.input.password}`));
   }
 
+  private attach(socket: net.Socket): void {
+    socket.setEncoding('latin1');
+    socket.on('data', this.onData);
+    socket.on('error', this.onError);
+    socket.on('end', this.onEnd);
+  }
+
+  private async offersStls(): Promise<boolean> {
+    const deadlineAt = Date.now() + POP3_CAPA_DEADLINE_FACTOR * this.input.timeoutMs;
+    // CAPA is optional (RFC 2449); a server without it answers -ERR.
+    if (!/^\+OK\b/i.test(await this.command('CAPA'))) return false;
+    let stls = false;
+    for (let count = 0; count < POP3_CAPA_MAX_LINES; count += 1) {
+      const line = await this.readLine(deadlineAt);
+      if (line === '.') return stls;
+      if (/^STLS\b/i.test(line)) stls = true;
+    }
+    throw new Error('POP3 CAPA-Antwort hat zu viele Zeilen');
+  }
+
+  private async upgradeToTls(): Promise<void> {
+    const raw = this.socket!;
+    raw.off('data', this.onData);
+    raw.off('error', this.onError);
+    raw.off('end', this.onEnd);
+    // Anything read before the switch was sent in plaintext and must not be
+    // taken as a TLS-protected response (RFC 2595 section 4).
+    this.clearBuffer();
+    const secure = await new Promise<tls.TLSSocket>((resolve, reject) => {
+      const socket = tls.connect({ socket: raw, servername: this.input.host });
+      const timer = setTimeout(() => fail(new Error('Connection timed out')), this.input.timeoutMs);
+      const fail = (error: Error): void => {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(error);
+      };
+      socket.once('error', fail);
+      socket.once('secureConnect', () => {
+        clearTimeout(timer);
+        socket.off('error', fail);
+        resolve(socket);
+      });
+    });
+    this.socket = secure;
+    this.attach(secure);
+  }
+
   async uidl(): Promise<readonly [number, string][]> {
+    const deadlineAt = this.multilineDeadline();
     await this.writeLine('UIDL');
-    assertPop3Ok(await this.readLine());
-    const lines = await this.readMultiline();
+    assertPop3Ok(await this.readLine(deadlineAt));
+    const lines = await this.readMultiline(deadlineAt);
     return lines.map((line) => {
       const match = /^(\d+)\s+(.+)$/.exec(line);
       return match ? [Number(match[1]), match[2].trim()] as [number, string] : null;
@@ -2246,9 +2390,10 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
   }
 
   async retr(messageNumber: number): Promise<Buffer> {
+    const deadlineAt = this.multilineDeadline();
     await this.writeLine(`RETR ${messageNumber}`);
-    assertPop3Ok(await this.readLine());
-    const lines = await this.readMultiline();
+    assertPop3Ok(await this.readLine(deadlineAt));
+    const lines = await this.readMultiline(deadlineAt);
     return Buffer.from(lines.join('\r\n'), 'latin1');
   }
 
@@ -2270,12 +2415,17 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     this.socket.write(`${command}\r\n`, 'latin1');
   }
 
-  private async readMultiline(): Promise<string[]> {
+  /** End of a whole UIDL/RETR answer started now; never earlier than one line timeout. */
+  private multilineDeadline(): number {
+    return Date.now() + Math.max(POP3_MULTILINE_DEADLINE_MS, this.input.timeoutMs);
+  }
+
+  private async readMultiline(deadlineAt: number): Promise<string[]> {
     const lines: string[] = [];
     let totalBytes = 0;
     let oversize = false;
     for (;;) {
-      const line = await this.readLine();
+      const line = await this.readLine(deadlineAt);
       if (line === '.') {
         if (oversize) throw new InboundMessageTooLargeError(totalBytes, MAX_INBOUND_RFC822_BYTES);
         return lines;
@@ -2299,15 +2449,17 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     }
   }
 
-  private async readLine(): Promise<string> {
+  private async readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
     if (this.closedError) throw this.closedError;
     const existing = this.shiftLine();
     if (existing !== null) return existing;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw this.failResponseDeadline();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Connection timed out'));
-      }, this.input.timeoutMs);
+        reject(remainingMs < this.input.timeoutMs ? this.failResponseDeadline() : new Error('Connection timed out'));
+      }, Math.min(this.input.timeoutMs, remainingMs));
       const cleanup = (): void => {
         clearTimeout(timer);
         const resolveIndex = this.waiters.indexOf(onLine);
@@ -2330,26 +2482,43 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
 
   private pushData(chunk: string): void {
     this.buffer += chunk;
-    for (;;) {
+    // Only the new chunk is searched: scanning the whole buffer on every chunk
+    // made an endless line (or a flood nobody reads) cost quadratic CPU.
+    const lastLf = chunk.lastIndexOf('\n');
+    this.partialLineChars = lastLf >= 0 ? chunk.length - lastLf - 1 : this.partialLineChars + chunk.length;
+    if (this.partialLineChars > POP3_MAX_LINE_CHARS || this.buffer.length > POP3_MAX_BUFFERED_CHARS) {
+      this.clearBuffer();
+      this.rejectAll(new Error('POP3-Serverantwort zu gross'));
+      this.socket?.destroy();
+      return;
+    }
+    // Split lines only for a waiting reader and only once a line end arrived;
+    // everything else stays queued for the next readLine.
+    while (this.waiters.length > 0 && this.partialLineChars < this.buffer.length) {
       const line = this.shiftLine();
       if (line === null) return;
-      const waiter = this.waiters.shift();
-      if (!waiter) {
-        this.buffer = `${line}\r\n${this.buffer}`;
-        return;
-      }
-      waiter(line);
+      this.waiters.shift()!(line);
     }
   }
 
   private shiftLine(): string | null {
-    const crlf = this.buffer.indexOf('\r\n');
     const lf = this.buffer.indexOf('\n');
+    if (lf < 0) return null;
+    // The first CRLF cannot start before the first LF; resuming where the last
+    // search stopped keeps bare-LF lines from rescanning the whole buffer.
+    const crlf = this.buffer.indexOf('\r\n', Math.max(lf - 1, this.crlfSearchFrom));
     const index = crlf >= 0 ? crlf : lf;
-    if (index < 0) return null;
+    const consumed = index + (crlf >= 0 ? 2 : 1);
+    this.crlfSearchFrom = crlf >= 0 ? 0 : Math.max(0, this.buffer.length - 1 - consumed);
     const line = this.buffer.slice(0, index).replace(/\r$/, '');
-    this.buffer = this.buffer.slice(index + (crlf >= 0 ? 2 : 1));
+    this.buffer = this.buffer.slice(consumed);
     return line;
+  }
+
+  private clearBuffer(): void {
+    this.buffer = '';
+    this.partialLineChars = 0;
+    this.crlfSearchFrom = 0;
   }
 
   private rejectAll(error: Error): void {
@@ -2358,6 +2527,13 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
     this.waiters = [];
     this.errorWaiters = [];
     waiters.forEach((waiter) => waiter(error));
+  }
+
+  private failResponseDeadline(): Error {
+    const error = new Error('Zeitlimit der Server-Antwort ueberschritten');
+    this.rejectAll(error);
+    this.socket?.destroy();
+    return error;
   }
 
   private close(): void {
@@ -2446,6 +2622,7 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
   | 'uidvalidity_str'
   | 'last_uid'
   | 'pop3_uidl_str'
+  | 'last_synced_at'
 >): ServerMailSyncFolder {
   return {
     id: Number(row.id),
@@ -2457,6 +2634,7 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
     uidvalidityStr: row.uidvalidity_str,
     lastUid: Number(row.last_uid),
     pop3UidlStr: row.pop3_uidl_str,
+    lastSyncedAt: row.last_synced_at ?? null,
   };
 }
 

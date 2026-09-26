@@ -51,6 +51,8 @@ export type MailSyncJobResult = Readonly<{
   inboundMessageIds?: readonly number[];
   replySuggestionMessageIds?: readonly number[];
   automatedEvidenceMessageIds?: readonly number[];
+  /** Bestandsmails aus dem Erst-Sync eines Ordners: nur Spam-Scoring, keine Automatik. */
+  historicalMessageIds?: readonly number[];
 }>;
 
 export type ScheduledSendJobPlan = Readonly<{
@@ -422,6 +424,9 @@ export function buildAiReviewJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
+      ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
   };
 }
 
@@ -487,6 +492,9 @@ export function buildAiReviewDraftJobPlan(
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
     ...(payload.terminalWorkflowCompletion === true
       ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
+    ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
+      ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
       : {}),
   };
 }

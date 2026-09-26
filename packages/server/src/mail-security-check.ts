@@ -1,7 +1,17 @@
 import dns from 'node:dns';
 
-import { isCorruptRawHeaders } from '@simplecrm/core';
+import {
+  isCorruptRawHeaders,
+  readBoundedResponseJson,
+  readBoundedResponseText,
+  selectTrustedAuthenticationResults,
+} from '@simplecrm/core';
 import type { AuthStatus, DKIMVerifyResult } from 'mailauth';
+
+// Byte limits while reading, as on the desktop: the Rspamd URL is configurable
+// and may point to a foreign host.
+const MAX_RSPAMD_RESPONSE_BYTES = 1024 * 1024;
+const MAX_RSPAMD_ERROR_TEXT_BYTES = 64 * 1024;
 
 export type AuthResultLabel =
   | 'pass'
@@ -48,6 +58,11 @@ export type StoredMailSecurityCheckInput = {
   mailauthEnabled: boolean;
   mailauthTimeoutMs?: number;
   mailauthAuthenticate?: typeof import('mailauth').authenticate;
+  /**
+   * authserv-id whose Authentication-Results may stand in for a failed live
+   * check (RFC 8601 §5); null/undefined disables that fallback.
+   */
+  trustedAuthservId?: string | null;
   rspamdEnabled: boolean;
   rspamdUrl: string;
   rspamdTimeoutMs: number;
@@ -129,6 +144,7 @@ export async function verifyMailAuthentication(input: {
   bodyHtml: string | null;
   mailauthTimeoutMs?: number;
   mailauthAuthenticate?: typeof import('mailauth').authenticate;
+  trustedAuthservId?: string | null;
 }): Promise<MailAuthVerification> {
   const message = buildRfc822FromStored(input);
   if (!message) {
@@ -142,7 +158,8 @@ export async function verifyMailAuthentication(input: {
     };
   }
 
-  const headerText = resolveHeaderTextForMailAuth(input);
+  const trustedAuthservId = input.trustedAuthservId ?? null;
+  const headerText = resolveHeaderTextForMailAuth(input, trustedAuthservId);
   try {
     ensureDnsPrefersIpv4();
     const authenticate = input.mailauthAuthenticate ?? (await import('mailauth')).authenticate;
@@ -161,7 +178,7 @@ export async function verifyMailAuthentication(input: {
       dmarc: result.dmarc && typeof result.dmarc === 'object' ? statusLabel(result.dmarc.status) : 'none',
       arc: result.arc && typeof result.arc === 'object' ? statusLabel(result.arc.status) : 'none',
       dkimDomains: dkimAgg.domains,
-    }, headerText);
+    }, headerText, trustedAuthservId);
   } catch (error) {
     return applyHeaderAuthFallback({
       spf: 'unknown',
@@ -170,7 +187,7 @@ export async function verifyMailAuthentication(input: {
       arc: 'unknown',
       dkimDomains: [],
       error: error instanceof Error ? error.message : String(error),
-    }, headerText);
+    }, headerText, trustedAuthservId);
   }
 }
 
@@ -233,7 +250,7 @@ export async function checkMessageWithRspamd(input: {
       signal: controller.signal,
     });
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readBoundedResponseText(response, MAX_RSPAMD_ERROR_TEXT_BYTES).catch(() => '');
       return {
         score: null,
         action: null,
@@ -242,7 +259,7 @@ export async function checkMessageWithRspamd(input: {
         error: `Rspamd HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`,
       };
     }
-    const data = await response.json() as RspamdJson;
+    const data = await readBoundedResponseJson(response, MAX_RSPAMD_RESPONSE_BYTES) as RspamdJson;
     return {
       score: typeof data.score === 'number' ? data.score : null,
       action: data.action ?? null,
@@ -306,7 +323,7 @@ export async function learnMessageWithRspamd(input: {
       signal: controller.signal,
     });
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readBoundedResponseText(response, MAX_RSPAMD_ERROR_TEXT_BYTES).catch(() => '');
       return {
         success: false,
         label: input.label,
@@ -382,16 +399,19 @@ function aggregateDkim(dkim: DKIMVerifyResult | undefined): {
   return { label: results[0] ?? 'unknown', domains };
 }
 
-function resolveHeaderTextForMailAuth(input: {
-  rawRfc822B64?: string | null;
-  rawHeaders: string | null;
-}): string | null {
+function resolveHeaderTextForMailAuth(
+  input: {
+    rawRfc822B64?: string | null;
+    rawHeaders: string | null;
+  },
+  trustedAuthservId: string | null,
+): string | null {
   const fromStored = input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders)
     ? input.rawHeaders
     : null;
-  if (fromStored && parseAuthenticationResultsLabels(fromStored)) return fromStored;
+  if (fromStored && parseAuthenticationResultsLabels(fromStored, trustedAuthservId)) return fromStored;
   const fromRfc822 = extractHeaderSectionFromStored(input);
-  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822)) return fromRfc822;
+  if (fromRfc822 && parseAuthenticationResultsLabels(fromRfc822, trustedAuthservId)) return fromRfc822;
   return fromRfc822 ?? fromStored;
 }
 
@@ -411,36 +431,22 @@ function extractHeaderSectionFromStored(input: {
   return input.rawHeaders?.trim() && !isCorruptRawHeaders(input.rawHeaders) ? input.rawHeaders : null;
 }
 
-function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> | null {
-  if (!rawHeaders?.trim()) return null;
-  const lines = rawHeaders.replace(/\r\n/g, '\n').split('\n');
-  const blocks: string[] = [];
-  let current: string | null = null;
-  for (const line of lines) {
-    if (/^(?:ARC-)?Authentication-Results:/i.test(line)) {
-      if (current) blocks.push(current.trim());
-      current = line.replace(/^(?:ARC-)?Authentication-Results:\s*/i, '');
-    } else if (current !== null && /^[ \t]/.test(line)) {
-      current += ` ${line.trim()}`;
-    } else {
-      if (current) blocks.push(current.trim());
-      current = null;
-    }
-  }
-  if (current) blocks.push(current.trim());
-  if (blocks.length === 0) return null;
+function parseAuthenticationResultsLabels(
+  rawHeaders: string | null,
+  trustedAuthservId: string | null,
+): Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> | null {
+  // RFC 8601 §5: any sender can add Authentication-Results, so only the topmost
+  // field counts, and only when it carries the account's trusted authserv-id.
+  // Lower fields and ARC-Authentication-Results (no ARC chain validation here)
+  // never supply or fill in keys.
+  const block = selectTrustedAuthenticationResults(rawHeaders, trustedAuthservId);
+  if (!block) return null;
 
   const parsed: Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> = {};
-  for (const block of blocks) {
-    for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
-      const match = block.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
-      if (!match?.[1]) continue;
-      const label = normalizeResult(match[1]);
-      const previous = parsed[key];
-      if (!previous || (liveCheckUnreliable(previous) && !liveCheckUnreliable(label))) {
-        parsed[key] = label;
-      }
-    }
+  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+    const match = block.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
+    if (!match?.[1]) continue;
+    parsed[key] = normalizeResult(match[1]);
   }
   return Object.keys(parsed).length > 0 ? parsed : null;
 }
@@ -448,8 +454,9 @@ function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Re
 function applyHeaderAuthFallback(
   live: MailAuthVerification,
   headerText: string | null,
+  trustedAuthservId: string | null,
 ): MailAuthVerification {
-  const header = parseAuthenticationResultsLabels(headerText);
+  const header = parseAuthenticationResultsLabels(headerText, trustedAuthservId);
   if (!header) return live;
 
   const merged: MailAuthVerification = { ...live, dkimDomains: [...live.dkimDomains] };

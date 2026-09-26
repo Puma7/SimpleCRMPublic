@@ -81,6 +81,8 @@ Wenn Sie **JTL-Wawi** nutzen:
 2. **Synchronisation starten** — Kunden und Produkte werden in die lokale Datenbank übernommen.
 3. Passwort wird sicher im **System-Schlüsselbund** gespeichert, nicht im Klartext in der Datei.
 
+**Nur-Lese-Benutzer verwenden:** Legen Sie für SimpleCRM einen eigenen SQL-Server-Benutzer an, der auf der JTL-Datenbank nur die Rolle `db_datareader` hat (keine Schreib- oder DDL-Rechte, nicht `sa`). Dieselbe Verbindung nutzen der Sync und die Workflow-Bausteine **MSSQL (Read-only)** (`mssql.query`) und **JTL Bestell-Kontext**; in der Server-Edition lesen diese auch beim **Dry-Run** live aus der JTL-Datenbank. Ausnahme: **„JTL Auftrag erstellen“** auf der Deal-Seite schreibt in JTL und funktioniert mit einem reinen Lesebenutzer nicht; wer die Funktion braucht, vergibt nur die dafür nötigen Rechte (siehe [SETUP_SERVER.md](SETUP_SERVER.md#jtl-wawi--mssql-connection-optional)).
+
 Ohne JTL arbeiten Sie vollständig mit **lokal angelegten** Kunden und Produkten.
 
 **Benutzerdefinierte Felder:** **Einstellungen → Benutzerdefinierte Felder** — eigene Felder für Kunden definieren (z. B. Branche, VIP-Status).

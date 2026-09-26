@@ -71,6 +71,8 @@ type TabDef = {
    * ein garantierter 403 — deshalb gar nicht erst anbieten.
    */
   adminOnly?: boolean
+  /** Nur im Desktop Owner/Admin (siehe settings-tab-access). */
+  desktopAdminOnly?: boolean
 }
 
 const TAB_DEFS: TabDef[] = [
@@ -149,7 +151,14 @@ const TAB_DEFS: TabDef[] = [
   { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
-  { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
+  {
+    id: "export",
+    label: "Datenschutz-Export",
+    icon: Download,
+    render: () => <ExportPanel />,
+    // Desktop: email:gdpr-export verlangt Owner/Admin.
+    desktopAdminOnly: true,
+  },
   { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
   { id: "auditLog", label: "Audit-Log", icon: ShieldCheck, adminOnly: true, render: () => <AuditLogPanel /> },
   { id: "threadTools", label: "Threads", icon: Workflow, render: () => <ThreadToolsPanel /> },
@@ -267,7 +276,9 @@ export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
   const { canViewSettings, capabilitiesReady, user } = useAuth()
-  const isAdmin = !isServerClientMode() || user?.role === "owner" || user?.role === "admin"
+  // Auch im Desktop nach Rolle: Backup, Restore, Export und OAuth-Apps verlangen
+  // dort per IPC Owner/Admin (die UI ist dabei keine Sicherheitsgrenze).
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
   // Erst nach dem Laden der Gruppenrechte entscheiden: davor ist WEDER
   // personalOnly noch Vollzugriff korrekt. Ein direkt angeforderter Tab wuerde
   // sonst kurz vollstaendig mounten (und seine Requests abfeuern), obwohl der
@@ -300,7 +311,7 @@ export function SettingsPanelsPage() {
   useEffect(() => {
     if (capabilitiesPending || personalOnly || isAdmin) return
     const requested = TAB_DEFS.find((t) => t.id === settingsTab)
-    if (!requested?.adminOnly) return
+    if (!requested?.adminOnly && !(requested?.desktopAdminOnly && !isServerClientMode())) return
     setSettingsTab(TAB_DEFS[0]!.id)
     void navigate({
       to: "/email/settings",

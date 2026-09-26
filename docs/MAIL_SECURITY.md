@@ -24,6 +24,53 @@ SimpleCRM prüft eingehende Mails **lokal** nach dem Sync — ohne eigenen MTA.
 | Whitelist | — | Für Workflow-Knoten „Absender-Filter“ (global) |
 | KI-Schwelle 1–100 | 70 | Knoten „Schwellwert“ nach `ai.spam_score` |
 
+## Fallback auf Authentication-Results (RFC 8601)
+
+Scheitert die Live-Prüfung (mailauth-Timeout, DNS-Fehler: `unknown`/`temperror`),
+übernimmt SimpleCRM SPF/DKIM/DMARC aus einem `Authentication-Results`-Header des
+empfangenden Servers. Weil jeder Absender solche Header mitschicken kann, gilt
+nach RFC 8601 §5 nur der **oberste** `Authentication-Results`-Header, und nur,
+wenn seine authserv-id (das Token vor dem ersten `;`) vertrauenswürdig ist. Trägt
+der oberste Header eine andere oder gar keine authserv-id, bleibt das Ergebnis
+`unknown`; tiefer liegende Header werden nie herangezogen, auch nicht, wenn sie
+eine passende authserv-id tragen. `ARC-Authentication-Results` wird ignoriert.
+
+- **Standard (beide Editionen):** die Domain des Eingangsservers, also der
+  IMAP-Host (bei POP3 der POP3-Host) ohne erstes Label: `imap.example.com` →
+  `example.com`. Hat der Host nur zwei Labels, ist er eine IP-Adresse oder bliebe
+  nur eine kurze Länder-Endung wie `co.uk`/`com.au` übrig (≤ 3 Zeichen plus
+  zweistellige TLD), gilt der volle Host.
+- **Passend** ist eine authserv-id, die gleich diesem Wert oder eine Subdomain
+  davon ist (`mx01.example.com` passt zu `example.com`).
+- **Server-Edition:** Konto bearbeiten → **Erweitert** → „Vertrauenswürdige
+  authserv-id“ (Spalte `email_accounts.trusted_authserv_id`, Migration 0054,
+  API-Feld `trustedAuthservId`). Nötig, wenn der Provider eine andere Kennung
+  setzt, z. B. `mx.google.com` für Gmail. Leer = Standard.
+- **Desktop:** immer der Standard, kein eigenes Feld. Setzt der Provider eine
+  andere Kennung (Gmail `mx.google.com`, Microsoft 365 gar keine), gibt es dort
+  keinen Fallback.
+- **Kein Fallback** auch, wenn über dem Header des Providers ein weiterer liegt
+  (interner Filter, zusätzlicher Hop mit eigener Kennung). Das ist gewollt: Ein
+  tieferer Header mit passender Kennung kann vom Absender stammen.
+- **Restrisiko:** Fügt der eigene MTA gar keinen Header hinzu und entfernt er
+  eingehende Header mit seiner authserv-id nicht (RFC 8601 §5), ist der oberste
+  Header der des Absenders; trägt er die passende authserv-id, wird er
+  übernommen. Setzt der empfangende Server dagegen einen eigenen Header, zählt
+  nur dieser, ein darunter eingeschleuster Header wird nie gelesen.
+
+Regeln: `packages/core/src/email/authentication-results.ts`.
+
+## Verdächtige Anhänge
+
+Eine gemeinsame Liste in `packages/core/src/email/attachment-safety.ts`
+entscheidet in beiden Editionen: Programme und Skripte, Windows-Verknüpfungen
+(`.lnk`, `.url`, …), Java (`.jar`), Disk-Images (`.iso`, `.img`, `.vhd`),
+Office-Dateien mit Makros (`.docm`, `.xlsm`, …) sowie macOS-/Linux-Starter. Punkte
+und Leerzeichen am Ende des Namens zählen nicht (`Rechnung.lnk. `). Der Desktop
+fragt vor dem Öffnen nach; auf dem Server brauchen Download, PGP-Entschlüsselung,
+Weiterleiten und DSGVO-Export solcher Dateien zusätzlich das Recht
+`mail.attachment.suspicious_download` („Verdächtige Anhänge laden“).
+
 ## Workflow-Variablen
 
 - `auth.spf`, `auth.dkim`, `auth.dmarc`, `auth.arc` — `pass`, `fail`, `softfail`, `none`, …

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { IPCChannels } from "@shared/ipc/channels";
+import { invokeIpc } from "@/components/email/types";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
@@ -15,6 +17,8 @@ interface UpdateStatusPayload {
   status: UpdateStatus;
   info?: unknown;
   error?: string;
+  /** macOS until the app is signed: no download, only a link to the release page. */
+  manualUpdate?: { releasePageUrl: string | null };
 }
 
 export function UpdateStatusDisplay() {
@@ -88,13 +92,28 @@ export function UpdateStatusDisplay() {
     }
   };
 
+  const handleOpenReleasePage = async () => {
+    const url = status?.manualUpdate?.releasePageUrl;
+    if (!url) {
+      return;
+    }
+
+    try {
+      await invokeIpc(IPCChannels.Update.OpenExternalUrl, { url });
+    } catch (error: any) {
+      console.error("[UpdateStatusDisplay] Error opening release page:", error);
+    }
+  };
+
   const statusLabel = (() => {
     if (!status) return "Keine Aktualisierungsinformationen";
     switch (status.status) {
       case "checking":
         return "Suche nach Updates…";
       case "available":
-        return "Update verfügbar – Download läuft…";
+        return status.manualUpdate
+          ? "Neue Version verfügbar – bitte manuell von der Release-Seite installieren"
+          : "Update verfügbar – Download läuft…";
       case "not-available":
         return "Keine Updates verfügbar";
       case "downloading":
@@ -147,6 +166,15 @@ export function UpdateStatusDisplay() {
         >
           {isChecking ? "Prüfe…" : "Nach Updates suchen"}
         </Button>
+        {status?.status === "available" && status.manualUpdate?.releasePageUrl && (
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleOpenReleasePage}
+          >
+            Release-Seite öffnen
+          </Button>
+        )}
         {status?.status === "downloaded" && (
           <Button
             variant="default"

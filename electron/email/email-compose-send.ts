@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  extractEmailAddressesFromRecipientField,
+  extractDeliveryAddressesFromRecipientField,
+  recipientFieldFromJson,
   recipientJsonFromField,
   senderJsonFromMailbox,
   validateRecipientField,
@@ -18,6 +19,7 @@ import {
   getComposeMarkReplyParentDone,
   setComposeMarkReplyParentDone,
 } from './compose-reply-done';
+import { SmtpDeliveryAmbiguousError } from './email-smtp-errors';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
 import { ensureTicketInSubject, extractKnownTicketFromSubject, getOrCreateThreadForTicket, createTicketCodeForAccount } from './email-ticket';
@@ -28,6 +30,9 @@ import {
 import { SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import type { EmailAccountRow } from './email-store';
+import { canAccessLocalAccount } from '../auth/auth-store';
+import type { SessionRole } from '../auth/session-store';
+import { clearScheduledSendActor } from './email-scheduled-send-actor';
 
 function resolveRequestReadReceipt(
   acc: EmailAccountRow,
@@ -42,6 +47,7 @@ import {
 } from './email-inline-images';
 import { persistLocalComposeAttachments } from './email-message-attachments-store';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
+import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 
 function maxComposeAttachmentBytes(): number {
   const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
@@ -151,6 +157,7 @@ async function finalizeSentDraft(input: {
 
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
+  clearScheduledSendActor(input.draftMessageId);
 
   const acc = getEmailAccountById(input.accountId);
   if (acc && (acc.protocol || 'imap') !== 'imap') {
@@ -239,22 +246,20 @@ async function finalizeSentDraft(input: {
   return { sentAppendWarning: joinWarnings(warnings) };
 }
 
-/** SMTP already succeeded (crash recovery): skip outbound/attachment gates, finalize only. */
+/**
+ * SMTP already succeeded (crash recovery): skip outbound/attachment gates, finalize only.
+ * Recipients, body and attachments come from the stored draft, which the original
+ * send wrote before SMTP — edits made after the commit were never delivered.
+ */
 async function finalizeCommittedSmtpDraft(
   input: {
     accountId: number;
     draftMessageId: number;
     subject: string;
-    bodyText: string;
-    to: string;
-    cc?: string;
-    bcc?: string;
     inReplyToMessageId?: number | null;
     requestReadReceipt?: boolean;
-    attachmentPaths?: string[];
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
-  html: string | null,
 ): Promise<
   | { ok: true; warning?: string; recoveredSentAppend: true }
   | { ok: false; error: string }
@@ -262,12 +267,15 @@ async function finalizeCommittedSmtpDraft(
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-  const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
-  const smtpCc = input.cc?.trim()
-    ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+  const sentTo = recipientFieldFromJson(draft.to_json);
+  const sentCc = recipientFieldFromJson(draft.cc_json);
+  const sentBcc = recipientFieldFromJson(draft.bcc_json);
+  const smtpTo = extractDeliveryAddressesFromRecipientField(sentTo).join(', ');
+  const smtpCc = sentCc.trim()
+    ? extractDeliveryAddressesFromRecipientField(sentCc).join(', ')
     : undefined;
-  const smtpBcc = input.bcc?.trim()
-    ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+  const smtpBcc = sentBcc.trim()
+    ? extractDeliveryAddressesFromRecipientField(sentBcc).join(', ')
     : undefined;
   const outboundMessageId =
     draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
@@ -275,7 +283,7 @@ async function finalizeCommittedSmtpDraft(
   const ticket = draft.ticket_code?.trim();
   const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
   const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
-  const recoveredAttachments = (input.attachmentPaths ?? [])
+  const recoveredAttachments = parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json)
     .filter((attachmentPath) => {
       try {
         return fs.statSync(attachmentPath).isFile();
@@ -293,8 +301,8 @@ async function finalizeCommittedSmtpDraft(
     cc: smtpCc,
     bcc: smtpBcc,
     subject: finalSubject,
-    text: input.bodyText,
-    html: html || undefined,
+    text: draft.body_text ?? '',
+    html: draft.body_html || undefined,
     messageId: outboundMessageId,
     inReplyTo: draft.in_reply_to ?? undefined,
     references: draft.references_header ?? undefined,
@@ -305,6 +313,30 @@ async function finalizeCommittedSmtpDraft(
     return { ok: true, warning: fin.sentAppendWarning, recoveredSentAppend: true };
   }
   return { ok: true, recoveredSentAppend: true };
+}
+
+/** Wer den Versand ausloest: SendCompose die Sitzung, der geplante Versand den gespeicherten Planer. */
+export type ComposeSendActor = { userId: string; role: SessionRole };
+
+/**
+ * C-A79 (G5): Die Eltern-Mail liefert Threading-Header, Ticket und den KI-Kontext
+ * nur, wenn der Handelnde ihr Konto lesen darf; „erledigt" setzen braucht
+ * Schreibrecht. Ohne Akteur zaehlt nur eine Eltern-Mail aus dem Konto des
+ * Entwurfs. Sonst wird der Bezug stillschweigend verworfen.
+ */
+function replyParentAccess(
+  inReplyToMessageId: number | null | undefined,
+  draftAccountId: number,
+  actor: ComposeSendActor | null | undefined,
+): { usable: boolean; canMarkDone: boolean } {
+  const parent = inReplyToMessageId ? getEmailMessageById(inReplyToMessageId) : undefined;
+  if (!parent) return { usable: false, canMarkDone: false };
+  const may = (access: 'ro' | 'rw') =>
+    actor
+      ? canAccessLocalAccount({ userId: actor.userId, accountId: parent.account_id, access, role: actor.role })
+      : parent.account_id === draftAccountId;
+  const usable = may('ro');
+  return { usable, canMarkDone: usable && may('rw') };
 }
 
 function maybeMarkReplyParentDone(
@@ -341,9 +373,11 @@ export async function sendComposeDraft(input: {
   pgpSign?: boolean;
   pgpPassphrase?: string;
   pgpUserId?: string;
+  /** Prueft die Eltern-Mail (C-A79); fehlt er, zaehlt nur eine Eltern-Mail aus demselben Konto. */
+  actor?: ComposeSendActor | null;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
-  | { ok: false; error: string; workflowRunId?: number | null }
+  | { ok: false; error: string; workflowRunId?: number | null; deliveryAmbiguous?: true }
 > {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -382,7 +416,25 @@ export async function sendComposeDraft(input: {
     const acc = getEmailAccountById(input.accountId);
     if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-    let bodyText = input.bodyText;
+    // Checked before anything is written back to the draft: after a committed
+    // SMTP send the draft row is the only record of what actually went out.
+    if (isSmtpCommitted(input.draftMessageId)) {
+      const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
+      clearOutboundHoldForResend(input.draftMessageId);
+      const recovered = await finalizeCommittedSmtpDraft(input, draft);
+      const recoveredParent = replyParentAccess(input.inReplyToMessageId, input.accountId, input.actor);
+      maybeMarkReplyParentDone(
+        recoveredParent.canMarkDone ? input.inReplyToMessageId : null,
+        input.draftMessageId,
+        input.markReplyParentDone,
+      );
+      return recovered;
+    }
+
+    // The draft and the outbound review keep the user's text; only the SMTP
+    // message (and, after acceptance, the sent copy) carries the PGP armor.
+    const bodyText = input.bodyText;
+    let smtpBodyText = bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     if (input.pgpEncrypt) {
       const hasAttachments = (input.attachmentPaths?.length ?? 0) > 0;
@@ -411,8 +463,9 @@ export async function sendComposeDraft(input: {
         sign: input.pgpSign,
         passphrase: input.pgpPassphrase,
       });
-      bodyText = prepared.bodyText;
+      smtpBodyText = prepared.bodyText;
     }
+    const pgpSent = Boolean(input.pgpEncrypt || input.pgpSign);
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
@@ -432,16 +485,7 @@ export async function sendComposeDraft(input: {
     const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
     clearOutboundHoldForResend(input.draftMessageId);
 
-    if (isSmtpCommitted(input.draftMessageId)) {
-      const recovered = await finalizeCommittedSmtpDraft(input, draft, html ?? null);
-      maybeMarkReplyParentDone(
-        input.inReplyToMessageId,
-        input.draftMessageId,
-        input.markReplyParentDone,
-      );
-      return recovered;
-    }
-
+    const parentAccess = replyParentAccess(input.inReplyToMessageId, input.accountId, input.actor);
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,
       accountId: input.accountId,
@@ -451,7 +495,7 @@ export async function sendComposeDraft(input: {
       to: input.to,
       cc: input.cc,
       bcc: input.bcc,
-      inReplyToMessageId: input.inReplyToMessageId,
+      inReplyToMessageId: parentAccess.usable ? input.inReplyToMessageId : null,
       attachmentCount: input.attachmentPaths?.length ?? 0,
       attachmentPaths: input.attachmentPaths,
     });
@@ -466,7 +510,7 @@ export async function sendComposeDraft(input: {
     let ticketCode: string | null = null;
     let threadId: string | null = null;
     let parentForThreading: ReturnType<typeof getEmailMessageById> | null = null;
-    if (input.inReplyToMessageId) {
+    if (input.inReplyToMessageId && parentAccess.usable) {
       parentForThreading = getEmailMessageById(input.inReplyToMessageId);
       if (parentForThreading?.ticket_code) {
         ticketCode = parentForThreading.ticket_code;
@@ -535,12 +579,13 @@ export async function sendComposeDraft(input: {
       }
     }
 
-    const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+    // Delivery addresses keep the local part (case, plus tag) intact.
+    const smtpTo = extractDeliveryAddressesFromRecipientField(input.to).join(', ');
     const smtpCc = input.cc?.trim()
-      ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+      ? extractDeliveryAddressesFromRecipientField(input.cc).join(', ')
       : undefined;
     const smtpBcc = input.bcc?.trim()
-      ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+      ? extractDeliveryAddressesFromRecipientField(input.bcc).join(', ')
       : undefined;
 
     let htmlOut = html || undefined;
@@ -578,7 +623,7 @@ export async function sendComposeDraft(input: {
         cc: smtpCc,
         bcc: smtpBcc,
         subject: finalSubject,
-        text: bodyText,
+        text: smtpBodyText,
         html: input.pgpEncrypt ? undefined : htmlOut,
         attachments: allAttachments.length > 0 ? allAttachments : undefined,
         messageId: outboundMessageId,
@@ -588,7 +633,21 @@ export async function sendComposeDraft(input: {
         ...(autoSubmitted ? { headers: { 'Auto-Submitted': 'auto-replied' } } : {}),
       });
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        // Failure after the complete message body: the server may have
+        // accepted it, so callers must not resend automatically.
+        ...(e instanceof SmtpDeliveryAmbiguousError ? { deliveryAmbiguous: true as const } : {}),
+      };
+    }
+    if (pgpSent) {
+      // SMTP accepted the PGP message: the sent copy keeps the armor, never the
+      // plaintext. Written before the committed marker so a crash in between
+      // cannot finalize a plaintext sent copy (recovery reads the stored draft).
+      getDb()
+        .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ?, body_html = ? WHERE id = ?`)
+        .run(smtpBodyText, input.pgpEncrypt ? null : html ?? null, input.draftMessageId);
     }
     markSmtpCommitted(input.draftMessageId);
     // Erfolgreich versendet — ein evtl. offener Freigabe-Zustand ist erledigt.
@@ -605,7 +664,7 @@ export async function sendComposeDraft(input: {
       cc: smtpCc,
       bcc: smtpBcc,
       subject: finalSubject,
-      text: bodyText,
+      text: smtpBodyText,
       html: input.pgpEncrypt ? undefined : htmlOut || undefined,
       messageId: outboundMessageId,
       inReplyTo: threadHeaders.inReplyTo,
@@ -615,7 +674,7 @@ export async function sendComposeDraft(input: {
     });
 
     maybeMarkReplyParentDone(
-      input.inReplyToMessageId,
+      parentAccess.canMarkDone ? input.inReplyToMessageId : null,
       input.draftMessageId,
       input.markReplyParentDone,
     );

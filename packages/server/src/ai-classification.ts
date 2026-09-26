@@ -1,6 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  interpolateWorkflowPlaceholders,
   messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
@@ -134,6 +135,11 @@ export type AiReviewJobPlan = Readonly<{
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
+  /**
+   * Terminal-Kontext fuer ein Urteil ohne Kante (BLOCK, block/error ohne
+   * Folgeknoten): der Zweig endet dann hier wie ein terminaler Knoten.
+   */
+  terminalChainPayloadForUnwiredPort?: Record<string, unknown>;
 }>;
 
 export type AiReviewJobPort = Readonly<{
@@ -617,8 +623,7 @@ export function createAiReviewPreviewRunner(
 
       const strings = stringPayload(input.eventStrings);
       const variables = variablePayload(input.eventVariables);
-      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
-        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      const userTemplate = context.prompt?.user_template ?? input.fallbackUserTemplate ?? '';
       const output = await runTrackedChatCompletion(
         options,
         {
@@ -696,8 +701,13 @@ export function createPostgresAiReviewPort(
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      let userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
-        .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      // Erst die Vorlage fuellen, dann den Antwort-Kontext anhaengen: er ist
+      // Mailtext und darf selbst nicht interpoliert werden.
+      let userPrompt = interpolateWorkflowTemplate(
+        context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '',
+        strings,
+        variables,
+      );
       if (input.replyParentMessageId !== undefined) {
         const parentBlock = await withWorkspaceTransaction(
           options.db,
@@ -705,7 +715,7 @@ export function createPostgresAiReviewPort(
           async (trx) => loadReplyParentContextBlock(trx, input.workspaceId, input.replyParentMessageId!),
           { applySession: options.applyWorkspaceSession },
         );
-        if (parentBlock) userTemplate = `${userTemplate}${parentBlock}`;
+        if (parentBlock) userPrompt = `${userPrompt}${parentBlock}`;
       }
       try {
         // Config errors (missing prompt/profile/key) must take the same fail-closed
@@ -731,7 +741,7 @@ export function createPostgresAiReviewPort(
             apiKey,
             system: input.systemPrompt
               ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
-            user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+            user: userPrompt,
           },
         );
         const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
@@ -770,14 +780,7 @@ export function createPostgresAiReviewPort(
           async (trx) => {
             if (blocked) {
               await persistAiReviewBlock(trx, input, now());
-              if (input.continuation) {
-                await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-                  workspaceId: input.workspaceId,
-                  messageId: input.messageId,
-                  actorUserId: input.continuation.actorUserId,
-                  continuation: input.continuation,
-                }, now());
-              }
+              await completeReviewBranchWithoutEdge(trx, input, true, now());
               return;
             }
             if (input.continuation) {
@@ -1106,19 +1109,18 @@ export function createPostgresAiPickCannedPort(
         }
 
         // When the model returns "0 = no canned template fits", draftBody stays
-        // null. If a continuation is queued in that state, downstream nodes such
-        // as email.send_draft would error out (no draft.id). Surface a clear
-        // no-match flag in the continuation variables so the workflow can branch
-        // or skip; do NOT enqueue a continuation that lacks a draft when the
-        // node was configured to create one.
+        // null. Surface a clear no-match flag in the continuation variables so
+        // the workflow can branch on it (desktop does the same synchronously).
+        // The continuation must still be queued: the parent run ended as
+        // deferred and only the resumed run advances the join barrier and the
+        // inbound priority chain. Skipping it left the message's remaining
+        // inbound workflows hanging forever. A downstream node that needs
+        // draft.id (email.send_draft) fails with a regular error instead.
         if (input.createDraft && draftBody === null) {
           continuationVariables['ai.canned.no_match'] = true;
         }
         const willCreateDraft = input.createDraft && draftBody !== null;
-        // Skip the continuation when createDraft was requested but no draft was
-        // produced — downstream nodes that depend on draft.id would error out.
-        const shouldEnqueueContinuation = !!input.continuation
-          && (willCreateDraft || !input.createDraft);
+        const shouldEnqueueContinuation = !!input.continuation;
 
         // Analog zu ai.agent: ohne passenden Baustein (pick 0) oder mit
         // createDraft:false ist der Job erfolgreich zu Ende gelaufen, nur eben
@@ -1714,14 +1716,7 @@ async function maybeEnqueueOutboundReviewContinuation(
   if (!resumeNodeId) {
     // No block/error edge: still advance the inbound priority chain so later
     // workflows are not stranded after a deferred AI child terminates.
-    if (port !== 'ok') {
-      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-        workspaceId: input.workspaceId,
-        messageId: input.messageId,
-        actorUserId: continuation.actorUserId,
-        continuation,
-      }, now);
-    }
+    if (port !== 'ok') await completeReviewBranchWithoutEdge(trx, input, port === 'block', now);
     return;
   }
   await enqueueContinuation(trx, {
@@ -1731,6 +1726,33 @@ async function maybeEnqueueOutboundReviewContinuation(
     variables,
     now,
   });
+}
+
+/**
+ * Das Urteil hat keine Kante (BLOCK bzw. block/error ohne Folgeknoten): der
+ * Zweig endet hier wie bei einem terminalen Knoten — Join-Barriere auch ohne
+ * Kette abbauen, Kette weiterschalten und bei gefaelltem Urteil als angewendet
+ * markieren (vgl. ai.review_draft).
+ */
+async function completeReviewBranchWithoutEdge(
+  trx: WorkspaceTransaction,
+  input: AiReviewJobPlan,
+  applied: boolean,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  if (input.terminalChainPayloadForUnwiredPort) {
+    await completeTerminalInboundChild(trx, input.terminalChainPayloadForUnwiredPort, { applied, now });
+    return;
+  }
+  // Jobs von vor diesem Stempel: nur die Kette weiterschalten.
+  await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    actorUserId: continuation.actorUserId,
+    continuation,
+  }, now);
 }
 
 async function enqueueClassificationContinuation(
@@ -1923,20 +1945,18 @@ function stringsFromOptionalMessage(message: ClassificationMessageRow | null): R
   };
 }
 
+// Ein Durchlauf (Core-Helfer): eingesetzte Werte werden nie erneut gescannt,
+// sonst loest ein {{…}} aus dem Mailtext interne Variablen (http.body,
+// mssql.rows …) auf. Der Callback-Ersatz wertet auch keine $-Muster aus.
 function interpolateWorkflowTemplate(
   template: string,
   strings: Record<string, string>,
   variables: JobPayload,
 ): string {
-  let output = template;
-  for (const [key, value] of Object.entries(strings)) {
-    output = output.replace(new RegExp(`\\{\\{${escapeRegex(key)}\\}\\}`, 'g'), value);
-  }
-  output = output.replace(/\{\{text\}\}/g, strings.combined_text ?? '');
-  for (const [key, value] of Object.entries(variables)) {
-    output = output.replace(new RegExp(`\\{\\{${escapeRegex(key)}\\}\\}`, 'g'), String(value ?? ''));
-  }
-  return output;
+  return interpolateWorkflowPlaceholders(template, {
+    strings,
+    variables: variables as Record<string, string | number | boolean | null | undefined>,
+  });
 }
 
 function stringPayload(value: unknown): Record<string, string> {
@@ -1987,10 +2007,6 @@ function variablePayload(value: unknown): JobPayload {
     }
   }
   return out;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function serverWorkerSourceRow() {

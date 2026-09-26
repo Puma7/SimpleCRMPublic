@@ -1,15 +1,16 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "@tanstack/react-router"
 import { IPCChannels } from "@shared/ipc/channels"
+import { ensureTurnstileScript } from "@/components/auth/login-captcha-gate"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Loader2, Plus, X } from "lucide-react"
-import { invokeRenderer } from "@/services/transport"
+import { createServerAuthClient, getRendererTransport, invokeRenderer } from "@/services/transport"
 
 // The public portal is unauthenticated by design. It deliberately does NOT
 // load the workspace's reason vocabulary (the customer doesn't pick a reason
@@ -26,6 +27,11 @@ type DraftItem = {
 
 function emptyItem(): DraftItem {
   return { key: crypto.randomUUID(), sku: "", productName: "", quantity: 1 }
+}
+
+type PortalCaptchaConfig = {
+  captchaRequired: boolean
+  siteKey: string | null
 }
 
 type CreatedRecord = {
@@ -48,6 +54,45 @@ export default function PortalReturnsNewPage() {
   const [submitting, setSubmitting] = useState(false)
   const [created, setCreated] = useState<CreatedRecord | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // null while the portal's CAPTCHA requirement is still loading.
+  const [captcha, setCaptcha] = useState<PortalCaptchaConfig | null>(null)
+  const [captchaChallenge, setCaptchaChallenge] = useState<string | null>(null)
+  const [captchaError, setCaptchaError] = useState<string | null>(null)
+  // Bumped to re-render the widget once a challenge was spent on a failed submit.
+  const [captchaRound, setCaptchaRound] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    void (invokeRenderer(IPCChannels.Returns.PortalConfig, { token }) as Promise<PortalCaptchaConfig>)
+      .then((config) => {
+        if (cancelled) return
+        const siteKey = typeof config?.siteKey === "string" && config.siteKey ? config.siteKey : null
+        setCaptcha({ captchaRequired: config?.captchaRequired === true && siteKey !== null, siteKey })
+      })
+      .catch(() => {
+        // An unknown/disabled token surfaces its error on submit instead.
+        if (!cancelled) setCaptcha({ captchaRequired: false, siteKey: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  const handleCaptchaToken = useCallback(async (turnstileToken: string) => {
+    setCaptchaError(null)
+    try {
+      setCaptchaChallenge(await verifyPortalCaptcha(turnstileToken))
+    } catch {
+      setCaptchaChallenge(null)
+      setCaptchaError("CAPTCHA-Prüfung fehlgeschlagen. Bitte erneut versuchen.")
+    }
+  }, [])
+
+  const handleCaptchaUnavailable = useCallback(() => {
+    setCaptchaError("CAPTCHA konnte nicht geladen werden. Bitte laden Sie die Seite neu.")
+  }, [])
+
+  const captchaPending = captcha === null || (captcha.captchaRequired && !captchaChallenge)
 
   const canSubmit = useMemo(
     () => items.some((it) => it.quantity > 0 && (it.sku.trim() || it.productName.trim())),
@@ -71,15 +116,21 @@ export default function PortalReturnsNewPage() {
             productName: it.productName.trim() || null,
             quantity: Math.max(1, Math.floor(it.quantity)),
           })),
+        ...(captchaChallenge ? { captchaChallenge } : {}),
       }
       const record = (await invokeRenderer(IPCChannels.Returns.PortalCreate, payload)) as CreatedRecord
       setCreated(record)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Anlegen fehlgeschlagen")
+      if (captchaChallenge) {
+        // The server consumes a challenge on use; a retry needs a fresh one.
+        setCaptchaChallenge(null)
+        setCaptchaRound((round) => round + 1)
+      }
     } finally {
       setSubmitting(false)
     }
-  }, [token, orderNumber, customerEmail, customerName, notes, items])
+  }, [token, orderNumber, customerEmail, customerName, notes, items, captchaChallenge])
 
   if (created) {
     const lookupHref = `/portal/${token}/returns/${encodeURIComponent(created.returnNumber)}`
@@ -213,7 +264,19 @@ export default function PortalReturnsNewPage() {
             />
           </div>
 
-          <Button onClick={() => void submit()} disabled={!canSubmit || submitting}>
+          {captcha?.captchaRequired && captcha.siteKey ? (
+            <div className="space-y-2">
+              <PortalTurnstile
+                key={captchaRound}
+                siteKey={captcha.siteKey}
+                onToken={handleCaptchaToken}
+                onUnavailable={handleCaptchaUnavailable}
+              />
+              {captchaError ? <p className="text-sm text-destructive">{captchaError}</p> : null}
+            </div>
+          ) : null}
+
+          <Button onClick={() => void submit()} disabled={!canSubmit || submitting || captchaPending}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Retoure absenden
           </Button>
@@ -221,6 +284,49 @@ export default function PortalReturnsNewPage() {
       </Card>
     </div>
   )
+}
+
+async function verifyPortalCaptcha(turnstileToken: string): Promise<string> {
+  const transport = getRendererTransport()
+  if (transport.kind !== "http" || !transport.serverBaseUrl) {
+    throw new Error("CAPTCHA ist nicht verfügbar")
+  }
+  return createServerAuthClient({ baseUrl: transport.serverBaseUrl }).verifyCaptcha(turnstileToken)
+}
+
+function PortalTurnstile(props: {
+  siteKey: string
+  onToken: (token: string) => void
+  onUnavailable: () => void
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const { siteKey, onToken, onUnavailable } = props
+
+  useEffect(() => {
+    let cancelled = false
+    let widgetId: string | null = null
+    void ensureTurnstileScript()
+      .then(() => {
+        if (cancelled || !containerRef.current || !window.turnstile) return
+        containerRef.current.innerHTML = ""
+        widgetId = window.turnstile.render(containerRef.current, {
+          sitekey: siteKey,
+          theme: "auto",
+          callback: (token) => onToken(token),
+          "error-callback": () => {
+            if (widgetId) window.turnstile?.reset(widgetId)
+          },
+        })
+      })
+      .catch(() => {
+        if (!cancelled) onUnavailable()
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [siteKey, onToken, onUnavailable])
+
+  return <div ref={containerRef} className="flex min-h-16 justify-center" data-testid="portal-captcha" />
 }
 
 function updateDraftItem(

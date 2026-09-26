@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import { MAIL_SCHEMA_GENERATION } from '../db/mail-schema-version';
 import { inspectZipBackup } from './email-local-backup';
 import { exportLocalMailBackupToPath, MAX_BACKUP_ATTACH_BYTES } from './email-local-backup-export';
+import { RESTORE_ZIP_MAX_ENTRIES } from './email-local-backup-limits';
 import {
   findDatabaseSqliteInTree,
   resolveSafePathUnderDirectory,
@@ -23,7 +24,6 @@ import {
 import { closeDatabase, reopenDatabaseConnection } from '../sqlite-service';
 
 const RESTORE_CONFIRM_PHRASE = 'WIEDERHERSTELLEN';
-const RESTORE_ZIP_MAX_ENTRIES = 10_000;
 const RESTORE_ZIP_MAX_ENTRY_BYTES = MAX_BACKUP_ATTACH_BYTES;
 const RESTORE_ZIP_MAX_TOTAL_BYTES = MAX_BACKUP_ATTACH_BYTES + 1024 * 1024 * 1024;
 
@@ -259,10 +259,15 @@ function renameForBackup(targetPath: string, suffix: string): string | null {
 
 function rollbackRenamedBackup(targetPath: string, backupPath: string | null): void {
   if (!backupPath || !fs.existsSync(backupPath)) return;
-  if (fs.existsSync(targetPath)) {
-    fs.rmSync(targetPath, { recursive: true, force: true });
+  try {
+    if (fs.existsSync(targetPath)) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+    }
+    fs.renameSync(backupPath, targetPath);
+  } catch (rollbackErr) {
+    // Keep going so a failed attachments rollback cannot block the database one.
+    console.error(`[restore] rollback of ${targetPath} failed; data remains at ${backupPath}`, rollbackErr);
   }
-  fs.renameSync(backupPath, targetPath);
 }
 
 export { findDatabaseSqliteInTree } from './email-zip-path-safety';
@@ -373,9 +378,13 @@ export async function restoreLocalMailBackup(input: {
         throw closeErr;
       }
 
-      const dbBackupPath = renameForBackup(dbPath, stamp);
-      const attBackupPath = renameForBackup(attRoot, stamp);
+      // Both renames sit inside the rollback scope: if the attachments folder is
+      // locked (EPERM/EBUSY on Windows) the already moved database must come back.
+      let dbBackupPath: string | null = null;
+      let attBackupPath: string | null = null;
       try {
+        dbBackupPath = renameForBackup(dbPath, stamp);
+        attBackupPath = renameForBackup(attRoot, stamp);
         fs.copyFileSync(extractedDb, dbPath);
         if (extractedAtt) {
           fs.cpSync(extractedAtt, attRoot, { recursive: true });

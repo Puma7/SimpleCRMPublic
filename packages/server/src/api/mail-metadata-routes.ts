@@ -43,6 +43,7 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
+import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 
 const DEFAULT_METADATA_LIMIT = 50;
 const MAX_METADATA_LIMIT = 100;
@@ -1206,23 +1207,18 @@ async function publishVisibilityFilterInvalidation(
     );
     return;
   }
-  for (const targetUserId of new Set(targets)) {
-    try {
-      await ports.events?.publish({
-        type: 'email_acl.changed',
-        workspaceId,
-        entityType: 'email_acl',
-        entityId: targetUserId,
-        actorUserId,
-        occurredAt: new Date().toISOString(),
-        payload: { targetUserId, state: 'changed' },
-      });
-    } catch (error) {
-      console.warn(
-        `[mail-metadata] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  if (!ports.events) return;
+  // Tag und Kategorie aendern nur die Sichtbarkeit einzelner Nachrichten; wie
+  // beim Workflow- und KI-Pfad kennzeichnet reason 'visibility_filter' das, damit
+  // Clients weder die Sitzung erneuern noch Konten-, Team- und Auswahlzustand
+  // verwerfen.
+  await publishMailVisibilityInvalidation({
+    workspaceId,
+    actorUserId,
+    targetUserIds: targets,
+    events: ports.events,
+    logPrefix: '[mail-metadata]',
+  });
 }
 
 async function handleCreateEmailTeamMember(

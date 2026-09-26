@@ -43,6 +43,25 @@ export function workflowDirectionForTrigger(trigger: WorkflowTriggerKind): Workf
   return 'inbound';
 }
 
+/**
+ * Trigger, die nur die Desktop-Runtime ausloest (Cron-Scheduler, Entwurf,
+ * CRM-/Aufgaben-/Termin-Ereignisse). Die Server-Edition reiht Workflows nur
+ * fuer inbound, outbound, manual, relay und webhook.incoming ein; unbekannte
+ * Namen laufen dort als manual. Spiegel: src/components/email/workflow/trigger-labels.ts.
+ */
+export const DESKTOP_ONLY_WORKFLOW_TRIGGERS: ReadonlySet<string> = new Set([
+  'draft_created',
+  'schedule',
+  'crm.deal_stage_changed',
+  'task.due',
+  'calendar.event_start',
+  'crm.customer_created',
+]);
+
+export function isServerWorkflowTrigger(trigger: string | null | undefined): boolean {
+  return typeof trigger === 'string' && !DESKTOP_ONLY_WORKFLOW_TRIGGERS.has(trigger);
+}
+
 export function workflowTriggerNeedsMessage(trigger: WorkflowTriggerKind): boolean {
   // 'relay' needs the persisted message: the follow-up graph reads its
   // tracking evidence (email.read_tracking_evidence).

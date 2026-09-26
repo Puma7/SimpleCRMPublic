@@ -84,6 +84,8 @@ const {
   restartEmailWorkflowCrons,
   startEmailBackgroundServices,
   stopEmailBackgroundServices,
+  getEmailBackgroundSyncSnapshot,
+  isEmailBackgroundSyncBusy,
 } = require('../../electron/email/email-imap-services') as typeof import('../../electron/email/email-imap-services');
 
 const logger = { warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -98,9 +100,14 @@ describe('email-imap-services', () => {
 
   test('start and stop background services', async () => {
     await startEmailBackgroundServices(logger);
+    await new Promise((resolve) => setImmediate(resolve));
     expect(cronTasks.length).toBeGreaterThan(0);
+    expect(getEmailBackgroundSyncSnapshot()).toMatchObject({ cronScheduled: true, idleImapAccountIds: [1] });
     stopEmailBackgroundServices();
-    expect(cronTasks.every((t) => t.stop.mock.calls.length > 0 || true)).toBe(true);
+    expect(cronTasks.every((t) => t.stop.mock.calls.length > 0)).toBe(true);
+    expect(client.logout).toHaveBeenCalled();
+    expect(getEmailBackgroundSyncSnapshot()).toMatchObject({ cronScheduled: false, idleImapAccountIds: [] });
+    expect(isEmailBackgroundSyncBusy()).toBe(false);
   });
 
   test('restart workflow crons after start', async () => {
@@ -132,6 +139,31 @@ describe('email-imap-services', () => {
     expect(syncAccountImap).toHaveBeenCalled();
     jest.restoreAllMocks();
     stopEmailBackgroundServices();
+  });
+
+  test('overlapping idle notifications cannot start duplicate account syncs', async () => {
+    await startEmailBackgroundServices(logger);
+    await new Promise((resolve) => setImmediate(resolve));
+    const existsHandler = client.on.mock.calls.find((call) => call[0] === 'exists')![1] as () => void;
+    let finishSync!: () => void;
+    (syncAccountImap as jest.Mock).mockImplementationOnce(() => new Promise<void>((resolve) => { finishSync = resolve; }));
+    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+    try {
+      existsHandler();
+      expect(isEmailBackgroundSyncBusy()).toBe(true);
+      expect(getEmailBackgroundSyncSnapshot().syncInFlightAccountIds).toEqual([1]);
+      existsHandler();
+      expect(syncAccountImap).toHaveBeenCalledTimes(1);
+      finishSync();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(isEmailBackgroundSyncBusy()).toBe(false);
+      existsHandler();
+      expect(syncAccountImap).toHaveBeenCalledTimes(1);
+    } finally {
+      finishSync?.();
+      jest.restoreAllMocks();
+      stopEmailBackgroundServices();
+    }
   });
 
   test('idle start failure schedules reconnect', async () => {

@@ -1,4 +1,4 @@
-import { WORKFLOW_TEMPLATES, type WorkflowTemplate } from '@simplecrm/core';
+import { isServerWorkflowTrigger, WORKFLOW_TEMPLATES, type WorkflowTemplate } from '@simplecrm/core';
 
 import type { ServerApiPorts } from './api';
 import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
@@ -10,10 +10,13 @@ import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
  * zur Laufzeit am nicht unterstützten Knoten stecken. Engine-Primitive
  * (trigger/condition/switch/…) sind immer da — geprüft wird nur data.nodeType.
  * Zwei-Stufen-KI-Antwort (ai.draft_reply / ai.review_draft) ist serverfähig.
+ * Ebenso fallen Vorlagen weg, deren Trigger der Server nie auslöst (Zeitplan,
+ * CRM-Ereignisse): sie ließen sich aktivieren, liefen aber nie.
  */
 export function listServerWorkflowTemplates(): WorkflowTemplate[] {
   return WORKFLOW_TEMPLATES.filter((template) =>
-    template.graph.nodes.every((node) => {
+    isServerWorkflowTrigger(template.trigger)
+    && template.graph.nodes.every((node) => {
       const nodeType = node.data.nodeType;
       return typeof nodeType !== 'string' || isServerWorkflowNodeTypeSupported(nodeType);
     }),

@@ -153,6 +153,26 @@ describe('email-vacation', () => {
     expect(sendSmtpForAccount).toHaveBeenCalled();
   });
 
+  // F-A7b-10: Die Abwesenheitsantwort nutzte nur isAutomatedInboundMessage und antwortete so auf Mailinglisten sowie noreply-/MAILER-DAEMON-Absender.
+  test('skips mailing-list mail and automated sender addresses like workflow auto-replies', async () => {
+    (getEmailAccountById as jest.Mock).mockReturnValue(baseAcc);
+    stmt.get.mockReturnValue(undefined);
+    (sendSmtpForAccount as jest.Mock).mockResolvedValue(undefined);
+    (getEmailMessageById as jest.Mock).mockReturnValue({
+      ...baseMsg,
+      raw_headers: 'List-Id: <team.lists.example.org>\r\nList-Post: <mailto:team@lists.example.org>\r\nPrecedence: list',
+    });
+    await maybeSendVacationAutoReply(1);
+    for (const address of ['noreply@shop.example', 'MAILER-DAEMON@mx.example.org']) {
+      (getEmailMessageById as jest.Mock).mockReturnValue({
+        ...baseMsg,
+        from_json: JSON.stringify({ value: [{ address }] }),
+      });
+      await maybeSendVacationAutoReply(1);
+    }
+    expect(sendSmtpForAccount).not.toHaveBeenCalled();
+  });
+
   test('skips precedence bulk headers', async () => {
     (getEmailAccountById as jest.Mock).mockReturnValue(baseAcc);
     (getEmailMessageById as jest.Mock).mockReturnValue({

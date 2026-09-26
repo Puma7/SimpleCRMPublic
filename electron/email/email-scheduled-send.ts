@@ -19,8 +19,42 @@ import {
   markScheduledSendDraftFailed,
   recordScheduledSendAttemptFailure,
 } from './email-scheduled-send-state';
+import { readScheduledSendActor } from './email-scheduled-send-actor';
+import type { ComposeSendActor } from './email-compose-send';
+import { USERS_TABLE } from '../database-schema';
+import { getDb } from '../sqlite-service';
+import { canAccessLocalAccount } from '../auth/auth-store';
+import type { SessionRole } from '../auth/session-store';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
+
+export const SCHEDULED_SEND_ACTOR_REVOKED_MESSAGE =
+  'Versand angehalten: Wer diesen Versand geplant hat, darf das Konto nicht mehr zum Senden nutzen '
+  + '(Zugriff entzogen oder Benutzer deaktiviert). Bitte prüfen und erneut planen oder direkt senden.';
+
+/**
+ * C-A2 (G6): Darf der gespeicherte Planende das Konto noch schreibend nutzen?
+ * Rolle und Aktiv-Status kommen aus der Benutzertabelle, nicht vom Zeitpunkt der
+ * Planung; geloeschte oder deaktivierte Benutzer gelten als entzogen. Ohne
+ * gespeicherten Akteur (Altbestand, Workflow) laeuft der Versand wie bisher.
+ */
+function scheduledSendActorAccess(
+  draftId: number,
+  accountId: number,
+): { revoked: boolean; actor: ComposeSendActor | null } {
+  const stored = readScheduledSendActor(draftId);
+  if (stored === undefined) return { revoked: false, actor: null };
+  const user = stored
+    ? (getDb()
+        .prepare(`SELECT role, is_active FROM ${USERS_TABLE} WHERE id = ?`)
+        .get(stored.userId) as { role: string; is_active: number } | undefined)
+    : undefined;
+  if (!stored || !user || user.is_active !== 1) return { revoked: true, actor: null };
+  const actor = { userId: stored.userId, role: user.role as SessionRole };
+  return canAccessLocalAccount({ ...actor, accountId, access: 'rw' })
+    ? { revoked: false, actor }
+    : { revoked: true, actor: null };
+}
 
 export async function processDueScheduledSends(
   logger: Pick<typeof console, 'warn' | 'debug'>,
@@ -69,6 +103,16 @@ export async function processDueScheduledSends(
         setDraftScheduledSendAt(draftId, null);
         continue;
       }
+      // Vor SMTP gegen die aktuellen Rechte des Planenden pruefen. Ist SMTP
+      // schon durch (Absturz vor dem Finalisieren), wird nur nachgezogen: die
+      // Mail ist raus, ein Anhalten zeigte sie faelschlich als offenen Entwurf.
+      const planner = scheduledSendActorAccess(draftId, draft.account_id);
+      if (planner.revoked && !getComposeDraftRecoveryState(draftId).smtpCommitted) {
+        setDraftScheduledSendAt(draftId, null);
+        markScheduledSendDraftFailed(draftId, SCHEDULED_SEND_ACTOR_REVOKED_MESSAGE);
+        logger.warn(`[email] scheduled send ${draftId}: Planender ohne Schreibzugriff, angehalten`);
+        continue;
+      }
       const attachmentPaths = parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json);
       const replyParent = (draft as { reply_parent_message_id?: number | null })
         .reply_parent_message_id;
@@ -83,6 +127,7 @@ export async function processDueScheduledSends(
         bcc: recipientFieldFromJson(draft.bcc_json) || undefined,
         attachmentPaths: attachmentPaths.length > 0 ? attachmentPaths : undefined,
         inReplyToMessageId: replyParent ?? undefined,
+        actor: planner.actor,
       });
       if (r.ok) {
         delivered = true;
@@ -91,6 +136,18 @@ export async function processDueScheduledSends(
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
+        if ('deliveryAmbiguous' in r && r.deliveryAmbiguous) {
+          // SMTP brach nach der vollstaendig uebertragenen Nachricht ab: der
+          // Server hat sie womoeglich angenommen. Ein automatischer Neuversand
+          // riskiert eine Doppelzustellung, also hier aufgeben.
+          setDraftScheduledSendAt(draftId, null);
+          markScheduledSendDraftFailed(
+            draftId,
+            `Zustellstatus unklar: kein automatischer Neuversand, bitte Gesendet-Ordner prüfen (${errMsg})`,
+          );
+          logger.warn(`[email] scheduled send ${draftId}: delivery ambiguous, no retry: ${errMsg}`);
+          continue;
+        }
         if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
           // Compose-Sendelock belegt: ein anderer Pfad sendet gerade. Ob er
           // Erfolg hat, wissen wir nicht — deshalb weder als zugestellt werten

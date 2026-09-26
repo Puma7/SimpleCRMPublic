@@ -378,6 +378,74 @@ describe('findOutboundGraphTraps', () => {
     );
     expect(findOutboundGraphTrapsShared(outboundSensitiveFixed as never)).toEqual([]);
   });
+
+  /**
+   * `levels` Bedingungen hintereinander, deren Ja-/Nein-Zweige vor der naechsten
+   * Bedingung wieder zusammenlaufen: Die Zahl der Pfade verdoppelt sich je Ebene,
+   * die Zahl der Knoten waechst nur linear.
+   */
+  function reconvergingOutboundChain(
+    levels: number,
+    { separateTargets, end }: { separateTargets: boolean; end: 'release' | 'dead_end' | 'loop' },
+  ): WorkflowGraphDocument {
+    const nodes: WorkflowGraphDocument['nodes'] = [{ id: 't1', type: 'trigger', data: { kind: 'outbound' } }];
+    const edges: WorkflowGraphDocument['edges'] = [{ id: 'e-t', source: 't1', target: 'c0' }];
+    for (let i = 0; i < levels; i++) {
+      const next = i + 1 < levels ? `c${i + 1}` : end === 'loop' ? 'c0' : 'end';
+      nodes.push({ id: `c${i}`, type: 'condition', data: { field: 'subject', op: 'contains', value: `x${i}` } });
+      if (separateTargets) {
+        nodes.push({ id: `a${i}`, type: 'action', data: { actionType: 'tag', tag: `a${i}` } });
+        nodes.push({ id: `b${i}`, type: 'action', data: { actionType: 'tag', tag: `b${i}` } });
+        edges.push(
+          { id: `y${i}`, source: `c${i}`, target: `a${i}`, label: 'yes' },
+          { id: `n${i}`, source: `c${i}`, target: `b${i}`, label: 'no' },
+          { id: `ea${i}`, source: `a${i}`, target: next },
+          { id: `eb${i}`, source: `b${i}`, target: next },
+        );
+      } else {
+        edges.push(
+          { id: `y${i}`, source: `c${i}`, target: next, label: 'yes' },
+          { id: `n${i}`, source: `c${i}`, target: next, label: 'no' },
+        );
+      }
+    }
+    if (end === 'release') {
+      nodes.push({ id: 'end', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } });
+    } else if (end === 'dead_end') {
+      nodes.push({ id: 'end', type: 'action', data: { actionType: 'tag', tag: 'end' } });
+    }
+    return { version: 1, nodes, edges };
+  }
+
+  const bothTrapFinders = [
+    findOutboundGraphTraps,
+    (doc: WorkflowGraphDocument) => findOutboundGraphTrapsShared(doc as never),
+  ];
+
+  // C-A63: Die Trap-Suche lief jeden Pfad durch wieder zusammenlaufende Bedingungen einzeln ab (2^n Schritte) und blockierte den Event-Loop schon bei rund 20 Ebenen fuer Sekunden.
+  it.each([
+    { label: 'identical yes/no targets, 22 levels', levels: 22, separateTargets: false },
+    { label: 'separate yes/no targets, 20 levels', levels: 20, separateTargets: true },
+  ])('checks reconverging conditions in linear time ($label)', ({ levels, separateTargets }) => {
+    const graph = reconvergingOutboundChain(levels, { separateTargets, end: 'release' });
+    for (const find of bothTrapFinders) {
+      const started = Date.now();
+      expect(find(graph)).toEqual([]);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    }
+  });
+
+  // C-A63: Auch mit Fehlerpfad oder Zyklus muss das Ergebnis dasselbe bleiben und schnell kommen.
+  it('reports the same dead end and loop on a reconverging chain, still fast', () => {
+    const deadEnd = reconvergingOutboundChain(20, { separateTargets: true, end: 'dead_end' });
+    const loop = reconvergingOutboundChain(20, { separateTargets: true, end: 'loop' });
+    for (const find of bothTrapFinders) {
+      const started = Date.now();
+      expect(find(deadEnd)).toEqual([{ code: 'dead_end', nodeId: 'end' }]);
+      expect(find(loop)).toEqual([{ code: 'dead_end', nodeId: 'c0' }]);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    }
+  });
 });
 
 describe('shipped outbound templates never trap mail', () => {

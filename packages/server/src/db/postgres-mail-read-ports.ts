@@ -25,6 +25,8 @@ import {
   buildLikeSearchSnippet,
   SEARCH_MARK_END,
   SEARCH_MARK_START,
+  incomingMailHost,
+  resolveTrustedAuthservId,
   type SpamEngineSettings,
   type SpamListMatch,
   type SpamScoreBreakdown,
@@ -38,6 +40,7 @@ import {
   escapeIlikePattern,
   hasSearchOperators,
   ilikeTextNeedles,
+  parseRegexSearch,
   parseServerMailSearchQuery,
   type ParsedMailSearchQuery,
 } from '../mail-search-sql';
@@ -82,6 +85,7 @@ import type {
   ServerDatabase,
 } from './schema';
 import type { PostgresSecretPort } from './postgres-secret-port';
+import { resolveEmailAccountReference } from './resolve-email-account-reference';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -102,6 +106,11 @@ import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
 } from '../draft-approval-actions';
+import {
+  composeDraftAttachmentPathsFromStored,
+  removeComposeDraftAttachmentDirectory,
+  removeComposeDraftAttachmentFiles,
+} from '../compose-draft-attachment-files';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -109,6 +118,8 @@ export type PostgresMailReadPortOptions = Readonly<{
   rspamdFetch?: typeof fetch;
   seenFlagSync?: Pick<ServerWorkflowImapActionPort, 'setSeen'>;
   outboundValidation?: EmailOutboundValidationApiPort;
+  /** Root of compose-draft uploads; enables removing files of deleted drafts / dropped attachments. */
+  attachmentsRoot?: string;
 }>;
 
 export type PostgresEmailAccountReadPortOptions = PostgresMailReadPortOptions & Readonly<{
@@ -166,6 +177,7 @@ const emailAccountSelectColumns = [
   'imap_delete_opt_in',
   'default_remote_content_policy',
   'respond_to_read_receipts',
+  'trusted_authserv_id',
   'updated_at',
 ] as const;
 
@@ -329,7 +341,7 @@ type EmailMessageApiRow =
     attachment_readable?: boolean;
   };
 
-type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
+type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number] | 'pop3_uidl'>;
 
 type EmailMessageSpamStatusMutationRow = Pick<EmailMessageRow, typeof emailMessageSpamStatusMutationColumns[number]>;
 type EmailMessageSecurityRow = Pick<EmailMessageRow, typeof emailMessageSecurityColumns[number]>;
@@ -516,7 +528,18 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await selectEmailAccountByPublicId(trx, input.workspaceId, input.id);
+          // Resolve the public id exactly like the mail ACL layer does: an id that names one
+          // account by postgres id and ANOTHER by legacy source_sqlite_id is ambiguous. The
+          // enforcer authorized the canonical account, so preferring the legacy match here
+          // would serve a different mailbox's identity — fail closed instead. (C-A67)
+          const reference = await resolveEmailAccountReference(trx, input.workspaceId, input.id);
+          if (!reference) return null;
+          const row = await trx
+            .selectFrom('email_accounts')
+            .select(emailAccountSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', reference.id)
+            .executeTakeFirst();
           if (!row) return null;
           // Same parent-only redaction as list(): a delegate reaching this account
           // ONLY as the parent of a scoped folder/message (restricted scope that does
@@ -590,6 +613,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
               default_remote_content_policy: 'blocked',
               respond_to_read_receipts: 'never',
               read_receipt_trusted_domains: null,
+              trusted_authserv_id: input.values.trustedAuthservId ?? null,
               source_row: serverApiSourceRow(),
               imported_in_run_id: null,
               created_at: now,
@@ -1115,6 +1139,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             rows = await runQuery(undefined, page);
           } else if (regex) {
             searchMode = 'regex';
+            // The pattern comes straight from the user. With back-references
+            // PostgreSQL's regex engine backtracks super-linearly, and nothing
+            // else ends the scan (a client abort does not cancel it), so bound
+            // this one statement; SET LOCAL ends with the transaction.
+            await kyselySql`SET LOCAL statement_timeout = '10s'`.execute(trx);
             rows = await runQuery('regex', page);
           } else if (!hasTextNeedles && parsed && !hasSearchOperators(parsed)) {
             // Nichts Suchbares in der Query (z. B. nur Anfuehrungszeichen):
@@ -1221,11 +1250,23 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             assignedToUserId: 'email_messages.assigned_to_user_id',
             assignedTo: 'email_messages.assigned_to',
           });
+          // Only the mutation re-read passes a content scope (the GET route already gated
+          // mail.content.read): a triage/draft-edit delegate without it gets the body redacted.
+          const contentReadablePredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
+          });
           let query = trx
             .selectFrom('email_messages')
             .select(input.includeBody ? emailMessageDetailColumns : emailMessageSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
+          if (contentReadablePredicate) {
+            query = query.select(kyselySql<boolean>`(${contentReadablePredicate})`.as('content_readable'));
+          }
           if (replyParentScopePredicate) {
             query = query.select(kyselySql<boolean>`(
               email_messages.reply_parent_message_id is null
@@ -1255,15 +1296,46 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       );
     },
     async updateComposeDraft(input) {
-      return withWorkspaceTransaction(
+      let droppedAttachmentPaths: string[] = [];
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
-          if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          if (!isLocalDraftRow(current)) return { ok: false as const, reason: 'not_local_draft' as const };
           const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
           if (claimedConflict) return claimedConflict;
+          // Composer "Von" switch: move the draft (same id, so draft-local uploads
+          // under compose-drafts/<id>/ stay valid) into the target account's draft folder.
+          let accountMove: {
+            account_id: number;
+            account_source_sqlite_id: number;
+            folder_id: number;
+            folder_source_sqlite_id: number;
+            uid: number;
+            from_json: ReturnType<typeof composeDraftFromJson>;
+          } | undefined;
+          if (input.values.accountId !== undefined) {
+            const account = await selectEmailAccountByPublicId(trx, input.workspaceId, input.values.accountId);
+            if (!account) return { ok: false as const, reason: 'account_not_found' as const };
+            if (Number(account.id) !== Number(current.account_id)) {
+              const folder = await ensureServerComposeDraftFolder(trx, input.workspaceId, account);
+              accountMove = {
+                account_id: Number(account.id),
+                account_source_sqlite_id: Number(account.source_sqlite_id),
+                folder_id: Number(folder.id),
+                folder_source_sqlite_id: Number(folder.source_sqlite_id),
+                uid: await nextLocalDraftUid(trx, input.workspaceId, Number(account.id), Number(folder.id)),
+                from_json: composeDraftFromJson(account),
+              };
+            }
+          }
+          if (input.values.draftAttachmentPaths !== undefined) {
+            const kept = new Set(input.values.draftAttachmentPaths.map((value) => value.trim()));
+            droppedAttachmentPaths = composeDraftAttachmentPathsFromStored(current.draft_attachment_paths_json)
+              .filter((value) => !kept.has(value));
+          }
           const bodyText = input.values.bodyText ?? current.body_text ?? '';
           const snippet = bodyText.trim()
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
@@ -1282,13 +1354,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             || input.values.toJson !== undefined
             || input.values.ccJson !== undefined
             || input.values.bccJson !== undefined
-            || input.values.draftAttachmentPaths !== undefined;
+            || input.values.draftAttachmentPaths !== undefined
+            || accountMove !== undefined;
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
               subject: input.values.subject ?? current.subject,
               body_text: bodyText,
               snippet,
+              ...(accountMove ?? {}),
               ...(input.values.bodyHtml === undefined ? {} : { body_html: input.values.bodyHtml }),
               ...(input.values.toJson === undefined ? {} : { to_json: input.values.toJson }),
               ...(input.values.fromJson === undefined ? {} : { from_json: input.values.fromJson }),
@@ -1335,6 +1409,16 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         },
         { applySession: options.applyWorkspaceSession },
       );
+      if (result.ok && options.attachmentsRoot && droppedAttachmentPaths.length > 0) {
+        await removeComposeDraftAttachmentFiles({
+          attachmentsRoot: options.attachmentsRoot,
+          workspaceId: input.workspaceId,
+          draftMessageId: input.messageId,
+          storagePaths: droppedAttachmentPaths,
+          now: new Date(),
+        });
+      }
+      return result;
     },
     async scheduleDraftSend(input) {
       return withWorkspaceTransaction(
@@ -1825,7 +1909,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       return { count: result.count };
     },
     async bulkDeleteLocalDrafts(input) {
-      return withWorkspaceTransaction(
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => deleteLocalDraftRows(trx, {
@@ -1834,9 +1918,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         }),
         { applySession: options.applyWorkspaceSession },
       );
+      return removeDeletedDraftUploads(options, input.workspaceId, result);
     },
     async deleteLocalDraft(input) {
-      return withWorkspaceTransaction(
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
@@ -1845,13 +1930,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           }
           const row = await trx
             .selectFrom('email_messages')
-            .select(['id', 'uid'])
+            .select(['id', 'uid', 'pop3_uidl', 'folder_kind'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .forUpdate()
             .executeTakeFirst();
           if (!row) return { ok: false as const, reason: 'not_found' as const };
-          if (Number(row.uid) >= 0) return { ok: false as const, reason: 'not_local_draft' as const };
+          if (!isLocalDraftRow(row)) return { ok: false as const, reason: 'not_local_draft' as const };
           return deleteLocalDraftRows(trx, {
             workspaceId: input.workspaceId,
             messageIds: [input.messageId],
@@ -1859,6 +1944,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         },
         { applySession: options.applyWorkspaceSession },
       );
+      return result.ok ? removeDeletedDraftUploads(options, input.workspaceId, result) : result;
     },
     async snooze(input) {
       return withWorkspaceTransaction(
@@ -2170,6 +2256,32 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
   };
 }
 
+// RFC 8601 §5: the Authentication-Results fallback only trusts fields from the
+// account's own receiving side (configured authserv-id or the incoming server's
+// domain). A message without an account trusts none.
+async function loadTrustedAuthservId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | string | null,
+): Promise<string | null> {
+  if (accountId === null) return null;
+  const account = await trx
+    .selectFrom('email_accounts')
+    .select(['protocol', 'imap_host', 'pop3_host', 'trusted_authserv_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', Number(accountId))
+    .executeTakeFirst();
+  if (!account) return null;
+  return resolveTrustedAuthservId({
+    configured: account.trusted_authserv_id,
+    incomingHost: incomingMailHost({
+      protocol: account.protocol,
+      imapHost: account.imap_host,
+      pop3Host: account.pop3_host,
+    }),
+  });
+}
+
 async function runPostgresMailSecurityCheck(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -2192,6 +2304,7 @@ async function runPostgresMailSecurityCheck(
     bodyText: current.body_text,
     bodyHtml: current.body_html,
     mailauthEnabled: settings.mailauthEnabled,
+    trustedAuthservId: await loadTrustedAuthservId(trx, workspaceId, current.account_id),
     rspamdEnabled: settings.rspamdEnabled,
     rspamdUrl: settings.rspamdUrl,
     rspamdTimeoutMs: settings.rspamdTimeoutMs,
@@ -2737,39 +2850,63 @@ async function shouldSyncSeenFlagToServer(
   return String(row.protocol || 'imap').toLowerCase() === 'imap' && row.imap_sync_seen_on_open !== false;
 }
 
+type LocalDraftDeleteRowsResult =
+  | { ok: true; count: number; deletedIds: number[] }
+  | { ok: false; reason: 'scheduled_send_claimed'; message: string };
+
+// Uploaded compose files have no attachment row; once the draft row is gone
+// nothing references them anymore.
+async function removeDeletedDraftUploads(
+  options: PostgresMailReadPortOptions,
+  workspaceId: string,
+  result: LocalDraftDeleteRowsResult,
+): Promise<{ ok: true; count: number } | { ok: false; reason: 'scheduled_send_claimed'; message: string }> {
+  if (!result.ok) return result;
+  if (options.attachmentsRoot) {
+    for (const draftMessageId of result.deletedIds) {
+      await removeComposeDraftAttachmentDirectory({
+        attachmentsRoot: options.attachmentsRoot,
+        workspaceId,
+        draftMessageId,
+      });
+    }
+  }
+  return { ok: true, count: result.count };
+}
+
 async function deleteLocalDraftRows(
   trx: any,
   input: {
     workspaceId: string;
     messageIds: readonly number[];
   },
-): Promise<
-  | { ok: true; count: number }
-  | { ok: false; reason: 'scheduled_send_claimed'; message: string }
-> {
+): Promise<LocalDraftDeleteRowsResult> {
   const ids = normalizeMessageIdList(input.messageIds);
-  if (ids.length === 0) return { ok: true, count: 0 };
-  const drafts = await trx
+  if (ids.length === 0) return { ok: true, count: 0, deletedIds: [] };
+  const candidates = await trx
     .selectFrom('email_messages')
-    .select('id')
+    .select(['id', 'uid', 'pop3_uidl', 'folder_kind'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', 'in', ids)
     .where('uid', '<', 0)
     .orderBy('id', 'asc')
     .forUpdate()
     .execute();
-  for (const draft of drafts) {
-    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, Number(draft.id));
+  const draftIds = candidates
+    .filter((row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>) => isLocalDraftRow(row))
+    .map((row: { id: unknown }) => Number(row.id));
+  if (draftIds.length === 0) return { ok: true, count: 0, deletedIds: [] };
+  for (const draftId of draftIds) {
+    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, draftId);
     if (claimedConflict) return claimedConflict;
   }
   const rows = await trx
     .deleteFrom('email_messages')
     .where('workspace_id', '=', input.workspaceId)
-    .where('id', 'in', ids)
-    .where('uid', '<', 0)
+    .where('id', 'in', draftIds)
     .returning('id')
     .execute();
-  return { ok: true, count: rows.length };
+  return { ok: true, count: rows.length, deletedIds: rows.map((row: { id: unknown }) => Number(row.id)) };
 }
 
 async function bulkSetSpamStatusRows(
@@ -4094,21 +4231,6 @@ function applyMessageListOrder(
   return query.orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc').orderBy('id', 'desc');
 }
 
-function parseRegexSearch(search: string): { pattern: string; caseInsensitive: boolean } | null {
-  const trimmed = search.trim();
-  if (!trimmed.startsWith('/') || trimmed.length <= 2 || trimmed.lastIndexOf('/') <= 0) return null;
-  const lastSlash = trimmed.lastIndexOf('/');
-  const pattern = trimmed.slice(1, lastSlash);
-  const flags = trimmed.slice(lastSlash + 1);
-  try {
-    // Validate the renderer-compatible syntax before handing it to PostgreSQL.
-    new RegExp(pattern, flags.replace(/[^ims]/g, ''));
-  } catch {
-    return null;
-  }
-  return { pattern, caseInsensitive: !flags || flags.includes('i') };
-}
-
 function escapeLikePattern(value: string): string {
   return value.trim().replace(/[%_\\]/g, (ch) => `\\${ch}`);
 }
@@ -4840,14 +4962,7 @@ export async function createPostgresComposeDraftInTransaction(
       in_reply_to: null,
       references_header: null,
       subject: input.values.subject ?? '(Entwurf)',
-      from_json: addressJson({
-        value: [{
-          address: String(account.email_address).trim(),
-          ...(String(account.display_name ?? '').trim()
-            ? { name: String(account.display_name).trim() }
-            : {}),
-        }],
-      }),
+      from_json: composeDraftFromJson(account),
       to_json: input.values.toJson ?? null,
       cc_json: null,
       bcc_json: null,
@@ -4895,6 +5010,17 @@ export async function createPostgresComposeDraftInTransaction(
     .returning(emailMessageDetailColumns)
     .executeTakeFirstOrThrow();
   return { ok: true as const, message: mapEmailMessageRow(row, true) };
+}
+
+function composeDraftFromJson(account: Pick<EmailAccountRow, 'email_address' | 'display_name'>) {
+  return addressJson({
+    value: [{
+      address: String(account.email_address).trim(),
+      ...(String(account.display_name ?? '').trim()
+        ? { name: String(account.display_name).trim() }
+        : {}),
+    }],
+  });
 }
 
 async function ensureServerComposeDraftFolder(
@@ -4978,15 +5104,22 @@ async function selectLocalDraftForMutation(
 ): Promise<LocalDraftMutationRow | undefined> {
   let query = trx
     .selectFrom('email_messages')
-    .select(emailMessageDetailColumns)
+    .select([...emailMessageDetailColumns, 'pop3_uidl'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId);
   if (options.forUpdate) query = query.forUpdate();
   return query.executeTakeFirst();
 }
 
-function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
-  return Number(row.uid) < 0;
+/**
+ * A local compose draft, and nothing else with a negative uid: received POP3 mail
+ * (uid <= POP3_UID_CEILING, pop3_uidl set) and sent local copies (folder 'sent') must
+ * not be edited or permanently deleted through the draft routes (desktop parity:
+ * isLocalComposeDraftRow in electron/email/email-store.ts).
+ */
+function isLocalDraftRow(row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>): boolean {
+  const uid = Number(row.uid);
+  return uid < 0 && uid > POP3_UID_CEILING && row.pop3_uidl == null && row.folder_kind === 'draft';
 }
 
 function isSchedulableLocalDraft(row: Pick<EmailMessageRow, 'uid' | 'folder_kind'>): boolean {
@@ -5327,6 +5460,7 @@ function mutationToEmailAccountPatch(
     ...(values.vacationBodyText === undefined ? {} : { vacation_body_text: values.vacationBodyText }),
     ...(values.requestReadReceipt === undefined ? {} : { request_read_receipt: values.requestReadReceipt }),
     ...(values.imapDeleteOptIn === undefined ? {} : { imap_delete_opt_in: values.imapDeleteOptIn }),
+    ...(values.trustedAuthservId === undefined ? {} : { trusted_authserv_id: values.trustedAuthservId }),
   };
 }
 
@@ -5444,6 +5578,7 @@ function redactParentOnlyAccountRow(row: Pick<EmailAccountRow, typeof emailAccou
     imapDeleteOptIn: false,
     defaultRemoteContentPolicy: 'blocked',
     respondToReadReceipts: 'never',
+    trustedAuthservId: null,
     // secret-presence flags — never reveal what is configured
     imapPasswordConfigured: false,
     smtpPasswordConfigured: false,
@@ -5486,6 +5621,7 @@ function mapEmailAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelect
     imapDeleteOptIn: row.imap_delete_opt_in,
     defaultRemoteContentPolicy: row.default_remote_content_policy,
     respondToReadReceipts: row.respond_to_read_receipts,
+    trustedAuthservId: row.trusted_authserv_id,
     imapPasswordConfigured: Boolean(row.imap_password_secret_id ?? row.keytar_account_key),
     smtpPasswordConfigured: Boolean(row.smtp_password_secret_id ?? row.smtp_keytar_account_key),
     oauthRefreshConfigured: Boolean(row.oauth_refresh_secret_id ?? row.oauth_refresh_keytar_key),

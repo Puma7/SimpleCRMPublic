@@ -6,6 +6,10 @@ import { readSyncInfo, writeSyncInfo } from '../sync-info-store';
 
 const ADMIN_IPC_ROLES = ['owner', 'admin'] as const;
 
+// sync_info also stores secrets (OAuth client secrets, webhook secret) and admin
+// config; the generic read channel only exposes the JTL sync status keys.
+const READABLE_SYNC_INFO_KEYS = new Set(['lastSyncStatus', 'lastSyncMessage', 'lastSyncTimestamp']);
+
 interface SyncHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   getMainWindow: () => BrowserWindow | null;
@@ -38,6 +42,7 @@ export function registerSyncHandlers(options: SyncHandlersOptions) {
 
   disposers.push(registerIpcHandler(IPCChannels.Sync.GetInfo, async (_event, key: string) => {
     try {
+      if (!READABLE_SYNC_INFO_KEYS.has(key)) return null;
       return readSyncInfo(key);
     } catch (error) {
       logger.error('IPC Error getting sync info:', error);

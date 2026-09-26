@@ -37,7 +37,6 @@ const relay: SmtpRelayRecord = {
   maxRecipients: 50,
   maxMessageBytes: 26_214_400,
   rateLimitPerMin: 60,
-  allowArbitraryRecipients: false,
   followupWorkflowId: 7,
   createdAt: '2026-07-01T00:00:00.000Z',
   allowedAccounts: [
@@ -214,6 +213,30 @@ describe('smtp relay routes', () => {
     expect(ok.status).toBe(201);
   });
 
+  // F-A13A14-04: Lookarounds und Rueckverweise im Betreff-Regex wurden gespeichert, obwohl V8 sie nicht auf die lineare Engine umstellen kann.
+  test.each([
+    ['/(?<=Rechnung )\\d+/', 'Lookaround'],
+    ['/(?=a)(a|a)*b/i', 'Lookaround'],
+    ['mahnung\n/(a|a)*\\1/', 'Rückverweis'],
+    // Codex-Review (PR #193): Mit Flag u oder v schaltet V8 nicht auf die lineare Engine um;
+    // /^(a|aa)+$/u besteht safe-regex und blockierte mit einem langen Betreff den Event-Loop.
+    ['/^(a|aa)+$/u', 'Flag'],
+    ['/^(a|aa)+$/iv', 'Flag'],
+  ])('rejects a subject regex the linear engine cannot take over: %s (E1)', async (patterns, reason) => {
+    const calls: string[] = [];
+    const response = await apiFor(makeRelayPort({
+      async createRelay() { calls.push('create'); throw new Error('unreachable'); },
+    })).handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP', trackingMode: 'rule', trackingSubjectPatterns: patterns },
+    });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).toContain(reason);
+    expect(calls).toEqual([]);
+  });
+
   test('creates a relay and records the audit event', async () => {
     const audit = makeAudit();
     const response = await apiFor(makeRelayPort(), audit).handle({
@@ -279,6 +302,42 @@ describe('smtp relay routes', () => {
         values: { trackingMode: 'off', maxRecipients: 1000 },
       }),
     ]);
+  });
+
+  // F-A3b-04 (E8): allowArbitraryRecipients was stored but never enforced. The
+  // switch is gone from the API; old clients that still send it are not
+  // rejected, the value is simply dropped.
+  test('accepts and ignores the removed allowArbitraryRecipients field', async () => {
+    const creates: unknown[] = [];
+    const updates: unknown[] = [];
+    const api = apiFor(makeRelayPort({
+      async createRelay(input) {
+        creates.push(input.values);
+        return { ok: true, relay: { ...relay, label: input.values.label, allowedAccounts: [], credentials: [] } };
+      },
+      async updateRelay(input) { updates.push(input.values); return { ok: true, relay }; },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP Relay', allowArbitraryRecipients: true },
+    });
+    expect(created.status).toBe(201);
+    expect(creates).toEqual([{ label: 'ERP Relay' }]);
+    expect((created.body as { data: { relay: Record<string, unknown> } }).data.relay).not.toHaveProperty('allowArbitraryRecipients');
+
+    for (const value of [false, true, 'yes', null]) {
+      const updated = await api.handle({
+        method: 'PATCH',
+        path: `/api/v1/email/relays/${RELAY_ID}`,
+        principal: admin,
+        body: { allowArbitraryRecipients: value, maxRecipients: 20 },
+      });
+      expect(updated.status).toBe(200);
+    }
+    expect(updates).toEqual(Array.from({ length: 4 }, () => ({ maxRecipients: 20 })));
   });
 
   test('requires a label when creating a relay', async () => {

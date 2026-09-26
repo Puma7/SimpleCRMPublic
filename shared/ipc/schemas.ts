@@ -1,4 +1,5 @@
 import { z, ZodTypeAny } from 'zod';
+import { isStrictBase64Payload } from '../../packages/core/src/base64';
 import { AllowedInvokeChannels, DeprecatedInvokeChannels, IPCChannels, InvokeChannel } from './channels';
 import { applyEmailIpcSchemas } from './email-schemas';
 
@@ -367,7 +368,8 @@ baseSchemaMap.set(IPCChannels.Mssql.SaveSettings, {
 baseSchemaMap.set(IPCChannels.Mssql.GetSettings, {
   payload: z.undefined(),
   result: z.union([
-    z.object({}).passthrough(),
+    // Ohne Passwort: der Renderer erfaehrt nur, ob eines gespeichert ist.
+    z.object({ hasPassword: z.boolean() }).passthrough(),
     z.null(),
     failureResponse,
   ]),
@@ -573,7 +575,11 @@ baseSchemaMap.set(IPCChannels.Db.UpdateCustomer, {
 });
 
 baseSchemaMap.set(IPCChannels.Db.DeleteCustomer, {
-  payload: z.number().int().positive(),
+  // Either the id, or [id, { cascade }] to confirm deleting dependent records.
+  payload: z.union([
+    z.number().int().positive(),
+    z.tuple([z.number().int().positive(), z.object({ cascade: z.boolean().optional() }).strict()]),
+  ]),
   result: standardResult,
 });
 
@@ -655,7 +661,7 @@ const pgpMessageAttachmentPayload = z.object({
   filename: z.string().trim().min(1).max(260),
   contentType: z.string().trim().max(200).optional(),
   contentBase64: z.string().trim().min(1).max(70_000_000)
-    .refine((value) => value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value), 'contentBase64 must be valid Base64'),
+    .refine((value) => value.length % 4 === 0 && isStrictBase64Payload(value), 'contentBase64 must be valid Base64'),
 });
 
 const pgpPreparedAttachmentResult = z.object({
@@ -724,6 +730,18 @@ baseSchemaMap.set(IPCChannels.Pgp.DeletePeerKey, {
     pgpSourceIdPayload,
   ]),
   result: standardResult,
+});
+
+// Manueller Fingerprint-Abgleich: 'verified' macht gueltige Signaturen vertrauenswuerdig,
+// 'imported' nimmt das zurueck (Schluessel bleibt fuer die Verschluesselung nutzbar).
+const pgpPeerKeyTrustLevel = z.enum(['verified', 'imported']);
+
+baseSchemaMap.set(IPCChannels.Pgp.SetPeerKeyTrust, {
+  payload: z.object({
+    id: z.number().int().positive(),
+    trustLevel: pgpPeerKeyTrustLevel,
+  }),
+  result: z.object({ success: z.literal(true), trustLevel: pgpPeerKeyTrustLevel }),
 });
 
 baseSchemaMap.set(IPCChannels.Pgp.CheckRecipientKeys, {

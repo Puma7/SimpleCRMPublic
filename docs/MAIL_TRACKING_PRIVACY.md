@@ -13,6 +13,7 @@
 - **Ausgehend:** Optional pro Konto und pro Mail (`Disposition-Notification-To`). Kein `Return-Receipt-To`.
 - **Eingehend:** Standard `never`; Konto kann `ask` oder `always_trusted` (nur vertrauenswürdige Domains).
 - **Keine automatische MDN-Antwort** ohne explizite Nutzer- oder Admin-Policy.
+- **Ausgangsprüfung (Server-Edition):** Ist ein ausgehender Workflow aktiv, startet der erste Klick auf „Lesebestätigung senden“ eine Prüfrunde. Weitere Klicks melden „Prüfung läuft“, solange Läufe, KI-Prüfungen oder Fortsetzungen dieser Runde ausstehen. Ist die Runde ohne Sperre abgeschlossen („Versand freigeben“ oder Lauf ohne Sperre), sendet der nächste Klick die Lesebestätigung, einmalig. Eine Sperre wird mit Grund gemeldet; der Klick danach prüft neu. „Versand freigeben“ ändert in dieser Runde die eingegangene Mail nicht.
 
 ## Ausgehende Evidenz (Server-Edition)
 

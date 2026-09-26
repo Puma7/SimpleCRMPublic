@@ -35,15 +35,21 @@ import {
 import { hashLoginPin, verifyLoginPin } from '../security/login-pin-hash';
 import {
   issueMfaChallengeToken,
+  mfaChallengeMatchesPassword,
   parseMfaChallengeToken,
 } from '../security/mfa-challenge';
 import type { AccessTokenSigner } from '../security/access-token';
 import {
   buildTotpOtpAuthUri,
   generateTotpSecret,
+  matchTotpTimeStep,
   verifyTotpCode,
 } from '../security/totp';
 import { verifyTurnstileToken } from '../security/turnstile-verify';
+
+// A code for time step T verifies from 30 s before to 60 s after T starts
+// (epochTolerance 30), so remembering an accepted step for 2 min covers it.
+const TOTP_STEP_REPLAY_TTL_MS = 2 * 60 * 1000;
 
 export type LoginSecurityConfig = Readonly<{
   turnstileSiteKey?: string;
@@ -122,8 +128,11 @@ export type LoginSecurityService = Readonly<{
     secret: string;
     code: string;
   }): Promise<boolean>;
-  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** Step-up outside a login: a current code of the user's enrolled authenticator, usable once. */
+  verifyCurrentTotpCode(input: { workspaceId: string; userId: string; code: string }): Promise<boolean>;
 }>;
 
 export function createLoginSecurityService(input: {
@@ -261,6 +270,7 @@ export function createLoginSecurityService(input: {
           workspaceId: user.workspaceId,
           method: user.mfaMethod,
           issuedAt: now(),
+          passwordHash: user.passwordHash,
         }),
       };
     },
@@ -286,6 +296,11 @@ export function createLoginSecurityService(input: {
       }
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
+      }
+      // A password change or admin reset since the challenge was issued ends it
+      // too; otherwise the old password would still yield a session.
+      if (!mfaChallengeMatchesPassword(claims, user.passwordHash)) {
+        return { ok: false, code: 'mfa_challenge_invalid' };
       }
 
       // Feed MFA failures into the same (email,ip) lockout used by /login. The
@@ -314,6 +329,8 @@ export function createLoginSecurityService(input: {
           secrets: input.secrets,
           user,
           code,
+          challengeStore,
+          now: now(),
         })
         : await verifyEmailMfaCode({
           db: input.db,
@@ -343,7 +360,9 @@ export function createLoginSecurityService(input: {
         email: user.email,
         ip: ip ?? '0.0.0.0',
       });
-      const tokens = await input.auth.issueTokenPair({ user, device });
+      // The port refuses if the password changes after the lookup above.
+      const tokens = await input.auth.issueTokenPair({ user, device, expectedPasswordHash: user.passwordHash });
+      if (!tokens) return { ok: false, code: 'mfa_challenge_invalid' };
       return { ok: true, user, tokens };
     },
 
@@ -431,6 +450,14 @@ export function createLoginSecurityService(input: {
     },
 
     async enableEmailMfa({ workspaceId, userId }) {
+      // Login fails closed for an enrolled method the workspace does not offer
+      // (beginMfaIfRequired -> mfa_delivery_failed), so enrolling it would lock
+      // the user out for good. Only the method toggle and SMTP count here, not
+      // mfaEnabled: users may enroll before the workspace switches MFA on.
+      const settings = await loadWorkspaceSettings(input.syncInfo, workspaceId);
+      if (!resolveMfaMethods({ ...settings, mfaEnabled: true }, Boolean(input.authInvitationSmtp)).includes('email')) {
+        return false;
+      }
       await withWorkspaceTransaction(
         input.db,
         { workspaceId, role: 'system' },
@@ -449,6 +476,22 @@ export function createLoginSecurityService(input: {
         },
         { applySession: input.applyWorkspaceSession },
       );
+      return true;
+    },
+
+    async verifyCurrentTotpCode({ workspaceId, userId, code }) {
+      const email = await lookupUserEmail(input.db, workspaceId, userId, input.applyWorkspaceSession);
+      if (!email) return false;
+      const user = await input.auth.findUserByEmail(email);
+      if (!user || user.id !== userId || user.disabledAt) return false;
+      return verifyUserTotp({
+        db: input.db,
+        secrets: input.secrets,
+        user,
+        code,
+        challengeStore,
+        now: now(),
+      });
     },
 
     async disableUserMfa({ workspaceId, userId }) {
@@ -524,6 +567,8 @@ async function verifyUserTotp(input: {
   secrets: PostgresSecretPort;
   user: AuthUserRecord;
   code: string;
+  challengeStore: AuthChallengeStore;
+  now: Date;
 }): Promise<boolean> {
   if (input.user.mfaMethod !== 'totp' || !input.user.mfaEnabled) return false;
   const secretBuffer = await input.secrets.readSecret({
@@ -532,7 +577,17 @@ async function verifyUserTotp(input: {
     name: input.user.id,
   });
   if (!secretBuffer) return false;
-  return verifyTotpCode(secretBuffer.toString('utf8'), input.code);
+  const timeStep = matchTotpTimeStep(secretBuffer.toString('utf8'), input.code);
+  if (timeStep === null) return false;
+  // Only the challenge token is single-use; with the password anyone can mint a
+  // fresh challenge. Burn the accepted time step per user in the shared store so
+  // the same code cannot complete a second login inside the tolerance window.
+  return input.challengeStore.consume({
+    token: `totp-step:${input.user.id}:${timeStep}`,
+    purpose: 'mfa',
+    ttlMs: TOTP_STEP_REPLAY_TTL_MS,
+    now: input.now,
+  });
 }
 
 async function sendEmailMfaCode(input: {

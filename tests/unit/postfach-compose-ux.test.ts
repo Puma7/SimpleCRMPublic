@@ -1,4 +1,4 @@
-import { applyCannedTemplate, needsFullMessageBody } from '../../src/components/email/types';
+import { applyCannedTemplate, needsFullMessageBody, stripHtmlToText } from '../../src/components/email/types';
 import {
   COMPOSE_BODY_MARKER,
   COMPOSE_QUOTE_MARKER,
@@ -17,17 +17,58 @@ import {
   buildReplyGreeting,
   replyGreetingPlainToHtml,
 } from '../../shared/email-reply-greeting';
+import {
+  buildReplyGreeting as buildServerReplyGreeting,
+  replyGreetingPlainToHtml as serverReplyGreetingPlainToHtml,
+} from '../../packages/server/src/email-reply-greeting';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
+import { interpolateSignatureTemplate as interpolateServerSignatureTemplate } from '../../packages/server/src/signature-template';
 
 jest.mock('quill', () => ({ __esModule: true, default: class MockQuill {} }));
 jest.mock('quill/dist/quill.snow.css', () => ({}));
 jest.mock('@/styles/compose-quill.css', () => ({}));
 
-import { handleSubjectTabToEditor } from '../../src/components/email/compose-dialog';
+import {
+  composeTrackingChoice,
+  handleSubjectTabToEditor,
+  hydrateComposeFieldsFromDraftMessage,
+} from '../../src/components/email/compose-dialog';
+import type { EmailMessage } from '../../src/components/email/types';
+
+// F-A3a-02: the tracking checkbox appeared (and sent trackingOverride) although the admin policy had tracking disabled.
+describe('compose per-message tracking checkbox', () => {
+  it('stays hidden while the workspace tracking policy is disabled', () => {
+    expect(composeTrackingChoice({ enabled: false, trackOpens: false, trackLinks: false })).toEqual({
+      available: false,
+      defaultOn: false,
+    });
+    expect(composeTrackingChoice({
+      enabled: false,
+      trackOpens: true,
+      trackLinks: true,
+      defaultTrackNewMessages: true,
+    })).toEqual({ available: false, defaultOn: false });
+    expect(composeTrackingChoice({ enabled: true, trackOpens: false, trackLinks: false })).toEqual({
+      available: false,
+      defaultOn: false,
+    });
+  });
+
+  it('is offered inside an enabled policy and seeds from the new-message default', () => {
+    expect(composeTrackingChoice({ enabled: true, trackOpens: true, defaultTrackNewMessages: true })).toEqual({
+      available: true,
+      defaultOn: true,
+    });
+    expect(composeTrackingChoice({ enabled: true, trackLinks: true, defaultTrackNewMessages: false })).toEqual({
+      available: true,
+      defaultOn: false,
+    });
+  });
+});
 
 describe('compose subject tab routing', () => {
   it('moves plain Tab focus from subject to the message editor', () => {
@@ -81,6 +122,31 @@ describe('compose subject tab routing', () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(focus).not.toHaveBeenCalled();
+  });
+});
+
+describe('compose draft hydration', () => {
+  // F-A11a-01: Klartext-Entwuerfe (body_html null) wurden ungeescaped als HTML in den Composer geladen.
+  it('escapes a plain-text draft body instead of interpreting it as markup', () => {
+    const existing = {
+      id: 42,
+      body_html: null,
+      body_text:
+        'Hallo <img src="https://attacker.example/p.png"> <a href="https://phish.example">Rechnung</a>\n'
+        + '& <Kunde> <!-- simplecrm-quote --><img src="https://attacker.example/q.png">',
+      draft_attachment_paths_json: null,
+    } as unknown as EmailMessage;
+
+    const hydrated = hydrateComposeFieldsFromDraftMessage(existing);
+
+    expect(hydrated.editorHtml).not.toMatch(/<img/i);
+    expect(hydrated.editorHtml).not.toMatch(/<a\s/i);
+    expect(hydrated.editorHtml).toContain('&lt;img');
+    expect(hydrated.editorHtml).toContain('&amp; &lt;Kunde&gt;');
+    expect(hydrated.editorHtml).toContain('<br');
+    // Ein Zonenmarker im Fremdtext darf keine Zitat- oder Signaturzone abspalten.
+    expect(hydrated.quotedHtml).toBe('');
+    expect(hydrated.signatureHtml).toBe('');
   });
 });
 
@@ -202,6 +268,62 @@ describe('email-reply-greeting', () => {
   it('replyGreetingPlainToHtml wraps paragraph', () => {
     expect(replyGreetingPlainToHtml('Guten Tag,')).toBe('<p>Guten Tag,</p>');
   });
+
+  // F-A6-01: Markup und Zonenmarker aus dem From-Anzeigenamen landeten roh im Antwort-HTML.
+  it.each([
+    ['desktop/renderer', buildReplyGreeting, replyGreetingPlainToHtml],
+    ['server', buildServerReplyGreeting, serverReplyGreetingPlainToHtml],
+  ] as const)('escapes the sender display name in the reply greeting html (%s)', (_edition, build, toHtml) => {
+    const fromJson = JSON.stringify({
+      value: [{
+        address: 'x@evil.tld',
+        name: 'Test <!-- simplecrm-quote --><img src="https://example.org/x.png"> & Co',
+      }],
+    });
+    const greetingHtml = toHtml(build({ fromJson }));
+    const composed = buildReplyComposeHtml({
+      greetingHtml,
+      replyHtml: '<p><br></p>',
+      quotedPlain: 'Original',
+      signatureHtml: '<p>Sig</p>',
+    });
+    const split = splitEditorAndSignature(composed);
+
+    expect(greetingHtml).toBe(
+      '<p>Guten Tag Test &lt;!-- simplecrm-quote --&gt;&lt;img src=&quot;https://example.org/x.png&quot;&gt; &amp; Co,</p>',
+    );
+    expect(split.quotedHtml).not.toContain('<img');
+    expect(split.quotedHtml).toBe('<p>Original</p>');
+    expect(split.signatureHtml).toBe('<p>Sig</p>');
+    expect(split.editorHtml).not.toContain('<img');
+  });
+
+  // F-D1-09: 'herr'/'frau' irgendwo im From-Anzeigenamen (Sherry, Frauke, Herrmann) erzeugte eine falsche Anrede.
+  it.each([
+    ['desktop/renderer', buildReplyGreeting],
+    ['server', buildServerReplyGreeting],
+  ] as const)('derives the salutation from the sender name only for a leading Herr/Frau (%s)', (_edition, build) => {
+    const fromName = (name: string) => build({
+      fromJson: JSON.stringify({ value: [{ name, address: 'kontakt@example.com' }] }),
+    });
+
+    // Teilstring-Treffer sind keine Anrede.
+    expect(fromName('Sherry Miller')).toBe('Guten Tag Sherry Miller,');
+    expect(fromName('Frauke Schmidt')).toBe('Guten Tag Frauke Schmidt,');
+    expect(fromName('Anna Herrmann')).toBe('Guten Tag Anna Herrmann,');
+    expect(fromName('Herrera GmbH')).toBe('Guten Tag Herrera GmbH,');
+    expect(fromName('Frauenhofer Institut')).toBe('Guten Tag Frauenhofer Institut,');
+    // "Herr" als Nachname ist ebenfalls keine Anrede.
+    expect(fromName('Anna Herr')).toBe('Guten Tag Anna Herr,');
+    // Ohne Namen hinter der Anrede gibt es keinen Nachnamen.
+    expect(fromName('Herr')).toBe('Guten Tag Herr,');
+
+    // Eine vorangestellte Anrede bleibt erkannt.
+    expect(fromName('Herr Max Müller')).toBe('Sehr geehrter Herr Müller,');
+    expect(fromName('frau Anna Müller')).toBe('Sehr geehrte Frau Müller,');
+    expect(fromName('Frau Dr. Anna Müller')).toBe('Sehr geehrte Frau Müller,');
+    expect(fromName('Herr. Max Müller')).toBe('Sehr geehrter Herr Müller,');
+  });
 });
 
 describe('ai-transform-prompt', () => {
@@ -244,6 +366,34 @@ describe('signature-template', () => {
       { accountDisplayName: 'Shop', customerName: 'Müller GmbH' },
     );
     expect(out).toBe('Grüße Shop / Müller GmbH');
+  });
+
+  // F-A11a-07: Platzhalterwerte (Kunden-, Konto-, Nutzername) wurden ohne HTML-Escaping in die Signatur gesetzt.
+  it.each([
+    ['desktop/renderer', interpolateSignatureTemplate],
+    ['server', interpolateServerSignatureTemplate],
+  ] as const)('escapes placeholder values inserted into the signature html (%s)', (_edition, interpolate) => {
+    expect(
+      interpolate('<p>{{customer.name}}</p>', { customerName: 'Müller<img src="https://x.example/p.png">' }),
+    ).toBe('<p>Müller&lt;img src=&quot;https://x.example/p.png&quot;&gt;</p>');
+    expect(
+      interpolate('<p>{{account.display_name}} / {{user.name}} / {{user.publicName}}</p>', {
+        accountDisplayName: 'A & B <b>',
+        userName: "O'Brien <i>",
+        userPublicName: '<u>Pub</u>',
+      }),
+    ).toBe('<p>A &amp; B &lt;b&gt; / O&#39;Brien &lt;i&gt; / &lt;u&gt;Pub&lt;/u&gt;</p>');
+    // Anfuehrungszeichen duerfen ein Attribut der Vorlage nicht verlassen.
+    const attr = interpolate('<a href="mailto:{{customer.email}}">{{customer.firstName}}</a>', {
+      customerName: 'Anna Müller',
+      customerFirstName: 'Anna',
+      customerEmail: 'x" style="position:fixed',
+    });
+    expect(attr).toBe('<a href="mailto:x&quot; style=&quot;position:fixed">Anna</a>');
+    expect(interpolate('<p>{{user.email}}</p>', { userEmail: 'a<b>@example.com' }))
+      .toBe('<p>a&lt;b&gt;@example.com</p>');
+    expect(interpolate('<p>{{customer.name}}</p>', { customerName: "Preis $& $' Co" }))
+      .toBe('<p>Preis $&amp; $&#39; Co</p>');
   });
 
   it('preserves customer placeholders until customer context is provided', () => {
@@ -333,6 +483,24 @@ describe('applyCannedTemplate', () => {
     const out = applyCannedTemplate('[{{account.display_name}}|{{user.name}}|{{customer.name}}]');
     expect(out).toBe('[||]');
   });
+
+  // F-N-fe-01: Kunden-, Konto- und Nutzernamen landeten roh im Compose-HTML und wurden dort wirksames Markup; '$&' im Wert wirkte als Ersetzungsmuster.
+  it('escapes placeholder values for the compose html', () => {
+    const out = applyCannedTemplate(
+      '{{customer.name}}|{{customer.firstName}}|{{customer.email}}|{{account.display_name}}|{{user.publicName}}|{{user.name}}|{{user.email}}',
+      { id: 1, name: 'Müller<img src="https://x.example/p.png">', firstName: "O'Brien <b>", email: 'a<b>@example.com' },
+      {
+        accountDisplayName: 'A & B <i>',
+        userName: 'Bea <u>',
+        userEmail: 'bea"x@example.com',
+        userPublicName: 'Preis $& $\' Co',
+      },
+    );
+    expect(out).toBe(
+      'Müller&lt;img src=&quot;https://x.example/p.png&quot;&gt;|O&#39;Brien &lt;b&gt;|a&lt;b&gt;@example.com'
+        + '|A &amp; B &lt;i&gt;|Preis $&amp; $&#39; Co|Bea &lt;u&gt;|bea&quot;x@example.com',
+    );
+  });
 });
 
 describe('needsFullMessageBody', () => {
@@ -341,5 +509,55 @@ describe('needsFullMessageBody', () => {
     expect(needsFullMessageBody({ body_text: '  ', body_html: null })).toBe(true);
     expect(needsFullMessageBody({ body_text: null, body_html: '<p>x</p>' })).toBe(false);
     expect(needsFullMessageBody({ body_text: 'hello', body_html: null })).toBe(false);
+  });
+});
+
+describe('stripHtmlToText', () => {
+  // F-N-redos-01: Lazy-/Negativklassen-Regexe liefen bei unverschlossenen <script/<style/< quadratisch; eine praeparierte Mail fror Viewer und Compose ein.
+  it('stays linear on unclosed tags', () => {
+    for (const html of ['<'.repeat(60_000), '<script'.repeat(20_000), `<p>x</p>${'<style'.repeat(20_000)}`]) {
+      const started = Date.now();
+      const text = stripHtmlToText(html);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(text.length).toBeGreaterThan(0);
+    }
+  });
+
+  // F-N-redos-01: Der lineare Strip muss exakt das Ergebnis der bisherigen Regex-Kette liefern.
+  it('matches the previous regex chain', () => {
+    const legacy = (html: string): string => html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const samples = [
+      '',
+      'Nur Text',
+      '<p>Hallo <b>Welt</b></p>',
+      'a<script>x</script>b<style>y</style>c',
+      '<script><style></script></style>rest',
+      '<style><script></style></script>rest',
+      '<SCRIPT type="x">1</sCrIpT>mehr<style>unterminated <p>bleibt</p>',
+      'a <> b <<c>> d > e < f',
+    ];
+    const tokens = [
+      '<', '>', '<>', 'a', ' ', '\n', '<p>', '</p>', '<style', '<STYLE>', '</style>', '</StYlE>',
+      '<script', '<Script>', '</script>', '</SCRIPT>', 'ſ', 'İ',
+    ];
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    };
+    for (let n = 0; n < 3000; n++) {
+      const count = Math.floor(random() * 14);
+      let html = '';
+      for (let i = 0; i < count; i++) html += tokens[Math.floor(random() * tokens.length)];
+      samples.push(html);
+    }
+    for (const html of samples) {
+      expect(stripHtmlToText(html)).toBe(legacy(html));
+    }
   });
 });

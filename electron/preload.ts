@@ -1,12 +1,15 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
-import { AllowedInvokeChannels } from '@shared/ipc/channels';
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron';
+import { AllowedInvokeChannels, IPCChannels, PreloadOnlyInvokeChannels } from '@shared/ipc/channels';
 
 type WindowState = {
   isMaximized: boolean;
   isFullScreen: boolean;
 };
 
-const allowedInvokeChannels = new Set<string>(AllowedInvokeChannels);
+const preloadOnlyInvokeChannels = new Set<string>(PreloadOnlyInvokeChannels);
+const allowedInvokeChannels = new Set<string>(
+  AllowedInvokeChannels.filter((channel) => !preloadOnlyInvokeChannels.has(channel)),
+);
 const canInvokeChannel = (channel: string): boolean => allowedInvokeChannels.has(channel);
 
 contextBridge.exposeInMainWorld('electron', {
@@ -57,6 +60,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // getSettings: () => ipcRenderer.invoke('mssql:get-settings'),
   // testConnection: (settings) => ipcRenderer.invoke('mssql:test-connection', settings),
   // fetchMssqlCustomers: () => ipcRenderer.invoke('mssql:fetch-customers'), // Keep or remove if only sync is used
+
+  // C-A30 (G12): Den Pfad einer abgelegten Datei ermittelt der Preload selbst
+  // (webUtils.getPathForFile) und gibt ihn im Main-Prozess als Compose-Anhang frei.
+  // Der Renderer kann so nur echte Dateien melden, keine frei gewaehlten Pfade.
+  registerDroppedComposeAttachments: async (files: File[]): Promise<string[]> => {
+    const paths = Array.from(files ?? [])
+      .map((file) => {
+        try {
+          return webUtils.getPathForFile(file);
+        } catch {
+          return '';
+        }
+      })
+      .filter((p) => p.length > 0)
+      .slice(0, 100);
+    if (paths.length === 0) return [];
+    const result = (await ipcRenderer.invoke(IPCChannels.Email.RegisterDroppedComposeAttachments, {
+      paths,
+    })) as { paths?: string[] } | undefined;
+    return result?.paths ?? [];
+  },
 
   // --- Generic Invoke Handler ---
   invoke: (channel: string, ...args: any[]) => {

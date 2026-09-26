@@ -744,6 +744,9 @@ async function handleMssqlSettings(
     workspaceId: principal.workspaceId,
     settings: parsed.values,
   });
+  if (!result.success && result.code === 'credentials_required') {
+    return error(400, 'mssql_credentials_required', result.error ?? 'Zugangsdaten bei Serverwechsel neu eingeben');
+  }
   if (result.success) {
     await ports.audit?.record({
       workspaceId: principal.workspaceId,

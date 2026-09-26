@@ -19,6 +19,7 @@ import {
   NODE_CHAIN_STOP_MESSAGE,
   nodeRequestsChainStop,
 } from '../../packages/core/src/workflow/node-chain-stop';
+import { workflowNodeDefersRun } from '../../packages/core/src/workflow/graph-validate';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -165,8 +166,29 @@ async function executeNode(
   return { status: 'skipped', message: `Unbekannter Knotentyp ${node.type}` };
 }
 
+/**
+ * Schrittlimit je Graph-Durchlauf — Parität zu MAX_GRAPH_STEPS in
+ * packages/server/src/workflow-execution.ts. Schleifenrümpfe laufen mit
+ * allowRevisit; ein Kreis A→B→A liefe dort sonst endlos mit Seiteneffekten.
+ */
+const MAX_GRAPH_STEPS = 500;
+/**
+ * Knotenausführungen je Lauf über alle Schleifen-Iterationen — Parität zu
+ * MAX_GRAPH_TOTAL_STEPS auf dem Server. Jede Iteration beginnt einen eigenen
+ * Pfad; ohne Gesamtbudget ergaben 500 Einträge mal langer Rumpf bis 250.000.
+ */
+const MAX_GRAPH_TOTAL_STEPS = 10_000;
+
 type WalkOptions = {
   allowRevisit?: boolean;
+  /** Vor diesen Knoten anhalten (Schleifenknoten und Fertig-Ziel, wie der Server). */
+  stopBeforeNodeIds?: ReadonlySet<string>;
+  /** Schrittzähler des Durchlaufs; der Block-Port-Zweig zählt weiter statt neu. */
+  steps?: { count: number };
+  /** Knotenausführungen des ganzen Laufs, geteilt von allen Schleifen-Iterationen. */
+  totalSteps?: { count: number };
+  /** Je-Eintrag-Zweig einer Schleife: deferierende Knoten sind dort verboten (F-A9-04). */
+  insideLoopBody?: boolean;
 };
 
 type InboundBranchGate = {
@@ -195,10 +217,33 @@ async function walkGraph(
   const nodesById = new Map(doc.nodes.map((n) => [n.id, n]));
   let currentId: string | undefined = startNodeId;
   const seen = visited ?? new Set<string>();
+  const steps = options?.steps ?? { count: 0 };
+  const totalSteps = options?.totalSteps ?? { count: 0 };
   let blocked = false;
   let blockReason: string | null = null;
 
   while (currentId) {
+    if (options?.stopBeforeNodeIds?.has(currentId)) break;
+    if (steps.count++ >= MAX_GRAPH_STEPS) {
+      log.push(
+        `graph_step_limit:${MAX_GRAPH_STEPS} – Abbruch bei Knoten ${currentId}, vermutlich ein Kreis im Workflow`,
+      );
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: `Schrittlimit von ${MAX_GRAPH_STEPS} Knoten erreicht (vermutlich ein Kreis im Workflow)`,
+      };
+    }
+    if (totalSteps.count++ >= MAX_GRAPH_TOTAL_STEPS) {
+      log.push(`graph_step_limit:${MAX_GRAPH_TOTAL_STEPS} – Abbruch bei Knoten ${currentId}, Gesamtbudget des Laufs erreicht`);
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: `Schrittlimit von ${MAX_GRAPH_TOTAL_STEPS} Knoten je Lauf erreicht (Schleife mit zu vielen Schritten)`,
+      };
+    }
     if (!options?.allowRevisit && seen.has(currentId)) {
       log.push(`cycle:${currentId}`);
       break;
@@ -260,10 +305,19 @@ async function walkGraph(
         currentId = doneEdge?.target;
         continue;
       }
+      // Wie der Server: Eine Rückkante zum Schleifenknoten oder zum Fertig-Ziel
+      // beendet den Durchgang. Haltepunkte umschließender Schleifen gelten
+      // weiter, sonst starten sich verschachtelte Schleifen gegenseitig neu.
+      const stopBeforeNodeIds = new Set<string>(options?.stopBeforeNodeIds);
+      stopBeforeNodeIds.add(currentId);
+      if (doneEdge?.target) stopBeforeNodeIds.add(doneEdge.target);
       for (let i = 0; i < items.length; i++) {
         ctx.variables['loop.item'] = items[i]!;
         ctx.variables['loop.index'] = i;
         log.push(`loop:${i}:${items[i]}`);
+        // The branch log starts as a copy of `log`; only its new tail is merged
+        // back, otherwise every iteration re-appended the whole history.
+        const logLengthBefore = log.length;
         const branchLog = [...log];
         const r = await walkGraph(
           ctx,
@@ -271,10 +325,10 @@ async function walkGraph(
           eachEdge.target,
           branchLog,
           new Set<string>(),
-          { allowRevisit: true },
+          { allowRevisit: true, stopBeforeNodeIds, insideLoopBody: true, totalSteps },
           gate,
         );
-        log.push(...r.log);
+        for (const line of r.log.slice(logLengthBefore)) log.push(line);
         if (r.blocked) return r;
         if (r.deferred) return r;
         if (r.status === 'error') {
@@ -289,14 +343,24 @@ async function walkGraph(
 
     const t0 = Date.now();
     let result: NodeExecuteResult;
-    try {
-      result = await executeNode(ctx, node, log);
-    } catch (e) {
-      result = {
-        status: 'error',
-        message: e instanceof Error ? e.message : String(e),
-        port: 'error',
-      };
+    // Wie der Server: Eine Fortsetzung kennt den Schleifenzustand nicht, die
+    // übrigen Einträge gingen still verloren. Vor dem Einplanen abbrechen.
+    if (options?.insideLoopBody && workflowNodeDefersRun(doc, node, 'desktop')) {
+      const message =
+        `„${node.id}“ läuft verzögert weiter und ist im Je-Eintrag-Zweig einer Schleife nicht erlaubt ` +
+        '— Knoten hinter den Fertig-Ausgang der Schleife verschieben';
+      log.push(`error:${node.id}:${message}`);
+      result = { status: 'error', port: 'error', message };
+    } else {
+      try {
+        result = await executeNode(ctx, node, log);
+      } catch (e) {
+        result = {
+          status: 'error',
+          message: e instanceof Error ? e.message : String(e),
+          port: 'error',
+        };
+      }
     }
     result = withNodeChainStop(node, regType, result);
     const durationMs = Date.now() - t0;
@@ -345,7 +409,7 @@ async function walkGraph(
           blockEdge.target,
           log,
           seen,
-          options,
+          { ...options, steps, totalSteps },
           gate,
         );
         if (branch.blocked || branch.status === 'blocked') return branch;
@@ -473,12 +537,17 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
   }
 
   let merged: GraphRunResult = { log, status: 'ok', blocked: false, blockReason: null };
+  // Ein Knotenbudget für den ganzen Lauf, geteilt von allen Trigger-Zweigen.
+  const totalSteps = { count: 0 };
   for (const edge of outs) {
+    // The branch log starts as a copy of `log`; only its new tail is merged
+    // back, otherwise every trigger edge re-appended the whole history.
+    const logLengthBefore = log.length;
     const branchLog = [...log, `branch:${edge.target}`];
     const branchCtx = cloneWorkflowContext(ctx);
     const branchGate: InboundBranchGate = { conditionOk: false };
-    const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
-    merged.log.push(...r.log);
+    const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, { totalSteps }, branchGate);
+    for (const line of r.log.slice(logLengthBefore)) merged.log.push(line);
     if (r.blocked) return r;
     // Spam-chain stop ends the whole inbound priority chain — bail immediately.
     if (r.inboundChainStop) {

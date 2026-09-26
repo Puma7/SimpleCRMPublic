@@ -313,7 +313,8 @@ export default function CalendarPage() {
           description: "Kalenderereignisse konnten nicht geladen werden.",
           variant: "destructive",
         });
-        return [];
+        // Rethrow so the page's retry/error state runs instead of an empty calendar.
+        throw error;
       }
     },
     addCalendarEvent: async (event, schedule) => {

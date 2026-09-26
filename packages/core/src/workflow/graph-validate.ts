@@ -1,6 +1,6 @@
 import { isTrashMailboxName } from '../email/imap-mailbox-names';
-import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
-import { edgeIsDefault } from './graph-walk-utils';
+import type { WorkflowGraphDocument, WorkflowGraphEdge, WorkflowGraphNode } from './graph-types';
+import { edgeIsDefault, outgoing, pickEdge, resolveResumeNodeAfter } from './graph-walk-utils';
 import { chainStopFlagEnabled, NODE_CHAIN_STOP_CONFIG_KEY } from './node-chain-stop';
 
 function registryType(node: WorkflowGraphNode): string {
@@ -9,15 +9,18 @@ function registryType(node: WorkflowGraphNode): string {
 }
 
 /**
- * Laufzeit-Typ eines Knotens — identisch zu nodeRuntimeType in
- * workflow-execution: `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
+ * Laufzeit-Typ eines Knotens — der Server-Executor (nodeRuntimeType in
+ * workflow-execution) ruft genau diese Funktion auf, damit Guard und
+ * Ausfuehrung denselben Typ sehen. Nur String-Werte zaehlen: ein Array oder
+ * Objekt als nodeType darf weder hier noch im Executor als Knotentyp gelten.
+ * `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
  * Canvas-Typen `registry` und `action`. Ein als `condition` gespeicherter
  * Knoten mit `data.nodeType = "email.release_outbound"` wird zur Laufzeit nur
  * als Bedingung ausgefuehrt und gibt nie frei; wuerde die Trap-Erkennung ihn
  * als Freigabe (oder als beabsichtigtes Hold-Ende) akzeptieren, liesse sie
  * einen aktiven Ausgangs-Workflow durch, der jede Mail dauerhaft festhaelt.
  */
-function runtimeType(node: WorkflowGraphNode): string {
+export function workflowNodeRuntimeType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
   if (node.type === 'registry') {
     return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
@@ -48,7 +51,7 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
  *    and errors at runtime instead of sending.
  */
 function isReleaseNode(node: WorkflowGraphNode): boolean {
-  const type = runtimeType(node);
+  const type = workflowNodeRuntimeType(node);
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
   if (type === 'email.send_draft') {
     const config = nodeConfig(node);
@@ -65,7 +68,7 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   const data = node.data as Record<string, unknown> | undefined;
   return (
     (node.type === 'action' && data?.actionType === 'hold_outbound') ||
-    runtimeType(node) === 'email.hold_outbound'
+    workflowNodeRuntimeType(node) === 'email.hold_outbound'
   );
 }
 
@@ -89,7 +92,7 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
 function namedPortBranch(
   node: WorkflowGraphNode,
 ): { ports: readonly string[]; releasePorts: readonly string[] } | null {
-  return NAMED_PORT_BRANCH_NODES[runtimeType(node)] ?? null;
+  return NAMED_PORT_BRANCH_NODES[workflowNodeRuntimeType(node)] ?? null;
 }
 
 /**
@@ -139,18 +142,9 @@ export const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.loop',
 ]);
 
-/** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */
+/** Resolve the runtime type of an action/registry node (the executor uses the same function). */
 function sideEffectRuntimeType(node: WorkflowGraphNode): string {
-  const data = node.data as Record<string, unknown> | undefined;
-  if (node.type === 'registry') {
-    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
-  }
-  if (node.type === 'action') {
-    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
-    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
-    return 'action';
-  }
-  return node.type;
+  return workflowNodeRuntimeType(node);
 }
 
 /**
@@ -228,6 +222,167 @@ export function workflowGraphHasChainStopNode(graph: unknown): boolean {
     if (sideEffectRuntimeType(node) === 'logic.stop_after_spam') return true;
   }
   return false;
+}
+
+/**
+ * Kann dieser Knoten zur Laufzeit die Inbound-Kette stoppen (inboundChainStop)?
+ * Dieselben Wege wie workflowGraphHasChainStopNode: `stopFurtherWorkflows` am
+ * Knoten (nodeRequestsChainStop bzw. email.mark_spam/set_spam_status) und
+ * `logic.stop_after_spam`. Ein Platzhalter im Schalter zaehlt vorsichtshalber
+ * mit, denn sein Wert steht erst zur Laufzeit fest.
+ */
+function nodeMayStopInboundChain(node: WorkflowGraphNode): boolean {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+    ? (data.config as Record<string, unknown>)
+    : {};
+  const flagMayBeOn = (value: unknown) =>
+    chainStopFlagEnabled(value) || (typeof value === 'string' && value.includes('{{'));
+  if (flagMayBeOn(config[NODE_CHAIN_STOP_CONFIG_KEY]) || flagMayBeOn(data[NODE_CHAIN_STOP_CONFIG_KEY])) {
+    return true;
+  }
+  return workflowNodeRuntimeType(node) === 'logic.stop_after_spam';
+}
+
+/**
+ * Kann hinter `nodeId` auf irgendeinem Pfad noch ein Knoten die Inbound-Kette
+ * stoppen? Folgt jeder Kante (auch Fehler-/Nein-Zweigen) und jedem
+ * `resumeNodeId`, also auch Pfaden hinter weiteren deferierten Knoten.
+ *
+ * Grundlage fuer logic.delay in der Server-Kette: Kann hinter dem Delay nichts
+ * mehr stoppen, schaltet die Kette sofort weiter; sonst wartet sie seriell bis
+ * zum Ende der Verzoegerung. Im Zweifel (unlesbarer Graph, Platzhalter als
+ * Resume-Ziel) gilt der Stopp als erreichbar — dann bleibt es seriell.
+ */
+export function inboundChainStopReachableAfter(doc: WorkflowGraphDocument, nodeId: string): boolean {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return true;
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const successors = (id: string): string[] | null => {
+    const targets = doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target);
+    const data = (byId.get(id)?.data ?? {}) as Record<string, unknown>;
+    const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+      ? (data.config as Record<string, unknown>)
+      : data;
+    const resume = typeof config.resumeNodeId === 'string' ? config.resumeNodeId.trim() : '';
+    if (resume.includes('{{')) return null;
+    if (resume) targets.push(resume);
+    return targets;
+  };
+  const start = successors(nodeId);
+  if (start === null) return true;
+  const queue = [...start];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (!node) continue;
+    if (nodeMayStopInboundChain(node)) return true;
+    const next = successors(id);
+    if (next === null) return true;
+    queue.push(...next);
+  }
+  return false;
+}
+
+/**
+ * logic.delay-Knoten eines Inbound-Workflows, hinter denen noch ein Knoten die
+ * Kette stoppen kann. In der Server-Edition warten nachrangige
+ * Inbound-Workflows dort bis zum Ende der Verzoegerung (Hinweis im Editor).
+ */
+export function findInboundDelaysHoldingChain(
+  doc: WorkflowGraphDocument,
+  opts?: { effectiveTrigger?: string },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes)) return [];
+  if ((opts?.effectiveTrigger ?? triggerKind(doc)) !== 'inbound') return [];
+  return doc.nodes
+    .filter((node) => workflowNodeRuntimeType(node) === 'logic.delay')
+    .filter((node) => inboundChainStopReachableAfter(doc, node.id))
+    .map((node) => node.id);
+}
+
+/**
+ * Server: Knoten, die den Lauf immer asynchron fortsetzen (Kindjob bzw.
+ * Verzoegerung), auch ohne Folgeknoten.
+ */
+const SERVER_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'logic.delay',
+  'ai.agent',
+  'ai.pick_canned',
+  'ai.draft_reply',
+  'ai.review_draft',
+]);
+/**
+ * Server: Knoten, die deferieren, sobald sie einen Folgeknoten haben (OK- bzw.
+ * Standardkante wie resolveResumeNodeAfter; HTTP auch ueber die Fehlerkante).
+ */
+const SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set([
+  'ai.classify',
+  'ai.review',
+  'ai_review',
+  'ai.outbound_review',
+  'ai.transform_text',
+  'http.request',
+  'email.forward_copy',
+  'forward_copy',
+  'email.ingest_dmarc_report',
+]);
+/** Desktop: nur die Verzoegerung laeuft spaeter weiter; KI und HTTP laufen synchron. */
+const DESKTOP_ALWAYS_DEFERRING_NODE_TYPES: ReadonlySet<string> = new Set(['logic.delay']);
+
+export type WorkflowRuntimeEdition = 'server' | 'desktop';
+
+/**
+ * Setzt dieser Knoten den Lauf asynchron fort (Fortsetzung als eigener Job)?
+ * Im Je-Eintrag-Zweig einer Schleife ginge dabei der Schleifenzustand
+ * verloren; beide Runtimes lehnen solche Knoten dort ab (F-A9-04).
+ */
+export function workflowNodeDefersRun(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  edition: WorkflowRuntimeEdition,
+): boolean {
+  const type = workflowNodeRuntimeType(node);
+  if (edition === 'desktop') return DESKTOP_ALWAYS_DEFERRING_NODE_TYPES.has(type);
+  if (SERVER_ALWAYS_DEFERRING_NODE_TYPES.has(type)) return true;
+  if (!SERVER_FOLLOW_UP_DEFERRING_NODE_TYPES.has(type) || !Array.isArray(doc?.edges)) return false;
+  if (type === 'http.request') return doc.edges.some((edge) => edge.source === node.id);
+  return resolveResumeNodeAfter(doc, node.id) !== null;
+}
+
+/**
+ * Knoten im Je-Eintrag-Zweig einer Schleife, die den Lauf deferieren wuerden.
+ * Die Runtime bricht dort mit Fehler ab; der Editor warnt beim Speichern.
+ * Der Zweig endet wie zur Laufzeit am Schleifenknoten und am Fertig-Ziel.
+ */
+export function findLoopBodyDeferringNodes(
+  doc: WorkflowGraphDocument,
+  opts: { edition: WorkflowRuntimeEdition },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return [];
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const found: string[] = [];
+  for (const loopNode of doc.nodes) {
+    if (workflowNodeRuntimeType(loopNode) !== 'logic.loop') continue;
+    const loopEdges = outgoing(doc.edges, loopNode.id);
+    const eachEdge = pickEdge(loopEdges, 'each');
+    if (!eachEdge) continue;
+    const doneTarget = pickEdge(loopEdges, 'done')?.target;
+    const seen = new Set<string>([loopNode.id, ...(doneTarget ? [doneTarget] : [])]);
+    const queue = [eachEdge.target];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const node = byId.get(id);
+      if (!node) continue;
+      if (workflowNodeDefersRun(doc, node, opts.edition) && !found.includes(id)) found.push(id);
+      queue.push(...doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target));
+    }
+  }
+  return found;
 }
 
 /**
@@ -659,11 +814,25 @@ export function findOutboundGraphTraps(
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
   // Sort like graph-walk-utils.outgoing so duplicate edges resolve to the same
-  // one the engine would pick.
-  const outgoing = (id: string) =>
-    doc.edges
-      .filter((edge) => edge.source === id)
-      .sort((a, b) => a.id.localeCompare(b.id));
+  // one the engine would pick. Kanten einmal je Quelle gruppiert, damit ein
+  // Schritt nicht alle Kanten des Graphen durchsucht.
+  const edgesBySource = new Map<string, WorkflowGraphEdge[]>();
+  for (const edge of doc.edges) {
+    const list = edgesBySource.get(edge.source);
+    if (list) list.push(edge);
+    else edgesBySource.set(edge.source, [edge]);
+  }
+  const outgoingCache = new Map<string, WorkflowGraphEdge[]>();
+  const outgoing = (id: string) => {
+    let outs = outgoingCache.get(id);
+    if (!outs) {
+      outs = (edgesBySource.get(id) ?? [])
+        .filter((edge) => edge.source === id)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      outgoingCache.set(id, outs);
+    }
+    return outs;
+  };
 
   const issues: OutboundGraphIssue[] = [];
   const seen = new Set<string>();
@@ -678,13 +847,21 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
+  // Jeder Zustand (Knoten, holdPath) wird nur einmal untersucht: Wieder
+  // zusammenlaufende Bedingungen verdoppeln sonst je Ebene die Zahl der Pfade,
+  // 20 Ebenen blockierten den Event-Loop fuer Sekunden (C-A63). `onPath`
+  // erkennt Zyklen wie zuvor die Pfadmenge. Ohne Zyklus ist das Ergebnis
+  // dasselbe; mit Zyklus bleibt es nicht leer, nennt aber evtl. weniger Knoten.
+  const onPath = new Set<string>([triggerNode.id]);
+  const finished = new Set<string>();
+
+  const walk = (nodeId: string, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId }); // edge to a missing/deleted node
       return;
     }
-    if (pathVisited.has(nodeId)) {
+    if (onPath.has(nodeId)) {
       add({ code: 'dead_end', nodeId }); // loop that never releases
       return;
     }
@@ -694,60 +871,67 @@ export function findOutboundGraphTraps(
       return;
     }
     if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
-    const next = new Set(pathVisited).add(nodeId);
-    const outs = outgoing(nodeId);
+    const state = `${holdPath ? 'hold' : 'send'}:${nodeId}`;
+    if (finished.has(state)) return;
+    finished.add(state);
+    onPath.add(nodeId);
+    try {
+      const outs = outgoing(nodeId);
 
-    if (isYesNoBranchNode(node)) {
-      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
-      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
-      return;
-    }
-
-    const portBranch = namedPortBranch(node);
-    if (portBranch) {
-      for (const port of portBranch.ports) {
-        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
-        // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
-        // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
-        // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
-        // meldet er einen lauffähigen Altgraphen als dead_end — und
-        // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
-        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
-        const isReleasePort = portBranch.releasePorts.includes(port);
-        if (edge) {
-          walk(edge.target, next, holdPath || !isReleasePort);
-        } else if (isReleasePort) {
-          // Missing ok/send port — a successful verdict could never release mail.
-          add({ code: 'dead_end', nodeId });
-        }
-        // Missing block/error/hold ports fail closed at runtime (draft stays held).
+      if (isYesNoBranchNode(node)) {
+        const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+        const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+        if (yesEdge) walk(yesEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+        if (noEdge) walk(noEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+        return;
       }
-      return;
-    }
 
-    if (outs.length === 0) {
-      if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
-      return;
+      const portBranch = namedPortBranch(node);
+      if (portBranch) {
+        for (const port of portBranch.ports) {
+          const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+          // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
+          // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
+          // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
+          // meldet er einen lauffähigen Altgraphen als dead_end — und
+          // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
+          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
+          const isReleasePort = portBranch.releasePorts.includes(port);
+          if (edge) {
+            walk(edge.target, holdPath || !isReleasePort);
+          } else if (isReleasePort) {
+            // Missing ok/send port — a successful verdict could never release mail.
+            add({ code: 'dead_end', nodeId });
+          }
+          // Missing block/error/hold ports fail closed at runtime (draft stays held).
+        }
+        return;
+      }
+
+      if (outs.length === 0) {
+        if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
+        return;
+      }
+      // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
+      // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
+      // branch) are not taken, so they must not be treated as reachable traps.
+      const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+      if (defaultEdge) {
+        walk(defaultEdge.target, holdPath);
+        return;
+      }
+      // Every outgoing edge is labeled (e.g. success/error) and none is a
+      // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
+      // the runtime stops here and the draft is never released — a dead end.
+      if (!holdPath) add({ code: 'dead_end', nodeId });
+    } finally {
+      onPath.delete(nodeId);
     }
-    // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
-    // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
-    // branch) are not taken, so they must not be treated as reachable traps.
-    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
-    if (defaultEdge) {
-      walk(defaultEdge.target, next, holdPath);
-      return;
-    }
-    // Every outgoing edge is labeled (e.g. success/error) and none is a
-    // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
-    // the runtime stops here and the draft is never released — a dead end.
-    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
-  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target);
   if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;
@@ -851,7 +1035,7 @@ export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowCon
     // Laufzeit-Typ und config liegen unter node.data — dieselben Helfer, die
     // auch die Trap-Erkennung oben benutzt. Direkt an node.config zu greifen
     // faende schlicht nie etwas.
-    const nodeType = runtimeType(node);
+    const nodeType = workflowNodeRuntimeType(node);
     const config = nodeConfig(node);
     for (const [key, value] of Object.entries(config)) {
       if (!RISKY_TARGET_FIELD_KEYS.has(key) || typeof value !== 'string') continue;
@@ -867,10 +1051,10 @@ export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowCon
   // Automatisierung — und eine Warnung, die immer erscheint, liest niemand
   // mehr. Der Anlass ist die Verbindung: KI formuliert aus fremdem Text, und
   // das Ergebnis geht ohne menschlichen Blick hinaus.
-  const hasAiNode = doc.nodes.some((node) => runtimeType(node).startsWith('ai.'));
+  const hasAiNode = doc.nodes.some((node) => workflowNodeRuntimeType(node).startsWith('ai.'));
   if (hasAiNode) {
     for (const node of doc.nodes) {
-      const nodeType = runtimeType(node);
+      const nodeType = workflowNodeRuntimeType(node);
       const config = nodeConfig(node);
       const autoSends =
         (nodeType === 'email.release_outbound' && config.autoSend === true) ||

@@ -35,6 +35,18 @@ export function isAutomatedInboundMessage(rawHeaders: string | null | undefined)
 }
 
 /**
+ * Kopie einer automatischen Weiterleitung ("Auto-Submitted: auto-forwarded";
+ * so markieren beide Editionen die Kopien von email.forward_copy). Sie erneut
+ * weiterzuleiten schliesst eine Weiterleitungsschleife. Andere Automaten-Mails
+ * (auto-generated, Precedence: bulk, etwa Rechnungen) bleiben weiterleitbar.
+ */
+export function isAutoForwardedMessage(rawHeaders: string | null | undefined): boolean {
+  const headers = (rawHeaders ?? '').toLowerCase();
+  if (!headers) return false;
+  return headerValue(headers, 'auto-submitted') === 'auto-forwarded';
+}
+
+/**
  * Strengere Variante für vollautomatische KI-Antworten: zusätzlich
  * Newsletter/Verteiler ausschließen — die KOMPLETTE RFC-2369-Familie plus
  * List-Id. Besonders kritisch ist List-Post: replyAddressesFromRawHeaders
@@ -57,3 +69,13 @@ export function isUnsafeAutoReplyTarget(rawHeaders: string | null | undefined): 
   const headers = (rawHeaders ?? '').toLowerCase();
   return MAILING_LIST_HEADER_PREFIXES.some((prefix) => headers.includes(prefix));
 }
+
+/**
+ * Absender-Adressen von Automaten (noreply, MAILER-DAEMON, postmaster, Bounces,
+ * Benachrichtigungen). Gleiche Regel wie das Auto-Antwort-Gate der Workflows;
+ * Urlaubs-Antworten beider Editionen nutzen sie zusammen mit
+ * isUnsafeAutoReplyTarget, damit Automaten ohne Auto-Submitted keine Antwort
+ * bekommen.
+ */
+export const AUTO_REPLY_NOREPLY_RE =
+  /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;

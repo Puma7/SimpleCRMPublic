@@ -62,7 +62,6 @@ export type SmtpRelayConfig = Readonly<{
   maxRecipients: number;
   maxMessageBytes: number;
   rateLimitPerMin: number;
-  allowArbitraryRecipients: boolean;
   followupWorkflowId: number | null;
 }>;
 
@@ -125,7 +124,6 @@ const relayConfigColumns = [
   'max_recipients',
   'max_message_bytes',
   'rate_limit_per_min',
-  'allow_arbitrary_recipients',
   'followup_workflow_id',
 ] as const;
 
@@ -284,7 +282,6 @@ function mapRelayConfigRow(row: Record<string, unknown>): SmtpRelayConfig {
     maxRecipients: Number(row.max_recipients),
     maxMessageBytes: Number(row.max_message_bytes),
     rateLimitPerMin: Number(row.rate_limit_per_min),
-    allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
     followupWorkflowId: followup === null || followup === undefined ? null : Number(followup),
   };
 }
@@ -377,7 +374,6 @@ const relayAdminSelectColumns = [
   'max_recipients',
   'max_message_bytes',
   'rate_limit_per_min',
-  'allow_arbitrary_recipients',
   'followup_workflow_id',
   'created_at',
 ] as const;
@@ -408,7 +404,6 @@ const USERNAME_GENERATION_ATTEMPTS = 5;
 
 const RELAY_DEFAULTS = {
   enabled: true,
-  allowArbitraryRecipients: false,
   maxRecipients: 50,
   maxMessageBytes: 26_214_400,
   rateLimitPerMin: 60,
@@ -528,8 +523,6 @@ export function createPostgresSmtpRelayAdminPort(
                 workspace_id: input.workspaceId,
                 label: input.values.label.trim(),
                 enabled: input.values.enabled ?? RELAY_DEFAULTS.enabled,
-                allow_arbitrary_recipients:
-                  input.values.allowArbitraryRecipients ?? RELAY_DEFAULTS.allowArbitraryRecipients,
                 max_recipients: input.values.maxRecipients ?? RELAY_DEFAULTS.maxRecipients,
                 max_message_bytes: input.values.maxMessageBytes ?? RELAY_DEFAULTS.maxMessageBytes,
                 rate_limit_per_min: input.values.rateLimitPerMin ?? RELAY_DEFAULTS.rateLimitPerMin,
@@ -954,7 +947,6 @@ type RelayAdminRow = {
   max_recipients: number;
   max_message_bytes: number;
   rate_limit_per_min: number;
-  allow_arbitrary_recipients: boolean;
   followup_workflow_id: number | null;
   created_at: Date | string;
 };
@@ -969,7 +961,6 @@ function relayUpdateColumns(values: SmtpRelayMutationInput): Record<string, unkn
   if (values.maxRecipients !== undefined) set.max_recipients = values.maxRecipients;
   if (values.maxMessageBytes !== undefined) set.max_message_bytes = values.maxMessageBytes;
   if (values.rateLimitPerMin !== undefined) set.rate_limit_per_min = values.rateLimitPerMin;
-  if (values.allowArbitraryRecipients !== undefined) set.allow_arbitrary_recipients = values.allowArbitraryRecipients;
   if (values.followupWorkflowId !== undefined) set.followup_workflow_id = values.followupWorkflowId;
   return set;
 }
@@ -985,7 +976,6 @@ function mapRelayAdminRow(row: RelayAdminRow): Omit<SmtpRelayRecord, 'allowedAcc
     maxRecipients: Number(row.max_recipients),
     maxMessageBytes: Number(row.max_message_bytes),
     rateLimitPerMin: Number(row.rate_limit_per_min),
-    allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
     followupWorkflowId: row.followup_workflow_id === null ? null : Number(row.followup_workflow_id),
     createdAt: timestampToIso(row.created_at),
   };

@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { toast } from "sonner"
 import { Copy, Pencil, Trash2, X } from "lucide-react"
@@ -162,6 +162,9 @@ export function MessageMetadataPanel({
   const [conversation, setConversation] = useState<EmailMessage[]>([])
   const [security, setSecurity] = useState<MessageSecurityState | null>(null)
   const [securityLoading, setSecurityLoading] = useState(false)
+  // Message the security block belongs to: late responses (initial load or
+  // "Erneut prüfen") for a previously selected message must not land here.
+  const securityMessageIdRef = useRef<number | null>(null)
   const [openingConversationId, setOpeningConversationId] = useState<number | null>(null)
 
   const reloadMessageCategoryIds = useCallback(async (messageId: number) => {
@@ -200,18 +203,26 @@ export function MessageMetadataPanel({
   }, [categories, messageCategoryIds])
 
   useEffect(() => {
-    if (!selectedMessage) {
-      setSecurity(null)
-      return
-    }
+    securityMessageIdRef.current = selectedMessage?.id ?? null
+    setSecurity(null)
+    if (!selectedMessage) return
+    let cancelled = false
     setSecurityLoading(true)
     void invokeRenderer(IPCChannels.Email.GetMessageSecurity, selectedMessage.id)
       .then((r) => {
+        if (cancelled) return
         const response = r as MessageSecurityResponse
         setSecurity(response.success ? messageSecurityStateFromResponse(response) : null)
       })
-      .catch(() => setSecurity(null))
-      .finally(() => setSecurityLoading(false))
+      .catch(() => {
+        if (!cancelled) setSecurity(null)
+      })
+      .finally(() => {
+        if (!cancelled) setSecurityLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [selectedMessage?.id])
 
   const correspondentEmail = selectedMessage
@@ -235,6 +246,7 @@ export function MessageMetadataPanel({
         ? selectedAccountId
         : selectedMessage.account_id
 
+    let cancelled = false
     void invokeRenderer(IPCChannels.Email.ListConversationMessages, {
       accountId: accountScope,
       messageId: selectedMessage.id,
@@ -243,8 +255,15 @@ export function MessageMetadataPanel({
       customerId: correspondentEmail ? undefined : selectedMessage.customer_id,
       limit: 50,
     })
-      .then((rows) => setConversation(Array.isArray(rows) ? (rows as EmailMessage[]) : []))
-      .catch(() => setConversation([]))
+      .then((rows) => {
+        if (!cancelled) setConversation(Array.isArray(rows) ? (rows as EmailMessage[]) : [])
+      })
+      .catch(() => {
+        if (!cancelled) setConversation([])
+      })
+    return () => {
+      cancelled = true
+    }
   }, [
     selectedMessage?.id,
     selectedMessage?.account_id,
@@ -679,23 +698,26 @@ export function MessageMetadataPanel({
                     disabled={securityLoading}
                     onClick={() => {
                       if (!selectedMessage) return
+                      const requestedId = selectedMessage.id
                       void (async () => {
                         setSecurityLoading(true)
                         try {
                           const result = await invokeRenderer(
                             IPCChannels.Email.RunMailSecurityCheck,
-                            selectedMessage.id,
+                            requestedId,
                           ) as { success?: boolean; queued?: boolean }
                           const r = await invokeRenderer(
                             IPCChannels.Email.GetMessageSecurity,
-                            selectedMessage.id,
+                            requestedId,
                           ) as MessageSecurityResponse
+                          if (securityMessageIdRef.current !== requestedId) return
                           if (r.success) setSecurity(messageSecurityStateFromResponse(r))
                           toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
                         } catch {
+                          if (securityMessageIdRef.current !== requestedId) return
                           toast.error("Sicherheitsprüfung fehlgeschlagen")
                         } finally {
-                          setSecurityLoading(false)
+                          if (securityMessageIdRef.current === requestedId) setSecurityLoading(false)
                         }
                       })()
                     }}

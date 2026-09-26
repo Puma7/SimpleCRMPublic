@@ -9,6 +9,7 @@ import {
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
   buildOutboundWarningBanner,
+  emailAddressForDelivery,
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   extractTicketFromSubject,
@@ -16,8 +17,10 @@ import {
   generateTicketCode,
   outboundDraftFingerprint,
   parseOutboundApprovalMarker,
+  replaceTags,
   resolveConfiguredSmtpHost,
   SMTP_HOST_MISSING_ERROR,
+  stripHtmlTagsToText,
 } from '@simplecrm/core';
 
 import type {
@@ -38,13 +41,19 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
+import { removeComposeDraftAttachmentDirectory } from './compose-draft-attachment-files';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
 import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
-import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
+import {
+  sendSmtpMessage,
+  SmtpDataRejectedError,
+  SmtpPreDataSendError,
+  type ServerSmtpSendInput,
+} from './mail-smtp-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
@@ -359,16 +368,29 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         const toJson = recipientJsonObjectFromField(values.to);
         const ccJson = values.cc?.trim() ? recipientJsonObjectFromField(values.cc) : null;
         const bccJson = values.bcc?.trim() ? recipientJsonObjectFromField(values.bcc) : null;
-        const smtpTo = extractEmailAddressesFromRecipientField(values.to);
-        const smtpCc = values.cc?.trim() ? extractEmailAddressesFromRecipientField(values.cc) : [];
-        const smtpBcc = values.bcc?.trim() ? extractEmailAddressesFromRecipientField(values.bcc) : [];
-        const recipients = [...new Set([...smtpTo, ...smtpCc, ...smtpBcc])];
+        // SMTP envelope, headers and stored recipients use delivery addresses
+        // (local part incl. plus tag unchanged); the PGP key lookup keeps its match key.
+        const smtpTo = extractDeliveryAddressesFromRecipientField(values.to);
+        const smtpCc = values.cc?.trim() ? extractDeliveryAddressesFromRecipientField(values.cc) : [];
+        const smtpBcc = values.bcc?.trim() ? extractDeliveryAddressesFromRecipientField(values.bcc) : [];
+        const recipients = uniqueDeliveryAddresses([...smtpTo, ...smtpCc, ...smtpBcc]);
+        const pgpRecipientEmails = [...new Set([
+          ...extractEmailAddressesFromRecipientField(values.to),
+          ...(values.cc?.trim() ? extractEmailAddressesFromRecipientField(values.cc) : []),
+          ...(values.bcc?.trim() ? extractEmailAddressesFromRecipientField(values.bcc) : []),
+        ])];
         const attachmentResolution = resolveComposeAttachments({
           attachmentPaths: values.attachmentPaths,
           attachmentsRoot: options.attachmentsRoot,
         });
         if (!attachmentResolution.ok) return { ok: false, error: attachmentResolution.error };
         let attachments = attachmentResolution.attachments;
+        // The stored draft and the outbound review keep the user's text; only the
+        // SMTP message carries the PGP armor. Writing the armor into the draft before
+        // SMTP lost the plaintext on every failure or review hold (not encrypted to self).
+        const draftBodyText = bodyText;
+        const draftBodyHtml = html;
+        let pgpSentBody: { bodyText: string; bodyHtml: string | null } | null = null;
 
         if (values.pgpEncrypt || values.pgpSign) {
           if (!options.pgpMessages) {
@@ -391,7 +413,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
               workspaceId: input.workspaceId,
               actorUserId: input.actorUserId,
               attachments: attachmentInput.attachments,
-              recipientEmails: recipients,
+              recipientEmails: pgpRecipientEmails,
               encrypt: values.pgpEncrypt,
               sign: values.pgpSign,
               ...(values.pgpPassphrase === undefined ? {} : { passphrase: values.pgpPassphrase }),
@@ -407,7 +429,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             workspaceId: input.workspaceId,
             actorUserId: input.actorUserId,
             bodyText,
-            recipientEmails: recipients,
+            recipientEmails: pgpRecipientEmails,
             encrypt: values.pgpEncrypt,
             sign: values.pgpSign,
             ...(values.pgpPassphrase === undefined ? {} : { passphrase: values.pgpPassphrase }),
@@ -415,6 +437,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           if (!pgpPrepared.ok) return { ok: false, error: pgpPrepared.error };
           bodyText = pgpPrepared.bodyText;
           if (values.pgpEncrypt) html = null;
+          pgpSentBody = { bodyText, bodyHtml: html };
         }
 
         if (draft.outboundHold && !outboundReview) {
@@ -430,8 +453,8 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           draft,
           account,
           input: values,
-          bodyText,
-          bodyHtml: html,
+          bodyText: draftBodyText,
+          bodyHtml: draftBodyHtml,
           toJson,
           ccJson,
           bccJson,
@@ -452,8 +475,8 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             actorUserId: input.actorUserId,
             draftMessageId: values.draftMessageId,
             subject: prepared.finalSubject,
-            bodyText,
-            bodyHtml: html,
+            bodyText: draftBodyText,
+            bodyHtml: draftBodyHtml,
             to: values.to,
             ...(values.cc === undefined ? {} : { cc: values.cc }),
             ...(values.bcc === undefined ? {} : { bcc: values.bcc }),
@@ -609,12 +632,21 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           return {
             ok: false,
             error: error instanceof Error ? error.message : String(error),
-            // Pre-DATA failures provably delivered nothing; anything else
-            // after smtpSend started is an unknown outcome.
-            ...(error instanceof SmtpPreDataSendError ? {} : { deliveryAmbiguous: true }),
+            // Pre-DATA failures and an explicit 4xx/5xx reply to the message
+            // provably delivered nothing; anything else after smtpSend started
+            // (timeout, connection loss after the body) is an unknown outcome.
+            ...(error instanceof SmtpPreDataSendError || error instanceof SmtpDataRejectedError
+              ? {}
+              : { deliveryAmbiguous: true }),
           };
         }
 
+        if (pgpSentBody) {
+          // SMTP accepted the PGP message: the sent copy keeps the armor, never the
+          // plaintext. Written before the committed marker so a crash in between
+          // cannot finalize a plaintext sent copy.
+          await options.store.updateDraftForSend({ ...prepared.draftUpdate, ...pgpSentBody });
+        }
         await markSmtpSent(
           options.store,
           input.workspaceId,
@@ -1428,6 +1460,15 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
           }
         },
       );
+      // The RFC822 (incl. attachments) is committed and snapshotted; the
+      // draft's uploads are never read again once it is marked sent.
+      if (options.attachmentsRoot) {
+        await removeComposeDraftAttachmentDirectory({
+          attachmentsRoot: options.attachmentsRoot,
+          workspaceId: input.workspaceId,
+          draftMessageId: input.messageId,
+        });
+      }
     },
     async markMessageDone(input) {
       await withWorkspaceTransaction(
@@ -1465,6 +1506,7 @@ async function prepareDraftForSend(input: {
   outboundMessageId: string;
   inReplyTo: string | null;
   references: string | null;
+  draftUpdate: Parameters<ComposeSenderStore['updateDraftForSend']>[0];
 }> {
   let ticketCode: string | null = null;
   let threadId: string | null = null;
@@ -1520,7 +1562,7 @@ async function prepareDraftForSend(input: {
   const outboundMessageId =
     input.draft.messageIdHeader?.trim() || generateOutboundMessageId(input.account.emailAddress);
 
-  await input.store.updateDraftForSend({
+  const draftUpdate: Parameters<ComposeSenderStore['updateDraftForSend']>[0] = {
     workspaceId: input.workspaceId,
     messageId: values.draftMessageId,
     subject: finalSubject,
@@ -1542,13 +1584,15 @@ async function prepareDraftForSend(input: {
     outboundMessageId,
     inReplyTo: threadHeaders.inReplyTo ?? null,
     references: threadHeaders.references ?? null,
-  });
+  };
+  await input.store.updateDraftForSend(draftUpdate);
 
   return {
     finalSubject,
     outboundMessageId,
     inReplyTo: threadHeaders.inReplyTo ?? null,
     references: threadHeaders.references ?? null,
+    draftUpdate,
   };
 }
 
@@ -1674,17 +1718,23 @@ function validateComposeRecipients(input: EmailComposeSendInput): string | null 
 }
 
 function validateRecipientField(raw: string, label: string): string | null {
-  const addrs = extractEmailAddressesFromRecipientField(raw);
-  return addrs.length === 0
+  const parsed = parseRecipientField(raw);
+  if (parsed.invalid.length > 0) {
+    return `Ungueltige E-Mail-Adresse in "${label}": ${parsed.invalid[0]}`;
+  }
+  return parsed.candidates.length === 0
     ? `Mindestens eine gueltige E-Mail-Adresse in "${label}" (z. B. a@b.de oder Name <a@b.de>).`
     : null;
 }
 
 function htmlToPlainTextForPgp(html: string): string {
-  return html
-    .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+  // replaceTags = .replace(/<[^>]+>/g, ' ') in linear time; the regex was
+  // quadratic on drafts with many unclosed '<'.
+  return replaceTags(
+    html
+      .replace(/<\s*br\s*\/?>/gi, '\n')
+      .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n'),
+  )
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
@@ -1709,23 +1759,58 @@ function htmlToPlainTextForPgp(html: string): string {
 function recipientJsonObjectFromField(raw: string): { value: { address: string }[] } | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const addresses = extractEmailAddressesFromRecipientField(trimmed);
+  const addresses = extractDeliveryAddressesFromRecipientField(trimmed);
   if (addresses.length === 0) return null;
   return { value: addresses.map((address) => ({ address })) };
 }
 
-function extractEmailAddressesFromRecipientField(raw: string): string[] {
-  const out: string[] = [];
+/**
+ * Split a recipient field into address candidates and invalid entries.
+ * Unquoted display names may contain commas ("Mueller, Hans <h@x.de>"), so a
+ * chunk without "@" only counts as a name fragment when a "Name <addr>" chunk follows.
+ */
+function parseRecipientField(raw: string): { candidates: string[]; invalid: string[] } {
+  const candidates: string[] = [];
+  const invalid: string[] = [];
+  let nameFragments: string[] = [];
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
-    const match = /^(.+)<([^>]+)>$/.exec(text);
-    const candidate = (match ? match[2] : text)?.trim() ?? '';
-    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) {
-      out.push(normalizeRecipientEmailAddress(candidate));
+    const match = /^(.*)<([^>]+)>$/.exec(text);
+    if (!match && !text.includes('@') && !text.includes('<')) {
+      nameFragments.push(text);
+      continue;
     }
+    if (!match) invalid.push(...nameFragments);
+    nameFragments = [];
+    const candidate = (match ? match[2] : text)?.trim() ?? '';
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) candidates.push(candidate);
+    else invalid.push(text);
   }
-  return [...new Set(out)];
+  invalid.push(...nameFragments);
+  return { candidates, invalid };
+}
+
+function extractDeliveryAddressesFromRecipientField(raw: string): string[] {
+  return uniqueDeliveryAddresses(parseRecipientField(raw).candidates.map(emailAddressForDelivery));
+}
+
+/** Case-insensitive dedupe that keeps the first spelling of each mailbox. */
+function uniqueDeliveryAddresses(addresses: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const address of addresses) {
+    const identity = address.toLowerCase();
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    out.push(address);
+  }
+  return out;
+}
+
+/** Match key (lowercase, without plus tag) for PGP key lookup. */
+function extractEmailAddressesFromRecipientField(raw: string): string[] {
+  return [...new Set(parseRecipientField(raw).candidates.map(normalizeRecipientEmailAddress))];
 }
 
 function normalizeRecipientEmailAddress(raw: string): string {
@@ -1959,7 +2044,7 @@ function outboundValidationEventStrings(
 ): Record<string, string> {
   const bodyText = values.bodyText ?? '';
   const bodyHtml = values.bodyHtml ?? '';
-  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(bodyHtml);
   const attachmentCount = values.attachmentCount ?? 0;
   return {
     subject: values.subject ?? '',

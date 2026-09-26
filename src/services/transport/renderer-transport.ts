@@ -196,6 +196,43 @@ export async function uploadServerComposeAttachment(input: {
   }
 }
 
+/**
+ * Forwarding in server-client mode: the server never exposes attachment storage
+ * paths, so it copies the stored attachment (by id, after checking the mail ACL)
+ * into the draft's uploads and returns the draft-local path like an upload.
+ */
+export async function copyServerComposeAttachment(input: {
+  draftMessageId: number
+  sourceAttachmentId: number
+}): Promise<{ path: string; filename: string; sizeBytes: number }> {
+  const transport = getRendererTransport()
+  if (transport.kind !== "http" || !transport.serverBaseUrl) {
+    throw new RendererTransportError("Server attachment copy requires HTTP transport", {
+      code: "http_transport_required",
+    })
+  }
+  const { body } = await authorizedServerFetch(
+    transport.serverBaseUrl,
+    `/api/v1/email/messages/${input.draftMessageId}/compose-attachments`,
+    {
+      method: "POST",
+      body: JSON.stringify({ sourceAttachmentId: input.sourceAttachmentId }),
+    },
+  )
+  const result = unwrapData(body)
+  if (!isRecord(result) || typeof result.path !== "string") {
+    throw new RendererTransportError("Invalid compose attachment copy response", {
+      code: "invalid_response",
+      details: result,
+    })
+  }
+  return {
+    path: result.path,
+    filename: typeof result.filename === "string" ? result.filename : "",
+    sizeBytes: typeof result.sizeBytes === "number" ? result.sizeBytes : 0,
+  }
+}
+
 export async function decryptServerPgpAttachment(input: {
   attachmentId: number
   passphrase: string

@@ -10,7 +10,11 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
-import { hasLocalIpc, type EmailAccount } from "../types"
+import { hasLocalIpc, mailEndpointKey, type EmailAccount } from "../types"
+import {
+  defaultTrustedAuthservId,
+  incomingMailHost,
+} from "../../../../packages/core/src/email/authentication-results"
 
 type Props = {
   onCreated: () => void
@@ -39,12 +43,30 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
   const [vacationSubject, setVacationSubject] = useState("")
   const [vacationBodyText, setVacationBodyText] = useState("")
   const [requestReadReceipt, setRequestReadReceipt] = useState(false)
+  const [trustedAuthservId, setTrustedAuthservId] = useState("")
   const [testing, setTesting] = useState(false)
   const [testingPop3, setTestingPop3] = useState(false)
   const [testingVacation, setTestingVacation] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
+  // The server and the desktop IPC refuse an IMAP/POP3 endpoint change (host,
+  // port, TLS) without the password, so the stored one is never sent to a
+  // different server. Ask for it before saving instead of letting the update fail.
+  const credentialsRequired = editAccount != null && (
+    mailEndpointKey(imapHost, parseInt(imapPort, 10) || 993, imapTls)
+      !== mailEndpointKey(editAccount.imap_host, editAccount.imap_port, Boolean(editAccount.imap_tls))
+    || mailEndpointKey(pop3Host.trim() || imapHost, parseInt(pop3Port, 10) || 995, pop3Tls)
+      !== mailEndpointKey(
+        editAccount.pop3_host?.trim() || editAccount.imap_host,
+        editAccount.pop3_port ?? 995,
+        editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls),
+      )
+  )
+  // Desktop: the OAuth token would win over the password, so the IPC drops the
+  // OAuth link when a server change is saved with a new password.
+  const oauthLinkReplaced = credentialsRequired && !serverClientMode
+    && Boolean(editAccount?.oauth_provider && editAccount?.oauth_refresh_keytar_key)
 
   const lastInitializedAccountIdRef = useRef<number | null>(null)
 
@@ -77,7 +99,15 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     setVacationSubject(editAccount.vacation_subject ?? "")
     setVacationBodyText(editAccount.vacation_body_text ?? "")
     setRequestReadReceipt((editAccount.request_read_receipt ?? 0) === 1)
+    setTrustedAuthservId(editAccount.trusted_authserv_id ?? "")
   }, [editAccount?.id])
+
+  // Server edition only (no column on the desktop): which Authentication-Results
+  // header may stand in when the live SPF/DKIM/DMARC check fails.
+  const authservIdPayload = serverClientMode
+    ? { trustedAuthservId: trustedAuthservId.trim() || null }
+    : {}
+  const defaultAuthservId = defaultTrustedAuthservId(incomingMailHost({ protocol, imapHost, pop3Host }))
 
   const handleTestImap = async () => {
     if (!imapHost.trim() || !imapUsername.trim()) {
@@ -88,6 +118,23 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     }
     if (!isEdit && !imapPassword) {
       const msg = "Bitte Passwort eingeben (neues Konto)."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
+    // Server edition: without a new password the server deliberately tests the
+    // STORED host/port/TLS/user (mail-connection-test.ts), not these form values.
+    if (
+      serverClientMode &&
+      editAccount &&
+      !imapPassword.trim() &&
+      (imapHost.trim() !== (editAccount.imap_host ?? "").trim() ||
+        (parseInt(imapPort, 10) || 993) !== editAccount.imap_port ||
+        imapTls !== Boolean(editAccount.imap_tls) ||
+        imapUsername.trim() !== (editAccount.imap_username ?? "").trim())
+    ) {
+      const msg =
+        "IMAP-Server, Port, TLS oder Benutzername geändert: Ohne Passwort prüft der Server nur die gespeicherten Werte. Bitte Passwort eingeben, um die neuen Werte zu testen."
       setTestFeedback(msg)
       toast.error(msg)
       return
@@ -135,6 +182,22 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     }
     if (!isEdit && !imapPassword) {
       const msg = "Bitte Passwort eingeben (neues Konto)."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
+    // Same server rule as the IMAP test: stored secret ⇒ stored endpoint.
+    if (
+      serverClientMode &&
+      editAccount &&
+      !imapPassword.trim() &&
+      (host !== (editAccount.pop3_host ?? "").trim() ||
+        (parseInt(pop3Port, 10) || 995) !== (editAccount.pop3_port ?? 995) ||
+        pop3Tls !== (editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls)) ||
+        imapUsername.trim() !== (editAccount.imap_username ?? "").trim())
+    ) {
+      const msg =
+        "POP3-Server, Port, TLS oder Benutzername geändert: Ohne Passwort prüft der Server nur die gespeicherten Werte. Bitte Passwort eingeben, um die neuen Werte zu testen."
       setTestFeedback(msg)
       toast.error(msg)
       return
@@ -187,10 +250,14 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
       )
       return
     }
+    if (credentialsRequired && !imapPassword) {
+      toast.error("Zugangsdaten bei Serverwechsel neu eingeben: Bitte das Passwort eingeben.")
+      return
+    }
     setSaving(true)
     try {
       if (isEdit && editAccount) {
-        await invokeRenderer(IPCChannels.Email.UpdateAccount, {
+        const res = await invokeRenderer(IPCChannels.Email.UpdateAccount, {
           id: editAccount.id,
           displayName: displayName.trim(),
           emailAddress: emailAddress.trim(),
@@ -208,7 +275,14 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           vacationSubject: vacationSubject.trim() || null,
           vacationBodyText: vacationBodyText.trim() || null,
           requestReadReceipt,
-        })
+          ...authservIdPayload,
+        }) as { success?: boolean; error?: string } | undefined
+        // The desktop IPC answers a refused update (e.g. a server change without
+        // the password) with success: false instead of throwing.
+        if (res?.success === false) {
+          toast.error(res.error ?? "Speichern fehlgeschlagen.")
+          return
+        }
         toast.success("Konto aktualisiert.")
         setImapPassword("")
         const refreshed = (await invokeRenderer(IPCChannels.Email.ListAccounts)) as EmailAccount[]
@@ -234,6 +308,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           pop3Port: parseInt(pop3Port, 10) || 995,
           pop3Tls,
           imapSyncSeenOnOpen: protocol === "imap" ? imapSyncSeenOnOpen : false,
+          ...authservIdPayload,
         }) as { id?: number }
         if (res.id != null) {
           toast.success("Konto gespeichert.")
@@ -396,14 +471,29 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="acc-pass">Passwort</Label>
+          <Label htmlFor="acc-pass">
+            {credentialsRequired ? "Passwort (erforderlich, Server geändert)" : "Passwort"}
+          </Label>
           <Input
             id="acc-pass"
             type="password"
             value={imapPassword}
             onChange={(e) => setImapPassword(e.target.value)}
+            required={credentialsRequired}
+            aria-invalid={credentialsRequired && !imapPassword ? true : undefined}
             placeholder={isEdit ? "Leer = gespeichertes Passwort beim Test" : undefined}
           />
+          {credentialsRequired ? (
+            <p className="text-[11px] text-muted-foreground">
+              Server, Port oder TLS geändert: Das gespeicherte Passwort wird nicht an einen
+              anderen Server gesendet. Bitte erneut eingeben.
+            </p>
+          ) : null}
+          {oauthLinkReplaced ? (
+            <p className="text-[11px] text-muted-foreground">
+              Beim Speichern wird die OAuth-Verknüpfung dieses Kontos durch dieses Passwort ersetzt.
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -501,6 +591,27 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
             </>
           ) : null}
         </div>
+      ) : null}
+
+      {serverClientMode ? (
+        <details className="rounded-md border bg-muted/20 p-3">
+          <summary className="cursor-pointer text-sm font-medium">Erweitert</summary>
+          <div className="mt-3 space-y-1.5">
+            <Label htmlFor="acc-authserv-id">Vertrauenswürdige authserv-id</Label>
+            <Input
+              id="acc-authserv-id"
+              value={trustedAuthservId}
+              onChange={(e) => setTrustedAuthservId(e.target.value)}
+              placeholder={defaultAuthservId ? `Standard: ${defaultAuthservId}` : "z. B. mx.example.com"}
+              autoComplete="off"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Fällt die Live-Prüfung von SPF/DKIM/DMARC aus, übernimmt SimpleCRM die Ergebnisse
+              nur aus einem „Authentication-Results“-Header dieses Servers (gleiche authserv-id
+              oder eine Subdomain davon). Leer = Domain des Eingangsservers.
+            </p>
+          </div>
+        </details>
       ) : null}
 
       <div className="flex flex-wrap gap-2 pt-1">

@@ -129,6 +129,9 @@ export function DiagnosticsPanel() {
   const [delayedJobs, setDelayedJobs] = useState<Array<Record<string, unknown>>>([])
   const [delayedJobsLoading, setDelayedJobsLoading] = useState(false)
   const canRecover = serverClientMode && (user?.role === "owner" || user?.role === "admin")
+  // Desktop-IPC: Vollbackup und Pruefen nur Owner/Admin, Restore nur Owner.
+  const showLocalBackupActions = !localBackupAvailable || user?.role === "owner" || user?.role === "admin"
+  const canRestoreLocalBackup = localBackupAvailable && user?.role === "owner"
   const canManageDelayedJobs = serverClientMode && (
     user?.role === "owner" || user?.role === "admin" || hasCapability("workflows.manage")
   )
@@ -299,37 +302,41 @@ export function DiagnosticsPanel() {
           <ClipboardCopy className="mr-2 h-4 w-4" />
           JSON kopieren
         </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!localBackupAvailable || backupRunning}
-          onClick={() => void runBackup()}
-        >
-          {backupRunning ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <HardDriveDownload className="mr-2 h-4 w-4" />
-          )}
-          Vollbackup (ZIP)…
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!localBackupAvailable || verifyRunning}
-          onClick={() => void runVerify()}
-        >
-          {verifyRunning ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <FileSearch className="mr-2 h-4 w-4" />
-          )}
-          Backup prüfen…
-        </Button>
+        {showLocalBackupActions ? (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!localBackupAvailable || backupRunning}
+              onClick={() => void runBackup()}
+            >
+              {backupRunning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <HardDriveDownload className="mr-2 h-4 w-4" />
+              )}
+              Vollbackup (ZIP)…
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!localBackupAvailable || verifyRunning}
+              onClick={() => void runVerify()}
+            >
+              {verifyRunning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <FileSearch className="mr-2 h-4 w-4" />
+              )}
+              Backup prüfen…
+            </Button>
+          </>
+        ) : null}
       </div>
 
-      {localBackupAvailable ? <RestoreWizardPanel /> : null}
+      {canRestoreLocalBackup ? <RestoreWizardPanel /> : null}
 
       <ArchiveRecoverySection />
 

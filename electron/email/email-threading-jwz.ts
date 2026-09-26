@@ -1,40 +1,27 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
+// Shared with the server resolver: only plausible msg-ids (id@right, >= 5 chars, no
+// brackets/whitespace) link conversations, so a bare token like "com" matches nothing. (C-A62)
+import { collectRelatedIds, normalizeThreadingMessageId } from '../../packages/core/src/email';
 import { createTicketCodeForAccount, extractKnownTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges } from './email-thread-aggregate';
 import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
 
-function normId(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const s = raw.trim().replace(/^<|>$/g, '').toLowerCase();
-  return s || null;
-}
-
-function parseReferences(refs: string | null): string[] {
-  if (!refs) return [];
-  return refs
-    .split(/\s+/)
-    .map((x) => normId(x))
-    .filter((x): x is string => Boolean(x));
-}
-
-const MAX_THREAD_REF_IDS = 64;
-
-function collectRelatedIds(messageId: string | null, inReplyTo: string | null, refs: string | null): string[] {
-  const s = new Set<string>();
-  const m = normId(messageId);
-  if (m) s.add(m);
-  const ir = normId(inReplyTo);
-  if (ir) s.add(ir);
-  for (const r of parseReferences(refs)) {
-    if (s.size >= MAX_THREAD_REF_IDS) break;
-    s.add(r);
-  }
-  return [...s];
-}
-
 function normHeaderCol(col: string): string {
   return `LOWER(TRIM(REPLACE(REPLACE(IFNULL(${col}, ''), '<', ''), '>', '')))`;
+}
+
+/**
+ * A References column as a space-delimited token list (" id1 id2 "): brackets and folding
+ * whitespace become separators, so an id matches only a whole reference, never a substring.
+ */
+function refTokensCol(col: string): string {
+  return `(' ' || LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col}, '<', ' '), '>', ' '), char(9), ' '), char(13), ' '), char(10), ' ')) || ' ')`;
+}
+
+/** LIKE pattern for one whole token of refTokensCol; %, _ and \ match literally. */
+function refTokenPattern(id: string): string {
+  return `% ${id.replace(/[\\%_]/g, (c) => `\\${c}`)} %`;
 }
 
 /**
@@ -53,7 +40,7 @@ export function assignJwzThreadAndTicket(
 ): void {
   const ticketFromSubject = extractKnownTicketFromSubject(input.subject);
   const related = collectRelatedIds(input.messageIdHeader, input.inReplyTo, input.referencesHeader);
-  const myMid = normId(input.messageIdHeader);
+  const myMid = normalizeThreadingMessageId(input.messageIdHeader);
 
   if (related.length === 0 && !ticketFromSubject) {
     const ticket = createTicketCodeForAccount(accountId);
@@ -67,17 +54,18 @@ export function assignJwzThreadAndTicket(
   const placeholders = related.map(() => '?').join(',');
   const nMid = normHeaderCol('message_id');
   const nIrt = normHeaderCol('in_reply_to');
+  const refMatch = `(m.references_header IS NOT NULL AND ${refTokensCol('m.references_header')} LIKE ? ESCAPE '\\')`;
 
   const refClauses: string[] = [];
   const refParams: string[] = [];
   for (const r of related) {
-    refClauses.push(`(m.references_header IS NOT NULL AND INSTR(LOWER(m.references_header), ?) > 0)`);
-    refParams.push(r);
+    refClauses.push(refMatch);
+    refParams.push(refTokenPattern(r));
   }
   const refSql = refClauses.length ? ` OR ${refClauses.join(' OR ')}` : '';
 
   const myReplyClause = myMid
-    ? ` OR ${nIrt} = ? OR (m.references_header IS NOT NULL AND INSTR(LOWER(m.references_header), ?) > 0)`
+    ? ` OR ${nIrt} = ? OR ${refMatch}`
     : '';
 
   const sql = `
@@ -96,7 +84,7 @@ export function assignJwzThreadAndTicket(
 
   const params: unknown[] = [accountId, messageId, ...related, ...related, ...refParams];
   if (myMid) {
-    params.push(myMid, myMid);
+    params.push(myMid, refTokenPattern(myMid));
   }
 
   const matches = getDb().prepare(sql).all(...params) as { thread_id: string; ticket_code: string | null }[];

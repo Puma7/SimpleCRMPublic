@@ -104,7 +104,11 @@ import {
     createSavedViewsTable,
 } from './database-schema';
 import { Product, DealProduct } from './types';
-import type { TaskScheduleInput } from '@simplecrm/core';
+import { CLOSED_DEAL_STAGES, WON_DEAL_STAGES, type TaskScheduleInput } from '@simplecrm/core';
+import { resolveIsDevelopment } from './security/runtime-mode';
+import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
+import { rewriteLegacyAttachmentStoragePaths } from './email/attachment-storage-path';
+import { localDateKey, localDateKeyInDays } from './utils/local-date';
 
 function getDatabasePath(): string {
   try {
@@ -119,7 +123,10 @@ function getDatabasePath(): string {
   return path.join(base, 'database.sqlite');
 }
 let db: Database.Database | undefined;
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = resolveIsDevelopment({
+  isPackaged: app?.isPackaged,
+  nodeEnv: process.env.NODE_ENV,
+});
 
 const sqliteVerboseLogger = (...args: unknown[]) => {
     if (isDevelopment) {
@@ -1187,6 +1194,16 @@ function runMigrations() {
         migrateEmailFtsSearchV3();
         migrateAttachmentTextSearch();
 
+        // Attachment paths are stored relative to the attachments root; rows from
+        // older versions (or restored older backups) still hold absolute paths.
+        if (!getSyncInfo('email_attachment_relative_paths_v1')) {
+            const rewritten = rewriteLegacyAttachmentStoragePaths(conn, EMAIL_MESSAGE_ATTACHMENTS_TABLE);
+            if (rewritten > 0) {
+                console.log(`Rewrote ${rewritten} attachment storage paths to relative form`);
+            }
+            setSyncInfo('email_attachment_relative_paths_v1', '1');
+        }
+
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();
         const hasSnoozedUntil = taskColsForSnooze.some((col: any) => col.name === 'snoozed_until');
@@ -2034,8 +2051,22 @@ export function createCustomer(customerData: any): any {
         '@affiliateLink', '@now'
     ];
 
+    // Every named placeholder needs a value (better-sqlite3 throws "Missing named
+    // parameter" otherwise); Automation-API bodies usually carry only a few fields.
+    const optional = (value: unknown) => (value === undefined ? null : value);
     const dataToInsert: any = {
         ...standardCustomerData,
+        firstName: optional(standardCustomerData.firstName),
+        company: optional(standardCustomerData.company),
+        email: optional(standardCustomerData.email),
+        phone: optional(standardCustomerData.phone),
+        mobile: optional(standardCustomerData.mobile),
+        street: optional(standardCustomerData.street),
+        zip: optional(standardCustomerData.zip ?? standardCustomerData.zipCode),
+        city: optional(standardCustomerData.city),
+        country: optional(standardCustomerData.country),
+        notes: optional(standardCustomerData.notes),
+        affiliateLink: optional(standardCustomerData.affiliateLink),
         now: now,
         status: standardCustomerData.status || 'Active'
     };
@@ -2104,6 +2135,14 @@ export function createCustomer(customerData: any): any {
     }
 }
 
+// Keys are interpolated as column names into the UPDATE statement, so only real
+// customer columns may pass (payloads come from IPC and the Automation API).
+const CUSTOMER_UPDATABLE_COLUMNS = new Set([
+    'customerNumber', 'name', 'firstName', 'company', 'email', 'phone', 'mobile',
+    'street', 'zipCode', 'city', 'country', 'jtl_dateCreated', 'jtl_blocked',
+    'status', 'notes', 'affiliateLink', 'dateAdded', 'lastModifiedLocally', 'lastSynced',
+]);
+
 export function updateCustomer(id: number, customerData: any): any {
     const now = new Date().toISOString();
 
@@ -2112,6 +2151,11 @@ export function updateCustomer(id: number, customerData: any): any {
 
     const updateFieldKeys = Object.keys(otherCustomerData)
         .filter(key => key !== 'id' && key !== 'jtl_kKunde'); // Don't update primary keys
+
+    const unknownKey = updateFieldKeys.find(key => !CUSTOMER_UPDATABLE_COLUMNS.has(key));
+    if (unknownKey !== undefined) {
+        throw new Error(`Unbekanntes Kundenfeld: ${unknownKey.slice(0, 64)}`);
+    }
 
     const updateAssignments = updateFieldKeys.map(key => `${key} = @${key}`);
 
@@ -2174,12 +2218,32 @@ export function updateCustomer(id: number, customerData: any): any {
     }
 }
 
-export function deleteCustomer(id: number): boolean {
+function countCustomerDependents(db: Database.Database, id: number): CustomerDependents {
+    return db.prepare(`
+        SELECT
+            (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE customer_id = @id) AS deals,
+            (SELECT COUNT(*) FROM ${TASKS_TABLE} WHERE customer_id = @id) AS tasks,
+            (SELECT COUNT(*) FROM ${CALENDAR_EVENTS_TABLE} e
+                JOIN ${TASKS_TABLE} t ON t.id = e.task_id
+                WHERE t.customer_id = @id) AS appointments
+    `).get({ id }) as CustomerDependents;
+}
+
+export function deleteCustomer(id: number, options: { cascade?: boolean } = {}): boolean {
     // Use a transaction to ensure all operations succeed or fail together
     const db = getDb();
     db.prepare('BEGIN TRANSACTION').run();
 
     try {
+        // Deals (with positions), tasks and their appointments go with the
+        // customer through ON DELETE CASCADE, so only do that when confirmed.
+        if (!options.cascade) {
+            const dependents = countCustomerDependents(db, id);
+            if (dependents.deals + dependents.tasks + dependents.appointments > 0) {
+                throw new CustomerHasDependentsError(dependents);
+            }
+        }
+
         // Delete custom field values first (though the foreign key would handle this)
         deleteAllCustomFieldValuesForCustomer(id);
 
@@ -2194,7 +2258,9 @@ export function deleteCustomer(id: number): boolean {
     } catch (error) {
         // If anything fails, roll back the transaction
         db.prepare('ROLLBACK').run();
-        console.error('Error deleting customer:', error);
+        if (!(error instanceof CustomerHasDependentsError)) {
+            console.error('Error deleting customer:', error);
+        }
         throw error;
     }
 }
@@ -2279,8 +2345,15 @@ export function createProduct(productData: Omit<Product, 'id' | 'dateCreated' | 
 }
 
 // For updating products manually within the app
+// Keys are interpolated as column names into the UPDATE statement (payload from IPC).
+const PRODUCT_UPDATABLE_COLUMNS = new Set(['name', 'sku', 'description', 'price', 'isActive', 'lastModifiedLocally']);
+
 export function updateProduct(id: number, productData: Partial<Omit<Product, 'id' | 'dateCreated' | 'lastModified' | 'lastSynced' | 'jtl_kArtikel' | 'jtl_dateCreated'>>): Database.RunResult {
     const now = new Date().toISOString();
+    const unknownKey = Object.keys(productData).find(key => !PRODUCT_UPDATABLE_COLUMNS.has(key));
+    if (unknownKey !== undefined) {
+        throw new Error(`Unbekanntes Produktfeld: ${unknownKey.slice(0, 64)}`);
+    }
     let updateFields = Object.keys(productData)
                            .map(key => `${key} = @${key}`)
                            .join(', ');
@@ -2599,6 +2672,12 @@ export function createCalendarEvent(eventData: any): Database.RunResult {
     }
 }
 
+// Keys are interpolated as column names into the UPDATE statement.
+const CALENDAR_EVENT_UPDATABLE_COLUMNS = new Set([
+    'title', 'description', 'start_date', 'end_date', 'all_day', 'color_code',
+    'event_type', 'recurrence_rule', 'task_id',
+]);
+
 export function updateCalendarEvent(id: number, eventData: Partial<Omit<CalendarEventData, 'id'>>): Database.RunResult {
     console.log('Updating calendar event with data:', id, eventData);
     try {
@@ -2635,6 +2714,10 @@ export function updateCalendarEvent(id: number, eventData: Partial<Omit<Calendar
         console.log('Sanitized data for SQLite update:', cleanData);
 
         const keysToUpdate = Object.keys(eventData);
+        const unknownKey = keysToUpdate.find(key => !CALENDAR_EVENT_UPDATABLE_COLUMNS.has(key));
+        if (unknownKey !== undefined) {
+            throw new Error(`Unbekanntes Terminfeld: ${unknownKey.slice(0, 64)}`);
+        }
         let updateFields = keysToUpdate
                                .map(key => `${key} = @${key}`)
                                .join(', ');
@@ -3090,6 +3173,31 @@ export function createDeal(dealData: any): { success: boolean; id?: number; erro
   }
 }
 
+/** Activity log + crm.deal_stage_changed workflows for a stage change (Kanban and edit dialog). */
+function recordDealStageChange(dealId: number, customerId: number, oldStage: string | null | undefined, newStage: string): void {
+  try {
+    createActivityLog({
+      customer_id: customerId,
+      deal_id: dealId,
+      activity_type: 'stage_change',
+      title: `Deal-Phase geändert: ${oldStage} → ${newStage}`,
+      metadata: JSON.stringify({ old_stage: oldStage, new_stage: newStage }),
+    });
+  } catch (e) {
+    console.error('Failed to log stage change activity:', e);
+  }
+  void import('./workflow/workflow-trigger-dispatch.js')
+    .then((m) =>
+      m.fireDealStageChangedWorkflows(
+        dealId,
+        Number(customerId),
+        String(oldStage ?? ''),
+        newStage,
+      ),
+    )
+    .catch((e) => console.warn('[workflow] deal stage trigger', e));
+}
+
 export function updateDeal(dealId: number, dealData: any): { success: boolean; error?: string } {
   try {
     // Update last_modified timestamp
@@ -3106,6 +3214,15 @@ export function updateDeal(dealId: number, dealData: any): { success: boolean; e
       return { success: false, error: 'No fields to update' };
     }
 
+    // The edit dialog and PATCH /deals/:id can change the stage too; they must
+    // have the same side effects as updateDealStage.
+    const newStage = typeof dealData.stage === 'string' ? dealData.stage : undefined;
+    const before = newStage !== undefined
+      ? getDb().prepare(`SELECT stage, customer_id FROM ${DEALS_TABLE} WHERE id = ?`).get(dealId) as
+          | { stage: string | null; customer_id: number }
+          | undefined
+      : undefined;
+
     const stmt = getDb().prepare(`
       UPDATE ${DEALS_TABLE}
       SET ${fields}
@@ -3116,6 +3233,10 @@ export function updateDeal(dealId: number, dealData: any): { success: boolean; e
       id: dealId,
       ...dealData
     });
+
+    if (result.changes > 0 && before && newStage !== undefined && before.stage !== newStage) {
+      recordDealStageChange(dealId, before.customer_id, before.stage, newStage);
+    }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };
   } catch (error) {
@@ -3141,27 +3262,7 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
     const result = stmt.run(newStage, now, dealId);
 
     if (result.changes > 0 && deal) {
-      try {
-        createActivityLog({
-          customer_id: deal.customer_id,
-          deal_id: dealId,
-          activity_type: 'stage_change',
-          title: `Deal-Phase geändert: ${oldStage} → ${newStage}`,
-          metadata: JSON.stringify({ old_stage: oldStage, new_stage: newStage }),
-        });
-      } catch (e) {
-        console.error('Failed to log stage change activity:', e);
-      }
-      void import('./workflow/workflow-trigger-dispatch.js')
-        .then((m) =>
-          m.fireDealStageChangedWorkflows(
-            dealId,
-            Number(deal.customer_id),
-            String(oldStage ?? ''),
-            newStage,
-          ),
-        )
-        .catch((e) => console.warn('[workflow] deal stage trigger', e));
+      recordDealStageChange(dealId, deal.customer_id, oldStage, newStage);
     }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };
@@ -3534,6 +3635,13 @@ export function getAllJtlVersandarten(): { kVersandart: number; cName: string }[
 
 // --- Dashboard Operations ---
 
+// Fixed stage lists from @simplecrm/core as SQL literals (constants, no user input).
+function sqlStageList(stages: readonly string[]): string {
+    return stages.map((stage) => `'${stage.replace(/'/g, "''")}'`).join(', ');
+}
+const CLOSED_DEAL_STAGES_SQL = sqlStageList(CLOSED_DEAL_STAGES);
+const WON_DEAL_STAGES_SQL = sqlStageList(WON_DEAL_STAGES);
+
 /**
  * Get dashboard statistics including customer counts, deal values, and task counts
  */
@@ -3567,11 +3675,11 @@ export function getDashboardStats(): {
         const newCustomersLastMonth = newCustomersResult.count;
 
         // Get active deals count and value
-        // Assuming 'active' deals are those not in 'Closed Won' or 'Closed Lost' stages
+        // 'Active' deals are those not in a won/lost stage (see CLOSED_DEAL_STAGES in @simplecrm/core)
         const activeDealsStmt = db.prepare(`
             SELECT COUNT(*) as count, SUM(value) as total_value
             FROM ${DEALS_TABLE}
-            WHERE stage NOT IN ('Closed Won', 'Closed Lost')
+            WHERE stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
         `);
         const activeDealsResult = activeDealsStmt.get() as { count: number; total_value: number | null };
         const activeDealsCount = activeDealsResult.count;
@@ -3586,7 +3694,7 @@ export function getDashboardStats(): {
         const pendingTasksCount = pendingTasksResult.count;
 
         // Get tasks due today
-        const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD
+        const today = localDateKey(); // local YYYY-MM-DD, due dates are local dates
         const dueTodayTasksStmt = db.prepare(`
             SELECT COUNT(*) as count FROM ${TASKS_TABLE}
             WHERE completed = 0 AND date(due_date) = ?
@@ -3597,8 +3705,8 @@ export function getDashboardStats(): {
         // Calculate conversion rate (closed won deals / total closed deals)
         const conversionRateStmt = db.prepare(`
             SELECT
-                COUNT(CASE WHEN stage = 'Closed Won' THEN 1 END) as won,
-                COUNT(CASE WHEN stage IN ('Closed Won', 'Closed Lost') THEN 1 END) as total
+                COUNT(CASE WHEN stage IN (${WON_DEAL_STAGES_SQL}) THEN 1 END) as won,
+                COUNT(CASE WHEN stage IN (${CLOSED_DEAL_STAGES_SQL}) THEN 1 END) as total
             FROM ${DEALS_TABLE}
         `);
         const conversionResult = conversionRateStmt.get() as { won: number; total: number };
@@ -3755,8 +3863,8 @@ export function getFollowUpQueueCounts(): {
     stagnierend: number;
     highValueRisk: number;
 } {
-    const today = new Date().toISOString().slice(0, 10);
-    const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = localDateKey();
+    const weekFromNow = localDateKeyInDays(7);
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const nowISO = new Date().toISOString();
@@ -3778,10 +3886,10 @@ export function getFollowUpQueueCounts(): {
             (SELECT COUNT(*) FROM ${TASKS_TABLE} WHERE completed = 0
                 AND snoozed_until IS NOT NULL AND snoozed_until > ?) as zurueckgestellt,
             (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE
-                stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+                stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
                 AND last_modified < ?) as stagnierend,
             (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE
-                stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+                stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
                 AND value > 1000
                 AND (
                     (expected_close_date IS NOT NULL AND expected_close_date != '' AND substr(expected_close_date, 1, 10) <= ?)
@@ -3814,8 +3922,8 @@ export function getFollowUpItems(
     limit: number = 100,
     offset: number = 0
 ): any[] {
-    const today = new Date().toISOString().slice(0, 10);
-    const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = localDateKey();
+    const weekFromNow = localDateKeyInDays(7);
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const nowISO = new Date().toISOString();
@@ -3845,7 +3953,7 @@ export function getFollowUpItems(
                 (SELECT MAX(al.created_at) FROM ${ACTIVITY_LOG_TABLE} al WHERE al.customer_id = d.customer_id) as last_contact_date
             FROM ${DEALS_TABLE} d
             LEFT JOIN ${CUSTOMERS_TABLE} c ON d.customer_id = c.id
-            WHERE d.stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+            WHERE d.stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
         `;
 
         if (queue === 'stagnierende_deals') {
@@ -3891,7 +3999,7 @@ export function getFollowUpItems(
                 (SELECT MAX(al.created_at) FROM ${ACTIVITY_LOG_TABLE} al WHERE al.customer_id = t.customer_id) as last_contact_date
             FROM ${TASKS_TABLE} t
             LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
-            LEFT JOIN ${DEALS_TABLE} d ON d.customer_id = t.customer_id AND d.stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+            LEFT JOIN ${DEALS_TABLE} d ON d.customer_id = t.customer_id AND d.stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
             WHERE t.completed = 0
         `;
 

@@ -4,6 +4,7 @@ export const AUTH_SECURITY_SYNC_KEYS = {
   mfaEnabled: 'auth_security_mfa_enabled',
   mfaTotpEnabled: 'auth_security_mfa_totp_enabled',
   mfaEmailEnabled: 'auth_security_mfa_email_enabled',
+  portalCaptchaEnabled: 'auth_security_portal_captcha_enabled',
 } as const;
 
 export type AuthSecurityWorkspaceSettings = {
@@ -12,6 +13,11 @@ export type AuthSecurityWorkspaceSettings = {
   mfaEnabled: boolean;
   mfaTotpEnabled: boolean;
   mfaEmailEnabled: boolean;
+  /**
+   * CAPTCHA for the public returns portal. On unless the workspace switches it
+   * off; it only takes effect once Turnstile is configured on the instance.
+   */
+  portalCaptchaEnabled: boolean;
 };
 
 export type AuthMfaMethod = 'totp' | 'email';
@@ -22,6 +28,7 @@ export const DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS: AuthSecurityWorkspaceSett
   mfaEnabled: false,
   mfaTotpEnabled: true,
   mfaEmailEnabled: false,
+  portalCaptchaEnabled: true,
 };
 
 export function parseAuthSecuritySyncValues(
@@ -33,6 +40,7 @@ export function parseAuthSecuritySyncValues(
     mfaEnabled: parseSyncFlag(values[AUTH_SECURITY_SYNC_KEYS.mfaEnabled]),
     mfaTotpEnabled: parseSyncFlag(values[AUTH_SECURITY_SYNC_KEYS.mfaTotpEnabled], true),
     mfaEmailEnabled: parseSyncFlag(values[AUTH_SECURITY_SYNC_KEYS.mfaEmailEnabled]),
+    portalCaptchaEnabled: parseSyncFlag(values[AUTH_SECURITY_SYNC_KEYS.portalCaptchaEnabled], true),
   };
 }
 
@@ -45,6 +53,7 @@ export function serializeAuthSecuritySyncValues(
     [AUTH_SECURITY_SYNC_KEYS.mfaEnabled]: settings.mfaEnabled ? 'true' : 'false',
     [AUTH_SECURITY_SYNC_KEYS.mfaTotpEnabled]: settings.mfaTotpEnabled ? 'true' : 'false',
     [AUTH_SECURITY_SYNC_KEYS.mfaEmailEnabled]: settings.mfaEmailEnabled ? 'true' : 'false',
+    [AUTH_SECURITY_SYNC_KEYS.portalCaptchaEnabled]: settings.portalCaptchaEnabled ? 'true' : 'false',
   };
 }
 

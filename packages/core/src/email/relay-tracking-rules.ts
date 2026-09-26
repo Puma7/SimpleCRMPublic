@@ -13,6 +13,8 @@
  * testable and reusable from both the SMTP submission path and any UI preview.
  */
 
+import { compileUserRegex, type UserRegexMatcher } from '../user-regex';
+
 export type RelayTrackingMode = 'off' | 'rule' | 'always';
 
 /** Parsed value of the `X-SimpleCRM-Track` header (`null` = header absent). */
@@ -121,10 +123,10 @@ function subjectMatchesAnyPattern(subjectPatterns: string | null, subject: strin
     .slice(0, MAX_PATTERNS);
 
   for (const line of lines) {
-    const regex = tryCompilePatternRegex(line);
-    if (regex) {
+    const matcher = tryCompilePatternMatcher(line);
+    if (matcher) {
       try {
-        if (regex.test(subject)) return true;
+        if (matcher(subject)) return true;
       } catch {
         // A pathological regex that throws at match time is treated as no-match
         // for this line rather than aborting the whole evaluation.
@@ -142,17 +144,18 @@ function subjectMatchesAnyPattern(subjectPatterns: string | null, subject: strin
 const REGEX_PATTERN_LINE = /^\/(.+)\/([a-z]*)$/i;
 
 /**
- * Compile a `/source/flags` line into a RegExp, or return `null` so the caller
+ * Compile a `/source/flags` line into a matcher, or return `null` so the caller
  * falls back to literal substring matching. `null` covers both "not regex
  * syntax" and "invalid regex" — an invalid regex is deliberately treated as a
- * literal rather than throwing.
+ * literal rather than throwing. compileUserRegex keeps /…/i patterns eligible
+ * for V8's linear-time fallback (F-A13A14-04).
  */
-function tryCompilePatternRegex(line: string): RegExp | null {
+function tryCompilePatternMatcher(line: string): UserRegexMatcher | null {
   const match = REGEX_PATTERN_LINE.exec(line);
   if (!match) return null;
   const [, source, flags] = match;
   try {
-    return new RegExp(source!, flags);
+    return compileUserRegex(source!, flags);
   } catch {
     return null;
   }
@@ -166,13 +169,20 @@ function tryCompilePatternRegex(line: string): RegExp | null {
  * phase, so a catastrophically-backtracking pattern must be rejected before it
  * is ever stored. Applies the same trim + length bound as evaluation. */
 export function extractRelaySubjectRegexSources(subjectPatterns: string | null): string[] {
+  return extractRelaySubjectRegexes(subjectPatterns).map((regex) => regex.source);
+}
+
+/** Like {@link extractRelaySubjectRegexSources}, with each line's flags. */
+export function extractRelaySubjectRegexes(
+  subjectPatterns: string | null,
+): Array<{ source: string; flags: string }> {
   if (!subjectPatterns) return [];
-  const sources: string[] = [];
+  const regexes: Array<{ source: string; flags: string }> = [];
   for (const raw of subjectPatterns.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.length > MAX_PATTERN_LENGTH) continue;
     const match = REGEX_PATTERN_LINE.exec(line);
-    if (match) sources.push(match[1]!);
+    if (match) regexes.push({ source: match[1]!, flags: match[2]! });
   }
-  return sources;
+  return regexes;
 }

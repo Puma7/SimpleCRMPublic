@@ -8,11 +8,14 @@
  * - `adminOnly`: schon der initiale GET ist serverseitig admin-only
  *   (OAuth-Apps, SMTP-Relay, Audit-Log) — fuer einen delegierten
  *   settings.view-Nutzer waere der Tab ein garantierter 403.
+ * - `desktopAdminOnly`: nur im Desktop verlangen die IPC-Kanaele Owner/Admin
+ *   (DSGVO-Export); der Server regelt denselben Tab ueber die Mail-ACL.
  */
 export type SettingsTabAccess = {
   serverOnly?: boolean
   personalAccount?: boolean
   adminOnly?: boolean
+  desktopAdminOnly?: boolean
 }
 
 export type SettingsTabAccessContext = {
@@ -28,5 +31,6 @@ export function isSettingsTabAvailable(
   if (tab.serverOnly && !context.serverClientMode) return false
   if (context.personalOnly && !tab.personalAccount) return false
   if (tab.adminOnly && !context.isAdmin) return false
+  if (tab.desktopAdminOnly && !context.serverClientMode && !context.isAdmin) return false
   return true
 }

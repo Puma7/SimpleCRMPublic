@@ -1,3 +1,4 @@
+import { CLOSED_DEAL_STAGES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 import { ilikeContainsPattern } from './sql-ilike';
 
@@ -7,6 +8,7 @@ import type {
   FollowUpQueueCountsRecord,
 } from '../api/types';
 import type { ServerDatabase } from './schema';
+import { taskVisibilityExpression } from './postgres-core-crm-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -16,8 +18,6 @@ export type PostgresFollowUpPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
-
-const CLOSED_DEAL_STAGES = ['Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost'] as const;
 
 export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions): FollowUpApiPort {
   return {
@@ -38,6 +38,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             trx.selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('due_date', '>=', dates.todayStart)
               .where('due_date', '<', dates.tomorrowStart)
@@ -49,6 +50,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             trx.selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('due_date', '<', dates.todayStart)
               .where((eb) => eb.or([
@@ -59,6 +61,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             trx.selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('due_date', '>=', dates.todayStart)
               .where('due_date', '<', dates.weekExclusiveEnd)
@@ -70,6 +73,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             trx.selectFrom('tasks')
               .select((eb) => eb.fn.countAll<number>().as('count'))
               .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
               .where('completed', '=', false)
               .where('snoozed_until', '>', dates.now)
               .executeTakeFirstOrThrow(),
@@ -160,7 +164,10 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
               .slice(offset, offset + limit);
           }
 
+          // Visibility is applied before the join so the shared predicate keeps
+          // its tasks-only expression builder; columns stay unambiguous.
           let query = trx.selectFrom('tasks')
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .leftJoin('customers', (join) => join
               .onRef('customers.id', '=', 'tasks.customer_id')
               .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
@@ -258,6 +265,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.taskId)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning('id')
             .executeTakeFirst();
           return row ? { success: true } : { success: false, error: 'Task not found' };

@@ -23,6 +23,7 @@ import type {
   ServerApiPorts,
 } from './types';
 import { filterMailEventForPrincipal } from '../mail-access/async-policy-enforcer';
+import { isPublicApiRoute } from './public-routes';
 
 export type FastifyPrincipalResolver = (
   request: FastifyRequest,
@@ -52,11 +53,10 @@ export type FastifyServerOptions = Readonly<{
    *
    * Defaults to `false` (trust nobody) — the safe choice for a directly-exposed
    * API, where trusting any peer's XFF would let a client spoof it to escape the
-   * per-IP buckets. The bundled Docker deployment sets `TRUST_PROXY=1` (trust
-   * exactly the one Caddy hop) via its env; other values accepted are `true`
-   * (trust all hops), a hop count, or a proxy-addr subnet/preset string.
+   * per-IP buckets. Docker trusts Caddy's fixed address on its proxy network.
+   * Custom deployments should name proxy IPs/CIDRs. `true` trusts every peer.
    */
-  trustProxy?: boolean | number | string;
+  trustProxy?: boolean | string;
   apiRateLimit?: PostgresApiRateLimitPort;
 }>;
 
@@ -75,7 +75,26 @@ function safeRequestIp(request: FastifyRequest): string {
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
-const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+// Fastify parses JSON synchronously before the dispatcher looks at the route or
+// the principal, so this is how much JSON an anonymous caller can make the event
+// loop chew on. Ordinary API bodies stay far below 1 MiB (the largest bounded
+// fields are 100k-char knowledge documents and 200k-char PGP private keys).
+const SERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
+// Only the upload routes registered below keep the former cap: the compose
+// attachment upload (contentBase64 up to 36M chars), compose drafts/send/
+// validation (bodyText and bodyHtml up to 2M chars each) and PGP encrypt/sign
+// (2M-char plaintext plus attachments).
+const SERVER_UPLOAD_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+// Anmeldung, Retouren-Portal und eingehende Webhooks: die oeffentlichen unter
+// ihnen parsen JSON vor jeder Anmeldung. Kein legitimer Body kommt in die Naehe
+// (Login/Setup/MFA: Felder bis 120 Zeichen; Portal: Notiz bis 10.000 Zeichen und
+// Positionen mit 200-Zeichen-Feldern; Webhook: gespeichert werden ohnehin nur
+// 64 KB, siehe WEBHOOK_BODY_JSON_MAX in workflow-routes).
+const SERVER_SMALL_BODY_LIMIT_BYTES = 64 * 1024;
+// Outside /api/v1/ only GET-only public resources are served (health probes,
+// the OpenAPI document, the tracking pixel and redirect). None of them reads a
+// body, and none of them is behind the per-IP rate limiter.
+const PUBLIC_RESOURCE_BODY_LIMIT_BYTES = 1024;
 const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
 const CORS_ALLOWED_HEADERS = [
   'Accept',
@@ -120,7 +139,36 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
         ? resolvePrincipalFromHeaders
         : () => undefined
   );
-  const handler = createFastifyHandler(api, resolvePrincipal);
+  // Every /api/v1 route except the public ones (PUBLIC_API_ROUTES) resolves the
+  // principal from the headers before Fastify reads the body, so an anonymous
+  // caller is refused before any JSON is parsed (up to 40 MiB on the upload
+  // routes). The dispatcher reuses that principal instead of resolving (and
+  // hitting the database) a second time.
+  const principalsResolvedBeforeBody = new WeakMap<FastifyRequest, AuthenticatedPrincipal>();
+  const requirePrincipalBeforeBody = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (isPublicApiRoute(request.method, requestPathname(request))) return;
+    let principal: AuthenticatedPrincipal | undefined;
+    try {
+      principal = await resolvePrincipal(request);
+    } catch {
+      // Leave the failure to the dispatcher, which reports it without detail.
+      return;
+    }
+    if (principal) {
+      principalsResolvedBeforeBody.set(request, principal);
+      return;
+    }
+    reply.code(401).send({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentifizierung erforderlich',
+      },
+    });
+  };
+  const handler = createFastifyHandler(
+    api,
+    (request) => principalsResolvedBeforeBody.get(request) ?? resolvePrincipal(request),
+  );
 
   void app.register(websocketPlugin);
   app.addHook('onRequest', async (request, reply) => {
@@ -166,6 +214,16 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
       });
       return;
     }
+    // Same answer the dispatcher gives, but before the body is read.
+    if (!isServedPath(path)) {
+      reply.code(404).send({
+        error: {
+          code: 'not_found',
+          message: 'Route nicht gefunden',
+        },
+      });
+      return;
+    }
   });
   app.after(() => {
     app.get('/api/v1/events', { websocket: true }, (socket, request) => {
@@ -176,11 +234,24 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     });
   });
 
-  app.route({
-    method: [...SUPPORTED_METHODS],
-    url: '/*',
-    handler,
-  });
+  // Every route goes to the same dispatcher; they differ only in how much body
+  // Fastify reads first. Keep the upload list in step with the large field
+  // limits in mail-routes.ts and pgp-routes.ts.
+  const uploadRoute = { bodyLimit: SERVER_UPLOAD_BODY_LIMIT_BYTES, onRequest: requirePrincipalBeforeBody, handler };
+  const smallBodyRoute = { bodyLimit: SERVER_SMALL_BODY_LIMIT_BYTES, onRequest: requirePrincipalBeforeBody, handler };
+  app.route({ method: 'POST', url: '/api/v1/email/messages/:messageId/compose-attachments', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose-drafts', ...uploadRoute });
+  app.route({ method: 'PATCH', url: '/api/v1/email/messages/:messageId/compose-draft', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose/send', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose/validate-outbound', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/pgp/messages/encrypt', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/pgp/messages/sign', ...uploadRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/auth/*', ...smallBodyRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/portal/*', ...smallBodyRoute });
+  app.route({ method: 'POST', url: '/api/v1/workflows/webhook/incoming', ...smallBodyRoute });
+  app.route({ method: 'POST', url: '/api/v1/webhooks/incoming', ...smallBodyRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/*', onRequest: requirePrincipalBeforeBody, handler });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/*', bodyLimit: PUBLIC_RESOURCE_BODY_LIMIT_BYTES, handler });
   app.options('/*', (request, reply) => {
     if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {
       reply.code(403).send({
@@ -195,6 +266,14 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   });
 
   return app;
+}
+
+/** The prefixes Caddy forwards and the dispatcher serves (`/t/` is let through earlier). */
+function isServedPath(path: string): boolean {
+  return path.startsWith('/api/v1/')
+    || path === '/health'
+    || path.startsWith('/health/')
+    || path === '/openapi.json';
 }
 
 function applyCorsHeaders(
@@ -306,6 +385,15 @@ async function handleEventSocket(
     if (!(await revalidatePrincipal(forceRevalidate))) {
       if (!closed) {
         closed = true;
+        // The socket keeps the access token of its upgrade request, so the re-resolve
+        // also fails after a routine refresh (the token's refresh-token row is rotated)
+        // or once the token expires. When the account itself is unchanged, nothing was
+        // taken from the user: close without the invalidation below, which would wipe
+        // the client's mail state, and let it reconnect with its current token.
+        if (!forceRevalidate && await isEventSocketAccountUnchanged(ports, context.principal)) {
+          socket.close(1008, 'session expired');
+          return;
+        }
         // The just-revoked/disabled user's own socket is the one that most needs the
         // invalidation, but the filtered path needs a valid principal we no longer
         // have. Push a self-targeted email_acl.changed on the RAW path before closing
@@ -477,6 +565,25 @@ export function isSelfTargetedAclInvalidation(event: ServerEvent, userId: string
     // Nachricht. Die normale TTL-Revalidierung laeuft unveraendert weiter.
     && event.payload.reason !== 'visibility_filter'
   );
+}
+
+/**
+ * True when the socket's user still exists, is enabled and holds the role the socket
+ * was last authorized with, i.e. only the socket's own access token has lapsed. Any
+ * doubt (no lookup port, lookup failure) counts as changed, so the caller keeps the
+ * revoke path with its invalidation.
+ */
+async function isEventSocketAccountUnchanged(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+): Promise<boolean> {
+  if (!ports.auth.getUser) return false;
+  try {
+    const user = await ports.auth.getUser({ workspaceId: principal.workspaceId, userId: principal.userId });
+    return Boolean(user && user.disabledAt === null && user.role === principal.role);
+  } catch {
+    return false;
+  }
 }
 
 function waitForWebSocketClient(): Promise<void> {

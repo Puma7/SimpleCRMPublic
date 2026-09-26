@@ -1,5 +1,6 @@
 import {
   getMailSecuritySettings,
+  rspamdUrlDiffersFromStored,
   saveMailSecuritySettings,
 } from '../../electron/email/mail-security-settings';
 import { getSyncInfo, setSyncInfo } from '../../electron/sqlite-service';
@@ -28,5 +29,18 @@ describe('mail-security-settings', () => {
     expect(s.mailauthEnabled).toBe(true);
     expect(s.rspamdEnabled).toBe(false);
     expect(s.rspamdUrl).toBe('http://127.0.0.1:11333');
+  });
+
+  // C-A51: Nicht-Admins durften die Rspamd-URL aendern; die Pruefung muss eine unveraendert mitgesendete URL erkennen.
+  it('erkennt eine geaenderte Rspamd-URL mit derselben Normalisierung wie beim Speichern', () => {
+    expect(rspamdUrlDiffersFromStored(' http://127.0.0.1:11333/ ')).toBe(false);
+    expect(rspamdUrlDiffersFromStored('')).toBe(false);
+    expect(rspamdUrlDiffersFromStored('https://collector.example')).toBe(true);
+
+    getSyncInfoMock.mockReturnValue(null);
+    expect(rspamdUrlDiffersFromStored('http://127.0.0.1:11333')).toBe(false);
+
+    saveMailSecuritySettings({ rspamdUrl: ' http://rspamd.intern/ ' });
+    expect(setSyncInfo).toHaveBeenCalledWith('mail_security_rspamd_url', 'http://rspamd.intern');
   });
 });

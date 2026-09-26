@@ -35,6 +35,19 @@ type StoredServerCsrfToken = {
 
 let activeSession: ServerAuthSession | null = null
 let activeSessionOrigin: string | null = null
+const accessTokenChangeListeners = new Set<() => void>()
+
+/**
+ * Called after a different access token was saved (login or refresh). Long-lived
+ * connections that authenticated with the previous token, like the event
+ * WebSocket, use it to reconnect before the server rejects the old token.
+ */
+export function onServerAccessTokenChange(listener: () => void): () => void {
+  accessTokenChangeListeners.add(listener)
+  return () => {
+    accessTokenChangeListeners.delete(listener)
+  }
+}
 
 export function buildServerAuthSession(input: {
   user: ServerAuthUser
@@ -57,12 +70,22 @@ export function saveServerAuthSession(
   accessTokenStorage: BrowserStorageLike | null = getAccessTokenStorage(),
   serverUrl?: string | null,
 ): void {
+  const previousAccessToken = activeSession?.tokens.accessToken
   activeSession = session
   activeSessionOrigin = normalizeServerOrigin(serverUrl)
   // Remove tokens written by pre-cookie releases as soon as a new session is accepted.
   storage?.removeItem(SERVER_AUTH_SESSION_STORAGE_KEY)
   accessTokenStorage?.removeItem(SERVER_ACCESS_TOKEN_STORAGE_KEY)
   saveServerCsrfToken(csrfToken, storage, serverUrl)
+  if (session.tokens.accessToken !== previousAccessToken) {
+    for (const listener of [...accessTokenChangeListeners]) {
+      try {
+        listener()
+      } catch {
+        // A failing subscriber must not break saving the session.
+      }
+    }
+  }
 }
 
 export function readServerAuthSession(

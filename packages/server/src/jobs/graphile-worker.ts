@@ -2,6 +2,7 @@ import {
   assertServerJobType,
   buildTrustedServiceJobPayload,
   calculateMailSyncPoolSize,
+  JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
   normalizeAiJobConcurrency,
   normalizeMaxAttempts,
   SERVER_JOB_TYPES,
@@ -218,10 +219,13 @@ export function buildGraphileWorkerPlan(input: {
   if (!input.connectionString.trim()) {
     throw new Error('connectionString is required for Graphile Worker runtime');
   }
-  const mailConcurrency = calculateMailSyncPoolSize(
-    input.concurrency.mailAccountCount,
-    input.concurrency.mailConcurrency,
-  );
+  const mailCap = input.concurrency.mailConcurrency ?? JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY;
+  const mailPoolForAccounts = calculateMailSyncPoolSize(input.concurrency.mailAccountCount, mailCap);
+  // JOB_WORKER_MAIL_ACCOUNT_COUNT=0 ist die Voreinstellung (Compose, .env) und
+  // heisst "Kontozahl nicht angegeben", nicht "keine Konten". Als echte Null
+  // gerechnet blieb dem Mail-Worker genau ein Slot fuer alle Konten aller
+  // Workspaces; dann gilt stattdessen die Obergrenze JOB_WORKER_MAIL_CONCURRENCY.
+  const mailConcurrency = input.concurrency.mailAccountCount === 0 ? mailCap : mailPoolForAccounts;
   const aiConcurrency = normalizeAiJobConcurrency(input.concurrency.aiConcurrency);
 
   return {
@@ -465,11 +469,15 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             `SELECT graphile_worker.add_job(
                $1::text,
                $2::json,
-               'workflow',
+               $3::text,
                now(),
                3
              )`,
-            ['workflow.execute', JSON.stringify(nextPayload)],
+            [
+              'workflow.execute',
+              JSON.stringify(nextPayload),
+              graphileQueueNameForJob('workflow.execute', nextPayload, target.workspaceId),
+            ],
           );
           await client.query('COMMIT');
         } catch (inner) {
@@ -487,7 +495,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     if (helpers?.addJob && nextPayload) {
       await helpers.addJob('workflow.execute', nextPayload, {
         maxAttempts: 3,
-        queueName: 'workflow',
+        queueName: graphileQueueNameForJob('workflow.execute', nextPayload, target.workspaceId),
       });
     }
   } catch (advanceErr) {
@@ -504,7 +512,7 @@ function asPgResult(value: unknown): { rowCount?: number | null } {
 export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {
   const type = assertServerJobType(input.type);
   return {
-    queueName: graphileQueueNameForJob(type, input.payload),
+    queueName: graphileQueueNameForJob(type, input.payload, input.workspaceId),
     runAt: input.runAfter,
     maxAttempts: normalizeMaxAttempts(input.maxAttempts),
     jobKey: graphileJobKeyForJob(type, input.payload, input.workspaceId),
@@ -512,11 +520,28 @@ export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {
   };
 }
 
-export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload): string | undefined {
+export function graphileQueueNameForJob(
+  type: ServerJobType,
+  payload: JobPayload,
+  workspaceId?: string,
+): string | undefined {
   const accountId = graphileKeyScalar(payload.accountId);
   if ((type === 'mail.sync.imap' || type === 'mail.sync.pop3') && accountId) {
     return `account-${accountId}`;
   }
+  const kind = graphileSharedQueueKind(type);
+  if (!kind) return undefined;
+  // Graphile arbeitet eine benannte Queue strikt nacheinander ab, ueber alle
+  // Worker hinweg. Ein Name nur nach Art ('ai', 'workflow', ...) reihte deshalb
+  // jeden Workspace hinter jeden anderen. Mit dem Workspace im Namen bleibt die
+  // Reihenfolge innerhalb eines Workspaces (Inbound-Kette, Spam -> Workflow)
+  // erhalten, Workspaces laufen aber nebeneinander. Ohne Workspace bleibt der
+  // bisherige gemeinsame Name.
+  const workspaceKey = graphileKeyScalar(workspaceId) ?? graphileKeyScalar(payload.workspaceId);
+  return workspaceKey ? `${kind}-${workspaceKey}` : kind;
+}
+
+function graphileSharedQueueKind(type: ServerJobType): string | undefined {
   if (
     type === 'ai.reply_suggestion'
     || type === 'ai.agent'
@@ -818,7 +843,19 @@ export function graphileJobKeyForJob(
       const resumeNodeId = resumeContext && typeof resumeContext === 'object'
         ? graphileKeyScalar(resumeContext.resumeNodeId)
         : undefined;
-      if (!resumeNodeId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+      if (!resumeNodeId) {
+        // Ein manueller Live-Lauf oder ein Backfill teilte sich sonst den Key mit
+        // dem wartenden Inbound-Kettenjob; 'replace' ersetzte dessen Payload samt
+        // Kettenkontext, und die nachrangigen Inbound-Workflows liefen nie.
+        // Eigene Suffixe trennen die Herkunft; Doppellaeufe derselben Herkunft
+        // dedupliziert der Key weiterhin.
+        const backfill = resumeContext && typeof resumeContext === 'object'
+          && resumeContext.workflowBackfill === true;
+        const originSuffix = backfill
+          ? ':backfill'
+          : payload.triggerName === 'manual' ? ':manual' : '';
+        return `${type}:${workspaceKey}:${workflowId}:message:${messageId}${originSuffix}`;
+      }
       // Dieselbe Ausfuehrungs-Identitaet wie bei den Kindjobs: Fan-out-Lauf und
       // Zweig. Ohne sie (nur Payloads von vor diesen Stempeln) lieber gar kein
       // Key — ein doppelter Lauf ist Arbeit, ein verschluckter haengt.

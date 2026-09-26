@@ -5,8 +5,14 @@ on:
     tags:
       - "v*"
 
+# Read-only by default. Only create-release and publish-release get
+# contents:write, and actions/checkout does not leave the token in .git/config.
+# The build jobs run install, vite, tsc and electron-builder (--publish never)
+# without any token and hand installers plus update metadata over as workflow
+# artifacts; publish-release attaches them to the release with gh. Every action
+# is pinned to a commit SHA (version in the comment).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -16,12 +22,16 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Extract changelog entry for this version
         id: changelog
@@ -42,7 +52,7 @@ jobs:
 
       - name: Create draft GitHub Release
         id: create_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           draft: true
           prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
@@ -57,13 +67,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -93,11 +105,23 @@ jobs:
           fi
           echo "✅ Tag matches package.json version"
 
-      - name: Build and publish Electron app (Windows)
+      - name: Build Electron app (Windows)
         env:
           NODE_ENV: production
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm run electron:publish
+        run: pnpm run electron:build
+
+      # Exactly what electron-updater needs from the release: latest.yml, the
+      # NSIS installer it points to and its blockmap (differential download).
+      - name: Upload installer and update metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-windows
+          path: |
+            dist-build/latest.yml
+            dist-build/*.exe
+            dist-build/*.exe.blockmap
+          if-no-files-found: error
+          retention-days: 7
 
   build-macos:
     needs: create-release
@@ -106,13 +130,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: pnpm
@@ -138,20 +164,77 @@ jobs:
           fi
           echo "✅ Tag matches package.json version"
 
-      - name: Build and publish Electron app (macOS)
+      - name: Build Electron app (macOS)
         env:
           NODE_ENV: production
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm run electron:publish
+        run: pnpm run electron:build
+
+      # latest-mac.yml, the DMG and its blockmap. A zip target (needed once
+      # macOS updates are installed automatically, see docs/RELEASE.md) has to
+      # be listed here as well.
+      - name: Upload installer and update metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-macos
+          path: |
+            dist-build/latest-mac.yml
+            dist-build/*.dmg
+            dist-build/*.dmg.blockmap
+          if-no-files-found: error
+          retention-days: 7
 
   publish-release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+    permissions:
+      contents: write
 
     steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Check assets against update metadata
+        shell: bash
+        working-directory: release-assets
+        run: |
+          set -euo pipefail
+          # electron-builder writes the GitHub-safe asset name into latest.yml
+          # ("SimpleCRM Setup 1.2.3.exe" -> "SimpleCRM-Setup-1.2.3.exe") and used
+          # to upload under that name. GitHub itself would turn the spaces into
+          # dots, so rename the same way electron-builder did.
+          for file in *; do
+            case "$file" in
+              *' '*) mv -- "$file" "${file// /-}" ;;
+            esac
+          done
+          # Every file the metadata points to, and its blockmap, must be uploaded,
+          # otherwise the updater runs into a 404 once the release is public.
+          for manifest in latest.yml latest-mac.yml; do
+            test -s "$manifest"
+            sed -nE "s/^( *(- )?url|path): *['\"]?([^'\"]+)['\"]? *$/\3/p" "$manifest" | sort -u |
+              while IFS= read -r name; do
+                for required in "$name" "$name.blockmap"; do
+                  if [ ! -f "$required" ]; then
+                    echo "::error::$manifest references $required, which is missing from the build artifacts"
+                    exit 1
+                  fi
+                done
+              done
+          done
+          ls -l
+
+      - name: Upload assets to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           draft: false
         env:

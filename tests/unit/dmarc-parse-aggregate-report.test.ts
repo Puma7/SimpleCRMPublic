@@ -5,6 +5,8 @@ import { crc32, gzipSync } from 'node:zlib';
 
 import {
   MAX_DECOMPRESSED_BYTES,
+  MAX_DMARC_RECORDS_PER_REPORT,
+  countDmarcRecordTags,
   decompressReportAttachment,
   parseDmarcReportAttachment,
   parseDmarcXml,
@@ -226,6 +228,25 @@ describe('parseDmarcXml', () => {
     // begin clamps to the 2100 upper bound, end (0) clamps up to the 1990 floor.
     expect(report?.dateBegin.getUTCFullYear()).toBe(2100);
     expect(report?.dateEnd.getUTCFullYear()).toBe(1990);
+  });
+
+  // F-A3b-01: Ein einzelner Report mit 32 MiB minimaler Records kostete rund 7,8 s synchrones Parsen und bis zu 450.000 Zeilen.
+  test('rejects a report with more than MAX_DMARC_RECORDS_PER_REPORT records before parsing it (E13)', () => {
+    const header = `<feedback><report_metadata><org_name>o</org_name><report_id>r</report_id></report_metadata>
+      <policy_published><domain>d.com</domain></policy_published>`;
+    const record = '<record><row><source_ip>1.2.3.4</source_ip><count>1</count></row></record>';
+    const xml = `${header}${record.repeat(MAX_DMARC_RECORDS_PER_REPORT + 1)}</feedback>`;
+    const started = Date.now();
+    expect(parseDmarcXml(xml)).toBeNull();
+    // Die Vorzaehlung ist ein indexOf-Durchlauf, kein XML-Parse.
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test('countDmarcRecordTags counts <record> elements only', () => {
+    expect(MAX_DMARC_RECORDS_PER_REPORT).toBe(100_000);
+    expect(countDmarcRecordTags(REPORT_XML)).toBe(2);
+    expect(countDmarcRecordTags('<record>a</record><record >b</record><record\n/><records><recordx>')).toBe(3);
+    expect(countDmarcRecordTags('')).toBe(0);
   });
 });
 

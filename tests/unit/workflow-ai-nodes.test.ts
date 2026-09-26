@@ -269,6 +269,18 @@ describe('ai.agent — Wissensbasis-Auswahl und Entwurf', () => {
     expect(r.variables?.['draft.id']).toBe(42);
   });
 
+  // F-A5-01: KI-Antwortentwuerfe kuerzten '+tag' und schrieben den Local-Part des Empfaengers klein.
+  test('createDraft adressiert die exakte Absender-Mailbox (Plus-Tag, Gross-/Kleinschreibung)', async () => {
+    const message = {
+      ...baseMessage,
+      from_json: JSON.stringify({ value: [{ address: 'Kunde+Shop@Firma.DE', name: 'Meier, Max' }] }),
+    };
+    await node.execute(ctx({ message }), {}, 'a');
+    expect(createComposeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      toJson: JSON.stringify({ value: [{ address: 'Kunde+Shop@firma.de' }] }),
+    }));
+  });
+
   test('createDraft: false → kein Entwurf, keine draft.id-Variable', async () => {
     const r = await node.execute(ctx(), { createDraft: false }, 'a');
     expect(createComposeDraft).not.toHaveBeenCalled();
@@ -421,6 +433,21 @@ describe('ai.review — KI-Prüfung (ein- und ausgehend)', () => {
     const r = await node.execute(ctx(), {}, 'r');
     expect(r).toMatchObject({ status: 'error', message: 'Prompt nicht gefunden' });
   });
+
+  // F-A9-02 (Desktop): {{text}} wurde vorab per replace eingesetzt und danach erneut interpoliert; Platzhalter aus dem Mailtext loesten interne Variablen auf.
+  test('Platzhalter aus dem Mailtext bleiben im Prüfprompt wörtlich stehen', async () => {
+    (runChatCompletion as jest.Mock).mockResolvedValue('OK');
+    const combined = "Frage {{http.body}} $' ende";
+    await node.execute(
+      ctx({
+        strings: { subject: 'Frage', from_address: 'kunde@firma.de', combined_text: combined },
+        variables: { 'http.body': 'GEHEIM-API-ANTWORT' },
+      }),
+      {},
+      'r',
+    );
+    expect((runChatCompletion as jest.Mock).mock.calls[0]?.[1]).toBe(`Prüfe: ${combined}`);
+  });
 });
 
 describe('ai.outbound_review — KI-Ausgangsprüfung (fail-closed)', () => {
@@ -464,6 +491,24 @@ describe('ai.outbound_review — KI-Ausgangsprüfung (fail-closed)', () => {
       variables: { 'ai.outbound_review.verdict': 'ok' },
     });
     expect(setOutboundHold).not.toHaveBeenCalled();
+  });
+
+  // F-A9-02 (Desktop): Eigener Prüfprompt wurde doppelt interpoliert; Platzhalter im Entwurf loesten interne Variablen auf.
+  test('eigener Prompt: Platzhalter aus dem Entwurf bleiben wörtlich stehen', async () => {
+    (listAiPrompts as jest.Mock).mockReturnValue([
+      { id: 3, label: 'Eigen', user_template: 'Entwurf: {{text}}', target: '', profile_id: null, account_id: null },
+    ]);
+    (runChatCompletion as jest.Mock).mockResolvedValue('STATUS: OK');
+    const combined = 'Ihr Angebot {{mssql.rows}} $& ende';
+    await node.execute(
+      outboundCtx({
+        strings: { subject: 'Ihr Angebot', from_address: '', combined_text: combined },
+        variables: { 'mssql.rows': 'INTERNE-DATEN' },
+      }),
+      { promptId: 3 },
+      'o',
+    );
+    expect((runChatCompletion as jest.Mock).mock.calls[0]?.[1]).toBe(`Entwurf: ${combined}`);
   });
 
   test('KI-Fehler → Hold + port error (fail-closed statt Versand)', async () => {

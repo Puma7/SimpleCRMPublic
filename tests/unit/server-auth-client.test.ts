@@ -456,6 +456,26 @@ describe('server auth client', () => {
     expect(fetchImpl.mock.calls[0]?.[1]).not.toHaveProperty('body');
   });
 
+  // F-A1-06: MFA changes must carry the step-up credential the server now requires.
+  test('sends the current password with an MFA change', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { enabled: false } }));
+    const client = createServerAuthClient({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(client.disableUserMfa('access-mfa', 'user-1', { currentPassword: 'mein-passwort-123' }))
+      .resolves.toEqual({ enabled: false });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/auth/users/user-1/mfa',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ currentPassword: 'mein-passwort-123' }),
+      }),
+    );
+  });
+
   test('logout revokes the HttpOnly cookie session with CSRF and clears memory', async () => {
     const persistent = memoryStorage();
     const volatile = memoryStorage();
@@ -531,6 +551,100 @@ describe('server auth client', () => {
       }),
     );
     expect(persistent.getItem(SERVER_AUTH_SESSION_STORAGE_KEY)).toBeNull();
+  });
+});
+
+// F-A11b-07: Scheiterte das Abmelden am Server, loeschte der Client die lokale Sitzung trotzdem;
+// das Refresh-Cookie blieb gueltig und ein zweiter Klick "meldete ab", ohne zu widerrufen.
+describe('server auth client logout failures', () => {
+  afterEach(() => {
+    clearServerAuthSession(null, null);
+  });
+
+  function storedSessionClient(fetchImpl: jest.Mock) {
+    const persistent = memoryStorage();
+    const volatile = memoryStorage();
+    saveServerAuthSession(
+      buildServerAuthSession({ user: user(), tokens: tokens('access-logout') }),
+      'csrf-stale',
+      persistent,
+      volatile,
+      'https://crm.example.com',
+    );
+    const client = createServerAuthClient({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+      storage: persistent,
+      accessTokenStorage: volatile,
+    });
+    return { client, persistent, volatile };
+  }
+
+  test('refetches the CSRF token once and retries after 403 csrf_invalid', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'csrf_invalid', message: 'CSRF' } }, 403))
+      .mockResolvedValueOnce(jsonResponse({ data: { csrfToken: 'csrf-fresh' } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { revoked: true } }));
+    const { client, persistent } = storedSessionClient(fetchImpl);
+
+    await expect(client.logout()).resolves.toEqual({ revoked: true });
+
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      'https://crm.example.com/api/v1/auth/logout',
+      'https://crm.example.com/api/v1/auth/csrf',
+      'https://crm.example.com/api/v1/auth/logout',
+    ]);
+    expect(fetchImpl.mock.calls[2]?.[1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-fresh' }),
+    }));
+    expect(readServerAuthSession(persistent)).toBeNull();
+  });
+
+  test('retries a rate-limited logout after a short backoff', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'rate_limited', message: 'Zu viele Anfragen' } }, 429))
+      .mockResolvedValueOnce(jsonResponse({ data: { revoked: true } }));
+    const { client, persistent } = storedSessionClient(fetchImpl);
+
+    await expect(client.logout()).resolves.toEqual({ revoked: true });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(readServerAuthSession(persistent)).toBeNull();
+  });
+
+  test('keeps the local session when the server logout fails', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'internal_error', message: 'kaputt' } }, 500));
+    const { client, persistent, volatile } = storedSessionClient(fetchImpl);
+
+    await expect(client.logout()).rejects.toMatchObject({ status: 500 });
+
+    expect(readServerAuthSession(persistent, 'https://crm.example.com')).not.toBeNull();
+    expect(getServerAccessToken(persistent, volatile, 'https://crm.example.com')).toBe('access-logout');
+    expect(readServerCsrfToken(persistent, 'https://crm.example.com')).toBe('csrf-stale');
+  });
+
+  test('keeps the local session when CSRF stays invalid after the retry', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'csrf_invalid', message: 'CSRF' } }, 403))
+      .mockResolvedValueOnce(jsonResponse({ data: { csrfToken: 'csrf-fresh' } }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'csrf_invalid', message: 'CSRF' } }, 403));
+    const { client, persistent } = storedSessionClient(fetchImpl);
+
+    await expect(client.logout()).rejects.toMatchObject({ status: 403, code: 'csrf_invalid' });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(readServerAuthSession(persistent, 'https://crm.example.com')).not.toBeNull();
+  });
+
+  test('clears the local session when the server answers 401', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'unauthorized', message: 'abgelaufen' } }, 401));
+    const { client, persistent } = storedSessionClient(fetchImpl);
+
+    await expect(client.logout()).resolves.toEqual({ revoked: false });
+
+    expect(readServerAuthSession(persistent, 'https://crm.example.com')).toBeNull();
   });
 });
 

@@ -646,6 +646,8 @@ export type EmailAccountsTable = {
   default_remote_content_policy: string;
   respond_to_read_receipts: string;
   read_receipt_trusted_domains: string | null;
+  /** RFC 8601 authserv-id fuer den Authentication-Results-Fallback; NULL = Standard (0054). */
+  trusted_authserv_id: string | null;
   /** Anstoss des letzten Syncs — Grundlage fuer Scheduler und Abkuehlzeit (0051). */
   last_sync_started_at: TimestampColumn | null;
   /**
@@ -907,7 +909,11 @@ export type SmtpRelaysTable = {
   workspace_id: string;
   label: string;
   enabled: boolean;
-  allow_arbitrary_recipients: boolean;
+  /**
+   * Never enforced and no longer read or written (F-A3b-04); the column keeps
+   * its DEFAULT false until a migration drops it.
+   */
+  allow_arbitrary_recipients: Generated<boolean>;
   max_recipients: number;
   max_message_bytes: number;
   rate_limit_per_min: number;

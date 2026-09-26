@@ -14,6 +14,39 @@ import { getAiSettings, runChatCompletion, runEmbedding, setAiSettings } from '.
 
 const runtimeMock = getResolvedAiRuntime as jest.Mock;
 
+const KIB = 1024;
+const CHUNK = 64 * KIB;
+
+function jsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), { status });
+}
+
+/** Streams `body` in 64 KiB pulls and records how much the client read. */
+function trackedResponse(body: string, status: number) {
+  const bytes = new TextEncoder().encode(body);
+  const stats = { pulled: 0, cancelled: false };
+  let offset = 0;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        const chunk = bytes.subarray(offset, offset + CHUNK);
+        offset += chunk.length;
+        stats.pulled += chunk.length;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        stats.cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { response: new Response(stream, { status }), stats };
+}
+
 describe('email-openai', () => {
   const fetchMock = jest.fn();
 
@@ -41,10 +74,9 @@ describe('email-openai', () => {
   });
 
   test('runChatCompletion returns assistant text', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '  Hallo  ' } }] }),
-    });
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ choices: [{ message: { content: '  Hallo  ' } }] }),
+    );
     const text = await runChatCompletion('sys', 'user');
     expect(text).toBe('Hallo');
   });
@@ -63,24 +95,51 @@ describe('email-openai', () => {
   });
 
   test('runChatCompletion handles http and empty response errors', async () => {
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'err' });
+    fetchMock.mockResolvedValueOnce(new Response('err', { status: 500 }));
     await expect(runChatCompletion('s', 'u')).rejects.toThrow(/fehlgeschlagen/);
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [] }) });
+    fetchMock.mockResolvedValueOnce(jsonResponse({ choices: [] }));
     await expect(runChatCompletion('s', 'u')).rejects.toThrow(/Leere/);
   });
 
   test('runEmbedding returns vector or null', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }),
-    });
+    fetchMock.mockImplementation(async () => jsonResponse({ data: [{ embedding: [0.1, 0.2] }] }));
     expect(await runEmbedding('text')).toEqual([0.1, 0.2]);
     runtimeMock.mockResolvedValueOnce({ apiKey: '', baseUrl: 'x', model: 'm', embeddingModel: 'e' });
     expect(await runEmbedding('t')).toBeNull();
     expect(await runEmbedding('  ')).toBeNull();
-    fetchMock.mockResolvedValueOnce({ ok: false });
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 500 }));
     expect(await runEmbedding('hello')).toBeNull();
     fetchMock.mockRejectedValueOnce(new Error('net'));
     expect(await runEmbedding('hello')).toBeNull();
+  });
+
+  // C-A23: success and error bodies of the AI endpoint were buffered without a byte limit.
+  test('runChatCompletion stops reading an oversized answer at 4 MiB', async () => {
+    const huge = `{"choices":[{"message":{"content":"${'x'.repeat(8 * KIB * KIB)}"}}]}`;
+    const { response, stats } = trackedResponse(huge, 200);
+    fetchMock.mockResolvedValueOnce(response);
+
+    await expect(runChatCompletion('s', 'u')).rejects.toThrow(/zu groß/);
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(4 * KIB * KIB + CHUNK);
+  });
+
+  test('runChatCompletion reads at most 64 KiB of an error body', async () => {
+    const { response, stats } = trackedResponse('e'.repeat(KIB * KIB), 500);
+    fetchMock.mockResolvedValueOnce(response);
+
+    await expect(runChatCompletion('s', 'u')).rejects.toThrow(`KI-Anfrage fehlgeschlagen: 500 ${'e'.repeat(200)}`);
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(64 * KIB + CHUNK);
+  });
+
+  test('runEmbedding returns null for an oversized answer without reading it all', async () => {
+    const vector = new Array(1_000_000).fill('0.123456789').join(',');
+    const { response, stats } = trackedResponse(`{"data":[{"embedding":[${vector}]}]}`, 200);
+    fetchMock.mockResolvedValueOnce(response);
+
+    expect(await runEmbedding('hello')).toBeNull();
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(4 * KIB * KIB + CHUNK);
   });
 });

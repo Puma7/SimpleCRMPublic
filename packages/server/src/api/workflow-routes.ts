@@ -1,8 +1,10 @@
 import {
   compileGraphToDefinition,
   definitionToJson,
+  describeUnsupportedWorkflowRegex,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  isServerWorkflowTrigger,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
@@ -94,7 +96,8 @@ export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegist
   workflowMailRoute('/api/v1/workflow-message-applied/:id', ['GET'], /^\/api\/v1\/workflow-message-applied\/([^/]+)$/),
   workflowMailRoute('/api/v1/workflow-forward-dedup', ['GET'], /^\/api\/v1\/workflow-forward-dedup$/),
   workflowMailRoute('/api/v1/workflow-forward-dedup/:id', ['GET'], /^\/api\/v1\/workflow-forward-dedup\/([^/]+)$/),
-  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET', 'POST'], /^\/api\/v1\/workflow-delayed-jobs$/),
+  // POST antwortet ohne Mail-Policy mit 405 (F-A8-05): kein Nachrichtenbezug, kein Existenz-Orakel.
+  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET'], /^\/api\/v1\/workflow-delayed-jobs$/),
   workflowMailRoute('/api/v1/workflow-delayed-jobs/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/workflow-delayed-jobs\/([^/]+)$/),
 ]);
 
@@ -671,39 +674,54 @@ async function handleWebhookIncomingRoute(
   if (!Number.isNaN(dedupeAt) && nowMs - dedupeAt < WEBHOOK_DEDUP_MS) {
     return data(200, { success: true, fired: 0, deduplicated: true });
   }
-  let fired = 0;
-  let cursor: number | undefined;
-  do {
-    const result = await ports.workflows.list({
-      workspaceId: principal.workspaceId,
-      triggerName: 'webhook.incoming',
-      enabled: true,
-      limit: MAX_LIMIT,
-      ...(cursor === undefined ? {} : { cursor }),
-    });
-    for (const workflow of result.items) {
-      if (!workflow.enabled || workflow.triggerName !== 'webhook.incoming') continue;
-      await ports.jobQueue.enqueue({
-        workspaceId: principal.workspaceId,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: principal.workspaceId,
-          workflowId: workflow.id,
-          triggerName: 'webhook.incoming',
-          actorUserId: principal.userId,
-          context: buildWebhookWorkflowContext(bodyJson),
-        },
-      });
-      fired += 1;
-      if (fired >= MAX_WEBHOOK_WORKFLOWS) break;
-    }
-    cursor = result.nextCursor ?? undefined;
-  } while (cursor !== undefined && fired < MAX_WEBHOOK_WORKFLOWS);
-
-  await ports.syncInfo.setMany({
+  // Claim atomically BEFORE enqueueing. A check-then-set written after the
+  // loop let two identical concurrent deliveries (sender retry on timeout)
+  // both see no marker and enqueue every workflow twice.
+  const claimed = await ports.syncInfo.claimIfExpired({
     workspaceId: principal.workspaceId,
-    values: { [dedupeKey]: String(Date.now()) },
+    key: dedupeKey,
+    nowMs,
+    ttlMs: WEBHOOK_DEDUP_MS,
   });
+  if (!claimed) {
+    return data(200, { success: true, fired: 0, deduplicated: true });
+  }
+  let fired = 0;
+  try {
+    let cursor: number | undefined;
+    do {
+      const result = await ports.workflows.list({
+        workspaceId: principal.workspaceId,
+        triggerName: 'webhook.incoming',
+        enabled: true,
+        limit: MAX_LIMIT,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      for (const workflow of result.items) {
+        if (!workflow.enabled || workflow.triggerName !== 'webhook.incoming') continue;
+        await ports.jobQueue.enqueue({
+          workspaceId: principal.workspaceId,
+          type: 'workflow.execute',
+          payload: {
+            workspaceId: principal.workspaceId,
+            workflowId: workflow.id,
+            triggerName: 'webhook.incoming',
+            actorUserId: principal.userId,
+            context: buildWebhookWorkflowContext(bodyJson),
+          },
+        });
+        fired += 1;
+        if (fired >= MAX_WEBHOOK_WORKFLOWS) break;
+      }
+      cursor = result.nextCursor ?? undefined;
+    } while (cursor !== undefined && fired < MAX_WEBHOOK_WORKFLOWS);
+  } catch (caught) {
+    // Release the claim so the sender's retry is not swallowed as a duplicate
+    // of a delivery that never (fully) reached the queue.
+    await ports.syncInfo.deleteMany({ workspaceId: principal.workspaceId, keys: [dedupeKey] })
+      .catch(() => undefined);
+    throw caught;
+  }
 
   return data(202, {
     success: true,
@@ -772,6 +790,18 @@ async function handleUpdateAiProfile(
     requireModel: false,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.baseUrl !== undefined || parsed.values.provider !== undefined) {
+    const current = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
+    if (!current) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+    if (aiProfileMoveNeedsNewApiKey(current, parsed.values)) {
+      return error(
+        400,
+        'ai_profile_api_key_required',
+        'Zugangsdaten bei Serverwechsel neu eingeben: API-Key erforderlich (Base-URL oder Anbieter geaendert)',
+        { fields: [{ field: 'apiKey', message: 'apiKey ist erforderlich, wenn Base-URL-Origin oder Anbieter geaendert werden' }] },
+      );
+    }
+  }
 
   const result = await ports.aiProfiles.update({
     workspaceId: principal.workspaceId,
@@ -822,6 +852,28 @@ function aiProfileMutationError(code: 'secret_port_unavailable'): ApiResponse {
       return error(503, 'ai_profile_secret_unavailable', 'AI profile secret storage ist nicht konfiguriert');
     default:
       return assertNever(code);
+  }
+}
+
+// The stored API key belongs to the profile id, not to a host: every AI call
+// sends it to the profile's baseUrl with the provider's auth header. Moving a
+// profile to another origin or provider without a new key would hand the stored
+// key to that server, which lets a workflows.manage holder collect a key an
+// admin entered. Such a move needs a new key (or apiKey: null to drop it).
+function aiProfileMoveNeedsNewApiKey(current: AiProfileRecord, values: AiProfileMutationInput): boolean {
+  if (!current.apiKeyConfigured || values.apiKey !== undefined) return false;
+  const providerChanged = values.provider !== undefined
+    && values.provider.trim().toLowerCase() !== current.provider.trim().toLowerCase();
+  const originChanged = values.baseUrl !== undefined
+    && urlOriginOrRaw(values.baseUrl) !== urlOriginOrRaw(current.baseUrl);
+  return providerChanged || originChanged;
+}
+
+function urlOriginOrRaw(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value;
   }
 }
 
@@ -900,10 +952,17 @@ async function handleAiTextTransform(
   const parsed = parseAiTextTransformBody(req.body);
   if (!parsed.ok) return parsed.response;
 
+  // customerId fuellt die Kunden-Platzhalter (Name, E-Mail) aus dem CRM — ohne
+  // crm.read ein CRM-Lesezugriff an der zentralen Pruefung vorbei (C-A36). Der
+  // Composer sendet customerId automatisch mit, deshalb still verwerfen statt
+  // 403: Mail-Nutzer ohne CRM-Recht formulieren weiter um, die Platzhalter
+  // bleiben leer und es gibt kein "Kunde nicht gefunden" als Existenz-Orakel.
+  const { customerId, ...values } = parsed.values;
   const result = await ports.aiTextTransform.transformText({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    ...parsed.values,
+    ...values,
+    ...(customerId !== undefined && requireCapability(principal, 'crm.read') ? { customerId } : {}),
   });
   return data(200, result);
 }
@@ -1009,6 +1068,20 @@ function rejectUnlessOverrideKeyManage(
   );
 }
 
+/**
+ * Der Server reiht Workflows nur fuer inbound, outbound, manual, relay und
+ * webhook.incoming ein. Desktop-Trigger (Zeitplan, Entwurf, CRM-Ereignisse)
+ * liessen sich speichern und aktivieren, liefen aber nie — deshalb 400 statt
+ * stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
+ */
+function unsupportedTriggerError(triggerName: string): ApiResponse {
+  return error(
+    400,
+    'unsupported_trigger',
+    `Ausloeser "${triggerName}" gibt es nur in der Desktop-Edition; der Server loest ihn nie aus`,
+  );
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1024,6 +1097,9 @@ async function handleCreateWorkflow(
     requireDefinition: true,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
+    return unsupportedTriggerError(parsed.values.triggerName);
+  }
 
   // New workflows default to enabled=true (postgres-workflow-read-ports), so an
   // outbound workflow is live immediately — validate its effective state.
@@ -1074,6 +1150,9 @@ async function handleUpdateWorkflow(
     requireDefinition: false,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
+    return unsupportedTriggerError(parsed.values.triggerName);
+  }
 
   // Validate the EFFECTIVE post-patch state. Any patch that touches trigger,
   // enabled, graph, or execution mode can turn the workflow into (or keep it as)
@@ -1158,6 +1237,15 @@ async function handleUpdateWorkflow(
         };
         if (Object.keys(expectedState).length === 0) expectedState = undefined;
       }
+      // Einen Bestands-Workflow mit Desktop-Trigger zu aktivieren, liefe ebenso
+      // ins Leere; Umbenennen oder Deaktivieren bleibt moeglich.
+      if (
+        parsed.values.enabled === true
+        && typeof existing?.triggerName === 'string'
+        && !isServerWorkflowTrigger(existing.triggerName)
+      ) {
+        return unsupportedTriggerError(existing.triggerName);
+      }
       const trap = outboundWorkflowGuardError({
         graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
         triggerName: parsed.values.triggerName ?? existing?.triggerName,
@@ -1170,6 +1258,17 @@ async function handleUpdateWorkflow(
         enabled: parsed.values.enabled ?? existing?.enabled,
       });
       if (sideEffectDenied) return sideEffectDenied;
+      // Das Gate oben sieht nur den NEUEN Zustand. Ist der GESPEICHERTE Workflow
+      // aktiv und hat Seiteneffekt- oder Kettenabbruch-Knoten, waere Stilllegen
+      // (enabled:false) oder Entschaerfen (harmloser Graph, anderer Trigger,
+      // Modus, Konto oder Zeitplan) derselbe privilegierte Eingriff wie das
+      // Aktivieren, nur in die Gegenrichtung (C-A20). Deaktivierte Entwuerfe und
+      // reine Metadaten-Patches (ohne Guard) bleiben mit workflows.edit frei.
+      const storedSideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+        graph: existing?.graph ?? null,
+        enabled: existing?.enabled ?? false,
+      });
+      if (storedSideEffectDenied) return storedSideEffectDenied;
       const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
         enabled: parsed.values.enabled ?? existing?.enabled,
         overrideKey: parsed.values.overrideKey !== undefined
@@ -1177,6 +1276,23 @@ async function handleUpdateWorkflow(
           : existing?.overrideKey ?? null,
       });
       if (overrideDenied) return overrideDenied;
+      // Ohne workflows.manage kam dieser Patch nur durch, weil der gespeicherte
+      // Row ungeschuetzt war (deaktiviert oder ohne Seiteneffekt). Das muss auch
+      // beim Write noch gelten: schaltet ein Admin den Workflow dazwischen
+      // scharf, wird aus dem veralteten Patch ein 409 statt einer Stilllegung.
+      // Setzt der Patch enabled bzw. graph selbst, fehlen sie oben im Vorzustand.
+      if (existing && !requireCapability(principal, 'workflows.manage')) {
+        const pinned = expectedState ?? {};
+        const staysUnprotected = pinned.enabled === false
+          || ('graph' in pinned
+            && !workflowGraphHasSideEffectNode(pinned.graph)
+            && !workflowGraphHasChainStopNode(pinned.graph));
+        if (!staysUnprotected) {
+          expectedState = existing.enabled === false
+            ? { ...pinned, enabled: false }
+            : { ...pinned, graph: existing.graph ?? null };
+        }
+      }
     }
   }
 
@@ -1867,6 +1983,21 @@ function parseWorkflowMutationBody(
   }
   if (options.requireDefinition && values.definition === undefined) {
     return { ok: false, response: error(400, 'validation_error', 'definition ist erforderlich') };
+  }
+  // Regex-Bedingungen laufen auf Absendertext. Der ReDoS-Schutz ist V8s
+  // lineare Engine, die Lookarounds und Rueckverweise nicht kann — solche
+  // Muster werden deshalb gar nicht erst gespeichert (F-A13A14-04).
+  for (const field of ['graph', 'definition'] as const) {
+    if (values[field] === undefined) continue;
+    const unsupportedRegex = describeUnsupportedWorkflowRegex({ [field]: values[field] });
+    if (unsupportedRegex) {
+      return {
+        ok: false,
+        response: error(400, 'validation_error', unsupportedRegex, {
+          fields: [{ field, message: unsupportedRegex }],
+        }),
+      };
+    }
   }
 
   return { ok: true, values };

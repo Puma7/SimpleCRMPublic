@@ -29,6 +29,14 @@ export const DEFAULT_AUDIT_RETENTION_DAYS = 365;
  * exponentiellem Backoff) und damit sicher.
  */
 export const DEFAULT_TERMINAL_MARKER_RETENTION_DAYS = 7;
+/**
+ * Aufbewahrung der Dedup-Marker des Incoming-Webhooks (`webhook_dedup:*`).
+ *
+ * Fachlich gilt ein Marker nur WEBHOOK_DEDUP_MS (5 Minuten, api/workflow-routes.ts);
+ * da jeder neue Body einen eigenen Schluessel erzeugt, wuchs sync_info sonst mit
+ * jedem Webhook-Aufruf unbegrenzt. Eine Stunde liegt sicher jenseits des Fensters.
+ */
+export const WEBHOOK_DEDUP_MARKER_RETENTION_MS = 60 * 60 * 1000;
 export const DEFAULT_AUDIT_RETENTION_LIMIT = 1000;
 export const MAX_AUDIT_RETENTION_LIMIT = 10000;
 
@@ -71,6 +79,8 @@ export type MaintenanceCleanupPlan = Readonly<{
   staleBefore: Date;
   /** Abschlussmarker aelter als das duerfen weg (eigenes Fenster, siehe Konstante). */
   terminalMarkersBefore: Date;
+  /** Webhook-Dedup-Marker aelter als das duerfen weg (siehe Konstante). */
+  webhookDedupMarkersBefore: Date;
   limit: number;
 }>;
 
@@ -81,6 +91,7 @@ export type MaintenanceCleanupPlan = Readonly<{
 const TERMINAL_MARKER_LIKE_PATTERNS = [
   'inbound\\_terminal\\_child\\_done:%',
 ] as const;
+const WEBHOOK_DEDUP_MARKER_LIKE_PATTERN = 'webhook\\_dedup:%';
 
 export type AuditRetentionPlan = Readonly<{
   workspaceId: string;
@@ -222,8 +233,31 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
             .executeTakeFirst();
         }
 
+        // Abgelaufene Webhook-Dedup-Marker, gleiche Schranke; das Alter steht
+        // auch hier im DELETE, weil ein neuer Aufruf mit demselben Body den
+        // Marker zwischen SELECT und DELETE erneuern kann.
+        const staleWebhookMarkers = await db
+          .selectFrom('sync_info')
+          .select('key')
+          .where('workspace_id', '=', plan.workspaceId)
+          .where('last_updated', '<', plan.webhookDedupMarkersBefore)
+          .where('key', 'like', WEBHOOK_DEDUP_MARKER_LIKE_PATTERN)
+          .orderBy('last_updated', 'asc')
+          .limit(plan.limit)
+          .execute();
+        if (staleWebhookMarkers.length > 0) {
+          await db
+            .deleteFrom('sync_info')
+            .where('workspace_id', '=', plan.workspaceId)
+            .where('key', 'in', staleWebhookMarkers.map((row) => row.key))
+            .where('last_updated', '<', plan.webhookDedupMarkersBefore)
+            .executeTakeFirst();
+        }
+
         // Voll heisst: es liegt vermutlich noch mehr an.
-        return messageIds.length >= plan.limit || staleMarkers.length >= plan.limit;
+        return messageIds.length >= plan.limit
+          || staleMarkers.length >= plan.limit
+          || staleWebhookMarkers.length >= plan.limit;
       }, { applySession: options.applyWorkspaceSession });
 
       if (batchWasFull) await requeue(options, 'lock.cleanup', plan.workspaceId, job.payload, now());
@@ -339,6 +373,7 @@ export function buildLockCleanupPlan(payload: JobPayload, now: Date): Maintenanc
     workspaceId,
     staleBefore: new Date(now.getTime() - staleSeconds * 1000),
     terminalMarkersBefore: new Date(now.getTime() - markerRetentionDays * 24 * 60 * 60 * 1000),
+    webhookDedupMarkersBefore: new Date(now.getTime() - WEBHOOK_DEDUP_MARKER_RETENTION_MS),
     limit: optionalInteger(payload, 'limit', DEFAULT_LOCK_CLEANUP_LIMIT, 1, MAX_LOCK_CLEANUP_LIMIT),
   };
 }

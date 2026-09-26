@@ -1,16 +1,17 @@
 import { createRequire } from 'module';
-import { simpleParser } from 'mailparser';
 import {
   assertInboundRfc822Size,
   InboundMessageTooLargeError,
   parseLegacyPop3UidlStr,
 } from '@simplecrm/core';
+import { withOpportunisticStls } from './pop3-stls';
 
 const requireCjs = createRequire(__filename);
-const Pop3Command = requireCjs('node-pop3') as typeof import(
+// Opportunistic STLS on top of node-pop3 (F-A4-05), see pop3-stls.ts.
+const Pop3Command = withOpportunisticStls(requireCjs('node-pop3') as typeof import(
   'node-pop3',
   { with: { 'resolution-mode': 'require' } }
-).default;
+).default);
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';
@@ -31,6 +32,7 @@ import {
   processNewMessagesAfterSync,
   type SyncNewMessageItem,
 } from './email-sync-post-process';
+import { persistParsedAttachments } from './email-message-attachments-store';
 import {
   assertSyncNotAborted,
   isEmailSyncAbortedError,
@@ -44,6 +46,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { parseInboundMailSource } from './email-inbound-parse';
 import { rfc822SourceToStorageB64 } from './mail-eml-build';
 
 const POP_FOLDER = 'INBOX';
@@ -96,6 +99,9 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
   const oversizedUidlKey = `email_pop3_oversized_uidls:${accountId}:${folderRow.id}`;
   const oversizedUidls = parseLegacyPop3UidlStr(getSyncInfo(oversizedUidlKey));
   const known = loadPop3UidlsForFolder(folderRow.id);
+  // F-A7b-04: Noch keine UIDL bekannt und nie eine UIDL-Liste gespeichert: der
+  // Erst-Sync liefert nur Bestand (ein leeres Postfach speichert "[]").
+  const historical = known.size === 0 && !folderRow.pop3_uidl_str && folderRow.last_uid === 0;
   const upsertCtx = createPop3UpsertContext(folderRow.id, accountId);
   const newAfterSync: SyncNewMessageItem[] = [];
 
@@ -123,7 +129,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     const sourceBuf =
       typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer);
     assertInboundRfc822Size(sourceBuf.length);
-    const parsed = await simpleParser(sourceBuf);
+    const parsed = await parseInboundMailSource(sourceBuf);
     const messageId = parsed.messageId ?? null;
     const inReplyTo = parsed.inReplyTo ?? null;
     const refs = parsed.references
@@ -166,9 +172,22 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     );
 
     if (isNew && localMsgId > 0) {
+      // Stored per message so the run does not hold the decoded attachments
+      // of every new message until the loop is done (C-A59). [] = stored;
+      // undefined makes the post-process recover them from raw_rfc822_b64.
+      let parsedAttachments: SyncNewMessageItem['parsedAttachments'] = [];
+      try {
+        await persistParsedAttachments(localMsgId, parsed.attachments);
+      } catch (attErr) {
+        parsedAttachments = undefined;
+        console.warn(
+          `[pop3-sync] attachments of message ${localMsgId} not stored, retried in post-process:`,
+          attErr instanceof Error ? attErr.message : attErr,
+        );
+      }
       newAfterSync.push({
         localMsgId,
-        parsedAttachments: parsed.attachments,
+        parsedAttachments,
         threading: {
           messageIdHeader: messageId,
           inReplyTo,
@@ -190,7 +209,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
   }
 
   try {
-    await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+    await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id, { historical });
   } catch (postErr) {
     console.error(
       `[pop3-sync] post-process failed account ${accountId} folder ${folderRow.id}:`,

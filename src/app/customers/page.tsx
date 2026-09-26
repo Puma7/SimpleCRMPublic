@@ -24,7 +24,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
-import { getCustomersPage, localDataService } from "@/services/data/localDataService"
+import { getCustomersPage } from "@/services/data/localDataService"
+import {
+  addCustomerDependents,
+  deleteCustomerChecked,
+  describeCustomerDependents,
+  type CustomerDependents,
+} from "@/services/data/customerDeletion"
 import {
   getRendererTransport,
   isCustomerListRefreshEvent,
@@ -209,6 +215,10 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [blockedDeletion, setBlockedDeletion] = useState<{
+    ids: Customer["id"][]
+    dependents: CustomerDependents
+  } | null>(null)
   const [serverEventRefresh, setServerEventRefresh] = useState(0)
   const [totalCustomers, setTotalCustomers] = useState(0)
   const navigate = useNavigate()
@@ -393,23 +403,60 @@ export default function CustomersPage() {
       return;
     }
 
+    // Customers with deals, tasks or appointments are not deleted here; they are
+    // collected and only deleted together with that data after confirmation.
+    const deletedIds: Customer["id"][] = [];
+    const blockedIds: Customer["id"][] = [];
+    let blockedDependents: CustomerDependents = { deals: 0, tasks: 0, appointments: 0 };
     try {
       setIsLoading(true); // Indicate processing
       for (const id of selectedIds) {
-        await localDataService.deleteCustomer(String(id));
+        const outcome = await deleteCustomerChecked(Number(id));
+        if (outcome.deleted) {
+          deletedIds.push(id);
+        } else {
+          blockedIds.push(id);
+          blockedDependents = addCustomerDependents(blockedDependents, outcome.dependents);
+        }
       }
-
-      // Update state after successful deletion
-      setCustomers(prev => prev.filter(c => !selectedIds.includes(c.id)));
-      setTotalCustomers(prev => Math.max(0, prev - selectedIds.length));
+      if (blockedIds.length > 0) {
+        setBlockedDeletion({ ids: blockedIds, dependents: blockedDependents });
+      }
       table.resetRowSelection(); // Clear selection
-      toast.success(`${selectedIds.length} Kunde(n) gelöscht.`);
     } catch (error) {
       console.error("Failed to delete selected customers:", error);
       toast.error("Fehler beim Löschen der ausgewählten Kunden.");
     } finally {
+      removeDeletedCustomers(deletedIds);
       setIsLoading(false);
     }
+  };
+
+  // Delete the customers held back above together with their dependent data.
+  const handleDeleteBlocked = async () => {
+    if (!blockedDeletion) return;
+    const deletedIds: Customer["id"][] = [];
+    try {
+      setIsLoading(true);
+      for (const id of blockedDeletion.ids) {
+        await deleteCustomerChecked(Number(id), { cascade: true });
+        deletedIds.push(id);
+      }
+    } catch (error) {
+      console.error("Failed to delete selected customers:", error);
+      toast.error("Fehler beim Löschen der ausgewählten Kunden.");
+    } finally {
+      removeDeletedCustomers(deletedIds);
+      setBlockedDeletion(null);
+      setIsLoading(false);
+    }
+  };
+
+  const removeDeletedCustomers = (deletedIds: Customer["id"][]) => {
+    if (deletedIds.length === 0) return;
+    setCustomers(prev => prev.filter(c => !deletedIds.includes(c.id)));
+    setTotalCustomers(prev => Math.max(0, prev - deletedIds.length));
+    toast.success(`${deletedIds.length} Kunde(n) gelöscht.`);
   };
   return (
     <main className="flex-1">
@@ -534,6 +581,33 @@ export default function CustomersPage() {
                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                  >
                    Löschen
+                 </AlertDialogAction>
+               </AlertDialogFooter>
+             </AlertDialogContent>
+           </AlertDialog>
+           <AlertDialog
+             open={blockedDeletion !== null}
+             onOpenChange={(open) => { if (!open) setBlockedDeletion(null) }}
+           >
+             <AlertDialogContent>
+               <AlertDialogHeader>
+                 <AlertDialogTitle>Verknüpfte Daten mitlöschen?</AlertDialogTitle>
+                 <AlertDialogDescription>
+                   {blockedDeletion?.ids.length === 1
+                     ? "Zu einem ausgewählten Kunden gehören "
+                     : `Zu ${blockedDeletion?.ids.length ?? 0} ausgewählten Kunden gehören `}
+                   {blockedDeletion ? describeCustomerDependents(blockedDeletion.dependents) : ""}.
+                   {blockedDeletion?.ids.length === 1 ? " Wenn Sie diesen Kunden löschen" : " Wenn Sie diese Kunden löschen"},
+                   werden diese Daten ebenfalls gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.
+                 </AlertDialogDescription>
+               </AlertDialogHeader>
+               <AlertDialogFooter>
+                 <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+                 <AlertDialogAction
+                   onClick={() => void handleDeleteBlocked()}
+                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                 >
+                   Mitlöschen
                  </AlertDialogAction>
                </AlertDialogFooter>
              </AlertDialogContent>

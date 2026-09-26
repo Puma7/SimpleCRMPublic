@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 
 import {
@@ -19,7 +21,11 @@ import type {
 } from './api';
 import type { PostgresSecretPort, SecretIdentifier } from './db';
 import type { ServerDatabase } from './db/schema';
-import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
 
@@ -41,6 +47,25 @@ const MAX_READ_RECEIPT_OUTBOUND_WORKFLOWS = 50;
 const MAX_READ_RECEIPT_OUTBOUND_CONTEXT_TEXT = 20_000;
 const READ_RECEIPT_OUTBOUND_REVIEW_REASON =
   'Ausgangspruefung fuer Lesebestaetigung wird serverseitig ausgefuehrt; Versand bleibt blockiert, bis die Pruefung abgeschlossen ist.';
+const READ_RECEIPT_OUTBOUND_BLOCKED_REASON = 'Ausgangspruefung hat die Lesebestaetigung gesperrt';
+const READ_RECEIPT_OUTBOUND_REVIEW_SOURCE = 'server_read_receipt_outbound_review';
+/** Eine Pruefrunde, die so lange offen bleibt, gilt als verwaist; der naechste Klick prueft neu. */
+const READ_RECEIPT_OUTBOUND_ROUND_TTL_MS = 24 * 60 * 60 * 1000;
+const READ_RECEIPT_OUTBOUND_ROUND_KEY_PREFIX = 'read_receipt_outbound_review:';
+
+/**
+ * Reservierte Workflow-Variable mit der ID der Pruefrunde. Der Executor setzt
+ * sie fuer Laeufe dieser Runde; sie reist in allen Job-Payloads und
+ * Fortsetzungen mit, damit review() ausstehende Arbeit der Runde erkennt.
+ */
+export const READ_RECEIPT_REVIEW_ROUND_VARIABLE = '__read_receipt_review_round';
+
+/** Runden-ID aus dem Job-Kontext eines Pruefauftrags dieser Datei, sonst null. */
+export function readReceiptReviewRoundFromJobContext(context: Record<string, unknown>): string | null {
+  if (context.readReceipt !== true || context.source !== READ_RECEIPT_OUTBOUND_REVIEW_SOURCE) return null;
+  const round = context.readReceiptRound;
+  return typeof round === 'string' && /^[0-9a-f-]{36}$/.test(round) ? round : null;
+}
 
 export type ReadReceiptResponderMessage = Readonly<{
   id: number;
@@ -443,11 +468,85 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
 
           const message = await trx
             .selectFrom('email_messages')
-            .select(['id', 'source_sqlite_id'])
+            .select(['id', 'source_sqlite_id', 'outbound_hold', 'outbound_block_reason'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
+            // Serializes concurrent clicks so the pending check below cannot
+            // race into a second round of review runs.
+            .forUpdate()
             .executeTakeFirst();
           if (!message) return { allowed: false, error: 'Nachricht nicht gefunden' };
+
+          // Die letzte Pruefrunde fuer genau diese Nachricht entscheidet: steht
+          // noch Arbeit aus, bleibt es blockiert; hat sie gesperrt, wird das
+          // gemeldet; ist sie ohne Sperre abgeschlossen (SEND), gibt sie die
+          // Lesebestaetigung einmal frei. Gemeldete Ergebnisse werden verbraucht.
+          const roundKey = `${READ_RECEIPT_OUTBOUND_ROUND_KEY_PREFIX}${input.messageId}`;
+          const roundRow = await trx
+            .selectFrom('sync_info')
+            .select('value')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', roundKey)
+            .executeTakeFirst();
+          const round = parseReadReceiptReviewRound(roundRow?.value ?? null);
+          if (round && now.getTime() - round.startedAt.getTime() < READ_RECEIPT_OUTBOUND_ROUND_TTL_MS) {
+            const verdict = await readReceiptReviewRoundVerdict(trx, input, round, {
+              outboundHold: message.outbound_hold === true,
+              outboundBlockReason: message.outbound_block_reason,
+            });
+            if (verdict.kind === 'pending') {
+              return {
+                allowed: false,
+                error: READ_RECEIPT_OUTBOUND_REVIEW_REASON,
+                workflowRunId: round.firstRunId,
+              };
+            }
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', roundKey)
+              .execute();
+            if (verdict.kind === 'blocked') {
+              return {
+                allowed: false,
+                error: `${READ_RECEIPT_OUTBOUND_BLOCKED_REASON}: ${verdict.reason}`,
+                workflowRunId: round.firstRunId,
+              };
+            }
+            return { allowed: true };
+          }
+
+          // A review for this message is still pending (e.g. queued before
+          // review rounds were tracked): report it again instead of queueing
+          // another round of runs and jobs per click.
+          const pendingRun = await trx
+            .selectFrom('email_workflow_runs')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('message_id', '=', input.messageId)
+            .where('direction', '=', 'outbound')
+            .where('status', 'in', ['queued', 'running'])
+            .orderBy('id', 'asc')
+            .limit(1)
+            .executeTakeFirst();
+          if (pendingRun) {
+            return {
+              allowed: false,
+              error: READ_RECEIPT_OUTBOUND_REVIEW_REASON,
+              workflowRunId: Number(pendingRun.id),
+            };
+          }
+
+          // Neue Runde: eine Sperre aus einer frueheren Runde gilt nicht mehr.
+          const roundId = randomUUID();
+          if (message.outbound_hold === true || message.outbound_block_reason !== null) {
+            await trx
+              .updateTable('email_messages')
+              .set({ outbound_hold: false, outbound_block_reason: null, updated_at: now })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .execute();
+          }
 
           let firstRunId: number | null = null;
           for (const workflow of workflows) {
@@ -484,12 +583,31 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
               .insertInto('job_queue')
               .values({
                 type: 'workflow.execute',
-                payload: readReceiptOutboundWorkflowJobPayload(input, workflowId, runId),
+                payload: readReceiptOutboundWorkflowJobPayload(input, workflowId, runId, roundId),
                 run_after: now,
                 max_attempts: 5,
                 workspace_id: input.workspaceId,
                 updated_at: now,
               })
+              .execute();
+          }
+
+          if (firstRunId !== null) {
+            const value = JSON.stringify({ round: roundId, startedAt: now.toISOString(), firstRunId });
+            await trx
+              .insertInto('sync_info')
+              .values({
+                workspace_id: input.workspaceId,
+                key: roundKey,
+                value,
+                last_updated: now,
+                source_row: { origin: READ_RECEIPT_OUTBOUND_REVIEW_SOURCE },
+                imported_in_run_id: null,
+                updated_at: now,
+              })
+              .onConflict((oc) => oc
+                .columns(['workspace_id', 'key'])
+                .doUpdateSet({ value, last_updated: now, updated_at: now }))
               .execute();
           }
 
@@ -505,10 +623,80 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
   };
 }
 
+type ReadReceiptReviewRound = { round: string; startedAt: Date; firstRunId: number };
+
+function parseReadReceiptReviewRound(value: string | null): ReadReceiptReviewRound | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const startedAt = new Date(String(parsed.startedAt ?? ''));
+    const firstRunId = Number(parsed.firstRunId);
+    if (
+      typeof parsed.round !== 'string'
+      || Number.isNaN(startedAt.getTime())
+      || !Number.isSafeInteger(firstRunId)
+    ) {
+      return null;
+    }
+    return { round: parsed.round, startedAt, firstRunId };
+  } catch {
+    return null;
+  }
+}
+
+type ReadReceiptReviewRoundVerdict =
+  | { kind: 'pending' }
+  | { kind: 'blocked'; reason: string }
+  | { kind: 'send' };
+
+async function readReceiptReviewRoundVerdict(
+  trx: WorkspaceTransaction,
+  input: ReadReceiptOutboundReviewInput,
+  round: ReadReceiptReviewRound,
+  message: { outboundHold: boolean; outboundBlockReason: string | null },
+): Promise<ReadReceiptReviewRoundVerdict> {
+  // Laeufe der Runde: der erste und alle Fortsetzungen fuer diese Nachricht.
+  // Ausgehende Laeufe gegen eine eingegangene Mail legt nur diese Pruefung an.
+  const runs = await trx
+    .selectFrom('email_workflow_runs')
+    .select('status')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_id', '=', input.messageId)
+    .where('direction', '=', 'outbound')
+    .where('id', '>=', round.firstRunId)
+    .execute();
+  if (runs.some((run) => run.status === 'queued' || run.status === 'running')) return { kind: 'pending' };
+
+  // Ausstehende Kindjobs (KI-Pruefung, HTTP, Verzoegerung, Fortsetzungen) tragen
+  // die Runde in ihren eventVariables bzw. im Startkontext.
+  const variable = READ_RECEIPT_REVIEW_ROUND_VARIABLE;
+  const jobs = await trx
+    .selectFrom('job_queue')
+    .select(['attempts', 'max_attempts'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where(kyselySql<boolean>`(
+      payload->'context'->>'readReceiptRound' = ${round.round}
+      OR payload->'context'->'eventVariables'->>(${variable}::text) = ${round.round}
+      OR payload->'eventVariables'->>(${variable}::text) = ${round.round}
+      OR payload->'continuation'->'eventVariables'->>(${variable}::text) = ${round.round}
+    )`)
+    .execute();
+  if (jobs.some((job) => Number(job.attempts) < Number(job.max_attempts))) return { kind: 'pending' };
+  if (jobs.length > 0) return { kind: 'blocked', reason: 'Pruefschritt endgueltig fehlgeschlagen' };
+
+  if (message.outboundHold) {
+    return { kind: 'blocked', reason: message.outboundBlockReason?.trim() || 'Versand gesperrt' };
+  }
+  if (runs.some((run) => run.status === 'error')) return { kind: 'blocked', reason: 'Pruefung mit Fehler beendet' };
+  if (runs.some((run) => run.status === 'blocked')) return { kind: 'blocked', reason: 'Versand gesperrt' };
+  return { kind: 'send' };
+}
+
 function readReceiptOutboundWorkflowJobPayload(
   input: ReadReceiptOutboundReviewInput,
   workflowId: number,
   runId: number,
+  roundId: string,
 ): Record<string, unknown> {
   return {
     workspaceId: input.workspaceId,
@@ -532,6 +720,7 @@ function readReceiptOutboundWorkflowJobPayload(
       },
       readReceipt: true,
       source: 'server_read_receipt_outbound_review',
+      readReceiptRound: roundId,
     },
   };
 }

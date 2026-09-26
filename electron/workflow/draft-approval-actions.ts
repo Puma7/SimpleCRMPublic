@@ -13,14 +13,19 @@ import {
 import { getEmailMessageById } from '../email/email-store';
 import { markAutoReplySent } from './auto-reply-guard';
 import { prepareDraftForWorkflowSend } from './draft-send-prep';
+import { recordScheduledSendActor } from '../email/email-scheduled-send-actor';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 
 export type DraftApprovalActionResult =
   | { success: true }
   | { success: false; error: string };
 
-/** "Jetzt senden": plant den freigegebenen KI-Entwurf zum Versand ein. */
-export function approveDraftSend(draftId: number): DraftApprovalActionResult {
+/**
+ * "Jetzt senden": plant den freigegebenen KI-Entwurf zum Versand ein. Der
+ * Freigebende wird wie beim Planen fuer die Rechtepruefung beim Versand
+ * gespeichert (C-A2, G6).
+ */
+export function approveDraftSend(draftId: number, actor?: { userId: string }): DraftApprovalActionResult {
   // Erst den LIVE-Zustand prüfen: ein staler zweiter View (Entwurf wurde
   // inzwischen bearbeitet oder "Als Entwurf behalten" gewählt — beides
   // cleart die Freigabe) darf nicht mehr mit runOutboundReview=false an der
@@ -44,6 +49,7 @@ export function approveDraftSend(draftId: number): DraftApprovalActionResult {
   // fehl, bleiben Banner und KI-Begründung erhalten (nichts wurde gesendet).
   const prep = prepareDraftForWorkflowSend(draftId, { runOutboundReview: false });
   if (!prep.ok) return { success: false, error: prep.message };
+  if (actor) recordScheduledSendActor(draftId, actor);
   // Antwort stammt aus der automatischen Pipeline → RFC-3834-Marker NACH
   // prep stempeln (prep normalisiert per updateComposeDraft und setzt
   // auto_submitted dabei zurück) — wie email.send_draft.

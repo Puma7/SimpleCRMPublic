@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import net from 'net';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
+import { ReadableStream } from 'stream/web';
 
 import type { Kysely } from 'kysely';
 import {
@@ -15,6 +16,7 @@ import {
   MAX_INBOUND_RFC822_BYTES,
 } from '../../packages/core/src/email/inbound-message-size';
 import { SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { mailSyncJobTypeForProtocol } from '../../packages/server/src/jobs/mail-sync-scheduler';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -82,6 +84,7 @@ import {
 import {
   MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
+  TRUSTED_SERVICE_JOB_MARKER_FIELD,
 } from '../../packages/server/src/jobs';
 import {
   SERVER_POSTGRES_MAJOR,
@@ -140,6 +143,7 @@ import {
   calculateJobRetryDelaySeconds,
   calculateLoginPenalty,
   calculateMailSyncPoolSize,
+  JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
   checksumMigration,
   collectMigrationSql,
   computeSqliteFileFingerprint,
@@ -382,6 +386,9 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0049_master_key_fingerprint',
   '0050_mail_acl_shadow_without_legacy',
   '0051_email_account_sync_schedule',
+  '0052_jtl_key_uniqueness',
+  '0053_task_assignment_scope_orphan_backfill',
+  '0054_email_account_trusted_authserv_id',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -676,6 +683,16 @@ describe('server edition foundation', () => {
           expect(isServerWorkflowNodeTypeSupported(nodeType)).toBe(true);
         }
       }
+    }
+  });
+
+  // F-A9-01 (E30): Die Server-Vorlagenliste bot Vorlagen mit Desktop-Triggern an
+  // (etwa crm-deal-won-task); auf dem Server liefen sie nie.
+  test('server template list omits templates whose trigger the server never fires', () => {
+    const templates = listServerWorkflowTemplates();
+    expect(templates.map((template) => template.id)).not.toContain('crm-deal-won-task');
+    for (const template of templates) {
+      expect(['inbound', 'outbound', 'manual', 'relay', 'webhook.incoming']).toContain(template.trigger);
     }
   });
 
@@ -2451,6 +2468,67 @@ describe('server edition foundation', () => {
     })).toThrow('unsupported server job type');
   });
 
+  // F-A8-01: Die Queues 'ai', 'spam', 'mail', 'webhook' und 'workflow' waren global und serialisierten die Jobs aller Workspaces.
+  test('graphile shared-kind queues serialize per workspace instead of across workspaces', () => {
+    const types = [
+      'ai.reply_suggestion',
+      'ai.classify',
+      'mail.spam.score',
+      'mail.vacation.auto_reply',
+      'webhook.fire',
+      'workflow.execute',
+      'workflow.http_request',
+    ] as const;
+    for (const type of types) {
+      const specA = graphileSpecFromJob({ type, workspaceId: 'workspace-a', payload: { workspaceId: 'workspace-a', messageId: 1, workflowId: 2 } });
+      const specA2 = graphileSpecFromJob({ type, workspaceId: 'workspace-a', payload: { workspaceId: 'workspace-a', messageId: 3, workflowId: 4 } });
+      const specB = graphileSpecFromJob({ type, workspaceId: 'workspace-b', payload: { workspaceId: 'workspace-b', messageId: 1, workflowId: 2 } });
+      // Within one workspace the kind stays serialized (inbound chain order unchanged) ...
+      expect(specA.queueName).toEqual(expect.any(String));
+      expect(specA.queueName).toBe(specA2.queueName);
+      // ... but another workspace no longer waits behind it.
+      expect(specB.queueName).not.toBe(specA.queueName);
+    }
+    expect(graphileSpecFromJob({ type: 'workflow.execute', workspaceId: 'workspace-a', payload: { workflowId: 2 } }).queueName)
+      .toBe('workflow-workspace-a');
+    expect(graphileQueueNameForJob('ai.agent', {}, 'workspace-b')).toBe('ai-workspace-b');
+    // Mail syncs keep their per-account queue.
+    expect(graphileQueueNameForJob('mail.sync.imap', { accountId: 42 }, 'workspace-a')).toBe('account-42');
+  });
+
+  // F-A8-02: Ein manueller Live-Lauf oder Backfill ersetzte per jobKeyMode 'replace' den wartenden Inbound-Kettenjob.
+  test('graphile workflow.execute keys keep manual and backfill runs apart from the inbound chain job', () => {
+    const inboundKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'inbound',
+      context: { skipIfMessageSpamOrReview: true, inboundWorkflowChain: { workflowIds: [23, 24], index: 0 } },
+    }, 'workspace-a');
+    const manualKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'manual',
+      context: {},
+    }, 'workspace-a');
+    const backfillKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'inbound',
+      context: { workflowBackfill: true, forceWorkflowReapply: true },
+    }, 'workspace-a');
+
+    // The inbound first run keeps its message-wide dedupe key.
+    expect(inboundKey).toBe('workflow.execute:workspace-a:23:message:11');
+    expect(manualKey).toEqual(expect.any(String));
+    expect(backfillKey).toEqual(expect.any(String));
+    expect(manualKey).not.toBe(inboundKey);
+    expect(backfillKey).not.toBe(inboundKey);
+    expect(backfillKey).not.toBe(manualKey);
+  });
+
   test('graphile queue port enqueues validated server jobs through worker utils', async () => {
     const added: Array<{ identifier: string; payload: Record<string, unknown>; spec: unknown }> = [];
     const removed: string[] = [];
@@ -3453,6 +3531,132 @@ describe('server edition foundation', () => {
     expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([]);
   });
 
+  // F-A5-08: Der IMAP-Sync sammelte alle neuen Nachrichten eines Ordners (je bis 80 MiB) im Speicher, bevor die erste geparst wurde.
+  test('server mail sync imports each IMAP message before fetching the next one', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5, uidvalidity: 22 })],
+    ]);
+    const syncInfo = new Map<string, string>();
+    const store = makeServerMailSyncStore({
+      account, folders, upserts, folderUpdates, syncInfo, messageIds: [601, 602, 603, 604],
+    });
+    const events: string[] = [];
+    let bufferedSources = 0;
+    let maxBufferedSources = 0;
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        return query.uid === '6:*' ? [6, 7, 8, 9] : [];
+      },
+      async fetchOne(uid: string) {
+        if (uid === '8') throw new Error('connection reset');
+        events.push(`fetch:${uid}`);
+        bufferedSources += 1;
+        maxBufferedSources = Math.max(maxBufferedSources, bufferedSources);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => {
+        const seed = source.toString('utf8');
+        events.push(`parse:${seed.slice('Subject: '.length, seed.indexOf('\r'))}`);
+        bufferedSources -= 1;
+        return makeParsedServerMailSyncMessage(seed);
+      },
+      imapClientFactory: () => client as any,
+    });
+
+    await expect(port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    })).resolves.toEqual({ inboundMessageIds: [601, 602, 603] });
+
+    expect(events).toEqual([
+      'fetch:6', 'parse:6', 'fetch:7', 'parse:7', 'fetch:9', 'parse:9',
+    ]);
+    expect(maxBufferedSources).toBe(1);
+    expect(upserts.map((item) => item.uid)).toEqual([6, 7, 9]);
+    // Cursor and retry list behave as before: the failed UID 8 is retried via the pending list.
+    expect(folderUpdates.at(-1)).toMatchObject({ folderId: 71, lastUid: 9 });
+    expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([8]);
+  });
+
+  // F-A5-06: 'UID n+1:*' liefert nach RFC 3501 die hoechste vorhandene UID, auch wenn sie <= n ist; die neueste Nachricht wurde so bei jedem Poll neu geholt und lokales Archivieren/Loeschen zurueckgesetzt.
+  test('server mail sync ignores the already-synced highest UID that an RFC 3501 "n+1:*" search returns', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const attachmentWrites: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5, uidvalidity: 22 })],
+    ]);
+    const store = makeServerMailSyncStore({
+      account,
+      folders,
+      upserts,
+      attachmentWrites,
+      folderUpdates,
+      messageIds: [105],
+    });
+    store.loadImapUidToId = async () => new Map([[5, 105]]);
+    const fetchedUids: string[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        // RFC 3501 §6.4.8: "6:*" contains the UID of the last message (5)
+        // even though no message with UID >= 6 exists.
+        if (query.uid === '6:*') return [5];
+        return [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8').slice(0, 64)),
+      imapClientFactory: () => client as any,
+    });
+
+    await port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    });
+
+    expect(fetchedUids).toEqual([]);
+    expect(upserts).toEqual([]);
+    expect(attachmentWrites).toEqual([]);
+  });
+
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
     const now = new Date('2026-07-06T10:00:00.000Z');
     const account = makeServerMailSyncAccount({ protocol: 'imap' });
@@ -3709,6 +3913,20 @@ describe('server edition foundation', () => {
         };
       },
       selectFrom(table: string) {
+        if (table === 'email_message_attachments') {
+          // Previous attachment rows read before the replacement (none here).
+          return {
+            select() {
+              return this;
+            },
+            where() {
+              return this;
+            },
+            async execute() {
+              return [];
+            },
+          };
+        }
         if (table !== 'email_messages') throw new Error(`unexpected select table ${table}`);
         return {
           select() {
@@ -3767,6 +3985,100 @@ describe('server edition foundation', () => {
       const storagePath = String(insertedRows[0].storage_path);
       expect(storagePath).toContain('/mail-sync/901/');
       expect(existsSync(join(root, storagePath))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // F-A5-07: Beim Ersetzen der Anhaenge wurden nur die DB-Zeilen geloescht, die alten Dateien blieben verwaist auf der Platte liegen.
+  test('postgres mail sync attachment replacement removes the replaced attachment files', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'mail-sync-attachment-replace-'));
+    let attachmentRows: Array<Record<string, unknown>> = [];
+    const foreignPath = `${WORKSPACE_A_ID}/mail-sync/902/keep-me.pdf`;
+    const db = {
+      transaction() {
+        return {
+          execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db),
+        };
+      },
+      selectFrom(table: string) {
+        if (table === 'email_messages') {
+          return {
+            select() { return this; },
+            where() { return this; },
+            async executeTakeFirst() { return { id: 901, source_sqlite_id: 9901 }; },
+          };
+        }
+        if (table === 'email_message_attachments') {
+          return {
+            select() { return this; },
+            where() { return this; },
+            async execute() {
+              return attachmentRows.map((row) => ({ storage_path: row.storage_path }));
+            },
+          };
+        }
+        throw new Error(`unexpected select table ${table}`);
+      },
+      deleteFrom(table: string) {
+        if (table !== 'email_message_attachments') throw new Error(`unexpected delete table ${table}`);
+        return {
+          where() { return this; },
+          async execute() {
+            attachmentRows = [];
+            return undefined;
+          },
+        };
+      },
+      insertInto(table: string) {
+        if (table !== 'email_message_attachments') throw new Error(`unexpected insert table ${table}`);
+        let pending: Array<Record<string, unknown>> = [];
+        return {
+          values(value: Record<string, unknown> | Array<Record<string, unknown>>) {
+            pending = Array.isArray(value) ? value : [value];
+            return this;
+          },
+          async execute() {
+            attachmentRows.push(...pending);
+            return undefined;
+          },
+        };
+      },
+    } as unknown as Kysely<any>;
+    const replace = () => replacePostgresMailSyncAttachments({
+      db,
+      attachmentsRoot: root,
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 901,
+      applyWorkspaceSession: async () => undefined,
+      attachments: [{
+        filename: 'invoice.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 7,
+        contentSha256: 'hash-1',
+        content: Buffer.from('payload'),
+      }],
+    });
+
+    try {
+      await replace();
+      const firstPath = String(attachmentRows[0].storage_path);
+      expect(existsSync(join(root, firstPath))).toBe(true);
+      // A row pointing outside this message's mail-sync directory is never
+      // touched on disk, even if it was attached to the message.
+      mkdirSync(join(root, WORKSPACE_A_ID, 'mail-sync', '902'), { recursive: true });
+      writeFileSync(join(root, foreignPath), 'other');
+      attachmentRows.push({ storage_path: foreignPath });
+
+      await replace();
+
+      expect(attachmentRows).toHaveLength(1);
+      const secondPath = String(attachmentRows[0].storage_path);
+      expect(secondPath).not.toBe(firstPath);
+      expect(existsSync(join(root, secondPath))).toBe(true);
+      expect(existsSync(join(root, firstPath))).toBe(false);
+      expect(readdirSync(join(root, WORKSPACE_A_ID, 'mail-sync', '901'))).toHaveLength(1);
+      expect(existsSync(join(root, foreignPath))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -3844,6 +4156,118 @@ describe('server edition foundation', () => {
       syncedAt: now,
     })]);
     expect(quitCalled).toBe(true);
+  });
+
+  // F-A7b-04: Der Erst-Sync eines Kontos meldete bis zu 2000 Bestandsmails als
+  // neu eingegangen; Inbound-Workflows, KI-Vorschlaege und Abwesenheitsantworten
+  // liefen fuer die ganze Historie.
+  test('server mail sync reports mail from a never-synced IMAP folder as historical', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastSyncedAt: null })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, messageIds: [501, 502, 503, 504] });
+    let serverUids = [1, 2, 3];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.all) return serverUids;
+        if (query.uid === '4:*') return serverUids.filter((uid) => uid >= 4);
+        return [];
+      },
+      async fetchOne(uid: string) {
+        return { source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`), flags: new Set<string>(), threadId: null };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory: () => client as any,
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap' as const };
+
+    await expect(port.sync(plan)).resolves.toEqual({
+      inboundMessageIds: [],
+      historicalMessageIds: [501, 502, 503],
+    });
+
+    // Der naechste Sync liefert wieder echten Eingang.
+    serverUids = [1, 2, 3, 4];
+    await expect(port.sync(plan)).resolves.toEqual({ inboundMessageIds: [504] });
+  });
+
+  test('server mail sync treats the first mail of an empty but synced IMAP folder as inbound', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({
+        id: 71,
+        path: 'INBOX',
+        lastUid: 0,
+        uidvalidity: 22,
+        uidvalidityStr: '22',
+        lastSyncedAt: new Date('2026-07-05T10:00:00.000Z'),
+      })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, messageIds: [601] });
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) { return query.all ? [1] : []; },
+      async fetchOne(uid: string) {
+        return { source: Buffer.from(`Subject: ${uid}\r\n\r\nBody`), flags: new Set<string>(), threadId: null };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory: () => client as any,
+    });
+
+    await expect(port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap' }))
+      .resolves.toEqual({ inboundMessageIds: [601] });
+  });
+
+  test('server mail sync reports mail of a POP3 mailbox without known UIDLs as historical', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({
+      protocol: 'pop3',
+      pop3Host: 'pop3.example.com',
+      pop3Port: 995,
+      pop3Tls: true,
+    });
+    const store = makeServerMailSyncStore({
+      account,
+      folders: new Map([['INBOX', makeServerMailSyncFolder({ id: 81, path: 'INBOX', lastSyncedAt: null })]]),
+      pop3Known: new Map(),
+      messageIds: [2101, 2102],
+    });
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      pop3ClientFactory() {
+        return {
+          async connect() { return undefined; },
+          async uidl() { return [[1, 'old-1'], [2, 'old-2']] as [number, string][]; },
+          async retr(messageNumber: number) { return Buffer.from(`Subject: POP3 ${messageNumber}\r\n\r\nBody`); },
+          async quit() { return undefined; },
+        };
+      },
+    });
+
+    await expect(port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'pop3' }))
+      .resolves.toEqual({ inboundMessageIds: [], historicalMessageIds: [2101, 2102] });
   });
 
   test('server mail sync remembers oversized POP3 UIDLs without suppressing transient failures', async () => {
@@ -4180,6 +4604,78 @@ describe('server edition foundation', () => {
 
     expect(smtpInputs).toHaveLength(1);
     expect(rows.activityLog).toHaveLength(1);
+  });
+
+  // F-A5-14: Die Server-Abwesenheitsantwort pruefte Automaten nur per Teilstring (z. B. nicht 'Precedence:bulk', keine Listen, kein noreply) und unterdrueckte bei 'Auto-Submitted: no' faelschlich.
+  test('postgres email vacation auto-reply port uses the shared auto-reply loop guard', async () => {
+    const now = new Date('2026-06-04T09:30:00.000Z');
+    const cases: Array<{ label: string; rawHeaders: string; sender?: string; expectSend: boolean }> = [
+      { label: 'precedence without space', rawHeaders: 'From: news@example.net\nPrecedence:bulk', expectSend: false },
+      { label: 'auto-submitted without space', rawHeaders: 'From: bot@example.net\nAuto-Submitted:auto-generated', expectSend: false },
+      { label: 'mailing list', rawHeaders: 'From: poster@example.net\nList-Id: <team.lists.example.org>\nPrecedence: list', expectSend: false },
+      { label: 'noreply sender', rawHeaders: 'From: noreply@shop.example', sender: 'noreply@shop.example', expectSend: false },
+      { label: 'mailer daemon', rawHeaders: 'From: MAILER-DAEMON@mx.example.org', sender: 'MAILER-DAEMON@mx.example.org', expectSend: false },
+      { label: 'explicitly manual mail', rawHeaders: 'From: guest@example.com\nAuto-Submitted: no', expectSend: true },
+    ];
+    const outcomes: Array<{ label: string; sent: boolean }> = [];
+    for (const item of cases) {
+      const { db } = makeAiReplySuggestionDb({
+        accounts: [{
+          id: 7,
+          workspace_id: WORKSPACE_A_ID,
+          display_name: 'Support',
+          email_address: 'support@example.com',
+          imap_host: 'imap.example.com',
+          imap_username: 'imap-user',
+          smtp_host: 'smtp.example.com',
+          smtp_port: 587,
+          smtp_tls: false,
+          smtp_username: null,
+          smtp_use_imap_auth: true,
+          oauth_provider: null,
+          vacation_enabled: true,
+          vacation_subject: 'Away',
+          vacation_body_text: 'Back soon',
+        }],
+        messages: [{
+          id: 35,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 350,
+          account_id: 7,
+          uid: 13,
+          pop3_uidl: null,
+          message_id: '<loop-guard@example.net>',
+          from_json: { value: [{ address: item.sender ?? 'guest@example.com' }] },
+          raw_headers: item.rawHeaders,
+          customer_id: null,
+          customer_source_sqlite_id: null,
+          archived: false,
+          soft_deleted: false,
+          is_spam: false,
+          spam_status: 'clean',
+          spam_score_label: 'clean',
+          folder_kind: 'inbox',
+        }],
+      });
+      const smtpInputs: any[] = [];
+      const port = createPostgresEmailVacationAutoReplyPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+        secrets: {
+          async readSecret() {
+            return Buffer.from('imap-secret');
+          },
+        } as any,
+        async smtpSend(input) {
+          smtpInputs.push(input);
+        },
+      });
+      await port.autoReply({ workspaceId: WORKSPACE_A_ID, messageId: 35 });
+      outcomes.push({ label: item.label, sent: smtpInputs.length > 0 });
+    }
+
+    expect(outcomes).toEqual(cases.map((item) => ({ label: item.label, sent: item.expectSend })));
   });
 
   test('postgres AI reply suggestion port generates and persists ready replies', async () => {
@@ -4866,6 +5362,167 @@ describe('server edition foundation', () => {
     }));
   });
 
+  // F-D1-01: with a continuation, pick 0 enqueued nothing, so the deferred parent
+  // run and every lower-priority inbound workflow for the message hung forever.
+  test('postgres AI pick-canned port resumes the workflow with ai.canned.no_match when no template fits', async () => {
+    const now = new Date('2026-06-03T12:40:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 60,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 600,
+        account_id: 7,
+        subject: 'Wo bleibt mein Paket',
+        from_json: {
+          value: [
+            { address: 'kunde@example.com' },
+            { address: 'unerwartet@example.com' },
+          ],
+        },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Wo bleibt mein Paket?',
+        body_text: 'Wo bleibt mein Paket?',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 7,
+      }],
+      folders: [{
+        id: 70,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 700,
+        account_id: 7,
+        path: 'INBOX',
+      }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Versandstatus', body: 'Status zu {{subject}}: unterwegs.', sort_order: 0 },
+        { id: 102, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1020, title: 'Retoure', body: 'Retoure-Infos.', sort_order: 1 },
+      ],
+    });
+    const chatInputs: any[] = [];
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        chatInputs.push(input);
+        return '0';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 60,
+      profileId: 21,
+      createDraft: true,
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'message.id': 60 } },
+    });
+
+    const resumed = rows.jobs.filter((job) => job.type === 'workflow.execute');
+    expect(resumed).toHaveLength(1);
+    expect((resumed[0]?.payload as any).context.resumeNodeId).toBe('next-1');
+    expect((resumed[0]?.payload as any).context.eventVariables).toMatchObject({
+      'message.id': 60,
+      'ai.canned.pick': 0,
+      'ai.canned.no_match': true,
+    });
+    expect(rows.messages).not.toContainEqual(expect.objectContaining({ folder_kind: 'draft' }));
+  });
+
+  // F-A9-02: the job layer interpolated in several passes, so a placeholder in
+  // the sender's subject expanded internal workflow variables into the draft.
+  test('postgres AI pick-canned port does not expand placeholders injected through the mail', async () => {
+    const now = new Date('2026-06-03T12:45:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 61,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 610,
+        account_id: 7,
+        subject: 'Frage {{http.body}} $` ende',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Frage',
+        body_text: 'Frage',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      accounts: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 7 }],
+      folders: [{ id: 70, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Anfrage', body: 'Ihre Anfrage: {{subject}}', sort_order: 0 },
+      ],
+    });
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion() {
+        return '1';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 61,
+      profileId: 21,
+      createDraft: true,
+      eventVariables: { 'http.body': 'GEHEIM-API-ANTWORT' },
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'http.body': 'GEHEIM-API-ANTWORT' } },
+    });
+
+    const expected = 'Ihre Anfrage: Frage {{http.body}} $` ende';
+    expect((rows.jobs[0]?.payload as any).context.eventVariables['ai.canned.text']).toBe(expected);
+    const draft = rows.messages.find((message) => message.folder_kind === 'draft');
+    expect(String(draft?.body_text)).toContain(expected);
+    expect(String(draft?.body_text)).not.toContain('GEHEIM');
+  });
+
   test('postgres AI review port resumes on OK and blocks outbound on BLOCK', async () => {
     const now = new Date('2026-06-03T12:35:00.000Z');
     const { db, rows } = makeAiReplySuggestionDb({
@@ -4979,6 +5636,90 @@ describe('server edition foundation', () => {
       outbound_block_reason: 'KI-Pruefung: Versand blockiert',
       updated_at: now,
     });
+  });
+
+  // F-A9-02: {{text}} was pre-substituted and the reply-parent block appended
+  // to the template before interpolation, so placeholders inside mail text
+  // expanded internal workflow variables into the review prompt.
+  test('postgres AI review port keeps placeholders from mail text literal in the prompt', async () => {
+    const now = new Date('2026-06-03T12:36:00.000Z');
+    const message = (id: number, body: string) => ({
+      id,
+      workspace_id: WORKSPACE_A_ID,
+      source_sqlite_id: id * 10,
+      subject: 'Review',
+      from_json: { value: [{ address: 'kunde@example.com' }] },
+      to_json: { value: [{ address: 'support@example.com' }] },
+      cc_json: null,
+      snippet: body,
+      body_text: body,
+      has_attachments: false,
+      attachments_json: null,
+      outbound_hold: false,
+      outbound_block_reason: null,
+    });
+    const { db } = makeAiReplySuggestionDb({
+      messages: [message(16, 'Entwurf {{mssql.rows}}'), message(17, "Kunde {{mssql.rows}} $' ende")],
+      prompts: [{
+        id: 22,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 22,
+        label: 'Review',
+        user_template: 'Pruefe {{text}}',
+        target: 'review',
+        profile_source_sqlite_id: null,
+        profile_id: 21,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    });
+    const prompts: string[] = [];
+    const port = createPostgresAiReviewPort({
+      db,
+      secrets: { async readSecret() { return Buffer.from('sk-test'); } } as any,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        prompts.push(input.user);
+        return 'OK';
+      },
+    });
+
+    await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 16,
+      promptId: 22,
+      blockKeyword: 'BLOCK',
+      direction: 'outbound',
+      replyParentMessageId: 17,
+      eventVariables: { 'mssql.rows': 'INTERNE-ZEILEN' },
+    });
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('Entwurf {{mssql.rows}}');
+    expect(prompts[0]).toContain("Kunde {{mssql.rows}} $' ende");
+    expect(prompts[0]).not.toContain('INTERNE-ZEILEN');
   });
 
   test('postgres workflow HTTP request port validates allowlist, fetches, and resumes workflows', async () => {
@@ -5312,7 +6053,7 @@ describe('server edition foundation', () => {
         payload: {
           workspaceId: WORKSPACE_A_ID,
           messageId: 31,
-          actorUserId: USER_A_ID,
+          [TRUSTED_SERVICE_JOB_MARKER_FIELD]: expect.stringMatching(/^simplecrm:trusted-service:/),
           trigger: 'inbound',
           force: false,
         },
@@ -5325,7 +6066,7 @@ describe('server edition foundation', () => {
         payload: {
           workspaceId: WORKSPACE_A_ID,
           messageId: 31,
-          actorUserId: USER_A_ID,
+          [TRUSTED_SERVICE_JOB_MARKER_FIELD]: expect.stringMatching(/^simplecrm:trusted-service:/),
         },
         runAfter: new Date('2026-07-04T09:03:00.000Z'),
         maxAttempts: 3,
@@ -5365,6 +6106,37 @@ describe('server edition foundation', () => {
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
+  });
+
+  // F-A7b-04: Bestandsmails aus dem Erst-Sync bekommen Spam-Scoring, aber keine
+  // Inbound-Workflows, keine Antwortvorschlaege und keine Abwesenheitsantwort.
+  test('mail sync post-process scores historical messages without automation', async () => {
+    const enqueued: unknown[] = [];
+    const postProcess = createPostgresMailSyncPostProcessor({
+      db: {} as any,
+      applyWorkspaceSession: async () => undefined,
+      jobQueue: {
+        async enqueue(input) {
+          enqueued.push(input);
+          return undefined;
+        },
+      },
+    });
+
+    await postProcess.afterSync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      syncStartedAt: new Date('2026-07-04T09:00:00.000Z'),
+      syncFinishedAt: new Date('2026-07-04T09:01:00.000Z'),
+      result: { inboundMessageIds: [43], historicalMessageIds: [45, 46, 45] },
+    });
+
+    const byType = (type: string) => enqueued.filter((item) => (item as any).type === type);
+    expect(byType('mail.spam.score').map((item) => [(item as any).payload.messageId, (item as any).payload.enqueueInboundWorkflows]))
+      .toEqual([[43, true], [45, false], [46, false]]);
+    expect(byType('ai.reply_suggestion').map((item) => (item as any).payload.messageId)).toEqual([43]);
+    expect(byType('mail.vacation.auto_reply').map((item) => (item as any).payload.messageId)).toEqual([43]);
   });
 
   test('postgres workflow inbound backfill port clears applied markers and enqueues workflow jobs', async () => {
@@ -8159,6 +8931,141 @@ describe('server edition foundation', () => {
     expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id])).toEqual([[28, 801]]);
   });
 
+  function dryRunSideEffectFixture(nodes: Array<Record<string, unknown>>) {
+    return makeWorkflowExecutionDb({
+      workflows: nodes.map((node, index) => ({
+        id: 400 + index,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 4000 + index,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [{ id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } }, { id: 'node-1', ...node }],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'node-1' }],
+        },
+        execution_mode: 'graph',
+      })),
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 1,
+        subject: 'Vorschau',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Vorschau',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: true,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: 'clean',
+        assigned_to: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Support',
+        sort_order: 0,
+      }],
+      teamMembers: [{ id: 'agent-1', workspace_id: WORKSPACE_A_ID, linked_user_id: null }],
+    });
+  }
+
+  // C-A64: Der Dry-Run simulierte nur eine Denylist; der Vorlagen-Alias set_category und ai.pick_canned liefen in der Vorschau live, setzten die Kategorie bzw. reihten einen echten KI-Job ein.
+  test('workflow dry-run simulates the set_category alias and ai.pick_canned instead of running them', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const { db, rows } = dryRunSideEffectFixture([
+      { type: 'action', data: { actionType: 'set_category', path: 'Support' } },
+      { type: 'registry', data: { nodeType: 'ai.pick_canned', config: {} } },
+    ]);
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const logs: string[][] = [];
+    for (const workflowId of [400, 401]) {
+      const result = await port.dryRun!({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId,
+        messageId: 29,
+        triggerName: 'manual',
+        context: {},
+      });
+      logs.push(result.log);
+    }
+
+    expect(logs).toEqual([
+      ['dry_run:server', 'dry_run:set_category'],
+      ['dry_run:server', 'dry_run:ai.pick_canned'],
+    ]);
+    expect(rows.messageCategories).toEqual([]);
+    expect(rows.jobs).toEqual([]);
+  });
+
+  // C-A64: Der Dry-Run muss fail-closed sein: nur ausdruecklich lesende oder rein logische Knoten laufen live, jeder andere Knotentyp (auch Aliase) bleibt ohne Schreibzugriff.
+  test('workflow dry-run leaves persisted state untouched for every catalog node type and action alias', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const config = {
+      tag: 'vorschau',
+      path: 'Support',
+      teamMemberId: 'agent-1',
+      level: 'hoch',
+      to: 'kopie@example.com',
+      url: 'https://api.example.com/hook',
+      method: 'POST',
+      folderPath: 'Archiv',
+      title: 'Aufgabe',
+      status: 'spam',
+      draftId: 1,
+      workflowId: 1,
+    };
+    const aliases = [
+      'tag', 'set_category', 'mark_seen', 'archive', 'link_customer', 'forward_copy',
+      'tag_attachment_meta', 'hold_outbound', 'ai_review', 'stop',
+    ];
+    const nodes = [
+      ...listBuiltinWorkflowNodeCatalog().map((entry) => ({ type: 'registry', data: { nodeType: entry.type, config } })),
+      ...aliases.map((actionType) => ({ type: 'action', data: { actionType, ...config, config } })),
+    ];
+    const { db, rows } = dryRunSideEffectFixture(nodes);
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const touched: string[] = [];
+    let snapshot = JSON.stringify(rows);
+    for (const [index, node] of nodes.entries()) {
+      // Ein Fehler des Knotens (fehlender Port, ungueltige Konfiguration) ist
+      // hier egal; es zaehlt nur, dass nichts geschrieben wurde.
+      await port.dryRun!({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 400 + index,
+        messageId: 29,
+        triggerName: 'manual',
+        context: {},
+      }).catch(() => undefined);
+      const after = JSON.stringify(rows);
+      if (after !== snapshot) touched.push(String(node.data.nodeType ?? node.data.actionType));
+      snapshot = after;
+    }
+
+    expect(touched).toEqual([]);
+  });
+
   test('postgres workflow execution job port resolves set_category by stable id (rename-safe)', async () => {
     const now = new Date('2026-07-04T10:31:45.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -10201,6 +11108,80 @@ describe('server edition foundation', () => {
     });
   });
 
+  // F-A13A14-11: the connection test combined caller-supplied server/port with
+  // the stored MSSQL password, so the stored secret could be sent to any host.
+  test('postgres MSSQL connection test only uses the stored password for the stored server and port', async () => {
+    const { db } = makeWorkflowExecutionDb({ syncInfo: [] });
+    let secretValue: Buffer | null = null;
+    const connectCalls: Array<{ server: string; port?: number; password: string }> = [];
+    const port = createPostgresMssqlSettingsPort({
+      db,
+      applyWorkspaceSession: async () => undefined,
+      secrets: {
+        async writeSecret(input) {
+          secretValue = Buffer.isBuffer(input.value) ? input.value : Buffer.from(input.value);
+          return {
+            id: 'secret-1',
+            workspaceId: input.workspaceId,
+            kind: input.kind,
+            name: input.name,
+            keyId: 'test',
+            algorithm: 'test',
+            updatedAt: '2026-07-04T11:00:00.000Z',
+          };
+        },
+        async readSecret() {
+          return secretValue;
+        },
+        async deleteSecret() {
+          return false;
+        },
+        async rotateSecret() {
+          return null;
+        },
+      },
+      connect: async (config) => {
+        connectCalls.push(config);
+        return {
+          request: () => ({ query: async () => ({ recordset: [{ ok: 1 }], rowsAffected: [1] }) }),
+          close: async () => undefined,
+        };
+      },
+    });
+    await expect(port.saveSettings({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'sql.local', database: 'JTL', user: 'crm', port: 1433, password: 'secret' },
+    })).resolves.toEqual({ success: true });
+
+    for (const redirected of [
+      { server: 'attacker.example', database: 'JTL', user: 'crm', port: 1433 },
+      { server: 'sql.local', database: 'JTL', user: 'crm', port: 1500, password: '' },
+      { server: 'sql.local,1444', database: 'JTL', user: 'crm' },
+      { server: 'sql.local\\OTHER', database: 'JTL', user: 'crm' },
+    ]) {
+      await expect(port.testConnection({ workspaceId: WORKSPACE_A_ID, settings: redirected })).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'),
+      });
+    }
+    expect(connectCalls).toEqual([]);
+
+    // Same endpoint (host case, other database/user) keeps using the stored password.
+    await expect(port.testConnection({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'SQL.local', database: 'JTL2', user: 'crm-readonly', port: 1433 },
+    })).resolves.toMatchObject({ success: true });
+    // An explicit password may target any host (admin-only ad-hoc test).
+    await expect(port.testConnection({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'other.example', database: 'JTL', user: 'crm', password: 'typed' },
+    })).resolves.toMatchObject({ success: true });
+    expect(connectCalls).toEqual([
+      expect.objectContaining({ server: 'SQL.local', port: 1433, password: 'secret' }),
+      expect.objectContaining({ server: 'other.example', password: 'typed' }),
+    ]);
+  });
+
   test('postgres JTL order port resolves workspace customer and executes parameterized JTL order SQL', async () => {
     const { db, rows } = makeWorkflowExecutionDb({
       customers: [{
@@ -10635,6 +11616,68 @@ describe('server edition foundation', () => {
     });
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['agent-1', 'ai.agent', 'ok', 'default', 'queued_ai_agent:1'],
+    ]);
+  });
+
+  // F-A9-12: email.create_draft created a reply draft without recipient and
+  // without reply parent, so create_draft -> send_draft never sent anything.
+  test('postgres email.create_draft addresses the reply so email.send_draft can send it', async () => {
+    const now = new Date('2026-07-04T11:02:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 36,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 360,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'draft-1', type: 'registry', data: { nodeType: 'email.create_draft', config: { bodyPrefix: 'Danke', runOnEveryInbound: true } } },
+            { id: 'send-1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'draft-1' },
+            { id: 'edge-2', source: 'draft-1', target: 'send-1' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 23,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 230,
+        account_id: 7,
+        subject: 'Eingang',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        raw_headers: 'From: customer@example.com\r\nReply-To: Kunde <antwort@example.com>\r\nSubject: Eingang',
+        snippet: 'Bitte antworten',
+        body_text: 'Bitte antworten.',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      accounts: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 7 }],
+      folders: [{ id: 70, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 36, messageId: 23, triggerName: 'inbound', context: {} });
+
+    const draft = rows.messages.find((message) => message.folder_kind === 'draft');
+    expect(draft).toMatchObject({
+      to_json: { value: [{ address: 'antwort@example.com' }] },
+      reply_parent_message_id: 23,
+      scheduled_send_at: now,
+    });
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['email.create_draft', 'ok', null],
+      ['email.send_draft', 'ok', 'send_draft_queued_auto'],
     ]);
   });
 
@@ -13756,6 +14799,81 @@ describe('server edition foundation', () => {
     expect(syncInfo.get('scheduled_send_failures:104')).toBe('0');
   });
 
+  // F-A5-02: Ein SMTP-Fehler mit unklarem Zustellstatus (nach DATA) wurde bis zu 5-mal automatisch erneut gesendet.
+  test('scheduled-send job port gives up without retry when the delivery outcome is ambiguous', async () => {
+    const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
+    const baseDraft = {
+      accountId: 7,
+      subject: 'Rechnung',
+      bodyText: 'Hallo',
+      bodyHtml: null,
+      ccJson: null,
+      bccJson: null,
+      draftAttachmentPathsJson: null,
+      replyParentMessageId: null,
+      claimedSendAt,
+    };
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          if (input.values.draftMessageId === 301) {
+            return { ok: false as const, error: 'SMTP-Zeitueberschreitung', deliveryAmbiguous: true };
+          }
+          return { ok: false as const, error: '451 4.3.0 try again later' };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [
+            { ...baseDraft, id: 301, toJson: { value: [{ address: 'unclear@example.com' }] } },
+            { ...baseDraft, id: 302, toJson: { value: [{ address: 'rejected@example.com' }] } },
+          ];
+        },
+        async finalizeSentDraft(input) {
+          storeCalls.push(['finalizeSentDraft', input]);
+        },
+        async releaseClaimedDraft(input) {
+          storeCalls.push(['releaseClaimedDraft', input]);
+        },
+        async restoreClaimedDraft(input) {
+          storeCalls.push(['restoreClaimedDraft', input]);
+        },
+        async giveUpDraft(input) {
+          storeCalls.push(['giveUpDraft', input]);
+        },
+        async recordFailedAttempt(input) {
+          storeCalls.push(['recordFailedAttempt', input]);
+          return { failures: 1, gaveUp: false };
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      accountId: 7,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([
+      ['giveUpDraft', {
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 301,
+        error: expect.stringMatching(/Zustellstatus unklar.*Gesendet-Ordner.*SMTP-Zeitueberschreitung/),
+      }],
+      // An explicit SMTP reply to the message keeps the normal bounded retry.
+      ['recordFailedAttempt', {
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 302,
+        error: '451 4.3.0 try again later',
+        claimedSendAt,
+        maxFailures: 5,
+      }],
+    ]);
+  });
+
   test('scheduled-send job port forwards the persisted per-message tracking override', async () => {
     const composeCalls: Array<Record<string, unknown>> = [];
     const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
@@ -14122,10 +15240,11 @@ describe('server edition foundation', () => {
     }
 
     expect(composeCalls).toEqual([]);
-    // Two transactions now: the due-draft scan + the bounded-retry
-    // recordFailedAttempt that backs the denied draft off (so it can't starve
-    // the global ticker) and gives up after MAX_SCHEDULED_SEND_FAILURES.
-    expect(db.transactionCount).toBe(2);
+    // Three transactions now: the stale-claim sweep (F-A8-03; finds none here),
+    // the due-draft scan + the bounded-retry recordFailedAttempt that backs the
+    // denied draft off (so it can't starve the global ticker) and gives up after
+    // MAX_SCHEDULED_SEND_FAILURES.
+    expect(db.transactionCount).toBe(3);
     expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
     expect(String(warnings[0]?.[0] ?? '')).toContain('attempt 1');
   });
@@ -14401,6 +15520,8 @@ describe('server edition foundation', () => {
       // Eigenes Fenster: die Abschlussmarker muessen das Graphile-Retry-Fenster
       // ueberleben, danach sind sie nur noch Ballast in sync_info.
       terminalMarkersBefore: new Date('2026-05-27T12:00:00.000Z'),
+      // Webhook-Dedup-Marker gelten nur 5 Minuten; nach einer Stunde weg (F-A3b-06).
+      webhookDedupMarkersBefore: new Date('2026-06-03T11:00:00.000Z'),
       limit: 2,
     });
     expect(buildLockCleanupPlan({
@@ -14935,6 +16056,20 @@ describe('server edition foundation', () => {
           ]],
           ['last_updated', '<', new Date('2026-05-27T12:00:00.000Z')],
         ],
+      },
+      {
+        // F-A3b-06: abgelaufene Webhook-Dedup-Marker; im Fixture gibt es keine,
+        // also folgt kein DELETE.
+        kind: 'select',
+        table: 'sync_info',
+        selected: 'key',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['last_updated', '<', new Date('2026-06-03T11:00:00.000Z')],
+          ['key', 'like', 'webhook\\_dedup:%'],
+        ],
+        orderBy: ['last_updated', 'asc'],
+        limit: 2,
       },
       {
         kind: 'select',
@@ -15683,9 +16818,17 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(50);
-    expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    // F-A10-06 (E38): each domain now runs in its own transaction, so the
+    // table commands are framed by BEGIN/COMMIT per domain.
+    const transactionControl = new Set(['BEGIN', 'COMMIT']);
+    expect(client.queries.map((query) => query.sql).filter((sql) => transactionControl.has(sql)))
+      .toEqual(['BEGIN', 'COMMIT', 'BEGIN', 'COMMIT', 'BEGIN', 'COMMIT']);
+    expect(client.queries[0].sql).toBe('BEGIN');
+    expect(client.queries.at(-1)?.sql).toBe('COMMIT');
+    const tableQueries = client.queries.filter((query) => !transactionControl.has(query.sql));
+    expect(tableQueries).toHaveLength(50);
+    expect(tableQueries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
+    expect(tableQueries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
       ['core_mail', 17],
@@ -16238,6 +17381,25 @@ describe('server edition foundation', () => {
     expect(client.metadataRows.map((row) => row.id)).toEqual(output.appliedIds);
     expect(client.queries.map((query) => query.sql)).toContain('BEGIN');
     expect(client.queries.map((query) => query.sql)).toContain('COMMIT');
+  });
+
+  test.each([
+    ['1', 'fail'], ['garbage', 'fail'], ['true', 'warn'],
+    ['false', 'warn'], ['0', 'warn'], ['', 'warn'],
+    ['172.31.255.2', 'ok'], ['192.0.2.10,2001:db8::10', 'ok'],
+  ])('doctor validates proxy configuration %s', async (trustProxy, status) => {
+    const io = makeCliIo();
+    const exitCode = await runDoctorCli({
+      argv: ['--json'],
+      env: { DATABASE_URL: 'postgres://test/test', TRUST_PROXY: trustProxy },
+      stdout: io.stdout,
+      stderr: io.stderr,
+      createClient: () => makeDoctorPgClient(),
+    });
+    const output = JSON.parse(io.stdoutOutput());
+    expect(output.checks.find((check: { name: string }) => check.name === 'trust_proxy')).toMatchObject({ status });
+    expect(exitCode).toBe(status === 'fail' ? 1 : 0);
+    expect(io.stdoutOutput()).not.toContain('set to 1 behind Caddy');
   });
 
   test('doctor CLI reports migration, queue, lock, database, and backup health without leaking credentials', async () => {
@@ -17373,8 +18535,25 @@ describe('server edition foundation', () => {
 
   test('server auth security route allows non-admin users to enable email MFA for themselves', async () => {
     const enableCalls: Array<{ workspaceId: string; userId: string }> = [];
+    const base = makeServerApiPorts();
     const ports = {
-      ...makeServerApiPorts(),
+      ...base,
+      // Every MFA change needs step-up since F-A1-06: user-b confirms with the own password.
+      auth: {
+        ...base.auth,
+        getUser: async () => ({ id: 'user-b', email: 'user-b@example.com', role: 'user' as const, disabledAt: null }),
+        findUserByEmail: async (email: string) => (email === 'user-b@example.com'
+          ? {
+            id: 'user-b',
+            workspaceId: WORKSPACE_A_ID,
+            email,
+            displayName: 'User B',
+            role: 'user' as const,
+            passwordHash: 'user-b-hash',
+          }
+          : null),
+        verifyPassword: async (password: string, hash: string) => password === 'user-b-password' && hash === 'user-b-hash',
+      },
       loginSecurity: {
         async enableEmailMfa(input: { workspaceId: string; userId: string }) {
           enableCalls.push(input);
@@ -17388,6 +18567,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/auth/users/user-b/mfa/email',
       principal: userPrincipal,
+      body: { currentPassword: 'user-b-password' },
     });
     expect(enabled.status).toBe(200);
     expect((enabled.body as { data: { enabled: boolean; method: string } }).data).toEqual({
@@ -17504,6 +18684,8 @@ describe('server edition foundation', () => {
     expect((spec.body as any).paths['/email/settings/security'].patch.summary).toContain('security');
     expect((spec.body as any).paths['/email/gdpr-export'].get.summary).toContain('GDPR export');
     expect((spec.body as any).paths['/email/gdpr-export'].post).toBeUndefined();
+    // F-A8-05 (E29): Delayed Jobs lassen sich nicht per API anlegen.
+    expect((spec.body as any).paths['/workflow-delayed-jobs'].post).toBeUndefined();
     expect((spec.body as any).paths['/email/messages/{id}/seen'].patch.summary).toContain('seen');
     expect((spec.body as any).paths['/workflow-versions'].post.summary).toContain('workflow version');
     expect((spec.body as any).paths['/pgp/identities'].post.summary).toContain('PGP identity');
@@ -17522,7 +18704,7 @@ describe('server edition foundation', () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const ports = {
       ...makeServerApiPorts({ auditEvents, initialSetupNeeded: true }),
-      initialSetupToken: 'setup-token-secret',
+      initialSetupToken: 'setup-token-secret-0123456789',
     };
     const api = createServerApi(ports);
 
@@ -17553,7 +18735,7 @@ describe('server edition foundation', () => {
         displayName: ' Owner ',
         workspaceName: ' Vertrieb ',
         device: 'browser',
-        initialSetupToken: 'setup-token-secret',
+        initialSetupToken: 'setup-token-secret-0123456789',
       },
     });
     expect(created.status).toBe(201);
@@ -17582,7 +18764,7 @@ describe('server edition foundation', () => {
     const invalid = await api.handle({
       method: 'POST',
       path: '/api/v1/auth/initial-setup',
-      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret' },
+      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret-0123456789' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -17593,7 +18775,7 @@ describe('server edition foundation', () => {
       body: {
         email: 'second@example.com',
         password: 'another-passphrase',
-        initialSetupToken: 'setup-token-secret',
+        initialSetupToken: 'setup-token-secret-0123456789',
       },
     });
     expect(blocked.status).toBe(409);
@@ -23080,7 +24262,8 @@ describe('server edition foundation', () => {
           accountId: 7,
           subject: 'Draft',
           bodyText: 'Hello',
-          toJson: { value: [{ address: 'person@example.com' }] },
+          // F-A5-01: drafts keep delivery addresses (plus tag, local-part case).
+          toJson: { value: [{ address: 'Person+tag@example.com' }, { address: 'person@example.com' }] },
         },
       }],
       ['updateComposeDraft', {
@@ -23090,7 +24273,7 @@ describe('server edition foundation', () => {
           subject: 'Updated',
           bodyText: 'Plain',
           bodyHtml: '<p>Plain</p>',
-          toJson: { value: [{ address: 'to@example.com' }] },
+          toJson: { value: [{ address: 'to+tag@example.com' }] },
           ccJson: { value: [{ address: 'cc@example.com' }] },
           bccJson: { value: [{ address: 'bcc@example.com' }] },
           draftAttachmentPaths: ['/data/a.eml', '/data/b.eml'],
@@ -23252,6 +24435,65 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // F-A5-03: "Spaeter senden" mit PGP-Verschluesselung verschickte die Mail im Klartext.
+  test('scheduled-send route rejects PGP encrypt/sign with a dedicated 400 before scheduling', async () => {
+    const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend(input) {
+          calls.push(input);
+          return { ok: true as const };
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    for (const flags of [{ pgpEncrypt: true }, { pgpSign: true }, { pgpEncrypt: true, pgpSign: true }]) {
+      const rejected = await api.handle({
+        method: 'PATCH',
+        path: '/api/v1/email/messages/44/scheduled-send',
+        body: { sendAt: '2026-06-04T15:00:00.000Z', ...flags },
+        principal,
+      });
+      expect(rejected.status).toBe(400);
+      expect((rejected.body as any).error.code).toBe('email_scheduled_send_pgp_unsupported');
+      expect((rejected.body as any).error.message).toContain('PGP');
+    }
+    expect(calls).toEqual([]);
+    expect(queueCalls).toEqual([]);
+
+    const plain = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: false, pgpSign: false },
+      principal,
+    });
+    expect(plain.status).toBe(200);
+    const invalidFlag = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: 'yes' },
+      principal,
+    });
+    expect(invalidFlag.status).toBe(400);
+    expect((invalidFlag.body as any).error.code).toBe('validation_error');
+    expect(calls).toEqual([{
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      messageId: 44,
+      sendAt: '2026-06-04T15:00:00.000Z',
+    }]);
+  });
+
   test('scheduled-send schedule/retry succeed even when the queue accelerator enqueue fails (R37-5)', async () => {
     const api = createServerApi(makeServerApiPorts({
       emailMessages: {
@@ -23359,6 +24601,36 @@ describe('server edition foundation', () => {
       'email_scheduled_send_claimed',
       'email_scheduled_send_claimed',
     ]);
+  });
+
+  // F-A13A14-06: Ein Entwurf ueber der Anhangsgrenze muss als 413 mit der deutschen Meldung beim Client ankommen.
+  test('compose attachment upload over the per-draft limit returns 413 with the German message', async () => {
+    const api = createServerApi({
+      ...makeServerApiPorts({}),
+      emailComposeAttachments: {
+        async upload() {
+          return {
+            ok: false as const,
+            reason: 'quota_exceeded' as const,
+            error: 'Anhaenge dieses Entwurfs waeren zusammen groesser als 50 MB',
+          };
+        },
+      },
+    });
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] };
+
+    const response = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/44/compose-attachments',
+      body: { filename: 'gross.bin', contentBase64: Buffer.from('x').toString('base64') },
+      principal,
+    });
+
+    expect(response.status).toBe(413);
+    expect((response.body as any).error).toMatchObject({
+      code: 'compose_attachment_quota_exceeded',
+      message: 'Anhaenge dieses Entwurfs waeren zusammen groesser als 50 MB',
+    });
   });
 
   test('server outbound validation persists manual approval marker on success', () => {
@@ -23799,6 +25071,42 @@ describe('server edition foundation', () => {
     expect(events.some((event) => event.type === 'email_account.deleted')).toBe(false);
   });
 
+  // F-D3-05: Die Sync-Route normalisierte das Protokoll anders als Handler und Scheduler ('IMAP' reihte einen sicher scheiternden Job ein).
+  test('server mail account sync route maps the protocol exactly like the sync handler and scheduler', async () => {
+    const queueCalls: Array<{ type: string }> = [];
+    const protocols: Record<number, string> = { 21: 'IMAP', 22: ' imap ', 23: '' };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: {
+        async list() {
+          return { items: [] };
+        },
+        async get(input) {
+          return input.id in protocols ? { ...makeEmailAccountRecord(input.id), protocol: protocols[input.id] } : null;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    for (const id of [21, 22]) {
+      const rejected = await api.handle({ method: 'POST', path: `/api/v1/email/accounts/${id}/sync`, principal });
+      expect(rejected.status).toBe(409);
+      expect((rejected.body as any).error.code).toBe('unsupported_email_account_protocol');
+    }
+    expect(queueCalls).toEqual([]);
+    expect([mailSyncJobTypeForProtocol('IMAP'), mailSyncJobTypeForProtocol(' imap ')]).toEqual([null, null]);
+
+    // The handler treats an empty protocol as imap, so the route does too.
+    const empty = await api.handle({ method: 'POST', path: '/api/v1/email/accounts/23/sync', principal });
+    expect(empty.status).toBe(202);
+    expect((empty.body as any).data.jobType).toBe(mailSyncJobTypeForProtocol(''));
+    expect(queueCalls.map((call) => call.type)).toEqual(['mail.sync.imap']);
+  });
+
   test('server mail account sync route enqueues workspace-scoped mail sync jobs', async () => {
     const queueCalls: unknown[] = [];
     const accountGetCalls: unknown[] = [];
@@ -23973,6 +25281,30 @@ describe('server edition foundation', () => {
 
     await runtime.stop();
     await expect(runtime.promise).resolves.toBeUndefined();
+  });
+
+  // F-D3-02: Mit den Compose-Voreinstellungen (JOB_WORKER_MAIL_ACCOUNT_COUNT=0) lief je Prozess nur ein einziger Mail-Sync.
+  test('die Voreinstellung ohne Kontozahl faehrt die Mail-Obergrenze statt eines einzigen Slots', () => {
+    const config = parseServerJobWorkerConfig({ JOB_WORKER_ENABLED: 'true' });
+    const plan = buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: {
+        mailAccountCount: config.mailAccountCount,
+        mailConcurrency: config.mailConcurrency,
+        aiConcurrency: config.aiConcurrency,
+      },
+    });
+    expect(plan.mailConcurrentJobs).toBe(JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY);
+    // Eine gesetzte Kontozahl begrenzt weiterhin (zwei Slots je Konto) ...
+    expect(buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: { mailAccountCount: 3, mailConcurrency: 50 },
+    }).mailConcurrentJobs).toBe(6);
+    // ... und die Obergrenze bleibt eine.
+    expect(buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: { mailAccountCount: 0, mailConcurrency: 4 },
+    }).mailConcurrentJobs).toBe(4);
   });
 
   test('server mail account sync cooldown: Vollimport haengt nicht am Takt des periodischen Syncs', async () => {
@@ -24202,6 +25534,39 @@ describe('server edition foundation', () => {
     expect((unavailable.body as any).error.code).toBe('job_queue_lock_release_unavailable');
   });
 
+  // F-D3-03: Mit der produktiven Graphile-Queue antwortete "Sync-Sperre loesen" immer 503 "nicht konfiguriert", obwohl die Funktion dort gar nicht existiert.
+  test('server sync-lock route says honestly that the Graphile queue releases orphaned locks itself', async () => {
+    const graphileQueue = await createGraphileQueuePort({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      createUtils: async () => ({
+        async addJob() {
+          throw new Error('not used');
+        },
+        async release() {},
+      }),
+    });
+    const response = await createServerApi(makeServerApiPorts({
+      emailAccounts: {
+        async list() {
+          return { items: [] };
+        },
+        async get() {
+          return makeEmailAccountRecord(7);
+        },
+      },
+      jobQueue: graphileQueue,
+    })).handle({
+      method: 'DELETE',
+      path: '/api/v1/email/accounts/7/sync-lock',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const },
+    });
+
+    expect(response.status).toBe(503);
+    expect((response.body as any).error.code).toBe('job_queue_lock_release_unavailable');
+    expect((response.body as any).error.message).toContain('nicht unterstuetzt');
+    expect((response.body as any).error.message).toContain('4 Stunden');
+  });
+
   test('server vacation auto-reply test route calls workspace-scoped sender and logs success', async () => {
     const senderCalls: unknown[] = [];
     const activityCalls: unknown[] = [];
@@ -24428,7 +25793,8 @@ describe('server edition foundation', () => {
     const imapLines: string[] = [];
     const imapServer = await startLineServer((line, socket) => {
       imapLines.push(line);
-      if (line.startsWith('a001 LOGIN ')) socket.write('a001 OK login completed\r\n');
+      if (line === 'a000 CAPABILITY') socket.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\na000 OK capability completed\r\n');
+      else if (line.startsWith('a001 LOGIN ')) socket.write('a001 OK login completed\r\n');
       else if (line.startsWith('a002 SELECT ')) socket.write('* FLAGS (\\Seen)\r\na002 OK select completed\r\n');
       else if (line.startsWith('a003 LOGOUT')) socket.write('* BYE logout\r\na003 OK logout completed\r\n');
       else socket.write('bad BAD unknown command\r\n');
@@ -24532,6 +25898,7 @@ describe('server edition foundation', () => {
         accessToken: 'oauth-access-token',
       })).resolves.toEqual({ success: true });
 
+      expect(imapLines).toContain('a000 CAPABILITY');
       expect(imapLines).toContain('a001 LOGIN "user@example.com" "secret"');
       expect(imapLines).toContain('a002 SELECT "INBOX"');
       expect(pop3Lines).toContain('USER user@example.com');
@@ -25142,11 +26509,12 @@ describe('server edition foundation', () => {
       user: 'smtp-agent@example.com',
       password: 'smtp-secret',
       envelopeFrom: 'agent@example.com',
-      recipients: ['customer@example.com', 'cc@example.com', 'hidden@example.com'],
+      // F-A5-01: the plus tag is delivery data and must reach SMTP unchanged.
+      recipients: ['customer+shop@example.com', 'cc@example.com', 'hidden@example.com'],
     });
     const rfc822 = (smtpSends[0] as { rfc822: string }).rfc822;
     expect(rfc822).toContain('From: Support <agent@example.com>');
-    expect(rfc822).toContain('To: customer@example.com');
+    expect(rfc822).toContain('To: customer+shop@example.com');
     expect(rfc822).toContain('Cc: cc@example.com');
     expect(rfc822).not.toContain('hidden@example.com');
     expect(rfc822).toContain('Subject: [SCR-ABCDEF] Antwort');
@@ -25188,7 +26556,7 @@ describe('server edition foundation', () => {
         subject: '[SCR-ABCDEF] Antwort',
         bodyText: 'Hallo',
         bodyHtml: '<p>Hallo</p>',
-        toJson: { value: [{ address: 'customer@example.com' }] },
+        toJson: { value: [{ address: 'customer+shop@example.com' }] },
         ccJson: { value: [{ address: 'cc@example.com' }] },
         bccJson: { value: [{ address: 'hidden@example.com' }] },
         ticketCode: 'SCR-ABCDEF',
@@ -25377,7 +26745,13 @@ describe('server edition foundation', () => {
       sign: true,
       passphrase: ' passphrase with spaces ',
     }]);
+    // F-A5-10: the draft keeps the plaintext until SMTP accepted the message;
+    // only then is the prepared armor written back as the sent copy.
     expect(updates[0]).toEqual(['updateDraftForSend', expect.objectContaining({
+      bodyText: 'Secret text',
+      bodyHtml: null,
+    })]);
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
       bodyText: '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----',
       bodyHtml: null,
     })]);
@@ -25414,7 +26788,12 @@ describe('server edition foundation', () => {
       encrypt: true,
       sign: undefined,
     }]);
+    // F-A5-10: the draft keeps the HTML formatting until SMTP accepted the message.
     expect(updates[0]).toEqual(['updateDraftForSend', expect.objectContaining({
+      bodyText: '',
+      bodyHtml: '<p>Secret <strong>text</strong><br>Line&nbsp;2 &amp; more</p>',
+    })]);
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
       bodyText: '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----',
       bodyHtml: null,
     })]);
@@ -25601,6 +26980,485 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       messageId: 46,
     }]);
+  });
+
+  // F-A5-10: Der PGP-Versand schrieb den Ciphertext vor Pruefung und SMTP in den Entwurf; bei Fehler oder Hold war der Klartext weg.
+  test('server compose sender keeps the plaintext draft until a PGP send is accepted by SMTP', async () => {
+    const armor = '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----';
+    const makeSender = (options: {
+      smtpSend: (input: { rfc822: string }) => Promise<void>;
+      review?: (input: unknown) => Promise<{ allowed: true } | { allowed: false; error: string }>;
+    }) => {
+      const ops: unknown[] = [];
+      let locked = false;
+      const syncInfo = new Map<string, string | null>();
+      const sender = createEmailComposeSenderPort({
+        now: () => new Date('2026-07-03T08:05:00.000Z'),
+        smtpSend: async (input) => {
+          ops.push(['smtp', input.rfc822]);
+          await options.smtpSend(input);
+        },
+        ...(options.review ? { outboundReview: { review: options.review } } : {}),
+        pgpMessages: {
+          async prepareOutboundBody() {
+            return { ok: true, bodyText: armor };
+          },
+          async prepareOutboundAttachments() {
+            throw new Error('no attachments in this test');
+          },
+        },
+        store: {
+          async getDraft(input) {
+            return input.messageId === 48
+              ? {
+                id: 48,
+                accountId: 7,
+                uid: -48,
+                folderKind: 'draft',
+                subject: 'Vertraulich',
+                bodyText: 'Geheimer Text',
+                bodyHtml: '<p>Geheimer <b>Text</b></p>',
+                messageIdHeader: null,
+                inReplyToHeader: null,
+                referencesHeader: null,
+                ticketCode: 'SCR-PGP',
+                threadId: 'th-pgp',
+                draftAttachmentPathsJson: null,
+                outboundHold: false,
+                outboundBlockReason: null,
+              }
+              : null;
+          },
+          async getAccount(input) {
+            return input.accountId === 7
+              ? {
+                id: 7,
+                sourceSqliteId: 70,
+                displayName: 'Support',
+                emailAddress: 'agent@example.com',
+                imapHost: 'imap.example.com',
+                imapUsername: 'agent@example.com',
+                smtpHost: 'smtp.example.com',
+                smtpPort: 587,
+                smtpTls: true,
+                smtpUsername: 'smtp-agent@example.com',
+                smtpUseImapAuth: false,
+                oauthProvider: null,
+                protocol: 'imap',
+                requestReadReceipt: false,
+              }
+              : null;
+          },
+          async getParentMessage() {
+            return null;
+          },
+          async getOrCreateThreadForTicket() {
+            return 'th-pgp';
+          },
+          async readSecret(input) {
+            return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+          },
+          async getSyncInfo(input) {
+            return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+          },
+          async setSyncInfo(input) {
+            for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+          },
+          async deleteSyncInfo(input) {
+            for (const key of input.keys) syncInfo.delete(key);
+          },
+          async claimSmtpOutbox() {
+            return 'claimed';
+          },
+          async tryAcquireSendingLock() {
+            if (locked) return false;
+            locked = true;
+            return true;
+          },
+          async releaseSendingLock() {
+            locked = false;
+          },
+          async updateDraftForSend(input) {
+            ops.push(['updateDraftForSend', { bodyText: input.bodyText, bodyHtml: input.bodyHtml }]);
+          },
+          async markDraftAsSent() {
+            ops.push(['markDraftAsSent']);
+          },
+          async markMessageDone() {},
+        },
+      });
+      return { sender, ops };
+    };
+    const send = (sender: ReturnType<typeof makeSender>['sender']) => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Vertraulich',
+        bodyText: 'Geheimer Text',
+        bodyHtml: '<p>Geheimer <b>Text</b></p>',
+        to: 'kunde@example.com',
+        pgpEncrypt: true,
+      },
+    });
+    const plaintextDraft = ['updateDraftForSend', {
+      bodyText: 'Geheimer Text',
+      bodyHtml: '<p>Geheimer <b>Text</b></p>',
+    }];
+
+    const smtpFailure = makeSender({
+      smtpSend: async () => {
+        throw new SmtpPreDataSendError('535 5.7.8 Authentication failed');
+      },
+    });
+    await expect(send(smtpFailure.sender)).resolves.toMatchObject({ ok: false });
+    expect(smtpFailure.ops.filter((op) => (op as unknown[])[0] === 'updateDraftForSend')).toEqual([plaintextDraft]);
+
+    const reviews: unknown[] = [];
+    const held = makeSender({
+      smtpSend: async () => {
+        throw new Error('SMTP must not run while the outbound review holds the draft');
+      },
+      review: async (input) => {
+        reviews.push(input);
+        return { allowed: false, error: 'Ausgangspruefung wird serverseitig ausgefuehrt' };
+      },
+    });
+    await expect(send(held.sender)).resolves.toMatchObject({ ok: false });
+    expect(reviews).toEqual([expect.objectContaining({
+      bodyText: 'Geheimer Text',
+      bodyHtml: '<p>Geheimer <b>Text</b></p>',
+    })]);
+    expect(held.ops).toEqual([plaintextDraft]);
+
+    const accepted = makeSender({ smtpSend: async () => undefined });
+    await expect(send(accepted.sender)).resolves.toMatchObject({ ok: true });
+    expect(accepted.ops.map((op) => (op as unknown[])[0])).toEqual([
+      'updateDraftForSend',
+      'smtp',
+      'updateDraftForSend',
+      'markDraftAsSent',
+    ]);
+    expect(accepted.ops[0]).toEqual(plaintextDraft);
+    expect(String((accepted.ops[1] as unknown[])[1])).toContain('-----BEGIN PGP MESSAGE-----');
+    expect(String((accepted.ops[1] as unknown[])[1])).not.toContain('Geheimer');
+    // The stored sent copy stays encrypted, as before.
+    expect(accepted.ops[2]).toEqual(['updateDraftForSend', { bodyText: armor, bodyHtml: null }]);
+  });
+
+  // F-A5-01: Compose kuerzte '+tag' und schrieb den Local-Part klein; ungueltige Eintraege neben gueltigen fielen still weg.
+  test('server compose sender keeps delivery addresses intact and rejects invalid recipient tokens', async () => {
+    const smtpSends: Array<{ recipients: readonly string[]; rfc822: string }> = [];
+    const updates: unknown[] = [];
+    const pgpRecipients: unknown[] = [];
+    let locked = false;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: async (input) => {
+        smtpSends.push(input);
+      },
+      pgpMessages: {
+        async prepareOutboundBody(input) {
+          pgpRecipients.push(input.recipientEmails);
+          return { ok: true, bodyText: input.bodyText };
+        },
+        async prepareOutboundAttachments() {
+          throw new Error('no attachments in this test');
+        },
+      },
+      store: {
+        async getDraft(input) {
+          return input.messageId === 47
+            ? {
+              id: 47,
+              accountId: 7,
+              uid: -47,
+              folderKind: 'draft',
+              subject: 'Rechnung',
+              bodyText: 'Anbei',
+              bodyHtml: null,
+              messageIdHeader: null,
+              inReplyToHeader: null,
+              referencesHeader: null,
+              ticketCode: 'SCR-PLUS01',
+              threadId: 'th-plus',
+              draftAttachmentPathsJson: null,
+              outboundHold: false,
+              outboundBlockReason: null,
+            }
+            : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7
+            ? {
+              id: 7,
+              sourceSqliteId: 70,
+              displayName: 'Support',
+              emailAddress: 'agent@example.com',
+              imapHost: 'imap.example.com',
+              imapUsername: 'agent@example.com',
+              smtpHost: 'smtp.example.com',
+              smtpPort: 587,
+              smtpTls: true,
+              smtpUsername: 'smtp-agent@example.com',
+              smtpUseImapAuth: false,
+              oauthProvider: null,
+              protocol: 'imap',
+              requestReadReceipt: false,
+            }
+            : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-plus';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          updates.push(['setSyncInfo', input]);
+        },
+        async deleteSyncInfo(input) {
+          updates.push(['deleteSyncInfo', input]);
+        },
+        async claimSmtpOutbox() {
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend(input) {
+          updates.push(['updateDraftForSend', input]);
+        },
+        async markDraftAsSent(input) {
+          updates.push(['markDraftAsSent', input]);
+        },
+        async markMessageDone(input) {
+          updates.push(['markMessageDone', input]);
+        },
+      },
+    });
+    const send = (recipients: { to: string; cc?: string; bcc?: string; pgpSign?: boolean }) => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 47,
+        subject: 'Rechnung',
+        bodyText: 'Anbei',
+        ...recipients,
+      },
+    });
+
+    await expect(send({
+      to: 'Kunde <Customer+Shop@Example.com>, customer+shop@example.com',
+      cc: 'Buchhaltung <Rechnung+2026@Firma.DE>; customer@example.com',
+      bcc: 'CUSTOMER+SHOP@example.com',
+    })).resolves.toMatchObject({ ok: true, messageId: 47 });
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpSends[0]!.recipients).toEqual([
+      'Customer+Shop@example.com',
+      'Rechnung+2026@firma.de',
+      'customer@example.com',
+    ]);
+    expect(smtpSends[0]!.rfc822).toContain('To: Customer+Shop@example.com');
+    expect(smtpSends[0]!.rfc822).toContain('Cc: Rechnung+2026@firma.de, customer@example.com');
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
+      toJson: { value: [{ address: 'Customer+Shop@example.com' }] },
+      ccJson: { value: [{ address: 'Rechnung+2026@firma.de' }, { address: 'customer@example.com' }] },
+      bccJson: { value: [{ address: 'CUSTOMER+SHOP@example.com' }] },
+    })]);
+
+    // PGP key lookup keeps its existing match key (lowercase, without plus tag).
+    smtpSends.length = 0;
+    await expect(send({ to: 'Kunde <Customer+Shop@Example.com>', pgpSign: true }))
+      .resolves.toMatchObject({ ok: true });
+    expect(pgpRecipients).toEqual([['customer@example.com']]);
+    expect(smtpSends[0]!.recipients).toEqual(['Customer+Shop@example.com']);
+
+    // A comma inside an unquoted display name is not an invalid recipient.
+    smtpSends.length = 0;
+    await expect(send({ to: 'Mueller, Hans <hans@firma.de>' })).resolves.toMatchObject({ ok: true });
+    expect(smtpSends[0]!.recipients).toEqual(['hans@firma.de']);
+
+    // RFC 5322 angle-addr without display name is a valid recipient, not an invalid token.
+    smtpSends.length = 0;
+    await expect(send({ to: '<Kunde+Tag@Firma.de>' })).resolves.toMatchObject({ ok: true });
+    expect(smtpSends[0]!.recipients).toEqual(['Kunde+Tag@firma.de']);
+
+    smtpSends.length = 0;
+    updates.length = 0;
+    await expect(send({ to: 'kunde@firma.de, chef@firma' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('chef@firma'),
+    });
+    await expect(send({ to: 'kunde@firma.de', cc: 'Hans, buchhaltung@firma.de' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('Hans'),
+    });
+    await expect(send({ to: 'kunde@firma.de', bcc: 'Chef <chef@firma>' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('chef@firma'),
+    });
+    expect(smtpSends).toEqual([]);
+    expect(updates).toEqual([]);
+  });
+
+  // F-A5-02: Eine eindeutige 4xx/5xx-Antwort auf die Nachricht galt als unklarer Zustellstatus; unklar ist nur eine fehlende Antwort nach DATA.
+  test('server compose sender flags only an unanswered message body as ambiguous delivery', async () => {
+    let finalReply: string | null = '554 5.7.1 rejected by policy\r\n';
+    let inData = false;
+    const smtpServer = await startLineServer((line, socket) => {
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          if (finalReply) socket.write(finalReply);
+        }
+        return;
+      }
+      if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n');
+      else if (line.startsWith('AUTH PLAIN ')) socket.write('235 2.7.0 Authentication successful\r\n');
+      else if (line.startsWith('MAIL FROM:')) socket.write('250 sender ok\r\n');
+      else if (line.startsWith('RCPT TO:')) socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        inData = true;
+        socket.write('354 end with dot\r\n');
+      } else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else socket.write('500 unknown command\r\n');
+    }, '220 SMTP ready\r\n');
+    const syncInfo = new Map<string, string | null>();
+    let locked = false;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: (input) => sendSmtpMessage({
+        ...input,
+        host: '127.0.0.1',
+        port: smtpServer.port,
+        tls: false,
+        timeoutMs: 300,
+      }),
+      store: {
+        async getDraft(input) {
+          return input.messageId === 49
+            ? {
+              id: 49,
+              accountId: 7,
+              uid: -49,
+              folderKind: 'draft',
+              subject: 'Angebot',
+              bodyText: 'Anbei',
+              bodyHtml: null,
+              messageIdHeader: null,
+              inReplyToHeader: null,
+              referencesHeader: null,
+              ticketCode: 'SCR-DATA01',
+              threadId: 'th-data',
+              draftAttachmentPathsJson: null,
+              outboundHold: false,
+              outboundBlockReason: null,
+            }
+            : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7
+            ? {
+              id: 7,
+              sourceSqliteId: 70,
+              displayName: 'Support',
+              emailAddress: 'agent@example.com',
+              imapHost: 'imap.example.com',
+              imapUsername: 'agent@example.com',
+              smtpHost: 'smtp.example.com',
+              smtpPort: 587,
+              smtpTls: false,
+              smtpUsername: 'agent@example.com',
+              smtpUseImapAuth: false,
+              oauthProvider: null,
+              protocol: 'imap',
+              requestReadReceipt: false,
+            }
+            : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-data';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        },
+        async setSyncInfo(input) {
+          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          for (const key of input.keys) syncInfo.delete(key);
+        },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          if (syncInfo.get(key)) return 'outbox';
+          syncInfo.set(key, 'outbox');
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend() {},
+        async markDraftAsSent() {},
+        async markMessageDone() {},
+      },
+    });
+    const send = () => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 49,
+        subject: 'Angebot',
+        bodyText: 'Anbei',
+        to: 'kunde@example.com',
+      },
+    });
+
+    try {
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.stringContaining('554 5.7.1 rejected by policy'),
+      });
+      finalReply = '451 4.3.0 try again later\r\n';
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.stringContaining('451 4.3.0 try again later'),
+      });
+      // The server stays silent after the terminating dot: accepted or not is unknown.
+      finalReply = null;
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.any(String),
+        deliveryAmbiguous: true,
+      });
+    } finally {
+      await smtpServer.close();
+    }
   });
 
   test('server compose sender clears sent-copy failure after successful IMAP APPEND', async () => {
@@ -26275,6 +28133,7 @@ describe('server edition foundation', () => {
           },
           readReceipt: true,
           source: 'server_read_receipt_outbound_review',
+          readReceiptRound: expect.stringMatching(/^[0-9a-f-]{36}$/),
         },
       },
       {
@@ -26299,9 +28158,13 @@ describe('server edition foundation', () => {
           },
           readReceipt: true,
           source: 'server_read_receipt_outbound_review',
+          readReceiptRound: expect.stringMatching(/^[0-9a-f-]{36}$/),
         },
       },
     ]);
+    // F-A5-11 (E24): alle Laeufe eines Klicks gehoeren zu einer Pruefrunde.
+    const rounds = rows.jobs.map((job) => (job.payload as any).context.readReceiptRound);
+    expect(new Set(rounds).size).toBe(1);
   });
 
   test('server read receipt responder refreshes OAuth tokens for SMTP MDN responses', async () => {
@@ -30189,6 +32052,166 @@ describe('server edition foundation', () => {
       ].sort());
   });
 
+  // F-D2-02: Manuelle Zuweisung sowie Tag/Kategorie per REST schickten email_acl.changed ohne reason 'visibility_filter' und setzten so bei jedem Betroffenen Sitzung und Mail-Oberflaeche zurueck.
+  test('manual assignment and tag mutations mark their ACL fan-out as visibility-only', async () => {
+    // Zuweisung, Tag und Kategorie aendern nur, WELCHE Nachrichten ein
+    // gefilterter Nutzer sieht — keine Rolle, kein Binding, keine Kontenliste.
+    // Genau wie beim Workflow- und KI-Pfad muss das Ereignis das sagen, sonst
+    // erneuert jeder Betroffene die Sitzung und verliert Auswahl und Filter.
+    const events: ServerEvent[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessages: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async assign() {
+            return {
+              ok: true as const,
+              message: { ...makeEmailMessageRecord(11), assignedToUserId: USER_A_ID },
+              previousAssignedToUserId: null,
+            };
+          },
+        },
+        emailMessageTags: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create(input) {
+            return {
+              ok: true as const,
+              tag: {
+                id: 5,
+                sourceSqliteId: 5,
+                messageSourceSqliteId: input.values.messageId ?? 11,
+                messageId: input.values.messageId ?? 11,
+                tag: input.values.tag ?? 'intern',
+                createdAt: '2026-06-01T12:00:00.000Z',
+                updatedAt: '2026-06-02T12:00:00.000Z',
+              },
+            };
+          },
+          async delete() {
+            return null;
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(_workspaceId: string, userId: string) {
+          return [userId];
+        },
+        async resolveConstraintSubjectUserIds() {
+          return ['filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const assigned = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/11/assignment',
+      body: { teamMemberId: 'agent-2' },
+      principal: admin,
+    });
+    const tagged = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: { messageId: 11, tag: 'intern' },
+      principal: admin,
+    });
+
+    expect(assigned.status).toBe(200);
+    expect(tagged.status).toBe(201);
+    const acl = events.filter((event) => event.type === 'email_acl.changed');
+    expect(acl.map((event) => event.entityId).sort()).toEqual([USER_A_ID, 'filtered-user', 'filtered-user'].sort());
+    for (const event of acl) {
+      expect(event.payload).toEqual({ targetUserId: event.entityId, state: 'changed', reason: 'visibility_filter' });
+      expect(event.actorUserId).toBe(USER_A_ID);
+    }
+  });
+
+  // F-A9-01 (E30): Die API speicherte jeden triggerName; Workflows mit Zeitplan
+  // oder CRM-Ereignis waren aktiv, liefen auf dem Server aber nie.
+  test('workflow API rejects triggers the server never fires but keeps such workflows readable', async () => {
+    const createCalls: unknown[] = [];
+    const updateCalls: unknown[] = [];
+    const stored = { ...makeWorkflowRecord(41), triggerName: 'schedule', cronExpr: '0 8 * * *', enabled: false };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 41 ? stored : null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(42), ...input.values } };
+        },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow: { ...stored, ...input.values } };
+        },
+      },
+    }));
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: { name: 'Taeglich', triggerName: 'schedule', cronExpr: '0 8 * * *', definition: { version: 1, rules: [] } },
+      principal: admin,
+    });
+    expect(created.status).toBe(400);
+    expect((created.body as any).error.code).toBe('unsupported_trigger');
+    expect(createCalls).toEqual([]);
+
+    const switched = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { triggerName: 'crm.deal_stage_changed' },
+      principal: admin,
+    });
+    expect(switched.status).toBe(400);
+    const enabled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { enabled: true },
+      principal: admin,
+    });
+    expect(enabled.status).toBe(400);
+    expect(updateCalls).toEqual([]);
+
+    // Lesen, Umbenennen und Deaktivieren eines Bestands-Workflows bleiben moeglich.
+    const read = await api.handle({ method: 'GET', path: '/api/v1/workflows/41', principal: admin });
+    expect(read.status).toBe(200);
+    expect((read.body as any).data.triggerName).toBe('schedule');
+    const renamed = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { name: 'Alt (Desktop)', enabled: false },
+      principal: admin,
+    });
+    expect(renamed.status).toBe(200);
+
+    const inbound = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: { name: 'Eingang', triggerName: 'inbound', definition: { version: 1, rules: [] } },
+      principal: admin,
+    });
+    expect(inbound.status).toBe(201);
+  });
+
   test('an active chain-stopping workflow requires workflows.manage', async () => {
     // logic.set_variable (email.is_spam=true) + logic.stop_after_spam setzt
     // inboundChainStop und ueberspringt damit ALLE nachrangigen Inbound-
@@ -30370,6 +32393,164 @@ describe('server edition foundation', () => {
       principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
     });
     expect(managed.status).toBe(201);
+  });
+
+  // C-A20: Das Seiteneffekt-Gate pruefte nur den NEUEN Zustand — ein Editor ohne
+  // workflows.manage konnte einen aktiven Seiteneffekt-/Kettenabbruch-Workflow
+  // per enabled:false stilllegen oder durch einen harmlosen Graphen ersetzen.
+  test('an active side-effect workflow cannot be disabled or defused without workflows.manage', async () => {
+    const updateCalls: any[] = [];
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const chainStopGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+        { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'var-1' },
+        { id: 'e2', source: 'var-1', target: 'stop-1' },
+      ],
+    };
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    const records = new Map<number, WorkflowRecord>([
+      // Aktiv mit Seiteneffekt, aktiv mit Kettenabbruch, deaktivierter Entwurf.
+      [23, { ...makeWorkflowRecord(23), enabled: true, graph: sideEffectGraph }],
+      [24, { ...makeWorkflowRecord(24), triggerName: 'inbound', enabled: true, graph: chainStopGraph }],
+      [25, { ...makeWorkflowRecord(25), enabled: false, graph: sideEffectGraph }],
+    ]);
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [...records.values()], nextCursor: null }; },
+        async get(input) { return records.get(input.id) ?? null; },
+        async create() { throw new Error('nicht verwendet'); },
+        async update(input) {
+          updateCalls.push(input);
+          const stored = records.get(input.id);
+          return stored ? { ok: true as const, workflow: { ...stored, ...input.values } } : null;
+        },
+        async delete() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+    const patch = (id: number, body: Record<string, unknown>, principal: typeof editor = editor) => api.handle({
+      method: 'PATCH',
+      path: `/api/v1/workflows/${id}`,
+      body,
+      principal,
+    });
+
+    // Stilllegen, Entschaerfen und jede andere Ausfuehrungsaenderung am AKTIVEN
+    // Seiteneffekt-Workflow verlangen workflows.manage — wie das Aktivieren.
+    for (const body of [
+      { enabled: false },
+      { graph: harmlessGraph },
+      { graph: null },
+      { enabled: false, graph: harmlessGraph, name: 'Aus' },
+      { graph: harmlessGraph, triggerName: 'inbound' },
+      { graph: harmlessGraph, executionMode: 'graph' },
+      { graph: harmlessGraph, accountId: null },
+      { graph: harmlessGraph, cronExpr: null, scheduleAccountId: null },
+    ]) {
+      const denied = await patch(23, body);
+      expect([body, denied.status]).toEqual([body, 403]);
+      expect((denied.body as any).error).toMatchObject({
+        code: 'forbidden',
+        message: 'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+      });
+    }
+    // Ein aktiver Kettenabbruch ist genauso geschuetzt.
+    expect((await patch(24, { enabled: false })).status).toBe(403);
+    expect((await patch(24, { graph: harmlessGraph })).status).toBe(403);
+    // Loeschen war schon immer manage-pflichtig.
+    const deleted = await api.handle({ method: 'DELETE', path: '/api/v1/workflows/23', principal: editor });
+    expect(deleted.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Reine Metadaten bleiben mit workflows.edit aenderbar …
+    const renamed = await patch(23, { name: 'Neuer Name', priority: 100, definition: { version: 1, rules: [] } });
+    expect(renamed.status).toBe(200);
+    // … ebenso ein deaktivierter Entwurf, auch mit Seiteneffekt-Knoten.
+    expect((await patch(25, { graph: harmlessGraph })).status).toBe(200);
+    expect((await patch(25, { graph: sideEffectGraph, enabled: false })).status).toBe(200);
+    expect(updateCalls.map((call) => call.id)).toEqual([23, 25, 25]);
+
+    // Mit workflows.manage ist alles erlaubt.
+    const manager = { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] };
+    expect((await patch(23, { enabled: false }, manager)).status).toBe(200);
+    expect((await patch(23, { graph: harmlessGraph }, manager)).status).toBe(200);
+    expect((await patch(24, { enabled: false }, manager)).status).toBe(200);
+    expect(updateCalls).toHaveLength(6);
+  });
+
+  // C-A20: Das Gate auf dem gespeicherten Zustand haelt nur, wenn der Write an
+  // genau diesen (ungeschuetzten) Zustand gebunden ist — sonst deaktiviert ein
+  // veralteter Editor-Patch einen inzwischen scharf geschalteten Workflow.
+  test('the stored-state gate binds the unprotected pre-state into the write', async () => {
+    const updateCalls: any[] = [];
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const records = new Map<number, WorkflowRecord>([
+      // Deaktivierter Entwurf mit Seiteneffekt und aktiver harmloser Workflow.
+      [31, { ...makeWorkflowRecord(31), enabled: false, graph: sideEffectGraph }],
+      [32, { ...makeWorkflowRecord(32), enabled: true, graph: harmlessGraph }],
+    ]);
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [...records.values()], nextCursor: null }; },
+        async get(input) { return records.get(input.id) ?? null; },
+        async update(input) {
+          updateCalls.push(input);
+          // Ein Admin hat den Workflow zwischen Read und Write scharf geschaltet.
+          return { ok: false as const, code: 'workflow_state_conflict' as const };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const disableDraft = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/31',
+      body: { enabled: false, graph: harmlessGraph },
+      principal: editor,
+    });
+    const replaceHarmless = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/32',
+      body: { graph: { ...harmlessGraph, edges: [] } },
+      principal: editor,
+    });
+
+    expect(updateCalls).toHaveLength(2);
+    // Deaktiviert gelesen: der Write gilt nur, solange er deaktiviert ist.
+    expect(updateCalls[0].expected).toMatchObject({ enabled: false });
+    // Aktiv, aber harmlos gelesen: der Write gilt nur fuer genau diesen Graphen.
+    expect(updateCalls[1].expected).toMatchObject({ enabled: true, graph: harmlessGraph });
+    expect(disableDraft.status).toBe(409);
+    expect(replaceHarmless.status).toBe(409);
   });
 
   test('team member upsert reports an unknown linked user as a client error', async () => {
@@ -34509,6 +36690,44 @@ describe('server edition foundation', () => {
     expect(unavailable.status).toBe(503);
   });
 
+  // C-A36: Die KI-Umformung lud den Kunden zu customerId auch ohne crm.read und
+  // schickte Name und E-Mail an den KI-Anbieter (bzw. verriet, ob es ihn gibt).
+  test('server AI text transform ignores customerId without crm.read', async () => {
+    const calls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      aiTextTransform: {
+        async transformText(input) {
+          calls.push(input);
+          return { success: true, text: 'Umformuliert' };
+        },
+      },
+    }));
+    const transform = (principal: { role: 'user' | 'admin'; capabilities?: string[] }) => api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: { promptId: 22, text: 'Hallo', customerId: 7 },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, ...principal },
+    });
+    const withoutCustomer = { workspaceId: WORKSPACE_A_ID, actorUserId: USER_A_ID, promptId: 22, text: 'Hallo' };
+
+    // Ohne CRM-Recht: umformulieren geht weiter, der Kunde wird nie geladen.
+    for (const capabilities of [[], ['workflows.manage'], ['settings.manage']]) {
+      const response = await transform({ role: 'user', capabilities });
+      expect(response.status).toBe(200);
+      expect((response.body as any).data).toEqual({ success: true, text: 'Umformuliert' });
+    }
+    expect(calls).toEqual([withoutCustomer, withoutCustomer, withoutCustomer]);
+
+    // Mit crm.read (oder als Admin) werden die Kunden-Platzhalter wie bisher gefuellt.
+    calls.length = 0;
+    expect((await transform({ role: 'user', capabilities: ['crm.read'] })).status).toBe(200);
+    expect((await transform({ role: 'admin' })).status).toBe(200);
+    expect(calls).toEqual([
+      { ...withoutCustomer, customerId: 7 },
+      { ...withoutCustomer, customerId: 7 },
+    ]);
+  });
+
   test('server workflow graph compile route returns legacy-compatible compile results', async () => {
     const api = createServerApi(makeServerApiPorts());
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
@@ -34577,6 +36796,43 @@ describe('server edition foundation', () => {
       body: graph,
     });
     expect(unauthorized.status).toBe(401);
+  });
+
+  // C-A82: 20 wieder zusammenlaufende Bedingungen (rund 8 KB) liessen die Compile-Route 2^20 Regeln erzeugen und den Event-Loop fuer alle Mandanten sekundenlang blockieren.
+  test('server workflow graph compile route rejects a path explosion like other invalid graphs', async () => {
+    const api = createServerApi(makeServerApiPorts());
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+    const nodes: Array<Record<string, unknown>> = [{ id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } }];
+    const edges: Array<Record<string, unknown>> = [{ id: 'edge-t', source: 'trigger-1', target: 'c0' }];
+    for (let i = 0; i < 20; i++) {
+      const next = i + 1 < 20 ? `c${i + 1}` : 'end';
+      nodes.push(
+        { id: `c${i}`, type: 'condition', data: { field: 'subject', op: 'contains', value: `x${i}` } },
+        { id: `a${i}`, type: 'action', data: { actionType: 'tag', tag: `a${i}` } },
+        { id: `b${i}`, type: 'action', data: { actionType: 'tag', tag: `b${i}` } },
+      );
+      edges.push(
+        { id: `y${i}`, source: `c${i}`, target: `a${i}`, label: 'yes' },
+        { id: `n${i}`, source: `c${i}`, target: `b${i}`, label: 'no' },
+        { id: `ea${i}`, source: `a${i}`, target: next },
+        { id: `eb${i}`, source: `b${i}`, target: next },
+      );
+    }
+    nodes.push({ id: 'end', type: 'action', data: { actionType: 'tag', tag: 'end' } });
+
+    const started = Date.now();
+    const compiled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/compile-graph',
+      body: { version: 1, nodes, edges },
+      principal,
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(compiled.status).toBe(200);
+    expect((compiled.body as any).data).toEqual({
+      success: false,
+      error: expect.stringContaining('Workflow-Graph zu komplex'),
+    });
   });
 
   test('side-effect workflow gate guards the write against a concurrent patch', async () => {
@@ -35237,11 +37493,20 @@ describe('server edition foundation', () => {
     ]);
     const syncGetCalls: unknown[] = [];
     const syncSetCalls: unknown[] = [];
+    const syncClaimCalls: unknown[] = [];
     const workflowListCalls: unknown[] = [];
     const queueCalls: unknown[] = [];
     const operationLog: string[] = [];
     const api = createServerApi(makeServerApiPorts({
       syncInfo: {
+        async claimIfExpired(input) {
+          operationLog.push('dedupe');
+          syncClaimCalls.push(input);
+          const claimedAt = Number(syncStore.get(input.key));
+          if (!Number.isNaN(claimedAt) && input.nowMs - claimedAt < input.ttlMs) return false;
+          syncStore.set(input.key, String(input.nowMs));
+          return true;
+        },
         async getMany(input) {
           syncGetCalls.push(input);
           return input.keys
@@ -35314,16 +37579,14 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       keys: ['email_webhook_secret', expect.stringMatching(/^webhook_dedup:/)],
     });
-    expect(syncSetCalls).toHaveLength(1);
-    expect(syncSetCalls[0]).toEqual({
+    // F-A3b-07: the dedup marker is claimed atomically instead of written via setMany afterwards.
+    expect(syncSetCalls).toEqual([]);
+    expect(syncClaimCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
-      values: expect.any(Object),
-    });
-    const dedupeValues = (syncSetCalls[0] as any).values as Record<string, string>;
-    const dedupeKeys = Object.keys(dedupeValues);
-    expect(dedupeKeys).toHaveLength(1);
-    expect(dedupeKeys[0]).toMatch(/^webhook_dedup:/);
-    expect(dedupeValues[dedupeKeys[0]]).toEqual(expect.any(String));
+      key: expect.stringMatching(/^webhook_dedup:/),
+      nowMs: expect.any(Number),
+      ttlMs: 5 * 60 * 1000,
+    }]);
     expect(queueCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
@@ -35359,7 +37622,9 @@ describe('server edition foundation', () => {
         },
       },
     ]);
-    expect(operationLog).toEqual(['enqueue:31', 'enqueue:32', 'dedupe']);
+    // F-A3b-07: claimed BEFORE the enqueue loop, so a concurrent identical delivery is deduplicated
+    // (a failed enqueue releases the claim again, see the next test).
+    expect(operationLog).toEqual(['dedupe', 'enqueue:31', 'enqueue:32']);
 
     const deduped = await api.handle({
       method: 'POST',
@@ -35453,6 +37718,11 @@ describe('server edition foundation', () => {
     const queueCalls: unknown[] = [];
     const api = createServerApi(makeServerApiPorts({
       syncInfo: {
+        async claimIfExpired(input) {
+          if (syncStore.has(input.key)) return false;
+          syncStore.set(input.key, String(input.nowMs));
+          return true;
+        },
         async getMany(input) {
           return input.keys
             .filter((key) => syncStore.has(key))
@@ -35476,8 +37746,12 @@ describe('server edition foundation', () => {
             updatedAt: '2026-06-04T10:01:00.000Z',
           }));
         },
-        async deleteMany() {
-          return 0;
+        async deleteMany(input) {
+          let deleted = 0;
+          for (const key of input.keys) {
+            if (syncStore.delete(key)) deleted += 1;
+          }
+          return deleted;
         },
       },
       workflows: {
@@ -36025,6 +38299,86 @@ describe('server edition foundation', () => {
     });
     expect(allowed.status).toBe(200);
     expect(updateCalls).toHaveLength(1);
+  });
+
+  // C-A20: Restore pruefte nur den wiederhergestellten Graphen — ein Editor
+  // konnte einen aktiven Seiteneffekt-Workflow per harmloser Version entschaerfen.
+  test('restoring a harmless version into an active side-effect workflow needs workflows.manage', async () => {
+    const updateCalls: any[] = [];
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    let workflow: WorkflowRecord = {
+      ...makeWorkflowRecord(23),
+      sourceSqliteId: -23,
+      enabled: true,
+      graph: sideEffectGraph,
+    };
+    const harmlessVersion = {
+      ...makeWorkflowVersionRecord(82),
+      sourceSqliteId: -82,
+      workflowId: 23,
+      workflowSourceSqliteId: -23,
+      graph: harmlessGraph,
+      definition: { steps: [] },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [workflow], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? workflow : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow };
+        },
+      },
+      workflowVersions: {
+        async list() { return { items: [harmlessVersion], nextCursor: null }; },
+        async get() { return harmlessVersion; },
+        async create() { throw new Error('nicht verwendet'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+    const restore = (principal: typeof editor) => api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal,
+    });
+
+    const denied = await restore(editor);
+    expect(denied.status).toBe(403);
+    expect((denied.body as any).error).toMatchObject({
+      code: 'forbidden',
+      message: 'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+    });
+    expect(updateCalls).toEqual([]);
+
+    const managed = await restore({ ...editor, capabilities: ['workflows.edit', 'workflows.manage'] });
+    expect(managed.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+
+    // Ein deaktivierter Entwurf bleibt fuer Editoren wiederherstellbar.
+    workflow = { ...workflow, enabled: false };
+    expect((await restore(editor)).status).toBe(200);
+    expect(updateCalls).toHaveLength(2);
+
+    // Ein aktiver, harmloser Workflow auch — der Write ist dann an genau diesen
+    // Graphen gebunden, damit ein zwischenzeitlich scharf geschalteter Graph
+    // nicht per veraltetem Restore ueberschrieben wird.
+    workflow = { ...workflow, enabled: true, graph: harmlessGraph };
+    expect((await restore(editor)).status).toBe(200);
+    expect(updateCalls).toHaveLength(3);
+    expect(updateCalls[2].expected).toMatchObject({ enabled: true, graph: harmlessGraph });
   });
 
   test('server workflow run by-source routes resolve legacy ids for history reads', async () => {
@@ -36754,6 +39108,9 @@ describe('server edition foundation', () => {
     // Delayed-job PATCH/DELETE now require the workflows.manage capability.
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
+    // F-A8-05 (E29): Ein per API angelegter Delayed Job bekam keine
+    // job_queue-Fortsetzung und blieb fuer immer pending, die API meldete aber
+    // 201. Anlegen ist kein Vertrag mehr: 405, der Port wird nie aufgerufen.
     const created = await api.handle({
       method: 'POST',
       path: '/api/v1/workflow-delayed-jobs',
@@ -36767,28 +39124,12 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(created.status).toBe(201);
-    expect((created.body as any).data).toMatchObject({
-      id: 87,
-      sourceSqliteId: -87,
-      workflowId: 23,
-      messageId: 11,
-      resumeNodeId: 'wait-1',
-      status: 'pending',
+    expect(created.status).toBe(405);
+    expect((created.body as any).error).toMatchObject({
+      code: 'method_not_allowed',
+      message: expect.stringContaining('Verzoegerung'),
     });
-    expect((created.body as any).data.context).toBeUndefined();
-    expect(createCalls).toEqual([{
-      workspaceId: WORKSPACE_A_ID,
-      actorUserId: USER_A_ID,
-      values: {
-        workflowId: 23,
-        messageId: 11,
-        resumeNodeId: 'wait-1',
-        executeAt: '2026-06-03T12:00:00.000Z',
-        context: { secret: 'delayed-context-secret' },
-        status: 'pending',
-      },
-    }]);
+    expect(createCalls).toEqual([]);
 
     const updated = await api.handle({
       method: 'PATCH',
@@ -36826,13 +39167,12 @@ describe('server edition foundation', () => {
     expect((deleted.body as any).data.delayedJob.context).toBeUndefined();
     expect(deleteCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, actorUserId: USER_A_ID, id: 87 }]);
 
+    // Das abgelehnte Anlegen (405) hinterlaesst weder Audit noch Event.
     expect(auditEvents.map((event) => event.action)).toEqual([
-      'workflow_delayed_job.created',
       'workflow_delayed_job.updated',
       'workflow_delayed_job.deleted',
     ]);
     expect(events.map((event) => [event.type, event.workspaceId, event.entityType, event.entityId])).toEqual([
-      ['workflow_delayed_job.created', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
       ['workflow_delayed_job.updated', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
       ['workflow_delayed_job.deleted', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
     ]);
@@ -36844,8 +39184,8 @@ describe('server edition foundation', () => {
       messageId: 11,
       messageSourceSqliteId: 11,
       resumeNodeId: 'wait-1',
-      executeAt: '2026-06-03T12:00:00.000Z',
-      status: 'pending',
+      executeAt: '2026-06-04T12:00:00.000Z',
+      status: 'cancelled',
     });
     expect(JSON.stringify(auditEvents)).not.toContain('delayed-context-secret');
     expect(JSON.stringify(events)).not.toContain('delayed-context-secret');
@@ -36965,26 +39305,27 @@ describe('server edition foundation', () => {
     // grant it here to exercise the payload-validation paths below.
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
-    const unavailable = await readOnlyApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(unavailable.status).toBe(503);
+    // F-A8-05 (E29): Anlegen per POST ist unabhaengig vom Payload und von der
+    // Port-Konfiguration immer 405 (frueher 503/400/404/201 je nach Eingabe).
+    for (const [api, body] of [
+      [readOnlyApi, { workflowId: 23, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' }],
+      [writableApi, []],
+      [writableApi, { workspaceId: WORKSPACE_B_ID, workflowId: 0, executeAt: 'not-a-date', status: 123 }],
+      [writableApi, { workflowId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' }],
+    ] as const) {
+      const rejected = await api.handle({
+        method: 'POST',
+        path: '/api/v1/workflow-delayed-jobs',
+        body,
+        principal,
+      });
+      expect(rejected.status).toBe(405);
+    }
 
-    const invalidPayload = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: [],
-      principal,
-    });
-    expect(invalidPayload.status).toBe(400);
-    expect((invalidPayload.body as any).error.code).toBe('invalid_workflow_delayed_job_payload');
-
+    // Die Feldpruefung des gemeinsamen Parsers bleibt fuer PATCH abgedeckt.
     const unsafePayload = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
       body: {
         workspaceId: WORKSPACE_B_ID,
         workflowId: 0,
@@ -37005,32 +39346,6 @@ describe('server edition foundation', () => {
       { field: 'context', message: 'context muss ein JSON-Objekt oder Array sein' },
       { field: 'status', message: 'status muss ein String sein' },
     ]));
-
-    const missingRequired = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23 },
-      principal,
-    });
-    expect(missingRequired.status).toBe(400);
-
-    const missingWorkflow = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(missingWorkflow.status).toBe(404);
-    expect((missingWorkflow.body as any).error.code).toBe('workflow_not_found');
-
-    const missingMessage = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23, messageId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(missingMessage.status).toBe(404);
-    expect((missingMessage.body as any).error.code).toBe('email_message_not_found');
 
     const invalidId = await writableApi.handle({
       method: 'PATCH',
@@ -41075,13 +43390,19 @@ function makeFetchResponse(input: {
   json?: unknown;
 } = {}): Response {
   const status = input.status ?? 200;
-  const text = input.text ?? '';
+  const bytes = new TextEncoder().encode(input.json !== undefined ? JSON.stringify(input.json) : input.text ?? '');
+  // Only a body stream: the Rspamd client reads it with a byte limit (N-cx-06);
+  // text()/json() were exactly the unbounded reads.
   return {
     ok: status >= 200 && status < 300,
     status,
-    text: async () => text,
-    json: async () => input.json ?? {},
-  } as Response;
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+  } as unknown as Response;
 }
 
 function makeEmailAttachmentRecord(id: number): EmailAttachmentRecord {
@@ -41617,7 +43938,7 @@ function makeScheduledSendTickerDb(rows: Array<Record<string, unknown>>): Kysely
   // recordFailedAttempt. executeTakeFirst → undefined so the failure counter
   // starts at 0.
   const chain: Record<string, unknown> = {};
-  for (const method of ['select', 'selectAll', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
+  for (const method of ['select', 'selectAll', 'distinct', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
     'set', 'values', 'onConflict', 'columns', 'doUpdateSet', 'doNothing', 'returning']) {
     chain[method] = () => chain;
   }
@@ -42285,8 +44606,30 @@ class FakeMaintenanceSelect {
       orderBy: this.order,
       limit: this.rowLimit,
     });
-    return this.rows;
+    // Plain `like` conditions are evaluated so a query only sees its own keys;
+    // everything else (e.g. expression-builder callbacks) returns all rows.
+    const likes = this.wheres.filter(([, operator, value]) => operator === 'like' && typeof value === 'string');
+    return this.rows.filter((row) => likes.every(([column, , pattern]) => likePatternToRegExp(String(pattern))
+      .test(String(row[column as string] ?? ''))));
   }
+}
+
+function likePatternToRegExp(pattern: string): RegExp {
+  let source = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    if (char === '\\' && index + 1 < pattern.length) {
+      index += 1;
+      source += pattern[index]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (char === '%') {
+      source += '.*';
+    } else if (char === '_') {
+      source += '.';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`, 's');
 }
 
 class FakeMaintenanceDelete {

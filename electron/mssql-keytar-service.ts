@@ -7,6 +7,7 @@ import {
     type MssqlErrorCategory,
     type MssqlErrorSeverity,
 } from '../shared/errors/mssql';
+import { validateReadOnlyMssqlQuery } from '../packages/core/src/workflow/mssql-readonly';
 
 // #COMPLETION_DRIVE: Assuming SQL error codes are consistent across MSSQL versions
 // #SUGGEST_VERIFY: Test with different MSSQL versions and authentication scenarios
@@ -580,22 +581,20 @@ export async function fetchJtlVersandarten() {
     }
 }
 
-const MAX_READONLY_MSSQL_CHARS = 8_000;
 const MSSQL_QUERY_TIMEOUT_MS = 30_000;
 
 export async function executeReadOnlyMssqlQuery(
   sqlQuery: string,
 ): Promise<{ success: boolean; rows?: unknown[]; rowCount?: number; error?: string }> {
-  if (sqlQuery.length > MAX_READONLY_MSSQL_CHARS) {
-    return {
-      success: false,
-      error: `SQL zu lang (max ${MAX_READONLY_MSSQL_CHARS} Zeichen)`,
-    };
+  // Runs with the stored JTL credentials: only a single read-only SELECT may pass.
+  const validation = validateReadOnlyMssqlQuery(sqlQuery);
+  if (!validation.ok) {
+    return { success: false, error: validation.error };
   }
   try {
     const pool = await getConnectionPool();
     const result = await Promise.race([
-      pool.request().query(sqlQuery),
+      pool.request().query(validation.query),
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`MSSQL Timeout nach ${MSSQL_QUERY_TIMEOUT_MS}ms`)), MSSQL_QUERY_TIMEOUT_MS);
       }),

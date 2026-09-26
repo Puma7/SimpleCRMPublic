@@ -1,7 +1,6 @@
 import { randomUUID } from 'crypto';
 import { BrowserWindow, IpcMainInvokeEvent, dialog, shell, type SaveDialogReturnValue } from 'electron';
 import fs from 'fs';
-import path from 'path';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
@@ -24,6 +23,32 @@ function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession 
   return { userId: session.userId, role: session.role };
 }
 
+/**
+ * Workspace-weite App-Secrets (OAuth-Client-Secrets, Webhook-Secret) sehen nur
+ * Owner und Admin im Klartext; alle anderen erfahren nur, ob eines gesetzt ist.
+ */
+function canReadEmailAppSecrets(event: IpcMainInvokeEvent): boolean {
+  const { role } = requireRealAuthSession(event);
+  return role === 'owner' || role === 'admin';
+}
+
+function oauthAppSettingsForCaller(
+  event: IpcMainInvokeEvent,
+  settings: { clientId: string; clientSecret: string },
+) {
+  const hasSecret = settings.clientSecret.length > 0;
+  return canReadEmailAppSecrets(event)
+    ? { success: true as const, clientId: settings.clientId, clientSecret: settings.clientSecret, hasSecret }
+    : { success: true as const, clientId: settings.clientId, hasSecret };
+}
+
+/** Ein leeres Secret-Feld beim Speichern behaelt das gespeicherte Secret. */
+function oauthAppSettingsUpdate(payload: { clientId: string; clientSecret: string }) {
+  return payload.clientSecret.trim()
+    ? { clientId: payload.clientId, clientSecret: payload.clientSecret }
+    : { clientId: payload.clientId };
+}
+
 function canAccessEmailAccount(
   event: IpcMainInvokeEvent,
   accountId: number,
@@ -36,6 +61,30 @@ function canAccessEmailAccount(
     access,
     role: session.role,
   });
+}
+
+/** C-A30 (G12): Fenster und Sitzung, an die Anhang-Freigaben gebunden sind. */
+function composeAttachmentCaller(event: IpcMainInvokeEvent): ComposeAttachmentCaller {
+  const session = requireAuthSession(event);
+  return {
+    webContentsId: event.sender.id,
+    sessionId: session.sessionId,
+    userId: session.userId,
+    role: session.role,
+  };
+}
+
+/**
+ * C-A79 (G5): Ein Elternbezug wird nur gespeichert, wenn der Aufrufer das Konto
+ * der Eltern-Mail lesen darf; sonst bleibt das Feld unveraendert (kein Fehler).
+ */
+function replyParentMessageIdForCaller(
+  event: IpcMainInvokeEvent,
+  replyParentMessageId: number | null | undefined,
+): number | null | undefined {
+  if (replyParentMessageId == null) return replyParentMessageId;
+  const parent = getEmailMessageById(replyParentMessageId);
+  return parent && canAccessEmailAccount(event, parent.account_id, 'ro') ? replyParentMessageId : undefined;
 }
 
 import { deleteEmailPassword, getEmailPassword, saveEmailPassword } from '../email/email-keytar';
@@ -96,6 +145,12 @@ import {
   restoreInboxMessagesFromArchiveSafe,
 } from '../email/email-inbox-recovery';
 import { sendComposeDraft } from '../email/email-compose-send';
+import { clearScheduledSendActor, recordScheduledSendActor } from '../email/email-scheduled-send-actor';
+import {
+  composeAttachmentPathsError,
+  grantComposeAttachmentPaths,
+  type ComposeAttachmentCaller,
+} from '../email/compose-attachment-grants';
 import { testSmtpConnection } from '../email/email-smtp';
 import {
   listCategories,
@@ -171,6 +226,7 @@ import {
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import {
   AI_PROVIDER_PRESETS,
+  aiProfileMoveNeedsNewApiKey,
   clearAiProfileApiKey,
   createAiProfile,
   deleteAiProfile,
@@ -193,6 +249,7 @@ import {
 } from '../email/email-workflow-engine';
 import {
   getMailSecuritySettings,
+  rspamdUrlDiffersFromStored,
   saveMailSecuritySettings,
 } from '../email/mail-security-settings';
 import { runMailSecurityPipeline } from '../email/mail-security-pipeline';
@@ -210,39 +267,13 @@ import { exchangeMicrosoftAuthCode } from '../email/email-oauth-microsoft';
 import { restartEmailWorkflowCrons } from '../email/email-imap-services';
 import { listAttachmentsForMessage, getAttachmentById } from '../email/email-message-attachments-store';
 import { syncSeenFlagToServer } from '../email/email-imap-flags';
+import { isPotentiallyDangerousAttachment } from './attachment-open-risk';
 
-const DANGEROUS_ATTACHMENT_EXT = new Set([
-  '.exe',
-  '.bat',
-  '.cmd',
-  '.com',
-  '.scr',
-  '.pif',
-  '.msi',
-  '.dll',
-  '.js',
-  '.jse',
-  '.vbs',
-  '.vbe',
-  '.wsf',
-  '.wsh',
-  '.ps1',
-  '.msc',
-  '.hta',
-  '.sh',
-  '.app',
-  '.deb',
-  '.rpm',
-]);
-
-function isPotentiallyDangerousAttachment(filename: string): boolean {
-  const ext = path.extname(filename).toLowerCase();
-  return ext !== '' && DANGEROUS_ATTACHMENT_EXT.has(ext);
-}
 import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
 } from '../../shared/email-recipient-parse';
+import { scheduledSendPgpBlockReason } from '../../shared/compose-scheduled-send';
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
@@ -255,6 +286,110 @@ import {
   deleteWorkflow,
   clearInboundWorkflowAppliedForMessage,
 } from '../email/email-workflow-store';
+
+// Gespeicherte Zugangsdaten (Keytar-Passwort, OAuth-Token) haengen nur an der
+// Konto-ID, nicht am Server. Ein Verbindungstest, der sie nutzt, darf daher nur
+// den gespeicherten Server mit der gespeicherten Anmeldung ansprechen; sonst
+// schickt ein Skript im Renderer jedes gespeicherte Passwort an einen fremden
+// Host. Paritaet: useStored in packages/server/src/mail-connection-test.ts.
+const STORED_LOGIN_CHANGED_ERROR = 'Host oder Zugang geändert: bitte Passwort erneut eingeben';
+
+type MailLogin = { host: string; port: number; tls: boolean | string; user: string };
+
+function sameMailEndpoint(stored: MailLogin, requested: MailLogin): boolean {
+  return stored.host.trim().toLowerCase() === requested.host.trim().toLowerCase()
+    && stored.port === requested.port
+    && stored.tls === requested.tls;
+}
+
+function sameMailLogin(stored: MailLogin, requested: MailLogin): boolean {
+  return sameMailEndpoint(stored, requested) && stored.user.trim() === requested.user.trim();
+}
+
+function imapLogin(acc: EmailAccountRow): MailLogin {
+  return { host: acc.imap_host, port: acc.imap_port, tls: Boolean(acc.imap_tls), user: acc.imap_username };
+}
+
+// Wie testPop3Connection und der POP3-Abruf: POP3-Host faellt auf den IMAP-Host zurueck.
+function pop3Login(acc: EmailAccountRow): MailLogin {
+  return {
+    host: acc.pop3_host || acc.imap_host,
+    port: acc.pop3_port ?? 995,
+    tls: (acc.pop3_tls ?? 1) === 1,
+    user: acc.imap_username,
+  };
+}
+
+// Transportschutz als ein Wert, damit Test (secure + tls) und Versand
+// (smtp_tls + Port) vergleichbar sind.
+function smtpTransportSecurity(secure: boolean, requireTls: boolean): string {
+  if (secure) return 'implicit';
+  return requireTls ? 'starttls' : 'none';
+}
+
+// Wie sendSmtpForAccount: smtp_tls heisst implizites TLS auf 465, sonst Pflicht-STARTTLS.
+function smtpLogin(acc: EmailAccountRow): MailLogin {
+  const port = acc.smtp_port ?? 587;
+  const tls = Boolean(acc.smtp_tls);
+  return {
+    host: acc.smtp_host ?? '',
+    port,
+    tls: smtpTransportSecurity(tls && port === 465, tls && port !== 465),
+    user: acc.smtp_use_imap_auth ? acc.imap_username : acc.smtp_username?.trim() || acc.imap_username,
+  };
+}
+
+// Abruf, Versand und Verbindungstest schicken die gespeicherten Zugangsdaten an
+// den Server, den die Kontozeile nennt. Aendert sich Host, Port oder TLS eines
+// Protokolls, muss daher das Passwort mitkommen, mit dem es sich anmeldet
+// (IMAP/POP3: IMAP-Passwort; SMTP: bei "wie IMAP" das IMAP-, sonst das
+// SMTP-Passwort); das Umschalten von "wie IMAP" zaehlt ebenso. Paritaet zu
+// A2a-01/E2: missingCredentialsForEndpointChange in packages/server/src/api/mail-routes.ts.
+// Liefert je Passwort die Protokolle, deren Server sich aendert.
+function credentialsForEndpointChange(
+  current: EmailAccountRow,
+  next: EmailAccountRow,
+): Map<'imapPassword' | 'smtpPassword', string[]> {
+  const checks = [
+    { protocol: 'IMAP', login: imapLogin, credential: 'imapPassword', switched: false },
+    { protocol: 'POP3', login: pop3Login, credential: 'imapPassword', switched: false },
+    {
+      protocol: 'SMTP',
+      login: smtpLogin,
+      credential: next.smtp_use_imap_auth ? 'imapPassword' : 'smtpPassword',
+      switched: Boolean(next.smtp_use_imap_auth) !== Boolean(current.smtp_use_imap_auth),
+    },
+  ] as const;
+  const required = new Map<'imapPassword' | 'smtpPassword', string[]>();
+  for (const check of checks) {
+    const after = check.login(next);
+    // Ein geleerter Host schaltet das Protokoll ab; dann geht nichts an einen Server.
+    if (!after.host.trim()) continue;
+    if (!check.switched && sameMailEndpoint(check.login(current), after)) continue;
+    required.set(check.credential, [...(required.get(check.credential) ?? []), check.protocol]);
+  }
+  return required;
+}
+
+function missingCredentialsError(
+  required: Map<'imapPassword' | 'smtpPassword', string[]>,
+  fresh: { imapPassword: boolean; smtpPassword: boolean },
+): string | null {
+  const missing = [...required].filter(([field]) => !fresh[field]);
+  if (missing.length === 0) return null;
+  const details = missing.map(([field, protocols]) =>
+    `${field === 'imapPassword' ? 'IMAP-Passwort' : 'SMTP-Passwort'} erforderlich (${
+      protocols.map((protocol) => `${protocol}-Server`).join(', ')
+    } geaendert)`);
+  return `Zugangsdaten bei Serverwechsel neu eingeben: ${details.join('; ')}`;
+}
+
+// Wie resolveImapAuth: ein verknuepftes Google-/Microsoft-Konto meldet sich mit
+// dem OAuth-Token an, auch wenn ein IMAP-Passwort gespeichert ist.
+function usesOAuthLogin(acc: EmailAccountRow): boolean {
+  return (acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft')
+    && Boolean(acc.oauth_refresh_keytar_key);
+}
 
 interface EmailHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -316,7 +451,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           throw err;
         }
       },
-      { logger },
+      // Kontoverwaltung wie mail.account.manage auf dem Server: nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -359,6 +495,38 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
+        let replaceOAuthLogin = false;
+        if (acc) {
+          // Vor dem Speichern der Passwoerter: eine abgelehnte Aenderung darf
+          // auch den Schluesselbund nicht anfassen. Die Werte folgen der
+          // Zuordnung an updateEmailAccountRecord unten (null bei Port/SMTP-TLS
+          // laesst den gespeicherten Wert stehen).
+          const required = credentialsForEndpointChange(acc, {
+            ...acc,
+            imap_host: payload.imapHost ?? acc.imap_host,
+            imap_port: payload.imapPort ?? acc.imap_port,
+            imap_tls: payload.imapTls === undefined ? acc.imap_tls : Number(payload.imapTls),
+            smtp_host: payload.smtpHost === undefined ? acc.smtp_host : payload.smtpHost,
+            smtp_port: payload.smtpPort ?? acc.smtp_port,
+            smtp_tls: payload.smtpTls == null ? acc.smtp_tls : Number(payload.smtpTls),
+            smtp_use_imap_auth: payload.smtpUseImapAuth === undefined
+              ? acc.smtp_use_imap_auth
+              : Number(payload.smtpUseImapAuth),
+            pop3_host: payload.pop3Host === undefined ? acc.pop3_host : payload.pop3Host,
+            pop3_port: payload.pop3Port ?? acc.pop3_port,
+            pop3_tls: payload.pop3Tls === undefined ? acc.pop3_tls : Number(Boolean(payload.pop3Tls)),
+          });
+          const missing = missingCredentialsError(required, {
+            imapPassword: Boolean(payload.imapPassword),
+            smtpPassword: Boolean(payload.smtpPassword),
+          });
+          if (missing) return { success: false as const, error: missing };
+          // Auf dem Desktop hat das OAuth-Token Vorrang vor dem IMAP-Passwort
+          // (resolveImapAuth). Verlangt der Serverwechsel das IMAP-Passwort, ersetzt
+          // das neue Passwort daher die OAuth-Verknuepfung; sonst ginge das Token an
+          // den neuen Server. Auf dem Server hat das Passwort ohnehin Vorrang.
+          replaceOAuthLogin = required.has('imapPassword') && usesOAuthLogin(acc);
+        }
         if (payload.imapPassword && payload.imapPassword.length > 0 && acc) {
           await saveEmailPassword(acc.keytar_account_key, payload.imapPassword);
         }
@@ -398,10 +566,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           smtpUsername: payload.smtpUsername ?? undefined,
           smtpUseImapAuth: payload.smtpUseImapAuth,
           smtpKeytarAccountKey: smtpKey,
+          ...(replaceOAuthLogin ? { oauthProvider: null, oauthRefreshKeytarKey: null } : {}),
         });
+        // Access-Tokens werden nicht zwischengespeichert (jeder Connect holt sie
+        // ueber den Refresh-Token), es genuegt also, diesen zu loeschen.
+        if (replaceOAuthLogin && acc?.oauth_refresh_keytar_key) {
+          await deleteEmailPassword(acc.oauth_refresh_keytar_key).catch((err: unknown) => {
+            logger.warn('[IPC] UpdateAccount: OAuth-Refresh-Token nicht geloescht', err);
+          });
+        }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -409,7 +585,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteAccount, async (_event: IpcMainInvokeEvent, id: number) => {
       await deleteEmailAccountRecord(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -439,6 +615,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imap_username: payload.imapUsername.trim(),
           };
           if (!password) {
+            if (!sameMailLogin(imapLogin(acc), imapLogin(row))) {
+              return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+            }
             password = (await getEmailPassword(acc.keytar_account_key)) ?? '';
           }
         } else {
@@ -485,7 +664,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: false as const, error: result.error };
       },
-      { logger },
+      // Verbindungstests gehoeren zur Kontoverwaltung (E16): mit accountId nutzen
+      // sie die gespeicherten Zugangsdaten, dann nur gegen den gespeicherten
+      // Server; ohne accountId dienen sie dem Anlegen. Beides nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -519,7 +701,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         logger.error('[IPC] email:sync-account', e);
         return { success: false as const, error: message };
       }
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -536,14 +718,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return listMessagesForFolder(folder.id, { limit: payload.limit, offset: payload.offset });
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return getEmailMessageById(messageId) ?? null;
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -551,7 +733,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListWorkflows,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listAllWorkflows(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -581,7 +763,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
       },
-      { logger },
+      // G1: Cron/Inbound fuehren gespeicherte Workflows (inkl. Code-Knoten) ohne
+      // weitere Rollenpruefung im Main-Prozess aus — anlegen, aendern und
+      // loeschen darum nur Owner/Admin, wie ExecuteWorkflowNow.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -615,7 +800,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         restartEmailWorkflowCrons(logger);
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -624,7 +809,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       deleteWorkflow(id);
       restartEmailWorkflowCrons(logger);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -669,7 +854,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const, allowed: result.allowed, reason: result.reason };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -690,7 +875,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await runDraftCreatedWorkflowsForMessage(id);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -698,9 +883,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.UpdateComposeDraft,
       async (
-        _event: IpcMainInvokeEvent,
+        event: IpcMainInvokeEvent,
         payload: {
           messageId: number;
+          accountId?: number;
           subject?: string;
           bodyText?: string;
           bodyHtml?: string;
@@ -712,6 +898,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           markReplyParentDone?: boolean;
         },
       ) => {
+        // Moving the draft (composer "Von" switch) places it in the target account:
+        // require the same access there as CreateComposeDraft. The IPC gate already
+        // checked the draft's current account (ipc-account-scope).
+        if (payload.accountId !== undefined && !canAccessEmailAccount(event, payload.accountId, 'rw')) {
+          throw new Error('Kein Zugriff auf dieses Konto');
+        }
+        const attachmentError = composeAttachmentPathsError(
+          composeAttachmentCaller(event),
+          payload.messageId,
+          payload.draftAttachmentPaths,
+        );
+        if (attachmentError) throw new Error(attachmentError);
         const toJson =
           payload.to !== undefined
             ? payload.to.trim()
@@ -731,6 +929,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               : null
             : undefined;
         updateComposeDraft(payload.messageId, {
+          accountId: payload.accountId,
           subject: payload.subject,
           bodyText: payload.bodyText,
           bodyHtml: payload.bodyHtml,
@@ -738,7 +937,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           ccJson,
           bccJson,
           draftAttachmentPaths: payload.draftAttachmentPaths,
-          replyParentMessageId: payload.replyParentMessageId,
+          replyParentMessageId: replyParentMessageIdForCaller(event, payload.replyParentMessageId),
         });
         if (payload.markReplyParentDone !== undefined) {
           const { setComposeMarkReplyParentDone } = await import('../email/compose-reply-done.js');
@@ -746,14 +945,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListMessageTags, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listTagsForMessage(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -763,7 +962,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         addMessageTag(payload.messageId, payload.tag);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -774,7 +973,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         removeMessageTag(payload.messageId, payload.tag);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -795,7 +994,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -823,7 +1022,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           doneFilter: payload.doneFilter,
         }, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -849,7 +1048,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           doneFilter: payload.doneFilter,
         }, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -900,7 +1099,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         );
         return { messages: rows, searchMode, hasMore };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -911,15 +1110,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSnoozedUntil(payload.messageId, payload.until);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ScheduleDraftSend,
-      async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
+      async (
+        event: IpcMainInvokeEvent,
+        payload: { messageId: number; sendAt: string | null; pgpEncrypt?: boolean; pgpSign?: boolean },
+      ) => {
         if (payload.sendAt) {
+          const pgpBlockReason = scheduledSendPgpBlockReason(payload);
+          if (pgpBlockReason) {
+            return { success: false as const, error: pgpBlockReason };
+          }
           const draft = getEmailMessageById(payload.messageId);
           if (!draft) {
             return { success: false as const, error: 'Entwurf nicht gefunden' };
@@ -958,6 +1164,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
           });
         }
+        // C-A2 (G6): Wer plant, wird fuer die Rechtepruefung beim Versand gespeichert.
+        if (payload.sendAt) {
+          recordScheduledSendActor(payload.messageId, requireAuthSession(event));
+        } else {
+          clearScheduledSendActor(payload.messageId);
+        }
         setDraftScheduledSendAt(payload.messageId, payload.sendAt);
         if (payload.sendAt) {
           const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
@@ -965,7 +1177,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -982,7 +1194,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           lastError: s.lastError,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -994,21 +1206,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         clearScheduledSendDraftMeta(messageId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.RetryScheduledSendDraft,
-      async (_event: IpcMainInvokeEvent, messageId: number) => {
+      async (event: IpcMainInvokeEvent, messageId: number) => {
         const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
         const { setDraftScheduledSendAt } = await import('../email/email-message-features.js');
         clearScheduledSendDraftMeta(messageId);
+        recordScheduledSendActor(messageId, requireAuthSession(event));
         setDraftScheduledSendAt(messageId, new Date().toISOString());
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1020,7 +1233,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const s = getComposeDraftRecoveryState(draftMessageId);
         return { success: true as const, ...s };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1033,7 +1246,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1045,7 +1258,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const, path: r.path };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1068,7 +1281,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.error) return { success: false as const, error: r.error, fired: 0 };
         return { success: true as const, fired: r.fired };
       },
-      { logger },
+      // Wie ExecuteWorkflowNow: das Secret allein berechtigt nicht zum Ausloesen von Workflows.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -1079,16 +1293,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         clearEmailAccountSyncLock(accountId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async () => {
-      return {
-        webhookSecret: readSyncInfo('email_webhook_secret') ?? '',
-        maxAttachmentMb: readSyncInfo('email_max_attachment_mb') ?? '25',
-      };
+    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async (event: IpcMainInvokeEvent) => {
+      const webhookSecret = readSyncInfo('email_webhook_secret') ?? '';
+      const maxAttachmentMb = readSyncInfo('email_max_attachment_mb') ?? '25';
+      const hasSecret = webhookSecret.length > 0;
+      return canReadEmailAppSecrets(event)
+        ? { webhookSecret, maxAttachmentMb, hasSecret }
+        : { maxAttachmentMb, hasSecret };
     }, { logger }),
   );
 
@@ -1107,7 +1323,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         dismissUidValidityResetNotice(payload.noticeId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1118,7 +1334,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps.js');
         return getLatestWorkflowRunForMessage(payload.messageId);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1129,25 +1345,26 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     }, { logger }),
   );
 
+  // Vollbackup: alle Mails aller Konten und die Passwort-Hashes der App-Benutzer.
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ExportLocalMailBackup, async () => {
       const { exportLocalMailBackup } = await import('../email/email-local-backup.js');
       return exportLocalMailBackup();
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
       const { verifyLocalMailBackup } = await import('../email/email-local-backup.js');
       return verifyLocalMailBackup();
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.PickLocalMailBackupZip, async () => {
       const { pickLocalMailBackupZip } = await import('../email/email-local-restore.js');
       return pickLocalMailBackupZip();
-    }, { logger }),
+    }, { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] }),
   );
 
   disposers.push(
@@ -1157,7 +1374,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { previewRestoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return previewRestoreLocalMailBackup(payload.zipPath);
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] },
     ),
   );
 
@@ -1176,7 +1393,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { restoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return restoreLocalMailBackup(payload);
       },
-      { logger },
+      // Ersetzt database.sqlite samt Benutzertabelle: so kritisch wie der Hard-Reset (nur Owner).
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] },
     ),
   );
 
@@ -1195,7 +1413,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         dismissImapAuthNotice(payload.accountId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1206,6 +1424,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { webhookSecret?: string; maxAttachmentMb?: number },
       ) => {
+        // Anders als bei den OAuth-App-Secrets heisst leer hier "entfernen":
+        // ohne Secret nimmt der Webhook-Eingang nichts mehr an, das ist der
+        // Weg, ihn abzuschalten. Nur Owner/Admin speichern, und sie bekommen
+        // das Secret im Formular vorbefuellt.
         if (payload.webhookSecret !== undefined) {
           writeSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
         }
@@ -1214,7 +1436,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -1298,7 +1520,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           access,
         );
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1326,9 +1548,18 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         },
       ) => {
         const session = requireAuthSession(_event);
+        const attachmentError = composeAttachmentPathsError(
+          composeAttachmentCaller(_event),
+          payload.draftMessageId,
+          payload.attachmentPaths,
+        );
+        if (attachmentError) {
+          return { success: false as const, error: attachmentError, workflowRunId: null };
+        }
         const r = await sendComposeDraft({
           ...payload,
           pgpUserId: session.userId,
+          actor: { userId: session.userId, role: session.role },
         });
         if (r.ok) {
           if (r.warning) {
@@ -1359,6 +1590,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           host: string;
           port: number;
           secure: boolean;
+          tls?: boolean;
           user: string;
           password?: string;
           smtpUseImapAuth?: boolean;
@@ -1370,6 +1602,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           const acc = getEmailAccountById(payload.accountId);
           if (!acc) return { success: false as const, error: 'Konto nicht gefunden' };
           const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
+          // Mit "wie IMAP" nimmt resolveImapAuth bei OAuth-Konten immer das Token,
+          // auch wenn ein Passwort mitkommt.
+          const oauthToken = useImap && usesOAuthLogin(acc);
+          if (
+            (!pass || oauthToken)
+            && (useImap !== Boolean(acc.smtp_use_imap_auth)
+              || !sameMailLogin(smtpLogin(acc), {
+                host: payload.host,
+                port: payload.port,
+                tls: smtpTransportSecurity(payload.secure, !payload.secure && (payload.tls ?? true)),
+                user: payload.user,
+              }))
+          ) {
+            return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+          }
           if (useImap) {
             const { resolveImapAuth } = await import('../email/email-imap-auth.js');
             const auth = await resolveImapAuth(acc);
@@ -1392,6 +1639,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           host: payload.host,
           port: payload.port,
           secure: payload.secure,
+          tls: payload.tls,
           user: payload.user,
           pass: pass || undefined,
           accessToken,
@@ -1399,7 +1647,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      // Kontoverwaltung wie beim IMAP-Test (E16): nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -1497,14 +1746,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return { categoryId: getMessageCategoryId(messageId) };
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   // M:N category assignments (drag-drop adds, ×-chip removes, multi-select dialog).
@@ -1520,7 +1769,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId,
         }));
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
   disposers.push(
@@ -1543,7 +1792,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { added: false, alreadyAssigned: true };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
   disposers.push(
@@ -1553,7 +1802,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { messageId: number; categoryId: number },
       ) => removeMessageCategoryAssignment(payload.messageId, payload.categoryId),
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
   disposers.push(
@@ -1566,7 +1815,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageCategoriesExact(payload.messageId, payload.categoryIds ?? []);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1577,7 +1826,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listCategoryCountsForMailScope(accountId, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1588,7 +1837,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return getMailFolderCountsForScope(accountId, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1599,7 +1848,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         addInternalNote(payload.messageId, payload.body);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1617,7 +1866,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1625,13 +1874,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteInternalNote, async (_event: IpcMainInvokeEvent, noteId: number) => {
       deleteInternalNote(noteId);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListInternalNotes, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listInternalNotes(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -1639,7 +1888,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListCannedResponses,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listCannedResponses(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1667,7 +1916,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const id = createCannedResponse(payload.title, payload.body, scopeOpts);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1675,7 +1924,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteCannedResponse, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteCannedResponse(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -1683,7 +1932,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListAiPrompts,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listAiPrompts(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1725,7 +1974,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1733,7 +1982,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteAiPrompt, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteAiPrompt(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -1748,7 +1997,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           ? ({ success: true as const } as const)
           : ({ success: false as const, error: 'Verschieben nicht möglich' } as const);
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1800,7 +2049,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListAiProfiles, async () => {
       await ensureDefaultAiProfiles();
-      return listAiProfiles();
+      // Zusaetzlich die Felder, die der Server-Client liefert (mapAiProfileRecord):
+      // das KI-Panel liest baseUrl, isDefault und hasApiKey, um bei einem
+      // Hostwechsel einen neuen Key zu verlangen.
+      return Promise.all(
+        listAiProfiles().map(async (p) => ({
+          ...p,
+          baseUrl: p.base_url,
+          embeddingModel: p.embedding_model,
+          isDefault: p.is_default === 1,
+          sortOrder: p.sort_order,
+          hasApiKey: await profileHasApiKey(p.id),
+        })),
+      );
     }, { logger }),
   );
 
@@ -1823,6 +2084,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await ensureDefaultAiProfiles();
         let profileId = payload.id;
         if (profileId != null && profileId > 0) {
+          // Wie auf dem Server (F-A4-02): der gespeicherte Key geht nie an einen neuen Host.
+          if (await aiProfileMoveNeedsNewApiKey(profileId, payload)) {
+            return {
+              success: false as const,
+              error: 'Zugangsdaten bei Serverwechsel neu eingeben: API-Key erforderlich (Base-URL oder Anbieter geändert)',
+            };
+          }
           updateAiProfile(profileId, {
             label: payload.label,
             provider: payload.provider,
@@ -1903,7 +2171,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { accountId: number; teamMemberId?: string }) => {
         return { html: getComposeSignatureHtml(payload.accountId, payload.teamMemberId) };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1923,7 +2191,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         saveAccountSignature(payload.accountId, payload.signatureHtml);
         return { success: true as const };
       },
-      { logger },
+      // Kontoverwaltung wie UpdateAccount (E16); Server: mail.account.manage.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -1971,17 +2240,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const prompts = listAiPrompts();
         const p = prompts.find((x) => x.id === payload.promptId);
         if (!p) return { success: false as const, error: 'Prompt nicht gefunden' };
-        let user = p.user_template.replace(/\{\{text\}\}/g, payload.text);
         let cust: EmailAiCustomerTemplateContext | null = null;
         if (payload.customerId) {
           cust = getEmailAiCustomerTemplateContext(payload.customerId);
         }
+        const values: Record<string, string> = { text: payload.text };
         if (cust) {
-          user = user
-            .replace(/\{\{customer\.name\}\}/g, cust.name ?? '')
-            .replace(/\{\{customer\.firstName\}\}/g, cust.firstName ?? '')
-            .replace(/\{\{customer\.email\}\}/g, cust.email ?? '');
+          values['customer.name'] = cust.name ?? '';
+          values['customer.firstName'] = cust.firstName ?? '';
+          values['customer.email'] = cust.email ?? '';
         }
+        // Single pass with a callback: the compose text is inserted literally ($-patterns
+        // stay text) and is never rescanned, so placeholders inside it cannot expand.
+        const user = p.user_template.replace(
+          /\{\{(text|customer\.name|customer\.firstName|customer\.email)\}\}/g,
+          (match, key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key]! : match),
+        );
         try {
           const profileId = resolvePromptProfileId(p);
           const out = await runChatCompletion(
@@ -2008,7 +2282,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetReplySuggestion,
       async (_event: IpcMainInvokeEvent, messageId: number) => getReplySuggestion(messageId),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2025,7 +2299,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2075,7 +2349,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return generateAndStoreReplySuggestion(payload.messageId, opts);
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2086,14 +2360,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageCustomerId(payload.messageId, payload.customerId);
         return { success: true as const };
       },
-      { logger }),
+      { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.SoftDeleteMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       setMessageSoftDeleted(messageId, true);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -2113,7 +2387,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2138,7 +2412,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2164,7 +2438,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2190,7 +2464,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2208,7 +2482,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2233,7 +2507,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2251,7 +2525,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2259,7 +2533,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.RestoreMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       setMessageSoftDeleted(messageId, false);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -2269,7 +2543,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageArchived(payload.messageId, payload.archived);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2283,7 +2557,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const, ...preview };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2303,7 +2577,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         );
         return { success: true as const, restored: result.restored };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2327,7 +2601,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           fromJson: row.from_json ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2340,7 +2614,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetMailSecuritySettings,
-      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof saveMailSecuritySettings>[0]) => {
+      async (event: IpcMainInvokeEvent, payload: Parameters<typeof saveMailSecuritySettings>[0]) => {
+        // Wie auf dem Server (settings-routes handleMailSecuritySettings): Die
+        // Rspamd-Pruefung schickt jede eingehende Mail roh an diese URL, aendern
+        // duerfen sie nur Owner und Admin. Das Panel sendet die geladene URL bei
+        // jedem Speichern mit; unveraendert bleibt das fuer alle Rollen erlaubt.
+        if (payload.rspamdUrl !== undefined && rspamdUrlDiffersFromStored(payload.rspamdUrl)) {
+          const { role } = requireRealAuthSession(event);
+          if (role !== 'owner' && role !== 'admin') {
+            throw new Error('Die Rspamd-URL darf nur von Administratoren geändert werden');
+          }
+        }
         saveMailSecuritySettings(payload);
         return { success: true as const };
       },
@@ -2354,7 +2638,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload?: number | 'all') => {
         return listSpamListEntries(payload ?? 'all');
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2369,7 +2653,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2382,7 +2666,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2413,7 +2697,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           spamDecidedAt: row.spam_decided_at ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2437,7 +2721,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           spamDecisionSource: r.spam?.source ?? updated?.spam_decision_source ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2468,7 +2752,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           clearTimeout(timer);
         }
       },
-      { logger },
+      // Ruft eine frei waehlbare URL ab; auf dem Server ebenfalls nur fuer Admins.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2501,7 +2786,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      // Bewusst 'ro': Gelesen markieren ist kosmetisch; alle anderen Mutationen verlangen 'rw'.
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2517,7 +2803,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageDoneLocal(payload.messageId, payload.done);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2528,7 +2814,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual' });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2545,7 +2831,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2560,12 +2846,36 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (result.canceled || result.filePaths.length === 0) {
           return { success: true as const, paths: [] as string[] };
         }
-        return { success: true as const, paths: result.filePaths };
+        // C-A30 (G12): Nur so gewaehlte Dateien darf dieses Fenster anhaengen.
+        const { sessionId } = requireAuthSession(event);
+        return {
+          success: true as const,
+          paths: grantComposeAttachmentPaths(event.sender.id, sessionId, result.filePaths),
+        };
       },
       { logger },
     ),
   );
 
+  // C-A30 (G12): Drag-and-drop. Nur der Preload ruft diesen Kanal auf, mit Pfaden
+  // aus webUtils.getPathForFile (PreloadOnlyInvokeChannels); freigegeben werden
+  // nur vorhandene regulaere Dateien.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RegisterDroppedComposeAttachments,
+      async (event: IpcMainInvokeEvent, payload: { paths: string[] }) => {
+        const { sessionId } = requireAuthSession(event);
+        return {
+          success: true as const,
+          paths: grantComposeAttachmentPaths(event.sender.id, sessionId, payload.paths),
+        };
+      },
+      { logger },
+    ),
+  );
+
+  // G1: fuehrt alle aktiven Inbound-Workflows erneut ueber alle Konten aus —
+  // nur Owner/Admin (Server: workflows.manage).
   disposers.push(
     registerIpcHandler(IPCChannels.Email.BackfillInboundWorkflows, async () => {
       const pageSize = 500;
@@ -2582,7 +2892,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         offset += pageSize;
       }
       return { success: true as const, processed };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -2627,13 +2937,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageAssignedTo(payload.messageId, payload.teamMemberId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetGoogleOAuthApp, async () => {
-      return { success: true as const, ...getGoogleOAuthAppSettings() };
+    registerIpcHandler(IPCChannels.Email.GetGoogleOAuthApp, async (event: IpcMainInvokeEvent) => {
+      return oauthAppSettingsForCaller(event, getGoogleOAuthAppSettings());
     }, { logger }),
   );
 
@@ -2641,10 +2951,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetGoogleOAuthApp,
       async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
-        setGoogleOAuthAppSettings(payload);
+        setGoogleOAuthAppSettings(oauthAppSettingsUpdate(payload));
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2697,7 +3007,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      // Ersetzt den Refresh-Token des Kontos: Kontoverwaltung wie UpdateAccount (E16), Server requireAdmin.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2723,6 +3034,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             imap_tls: payload.tls ? 1 : 0,
             imap_username: user || acc.imap_username,
           };
+          if (payload.password.trim().length === 0 && !sameMailLogin(pop3Login(acc), pop3Login(testAcc))) {
+            return { success: false as const, error: STORED_LOGIN_CHANGED_ERROR };
+          }
           const pw =
             payload.password.trim().length > 0
               ? payload.password
@@ -2759,7 +3073,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const r = await testPop3Connection(fakeAcc as EmailAccountRow, payload.password);
         return r.ok ? { success: true as const } : { success: false as const, error: r.error };
       },
-      { logger },
+      // Kontoverwaltung wie beim IMAP-Test (E16): nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2802,7 +3117,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListMessageAttachments, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listAttachmentsForMessage(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -2823,7 +3138,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await fs.promises.copyFile(row.storage_path, filePath);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2849,7 +3164,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (err) return { success: false as const, error: err };
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2863,7 +3178,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           data: getEmailReportingSnapshot(accountId, access),
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2874,13 +3189,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const r = await exportEmailGdprPackage({ skipAttachments: Boolean(payload?.skipAttachments) });
         return r;
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetMicrosoftOAuthApp, async () => {
-      return { success: true as const, ...getMicrosoftOAuthAppSettings() };
+    registerIpcHandler(IPCChannels.Email.GetMicrosoftOAuthApp, async (event: IpcMainInvokeEvent) => {
+      return oauthAppSettingsForCaller(event, getMicrosoftOAuthAppSettings());
     }, { logger }),
   );
 
@@ -2888,10 +3203,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetMicrosoftOAuthApp,
       async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
-        setMicrosoftOAuthAppSettings(payload);
+        setMicrosoftOAuthAppSettings(oauthAppSettingsUpdate(payload));
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2915,7 +3230,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return consumeAllowedOnceRemoteContentLocal(payload.messageId);
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'ro', requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -2933,7 +3248,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       ) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
+        if (!canAccessEmailAccount(event, row.account_id, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
@@ -2955,7 +3270,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setLocalRemoteContentPolicy(payload.messageId, payload.policy, remember);
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -2976,7 +3291,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           trustedDomains: settings.trustedDomains,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2986,7 +3301,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
+        if (!canAccessEmailAccount(event, row.account_id, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         if (payload.action === 'send') {
@@ -3015,16 +3330,21 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         logLocalReadReceiptDeclined(payload.messageId);
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true },
     ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListThreadMessages,
-      async (_event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
+      async (event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
         const { listThreadMessages } = await import('../email/email-thread-aggregate.js');
-        return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
+        return listThreadMessages(
+          payload.threadId,
+          payload.limit ?? 50,
+          payload.offset ?? 0,
+          mailScopeSessionFromEvent(event),
+        );
       },
       { logger },
     ),
@@ -3049,7 +3369,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -3063,16 +3383,16 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const, threadId: r.threadId };
       },
-      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListThreadAliasWarnings,
-      async () => {
+      async (event: IpcMainInvokeEvent) => {
         const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics.js');
-        return listPendingThreadAliasWarnings(50);
+        return listPendingThreadAliasWarnings(50, mailScopeSessionFromEvent(event));
       },
       { logger, requireAuth: true },
     ),
@@ -3097,7 +3417,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           access,
         );
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -3133,7 +3453,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      // Ersetzt den Refresh-Token des Kontos: Kontoverwaltung wie UpdateAccount (E16), Server requireAdmin.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 

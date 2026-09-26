@@ -5,6 +5,22 @@ import type { RegisteredWorkflowNode, WorkflowContext } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
+/**
+ * Kunden-ID aus der Variable customer.id — CRM-Trigger (Deal-Stufe, Aufgabe
+ * fällig, Termin, Neukunde) laufen ohne Nachricht und liefern den Kunden nur
+ * dort. Parität zum Server (positiveIntegerVariable(context.variables['customer.id'])).
+ */
+function customerIdFromVariables(ctx: WorkflowContext): number | null {
+  const raw = ctx.variables['customer.id'];
+  const n =
+    typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string' && /^\d+$/.test(raw.trim())
+        ? Number(raw.trim())
+        : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export function registerCrmNodes(register: Reg): void {
   register({
     type: 'crm.link_customer',
@@ -13,8 +29,13 @@ export function registerCrmNodes(register: Reg): void {
     canvasType: 'action',
     execute: async (ctx) => {
       if (ctx.messageId == null) return { status: 'skipped' };
-      if (!ctx.dryRun) tryLinkMessageToCustomer(ctx.messageId);
-      return { status: 'ok' };
+      if (ctx.dryRun) return { status: 'ok' };
+      // Wie der Server den verknüpften Kunden weitergeben, sonst sieht ein
+      // folgender crm.create_task nur den alten Nachrichten-Stand ohne Kunde.
+      const customerId = tryLinkMessageToCustomer(ctx.messageId);
+      return customerId
+        ? { status: 'ok', variables: { 'customer.id': customerId } }
+        : { status: 'ok' };
     },
   });
 
@@ -25,7 +46,8 @@ export function registerCrmNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { title: 'E-Mail bearbeiten', priority: 'medium', daysUntilDue: 3 },
     execute: async (ctx, config) => {
-      const customerId = ctx.message?.customer_id ?? Number(config.customerId ?? 0);
+      const customerId =
+        ctx.message?.customer_id ?? (Number(config.customerId ?? 0) || customerIdFromVariables(ctx));
       if (!customerId) return { status: 'skipped', message: 'Kein Kunde verknüpft' };
       const title = String(config.title ?? 'E-Mail bearbeiten');
       const priority = String(config.priority ?? 'medium');
@@ -50,7 +72,7 @@ export function registerCrmNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { activityType: 'email', title: 'Workflow' },
     execute: async (ctx, config) => {
-      const customerId = ctx.message?.customer_id ?? null;
+      const customerId = ctx.message?.customer_id ?? customerIdFromVariables(ctx);
       if (!customerId) return { status: 'skipped' };
       if (ctx.dryRun) return { status: 'ok' };
       getDb()

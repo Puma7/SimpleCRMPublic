@@ -30,20 +30,25 @@ export function createPostgresMailSyncPostProcessor(
   return {
     async afterSync(input) {
       const suppressed = new Set(uniquePositiveIds(input.result?.automatedEvidenceMessageIds ?? []));
+      // F-A7b-04: Bestand aus dem Erst-Sync: Spam-Scoring ja, sonst keine Automatik.
+      const historical = new Set(uniquePositiveIds(input.result?.historicalMessageIds ?? []));
       const postSyncMessageIds = (await resolvePostSyncMessageIds(options, { ...input, limit }))
-        .filter((messageId) => !suppressed.has(messageId));
-      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
+        .filter((messageId) => !suppressed.has(messageId) && !historical.has(messageId));
+      const spamScoringMessageIds = uniquePositiveIds([
+        ...inboundSpamScoringMessageIds(input.result),
+        ...historical,
+      ]);
 
       for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.spam.score',
-          payload: withPostSyncProvenance(input.actorUserId, {
+          payload: withPostSyncProvenance({
             workspaceId: input.workspaceId,
             messageId,
             applyStatus: true,
             runSecurityCheck: true,
-            enqueueInboundWorkflows: !suppressed.has(messageId),
+            enqueueInboundWorkflows: !suppressed.has(messageId) && !historical.has(messageId),
           }),
           maxAttempts: 3,
         });
@@ -54,7 +59,7 @@ export function createPostgresMailSyncPostProcessor(
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'ai.reply_suggestion',
-          payload: withPostSyncProvenance(input.actorUserId, {
+          payload: withPostSyncProvenance({
             workspaceId: input.workspaceId,
             messageId,
             trigger: 'inbound',
@@ -70,7 +75,7 @@ export function createPostgresMailSyncPostProcessor(
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.vacation.auto_reply',
-          payload: withPostSyncProvenance(input.actorUserId, {
+          payload: withPostSyncProvenance({
             workspaceId: input.workspaceId,
             messageId,
           }),
@@ -82,8 +87,15 @@ export function createPostgresMailSyncPostProcessor(
   };
 }
 
-function withPostSyncProvenance(actorUserId: string | undefined, payload: Record<string, unknown>): Record<string, unknown> {
-  return actorUserId ? { ...payload, actorUserId } : buildTrustedServiceJobPayload(payload);
+// Post-sync follow-ups process the messages that just arrived, exactly as the
+// scheduler's own sync would. Syncing only needs mail.metadata.read, while these
+// jobs need triage, draft or send rights; attributing them to the user who
+// clicked "Aktualisieren" made them fail authorization for most profiles, and
+// the new messages were then never scored, routed or answered. Who triggered the
+// fetch changes the timing, not the processing, so they always run as the
+// trusted service.
+function withPostSyncProvenance(payload: Record<string, unknown>): Record<string, unknown> {
+  return buildTrustedServiceJobPayload(payload);
 }
 
 function inboundSpamScoringMessageIds(result: MailSyncJobResult | null): number[] {

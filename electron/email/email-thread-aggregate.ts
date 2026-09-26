@@ -9,6 +9,7 @@ import type { AccountMailView, EmailMessageRow } from './email-store';
 import { listMessagesForMailScope } from './email-store';
 import { createTicketCodeForAccount } from './email-ticket';
 import { canonicalThreadId, resolveThreadListKey } from './email-thread-resolve';
+import { accountAccessSql } from './mail-scope-access';
 
 const MAX_REF_IDS = 64;
 
@@ -129,19 +130,22 @@ export function listThreadMessages(
   threadId: string,
   limit = 50,
   offset = 0,
+  access?: import('./email-store.js').MailScopeSession,
 ): EmailMessageRow[] {
   const db = getDb();
   if (!db) return [];
   const canon = canonicalThreadId(threadId);
+  // Aliases can join threads across mailboxes; only the caller's accounts are listed.
+  const scope = accountAccessSql(db, access);
   return db
     .prepare(
       `SELECT m.* FROM ${EMAIL_MESSAGES_TABLE} m
-       WHERE m.thread_id = ? OR m.thread_id IN (
+       WHERE (m.thread_id = ? OR m.thread_id IN (
          SELECT alias_thread_id FROM ${EMAIL_THREAD_ALIASES_TABLE} WHERE canonical_thread_id = ?
-       )
+       ))${scope.sql}
        ORDER BY m.date_received ASC LIMIT ? OFFSET ?`,
     )
-    .all(canon, canon, limit, offset) as EmailMessageRow[];
+    .all(canon, canon, ...scope.params, limit, offset) as EmailMessageRow[];
 }
 
 export type ThreadListRow = {

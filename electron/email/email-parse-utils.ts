@@ -1,13 +1,17 @@
 export {
   addressJson,
   addressesFromRecipientJson,
+  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   ATTACHMENT_TEXT_MAX_CHARS,
   attachmentTextKind,
   capAttachmentText,
+  CID_INLINE_MIN_BUDGET_BYTES,
+  cidInlineBudgetBytes,
   decodeHtmlEntities,
   formatDate,
   formatMailparserHeaderValue,
+  inlineCidImages,
   isCorruptRawHeaders,
   normalizeAddressJson,
   parseAttachmentsMeta,
@@ -16,4 +20,5 @@ export {
   snippetFromParsed,
   type AttachmentTextKind,
   type CanonicalAddressJson,
+  type DocxZipLoader,
 } from '../../packages/core/src/email';

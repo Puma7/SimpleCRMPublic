@@ -6,6 +6,7 @@ import {
   revokeSession,
   revokeSessionsForUser,
   getSessionFromEvent,
+  setSessionRole,
   touchSession,
   type SessionRole,
 } from '../auth/session-store';
@@ -28,6 +29,7 @@ import {
   verifyLocalAuthAuditChain,
 } from '../auth/auth-store';
 import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../auth/login-guard';
+import { revokeComposeAttachmentGrants } from '../email/compose-attachment-grants';
 
 interface AuthRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -35,6 +37,29 @@ interface AuthRouterOptions {
 }
 
 const sessionCleanupSenders = new WeakSet<object>();
+
+/**
+ * Paritaet zum Server (F-A1-02): Dort beendet ein Passwort-Reset die Sitzungen des
+ * Ziels, eine Deaktivierung macht sie ungueltig und die Rolle wird je Anfrage neu
+ * gelesen. Eine Desktop-Session haelt die Rolle aus dem Login fest, deshalb enden
+ * hier nach Rollenwechsel, Deaktivierung oder Passwort-Reset die Sessions des Ziels.
+ * Am eigenen Konto bleibt das aktuelle Fenster wie auf dem Server (actorSessionId)
+ * erhalten und bekommt die neue Rolle; nur das Deaktivieren beendet auch es.
+ */
+function revokeSessionsAfterUserSave(
+  actor: { webContentsId: number; userId: string },
+  before: { id: string; role: string; is_active: number },
+  passwordSet: boolean,
+): void {
+  const after = listLocalAuthUsers().find((user) => user.id === before.id);
+  if (!after) return;
+  const roleChanged = after.role !== before.role;
+  const inactive = after.is_active !== 1;
+  if (!roleChanged && !inactive && !passwordSet) return;
+  const keep = before.id === actor.userId && !inactive ? actor.webContentsId : undefined;
+  revokeSessionsForUser(before.id, keep);
+  if (keep !== undefined && roleChanged) setSessionRole(keep, after.role as SessionRole);
+}
 
 function isMainRenderer(
   event: { sender: { id: number } },
@@ -108,6 +133,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       const session = getSessionFromEvent(event);
       recordLocalLogout(session?.userId ?? null);
       revokeSession(event.sender.id);
+      revokeComposeAttachmentGrants(event.sender.id);
       return { success: true as const };
     }, { logger }),
   );
@@ -191,7 +217,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
     registerIpcHandler(
       IPCChannels.Auth.SaveUser,
       async (
-        _event,
+        event,
         payload: {
           id?: string;
           username: string;
@@ -201,7 +227,21 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
           isActive?: boolean;
         },
       ) => {
-        return saveLocalAuthUser(payload);
+        // Die Rolle des Handelnden kommt aus der Session, nie aus dem Renderer (G3).
+        const session = getSessionFromEvent(event);
+        if (!session) {
+          return { success: false as const, error: 'Nicht angemeldet' };
+        }
+        const before = payload.id ? listLocalAuthUsers().find((user) => user.id === payload.id) : undefined;
+        const result = saveLocalAuthUser(payload, session.role);
+        if (result.success && before) {
+          revokeSessionsAfterUserSave(
+            { webContentsId: event.sender.id, userId: session.userId },
+            before,
+            Boolean(payload.passphrase),
+          );
+        }
+        return result;
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
@@ -212,10 +252,13 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       IPCChannels.Auth.DeleteUser,
       async (event, payload: { id: string }) => {
         const session = getSessionFromEvent(event);
-        if (session && session.userId === payload.id) {
+        if (!session) {
+          return { success: false as const, error: 'Nicht angemeldet' };
+        }
+        if (session.userId === payload.id) {
           return { success: false as const, error: 'Sie können sich nicht selbst löschen' };
         }
-        const result = deleteLocalAuthUser(payload);
+        const result = deleteLocalAuthUser(payload, session.role);
         // Drop any open sessions for the deleted user so an already-authenticated
         // window loses IPC access immediately instead of at the idle timeout.
         if (result.success) revokeSessionsForUser(payload.id);
@@ -233,11 +276,14 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!session) {
           return { success: false as const, error: 'Nicht angemeldet' };
         }
-        return changeLocalAuthPassword({
+        const result = changeLocalAuthPassword({
           userId: session.userId,
           currentPassword: payload.currentPassword,
           newPassword: payload.newPassword,
         });
+        // Wie changePassword auf dem Server: andere Sitzungen des Nutzers enden, die aktuelle bleibt.
+        if (result.success) revokeSessionsForUser(session.userId, event.sender.id);
+        return result;
       },
       { logger, requireAuth: true, requireRealSession: true },
     ),

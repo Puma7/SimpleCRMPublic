@@ -21,6 +21,8 @@ declare global {
       send: (channel: string, data?: any) => void;
       receive: (channel: string, func: (...args: any[]) => void) => (() => void) | undefined; // Return type for cleanup
       removeAllListeners: (channel: string) => void;
+      /** Desktop: gibt abgelegte Dateien als Compose-Anhang frei (Pfade aus dem Preload). */
+      registerDroppedComposeAttachments?: (files: File[]) => Promise<string[]>;
       // Add other specific methods if they were exposed directly (though invoke is preferred)
     };
   }

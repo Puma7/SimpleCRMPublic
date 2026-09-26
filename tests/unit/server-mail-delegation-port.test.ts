@@ -292,6 +292,93 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toMatchObject({ ok: false, code: 'privilege_escalation' });
   });
 
+  // C-A58: POST/PATCH mit expliziten Filtern prueften nur die neuen Filter, nicht das bestehende Binding.
+  test('a constrained manager cannot narrow a binding beyond its own authority via POST or PATCH', async () => {
+    // Sonst engt der auf Kategorie 5 beschraenkte Manager die unbeschraenkte
+    // Delegation erst auf Kategorie 5 ein und loescht sie danach — genau das,
+    // was Loeschpfad und DELETE-Route direkt verweigern.
+    const managedCategory = {
+      binding_id: 501,
+      kind: 'category',
+      mode: 'allow',
+      assignment_mode: null,
+      value_ids: [5],
+      value_texts: null,
+    };
+    const fixtures = {
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: {
+        id: 901,
+        workspace_id: WORKSPACE,
+        subject_type: 'user',
+        subject_id: AGENT,
+        resource_type: 'account',
+        account_id: 101,
+        folder_id: null,
+        message_id: null,
+        updated_at: new Date('2026-07-19T12:00:00.000Z'),
+      },
+      affectedUsers: [{ id: AGENT }],
+      actorPermissionBindings: [
+        { bindingId: 501, permission: 'mail.delegation.manage' as const },
+        { bindingId: 502, permission: 'mail.metadata.read' as const },
+      ],
+      actorAuthorityConstraints: [managedCategory],
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+    const actor = { userId: ACTOR, isOwner: false, isAdmin: false };
+    const narrowed = {
+      assignmentMode: null,
+      categoryAllowIds: [5],
+      categoryExcludeIds: [],
+      tagAllowValues: [],
+      tagExcludeValues: [],
+    };
+
+    const viaPost = createDelegationTransaction(fixtures);
+    await expect(portFor(viaPost).replaceBinding({
+      workspaceId: WORKSPACE,
+      actor,
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: narrowed,
+    })).resolves.toMatchObject({ ok: false, code: 'privilege_escalation' });
+
+    const viaPatch = createDelegationTransaction(fixtures);
+    await expect(portFor(viaPatch).replaceBindingById({
+      workspaceId: WORKSPACE,
+      actor,
+      bindingId: 901,
+      permissions: ['mail.metadata.read'],
+      constraints: narrowed,
+    })).resolves.toMatchObject({ ok: false, code: 'privilege_escalation' });
+
+    for (const trx of [viaPost, viaPatch]) {
+      expect(trx.calls).not.toContainEqual(['deleteFrom', 'mail_acl_binding_permissions']);
+      expect(trx.calls).not.toContainEqual(['insertInto', 'mail_acl_binding_constraints']);
+    }
+
+    // Gegenprobe: ein Binding innerhalb der eigenen Autoritaet bleibt ersetzbar.
+    const inside = createDelegationTransaction({
+      ...fixtures,
+      existingConstraints: [{ ...managedCategory, binding_id: 901 }],
+    });
+    await expect(portFor(inside).replaceBindingById({
+      workspaceId: WORKSPACE,
+      actor,
+      bindingId: 901,
+      permissions: ['mail.metadata.read'],
+      constraints: narrowed,
+    })).resolves.toMatchObject({ ok: true });
+  });
+
   test('a constrained manager may delete a binding inside its authority', async () => {
     // Kein Ueberschiessen: dasselbe Filterprofil wie die eigene Autoritaet.
     const constraintRows = [{

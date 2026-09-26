@@ -30,6 +30,16 @@ type PeerKey = {
   source: string
 }
 
+/** Older imports stored the user-id object ('[object Object]') instead of the e-mail. */
+function peerKeyNeedsReimport(email: string): boolean {
+  return !email.includes("@")
+}
+
+/** Fingerprint in Vierergruppen, zum Vorlesen beim Abgleich mit dem Absender. */
+function formatFingerprint(fingerprint: string): string {
+  return fingerprint.toUpperCase().replace(/(.{4})(?=.)/g, "$1 ")
+}
+
 export function PgpPanel() {
   const [identities, setIdentities] = useState<Identity[]>([])
   const [peers, setPeers] = useState<PeerKey[]>([])
@@ -230,20 +240,54 @@ export function PgpPanel() {
         <ul className="divide-y text-sm">
           {peers.map((p) => (
             <li key={p.id} className="flex items-center justify-between py-2">
-              <span>
-                {p.email} <span className="text-muted-foreground">({p.trust_level})</span>
-              </span>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={async () => {
-                  await invokeRenderer(IPCChannels.Pgp.DeletePeerKey, { id: p.id })
-                  void reload()
-                }}
-              >
-                Entfernen
-              </Button>
+              {peerKeyNeedsReimport(p.email) ? (
+                <span className="text-destructive">
+                  Schlüssel {p.fingerprint.slice(0, 16)}… ohne E-Mail gespeichert – bitte neu importieren
+                </span>
+              ) : (
+                <span>
+                  {p.email} <span className="text-muted-foreground">({p.trust_level})</span>
+                </span>
+              )}
+              <div className="flex items-center gap-1">
+                {/* Desktop: pgp:set-peer-key-trust (Owner/Admin). Der Server hat dafuer noch keine Oberflaeche. */}
+                {!serverClientMode && !peerKeyNeedsReimport(p.email) ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      const verified = p.trust_level === "verified"
+                      if (!verified && !window.confirm(
+                        `Fingerprint mit ${p.email} auf einem anderen Weg (Telefon, persönlich) abgleichen:\n\n${formatFingerprint(p.fingerprint)}\n\nStimmt er überein? Dann gelten gültige Signaturen dieses Schlüssels als vertrauenswürdig.`,
+                      )) return
+                      try {
+                        await invokeRenderer(IPCChannels.Pgp.SetPeerKeyTrust, {
+                          id: p.id,
+                          trustLevel: verified ? "imported" : "verified",
+                        })
+                        toast.success(verified ? "Vertrauen entzogen" : "Schlüssel als verifiziert markiert")
+                        void reload()
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : "Vertrauensstatus nicht geändert")
+                      }
+                    }}
+                  >
+                    {p.trust_level === "verified" ? "Vertrauen entziehen" : "Als verifiziert markieren"}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={async () => {
+                    await invokeRenderer(IPCChannels.Pgp.DeletePeerKey, { id: p.id })
+                    void reload()
+                  }}
+                >
+                  Entfernen
+                </Button>
+              </div>
             </li>
           ))}
         </ul>

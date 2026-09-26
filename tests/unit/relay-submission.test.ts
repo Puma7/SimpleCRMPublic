@@ -2,6 +2,7 @@
  * @jest-environment node
  */
 import { normalizeEmailAddress } from '@simplecrm/core';
+import { simpleParser } from 'mailparser';
 
 import {
   createRelaySubmissionPipeline,
@@ -54,7 +55,6 @@ function relayConfig(overrides: Partial<SmtpRelayConfig> = {}): SmtpRelayConfig 
     maxRecipients: 50,
     maxMessageBytes: 26_214_400,
     rateLimitPerMin: 60,
-    allowArbitraryRecipients: false,
     followupWorkflowId: 7,
     ...overrides,
   };
@@ -200,6 +200,7 @@ function makePipeline(overrides: {
   smtpSend?: jest.Mock;
   sentCopyAppend?: jest.Mock;
   readSecret?: (input: unknown) => Promise<Buffer | null>;
+  create?: typeof createRelaySubmissionPipeline;
 } = {}) {
   const { store, submissions, persistInputs } = makeStore();
   const relayPort = overrides.relayPort ?? makeRelayPort();
@@ -208,7 +209,7 @@ function makePipeline(overrides: {
     ?? jest.fn(async (_input: ServerSmtpSendInput) => undefined);
   const sentCopyAppend = overrides.sentCopyAppend
     ?? jest.fn(async () => ({ ok: true as const, mailbox: 'Sent' }));
-  const pipeline = createRelaySubmissionPipeline({
+  const pipeline = (overrides.create ?? createRelaySubmissionPipeline)({
     store,
     relayPort,
     emailTracking: tracking,
@@ -364,6 +365,61 @@ describe('submitRelay tracked path', () => {
     expect(outgoing).not.toContain('kunde-a@example.com');
     expect(outgoing).not.toContain('kunde-b@example.com');
     expect(outgoing).toContain('To: undisclosed-recipients:;');
+  });
+
+  // C-A60: Der Tracking-Rebuild serialisierte den Anzeigenamen ungequotet neu, sodass aus einem Namen mit Komma und Adresse eine zweite, nicht freigegebene From-Adresse wurde.
+  test.each([
+    ['comma and address', '"ceo@bank.example, Team" <sales@acme.test>', 'ceo@bank.example, Team'],
+    [
+      'encoded-word',
+      `=?UTF-8?B?${Buffer.from('ceo@bank.example, Team', 'utf8').toString('base64')}?= <sales@acme.test>`,
+      'ceo@bank.example, Team',
+    ],
+    ['escaped quotes', '"ceo@bank.example, \\"Team\\"" <sales@acme.test>', 'ceo@bank.example, "Team"'],
+    ['backslash', '"ceo@bank.example\\\\, Team" <sales@acme.test>', 'ceo@bank.example\\, Team'],
+    ['angle brackets', '"Team <ceo@bank.example>, x" <sales@acme.test>', 'Team <ceo@bank.example>, x'],
+  ])('a display name with %s stays one validated From mailbox in the rebuilt message', async (
+    _label,
+    fromHeader,
+    expectedName,
+  ) => {
+    const { pipeline, smtpSend } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({
+      from: fromHeader,
+      to: '"kunde@evil.example, Kunde" <kunde@example.com>',
+      subject: 'Mahnung 2',
+    })));
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, tracked: true }));
+    const parsed = await simpleParser(Buffer.from(capturedRfc822(smtpSend), 'latin1'));
+    expect(parsed.from?.value).toEqual([{ address: 'sales@acme.test', name: expectedName }]);
+    expect(parsed.to?.value).toEqual([{ address: 'kunde@example.com', name: 'kunde@evil.example, Kunde' }]);
+  });
+
+  // C-A60: Ohne erneute Pruefung haette ein Rebuild mit zusaetzlicher From-Adresse den Absender-Check nachtraeglich unterlaufen.
+  test('a rebuilt From that names more than the validated sender is refused instead of sent', async () => {
+    let create: typeof createRelaySubmissionPipeline | undefined;
+    jest.isolateModules(() => {
+      jest.doMock('@simplecrm/core', () => {
+        const actual = jest.requireActual('@simplecrm/core') as typeof import('@simplecrm/core');
+        return {
+          ...actual,
+          buildComposeRfc822: (input: Parameters<typeof actual.buildComposeRfc822>[0]) =>
+            actual.buildComposeRfc822({ ...input, from: `ceo@bank.example, ${input.from}` }),
+        };
+      });
+      create = (require('../../packages/server/src/relay-submission') as {
+        createRelaySubmissionPipeline: typeof createRelaySubmissionPipeline;
+      }).createRelaySubmissionPipeline;
+    });
+    const { pipeline, smtpSend, submissions } = makePipeline({ create });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, code: 'from_mismatch', retryable: false }));
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(submissions[0]!.status).toBe('failed');
   });
 });
 
@@ -686,6 +742,44 @@ describe('submitRelay header-From spoofing check', () => {
     });
     expect(smtpSend).not.toHaveBeenCalled();
     expect(store.persistMessage).not.toHaveBeenCalled();
+  });
+
+  // F-A3b-02: a duplicate From header or group syntax passed the "exactly one From" check (the parser keeps
+  // only the last From and drops group entries) while the pass-through sent the original header lines.
+  test.each([
+    ['a duplicate From header with the spoofed one first', erpMessage({
+      from: 'CEO <ceo@bank.example>',
+      extraHeaders: ['From: Buchhaltung <sales@acme.test>'],
+    })],
+    ['a duplicate From header written with whitespace before the colon', Buffer.concat([
+      Buffer.from('From : CEO <ceo@bank.example>\r\n', 'utf8'),
+      erpMessage(),
+    ])],
+    ['a group entry next to the allowed mailbox', erpMessage({
+      from: 'Buchhaltung <sales@acme.test>, Grp: evil@example.test;',
+    })],
+  ])('rejects %s', async (_label, rfc822) => {
+    const { pipeline, smtpSend, store } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(rfc822));
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'from_mismatch',
+      message: expect.any(String),
+      retryable: false,
+    });
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(store.persistMessage).not.toHaveBeenCalled();
+  });
+
+  test('accepts one allowed From mailbox with a quoted or encoded display name', async () => {
+    for (const from of ['"Buchhaltung, Acme" <sales@acme.test>', '=?utf-8?Q?B=C3=BCro?= <sales@acme.test>']) {
+      const { pipeline, smtpSend } = makePipeline();
+      const result = await pipeline.submitRelay(submitInput(erpMessage({ from })));
+      expect([from, result.ok]).toEqual([from, true]);
+      expect(smtpSend).toHaveBeenCalledTimes(1);
+    }
   });
 
   test('rejects a header From that resolves to a different account than the envelope From', async () => {

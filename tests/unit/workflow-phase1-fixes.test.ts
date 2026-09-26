@@ -54,7 +54,7 @@ import {
 } from '../../electron/email/email-store';
 import { releaseOutboundHoldForDraft } from '../../electron/workflow/draft-send-prep';
 import { syncInboxImap } from '../../electron/email/email-imap-sync';
-import { interpolateTemplate } from '../../electron/workflow/context';
+import { buildStringContextFromOutbound, interpolateTemplate } from '../../electron/workflow/context';
 import { registerEmailNodes } from '../../electron/workflow/nodes/email-nodes';
 import { registerIntegrationNodes } from '../../electron/workflow/nodes/integration-nodes';
 
@@ -396,5 +396,21 @@ describe('Katalog-Parität v1 (Core-Katalog ↔ Electron-Registry)', () => {
       const coreKeys = Object.keys(core!.defaultConfig ?? {}).sort();
       expect(regKeys).toEqual(coreKeys);
     }
+  });
+});
+
+// F-N-redos-01: Der Outbound-Kontext strippte bodyHtml per /<[^>]+>/g; unverschlossene '<' blockierten den Main-Prozess quadratisch.
+describe('buildStringContextFromOutbound HTML strip', () => {
+  test('stays linear and keeps the stripped text in combined_text', () => {
+    const started = Date.now();
+    const ctx = buildStringContextFromOutbound({
+      messageId: 1,
+      subject: 'Test',
+      bodyText: '',
+      bodyHtml: `<p>Hallo</p>Welt${'<'.repeat(60_000)}`,
+      to: 'kunde@example.com',
+    });
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(ctx.combined_text).toContain('Hallo Welt');
   });
 });

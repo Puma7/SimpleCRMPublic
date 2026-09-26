@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import LoginPage from '@/app/login/page';
 import { CAPTCHA_CHALLENGE_STORAGE_KEY } from '@/components/auth/login-captcha-gate';
 import {
+  BROWSER_DEPLOY_CONFIG_STORAGE_KEY,
   configureRendererTransport,
   createHttpRendererTransport,
   resetRendererTransportForTests,
@@ -119,6 +120,32 @@ describe('LoginPage server-client mode', () => {
     expect(await screen.findByText('Server nicht erreichbar')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Betriebsmodus oder Server-Verbindung ändern' }));
     await waitFor(() => expect(localInvoke).toHaveBeenCalledWith('setup:reset-deploy-config'));
+  });
+
+  // F-A11b-04: Im Browser gab es keinen Weg, eine gespeicherte (ggf. fremde) Server-Verbindung zu verwerfen.
+  test('offers a browser reset of the stored server connection on the login page', async () => {
+    window.localStorage.setItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      mode: 'server-client',
+      selectedAt: '2026-09-01T00:00:00.000Z',
+      server: { baseUrl: 'https://crm.example.com' },
+    }));
+    global.fetch = jest.fn().mockImplementation((url: string) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({ data: defaultLoginConfig }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Server-Verbindung zurücksetzen' }));
+    expect(window.localStorage.getItem(BROWSER_DEPLOY_CONFIG_STORAGE_KEY)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Betriebsmodus oder Server-Verbindung ändern' })).not.toBeInTheDocument();
   });
 
   test('validates email before server initial setup submit', async () => {

@@ -32,6 +32,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
+import { extractDocxTextInWorker } from './mail-attachment-docx';
 
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_POLL_INTERVAL_MS = 30_000;
@@ -66,9 +67,9 @@ const EXTRACTABLE_COLUMNS = [
 ] as const;
 
 /**
- * Reject after ms. NB: the underlying parse promise cannot be cancelled and
- * may keep running detached — acceptable, the row is marked as tried and the
- * pipeline moves on.
+ * Reject after ms. NB: a pdf parse cannot be cancelled and may keep running
+ * detached — acceptable, the row is marked as tried and the pipeline moves
+ * on. The docx worker is terminated at the same deadline.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -106,12 +107,10 @@ export async function extractAttachmentTextFromBuffer(
         await parser.destroy().catch(() => undefined);
       }
     }
-    case 'docx': {
+    case 'docx':
       await validateDocxArchive(buf);
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      return capAttachmentText(result.value ?? '');
-    }
+      // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
+      return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
   }
 }
 
@@ -195,6 +194,9 @@ export async function extractTextForAttachmentRow(
       return false;
     }
     const buf = await readFile(resolvedPath);
+    // Mark as tried before parsing: if a parse takes the process down, the
+    // backfill must not pick the same row again after every restart.
+    await markExtracted(options, row, null);
     const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     await markExtracted(options, row, text.length > 0 ? text : null);
     return text.length > 0;

@@ -77,6 +77,18 @@ describe('processNewMessagesAfterSync', () => {
     expect(mockMarkDone).toHaveBeenCalledWith(5);
   });
 
+  // F-A7b-04: Der Erst-Sync reichte Bestandsmails ohne Kennzeichen an die Inbound-Workflows weiter.
+  test('passes the historical flag of a first sync to the inbound run', async () => {
+    await processNewMessagesAfterSync(
+      1,
+      [{ localMsgId: 5, parsedAttachments: undefined, threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null } }],
+      undefined,
+      { historical: true },
+    );
+    expect(mockRunInbound).toHaveBeenCalledWith(5, expect.objectContaining({ historical: true }));
+    expect(mockMarkDone).toHaveBeenCalledWith(5);
+  });
+
   test('merges pending folder messages', async () => {
     mockPending.mockReturnValue([
       {
@@ -141,7 +153,8 @@ describe('processNewMessagesAfterSync', () => {
 
     await processNewMessagesAfterSync(1, [], 2);
 
-    expect(mockSimpleParser).toHaveBeenCalledWith(Buffer.from('raw mail'));
+    // C-A71: Auch die Wiederherstellung parste mit der unbegrenzten Standard-CID-Expansion.
+    expect(mockSimpleParser).toHaveBeenCalledWith(Buffer.from('raw mail'), { keepCidLinks: true });
     expect(mockPersist).toHaveBeenCalledWith(9, recoveredAttachments);
     expect(mockMarkDone).toHaveBeenCalledWith(9);
   });
@@ -206,6 +219,24 @@ describe('processNewMessagesAfterSync', () => {
     expect(mockHasCompleteStoredAttachments).toHaveBeenCalledWith(14, attachmentsJson);
     expect(mockPersist).toHaveBeenCalledWith(14, undefined);
     expect(mockMarkDone).toHaveBeenCalledWith(14);
+  });
+
+  // C-A59: Vom Sync schon gespeicherte Anhaenge kommen als leere Liste und loesen keine Wiederherstellung aus.
+  test('does not recover attachments that the sync already stored', async () => {
+    mockGetMessage.mockReturnValue({ id: 6, has_attachments: 1, raw_rfc822_b64: Buffer.from('raw').toString('base64') });
+
+    await processNewMessagesAfterSync(1, [
+      {
+        localMsgId: 6,
+        parsedAttachments: [],
+        threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null },
+      },
+    ]);
+
+    expect(mockHasCompleteStoredAttachments).not.toHaveBeenCalled();
+    expect(mockSimpleParser).not.toHaveBeenCalled();
+    expect(mockThread).toHaveBeenCalled();
+    expect(mockMarkDone).toHaveBeenCalledWith(6);
   });
 
   test('skips workflow when message row missing', async () => {

@@ -66,7 +66,7 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
-import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint } from '@simplecrm/core';
+import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint, replaceTags } from '@simplecrm/core';
 import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
@@ -137,13 +137,19 @@ function knowledgeSourcesLabel(
  * &amp; wird als LETZTES dekodiert, sonst würde "&amp;lt;" zu "<".
  */
 function signatureHtmlToText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+  // replaceTags(…, '') = .replace(/<[^>]+>/g, '') in linearer Zeit; die Regex
+  // lief bei Signaturen mit vielen unverschlossenen '<' quadratisch.
+  return replaceTags(
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, '\n'),
+    '',
+  )
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/&amp;/g, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -217,7 +223,9 @@ export function registerAiNodes(register: Reg): void {
       }
       const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
-      const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
+      // Single pass ({{text}} included): mail text inserted here is never
+      // rescanned, so its placeholders cannot expand internal variables.
+      const user = interpolateTemplate(p.user_template, ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
       try {
         const out = await runChatCompletion(
@@ -305,10 +313,7 @@ export function registerAiNodes(register: Reg): void {
       const attCount = ctx.outbound?.attachmentCount ?? 0;
       const userParts = [
         custom
-          ? interpolateTemplate(
-              custom.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text),
-              ctx,
-            )
+          ? interpolateTemplate(custom.user_template, ctx)
           : [
               'Prüfe die folgende ausgehende E-Mail vor dem Versand an Kunden.',
               '',

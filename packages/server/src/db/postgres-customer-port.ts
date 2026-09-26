@@ -2,6 +2,7 @@ import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type U
 
 import type {
   CustomerApiPort,
+  CustomerDependentsRecord,
   CustomerListResult,
   CustomerMutationInput,
   CustomerRecord,
@@ -10,6 +11,7 @@ import type { CustomersTable, ServerDatabase } from './schema';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
 } from './workspace-context';
 import { ilikeContainsPattern } from './sql-ilike';
 
@@ -36,6 +38,7 @@ const customerSelectColumns = [
   'country',
   'notes',
   'status',
+  'jtl_kkunde',
   'updated_at',
 ] as const;
 
@@ -70,7 +73,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('customer_number', 'ilike', pattern),
               eb('phone', 'ilike', pattern),
               eb('mobile', 'ilike', pattern),
-              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
+              eb(kyselySql<string>`cast(jtl_kkunde as text)`, 'ilike', pattern),
             ]));
             countQuery = countQuery.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
@@ -80,7 +83,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('customer_number', 'ilike', pattern),
               eb('phone', 'ilike', pattern),
               eb('mobile', 'ilike', pattern),
-              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
+              eb(kyselySql<string>`cast(jtl_kkunde as text)`, 'ilike', pattern),
             ]));
           }
 
@@ -111,7 +114,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               query = query.orderBy('status', sortDirection).orderBy('id', 'asc');
               break;
             case 'jtlCustomerNumber':
-              query = query.orderBy('source_sqlite_id', sortDirection).orderBy('id', 'asc');
+              query = query.orderBy('jtl_kkunde', sortDirection).orderBy('id', 'asc');
               break;
             default:
               query = query.orderBy('id', 'asc');
@@ -223,7 +226,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
         { applySession: options.applyWorkspaceSession },
       );
     },
-    async delete(input): Promise<CustomerRecord | null> {
+    async delete(input): Promise<CustomerRecord | { dependents: CustomerDependentsRecord } | null> {
       return withWorkspaceTransaction(
         options.db,
         {
@@ -232,6 +235,31 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
           role: 'user',
         },
         async (trx) => {
+          // Lock the customer first: a deal or task inserted concurrently must
+          // wait for this decision instead of being orphaned by ON DELETE SET NULL.
+          const locked = await trx
+            .selectFrom('customers')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!locked) return null;
+
+          const dependents = await countCustomerDependents(trx, input.workspaceId, input.id);
+          if (dependents.deals + dependents.tasks + dependents.appointments > 0) {
+            if (!input.cascade) return { dependents };
+            // Appointments go with their task (FK cascade), positions with their deal.
+            await trx.deleteFrom('tasks')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('customer_id', '=', input.id)
+              .execute();
+            await trx.deleteFrom('deals')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('customer_id', '=', input.id)
+              .execute();
+          }
+
           const row = await trx
             .deleteFrom('customers')
             .where('workspace_id', '=', input.workspaceId)
@@ -243,6 +271,40 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
         { applySession: options.applyWorkspaceSession },
       );
     },
+  };
+}
+
+async function countCustomerDependents(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  customerId: number,
+): Promise<CustomerDependentsRecord> {
+  const row = await trx
+    .selectNoFrom((eb) => [
+      eb.selectFrom('deals')
+        .select((inner) => inner.fn.countAll<string>().as('count'))
+        .where('workspace_id', '=', workspaceId)
+        .where('customer_id', '=', customerId)
+        .as('deals'),
+      eb.selectFrom('tasks')
+        .select((inner) => inner.fn.countAll<string>().as('count'))
+        .where('workspace_id', '=', workspaceId)
+        .where('customer_id', '=', customerId)
+        .as('tasks'),
+      eb.selectFrom('calendar_events')
+        .innerJoin('tasks', (join) => join
+          .onRef('tasks.id', '=', 'calendar_events.task_id')
+          .onRef('tasks.workspace_id', '=', 'calendar_events.workspace_id'))
+        .select((inner) => inner.fn.countAll<string>().as('count'))
+        .where('calendar_events.workspace_id', '=', workspaceId)
+        .where('tasks.customer_id', '=', customerId)
+        .as('appointments'),
+    ])
+    .executeTakeFirstOrThrow();
+  return {
+    deals: Number(row.deals ?? 0),
+    tasks: Number(row.tasks ?? 0),
+    appointments: Number(row.appointments ?? 0),
   };
 }
 
@@ -270,6 +332,8 @@ function mapCustomerRow(row: Pick<CustomerRow, typeof customerSelectColumns[numb
     country: row.country,
     notes: row.notes,
     status: row.status,
+    // bigint: pg returns it as a string.
+    jtlKkunde: row.jtl_kkunde == null ? null : Number(row.jtl_kkunde),
     updatedAt: timestampToIso(row.updated_at),
   };
 }

@@ -31,13 +31,19 @@ Voraussetzungen:
 - `MASTER_KEY` mit 32 Byte Schlüsselmaterial.
 - Korrekte `PUBLIC_BASE_URL`; produktiv ausschließlich HTTPS.
 - Reverse-Proxy-Routing für `/t/*` zum API-Prozess.
-- Vertrauenswürdige Proxy-Konfiguration (`TRUST_PROXY=1` im mitgelieferten Docker-Setup).
+- Vertrauenswürdige Proxy-Konfiguration (im Docker-Setup Caddys feste Proxy-Adresse; eigene Proxys über konkrete IPs/CIDRs, siehe [SETUP_SERVER.md](SETUP_SERVER.md#reverse-proxy-trust-and-upgrades)).
 - Rechtsgrundlage, HTTPS-Datenschutzhinweis und aktive Admin-Bestätigung in
   **Einstellungen -> E-Mail -> Nachverfolgung**.
 
 Jede materielle Änderung der Tracking-Konfiguration verlangt in UI und API eine neue Bestätigung. Das
 Deaktivieren widerruft bestehende Tokens. Das Deaktivieren nur einer Signalart widerruft die
-zugehörigen Pixel- beziehungsweise Klick-Tokens.
+zugehörigen Pixel- beziehungsweise Klick-Tokens. Widerrufene oder abgelaufene Klick-Links in bereits
+versendeten Mails leiten weiterhin auf ihr gespeichertes Ziel, zeichnen aber nichts mehr auf. Erst wenn
+das Linkziel gelöscht ist (Löschung der Tracking-Daten, Bereinigung nach Token-Ablauf), zeigt der Link
+eine neutrale Hinweisseite „Link nicht mehr verfügbar“.
+
+Das Tracking-Häkchen im Compose-Dialog erscheint nur bei aktivierter Richtlinie; ein
+`trackingOverride: true` wird serverseitig ignoriert, solange die Richtlinie deaktiviert ist.
 
 ## Datenfluss
 
@@ -85,6 +91,9 @@ sichtbar macht; ohne oder mit einem anderen Hash bleibt der Resolver vollständi
   Pino-Stdout und Diagnose-Log, da der Pfad ein bearer-artiges Token enthält.
 - Öffentliche Endpunkte haben IP- und Token-Limits, 1,5 Sekunden Anwendungs-Timeout,
   persistente Minuten-Deduplizierung und maximal 10.000 öffentliche Ereignisse pro Nachricht.
+- Pro API-Prozess schreiben höchstens vier öffentliche Abrufe gleichzeitig Evidenz, 64 weitere
+  warten; was darüber hinausgeht, wird verworfen (Redirect und Pixel kommen trotzdem). Der
+  Workspace-Policy-Lock wird dabei nur geteilt genommen und höchstens eine Sekunde abgewartet.
 - Ungültige Pixel-Tokens liefern dasselbe nicht cachebare GIF wie gültige Tokens.
 - Klickziele werden nur als `http` oder `https` weitergeleitet; CR/LF und überlange Ziele
   werden verworfen.
@@ -191,6 +200,15 @@ Ein täglicher Ticker:
 - löscht Ereignisse nach 30 bis 3.650 Tagen,
 - entfernt abgelaufene Resolver-Tokens,
 - entfernt den Tracking-Container erst nach Tokenablauf und wenn keine Evidenz mehr existiert.
+
+Das Löschen abgelaufener Resolver-Tokens ist Absicht (Datenschutz): Nach Ablauf soll sich kein
+Token mehr einer Mail oder einem Empfänger zuordnen lassen. Getrackte Links einer versendeten Mail
+bleiben deshalb nur so lange erreichbar, wie ihr Token gilt (**Token gültig (Tage)**, Standard 730).
+Nach dem Ablauf leiten sie bis zum nächsten Bereinigungslauf noch ohne Aufzeichnung weiter; danach
+zeigt der Link die neutrale Hinweisseite „Link nicht mehr verfügbar“ (HTTP 404) statt des Ziels.
+Eine verkürzte Token-Laufzeit gilt auch für bereits versendete Mails. Wer Links länger erreichbar
+halten muss (etwa Rechnungs- oder Zahlungslinks), wählt eine entsprechend lange Laufzeit oder
+versendet solche Mails ohne Link-Tracking.
 
 Fehler eines Workspace blockieren die Bereinigung anderer Workspaces nicht. Bei einem
 Tracking-Fehler wird die Mail ohne Instrumentierung versendet und der Benutzer erhält eine

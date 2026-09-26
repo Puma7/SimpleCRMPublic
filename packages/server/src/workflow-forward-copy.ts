@@ -6,6 +6,7 @@ import {
   buildComposeRfc822,
   emailAddressForDelivery,
   generateOutboundMessageId,
+  isAutoForwardedMessage,
   resolveConfiguredSmtpHost,
   SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
@@ -123,6 +124,7 @@ type ForwardCopyMessage = Readonly<{
   fromJson: unknown | null;
   snippet: string | null;
   bodyText: string | null;
+  rawHeaders: string | null;
   attachments: readonly ForwardCopyAttachment[];
 }>;
 
@@ -154,7 +156,7 @@ type PreparedForwardCopy =
     bodyText: string;
     rfc822: string;
   }
-  | { ok: false; error: string };
+  | { ok: false; error: string; skipped?: true };
 
 type ResolvedSmtpAuth =
   | { ok: true; user: string; password?: string; accessToken?: string }
@@ -232,6 +234,17 @@ export function createPostgresWorkflowForwardCopyPort(
         { applySession: options.applyWorkspaceSession },
       );
 
+      if (!prepared.ok && prepared.skipped) {
+        // Bewusst uebersprungen (keine Stoerung): nicht wiederholen, Workflow
+        // mit forward_copy.ok=false fortsetzen.
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: prepared.error,
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
       if (!prepared.ok) {
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
@@ -437,6 +450,11 @@ async function prepareForwardCopy(
 
   const message = await loadForwardCopyMessage(trx, input.workspaceId, input.messageId);
   if (!message) return { ok: false, error: 'Nachricht nicht gefunden' };
+  // Anti-Loop, zweite Absicherung fuer Jobs, die vor der Pruefung im Executor
+  // eingereiht wurden: Weiterleitungskopien nicht erneut weiterleiten.
+  if (isAutoForwardedMessage(message.rawHeaders)) {
+    return { ok: false, error: 'skip:auto_forwarded_source', skipped: true };
+  }
   if (message.accountId === null) return { ok: false, error: 'Konto fehlt' };
 
   const account = await loadForwardCopyAccount(trx, input.workspaceId, message.accountId);
@@ -467,8 +485,9 @@ async function prepareForwardCopy(
   }
 
   // Outbound-review gating: forwards normally bypass outbound review (they were
-  // initiated by an inbound workflow, not composed by a human, and the
-  // Auto-Submitted header + dedup table already guard loops). With
+  // initiated by an inbound workflow, not composed by a human). Loops are
+  // guarded by the dedup table (per source message) and by skipping sources
+  // that carry our own "Auto-Submitted: auto-forwarded" marker (see above). With
   // runOutboundReview=true the forward path in forwardCopy() takes over and
   // routes the forward through composeSender.send → existing review pipeline.
 
@@ -502,7 +521,8 @@ async function prepareForwardCopy(
       subject,
       text: bodyText,
       messageId: generateOutboundMessageId(account.emailAddress),
-      // Anti-loop: mark as auto-forwarded (the dedup table also guards loops).
+      // Anti-loop: mark as auto-forwarded; prepareForwardCopy and the executor
+      // skip sources carrying this marker (the dedup table also guards loops).
       extraHeaders: ['Auto-Submitted: auto-forwarded'],
       attachments,
       date: now,
@@ -550,7 +570,7 @@ async function loadForwardCopyMessage(
 ): Promise<ForwardCopyMessage | null> {
   const row = await trx
     .selectFrom('email_messages')
-    .select(['id', 'source_sqlite_id', 'account_id', 'subject', 'from_json', 'snippet', 'body_text'])
+    .select(['id', 'source_sqlite_id', 'account_id', 'subject', 'from_json', 'snippet', 'body_text', 'raw_headers'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
     .executeTakeFirst();
@@ -569,6 +589,7 @@ async function loadForwardCopyMessage(
     fromJson: row.from_json,
     snippet: row.snippet,
     bodyText: row.body_text,
+    rawHeaders: row.raw_headers,
     attachments: attachmentRows
       .filter((att) => typeof att.storage_path === 'string' && att.storage_path.trim() !== '')
       .map((att) => ({

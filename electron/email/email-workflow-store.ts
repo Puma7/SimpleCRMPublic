@@ -12,6 +12,7 @@ import {
 import { migrateLegacyWorkflowsWithoutGraph } from '../workflow/workflow-graph-resolve';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
+import { describeUnsupportedWorkflowRegex } from '../../packages/core/src/user-regex';
 
 export type EmailWorkflowRow = {
   id: number;
@@ -33,6 +34,18 @@ export type EmailWorkflowRow = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Regex-Bedingungen laufen im Main-Prozess auf Absendertext. Der ReDoS-Schutz
+ * ist V8s lineare Engine (Flag in electron/main.js), die Lookarounds und
+ * Rueckverweise nicht kann — solche Muster werden nicht gespeichert
+ * (F-A13A14-04). Alle Schreibwege (Anlegen, Bearbeiten, Import,
+ * Versions-Restore) laufen hier durch.
+ */
+function assertSupportedWorkflowRegex(input: { graphJson?: string | null; definitionJson?: string }): void {
+  const message = describeUnsupportedWorkflowRegex({ graph: input.graphJson, definition: input.definitionJson });
+  if (message) throw new Error(message);
 }
 
 function mapWorkflowRow(row: Record<string, unknown>): EmailWorkflowRow {
@@ -144,6 +157,7 @@ export function createWorkflow(input: {
   engineVersion?: number;
   enabled?: boolean;
 }): number {
+  assertSupportedWorkflowRegex(input);
   const t = nowIso();
   const result = getDb()
     .prepare(
@@ -188,6 +202,7 @@ export type WorkflowUpdateInput = Partial<{
 export function updateWorkflow(id: number, input: WorkflowUpdateInput): void {
   const existing = getWorkflowById(id);
   if (!existing) throw new Error('Workflow nicht gefunden');
+  assertSupportedWorkflowRegex(input);
   const t = nowIso();
   const sets: string[] = [];
   const vals: unknown[] = [];

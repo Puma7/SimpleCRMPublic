@@ -5,6 +5,8 @@
  * Modulpfad bleibt für alle electron-Importe erhalten.
  */
 export {
+  AUTO_REPLY_NOREPLY_RE,
+  isAutoForwardedMessage,
   isAutomatedInboundMessage,
   isUnsafeAutoReplyTarget,
 } from '../../packages/core/src/email/automation-headers';

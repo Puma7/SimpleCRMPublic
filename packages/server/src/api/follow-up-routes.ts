@@ -29,6 +29,7 @@ export async function handleFollowUpRoute(
     if (req.method !== 'GET') return methodNotAllowed();
     return data(200, await ports.followUp.getQueueCounts({
       workspaceId: principal.workspaceId,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 
@@ -53,6 +54,7 @@ export async function handleFollowUpRoute(
       },
       limit,
       offset,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 
@@ -70,6 +72,7 @@ export async function handleFollowUpRoute(
       actorUserId: principal.userId,
       taskId,
       snoozedUntil: parsed.snoozedUntil,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 

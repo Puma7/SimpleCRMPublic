@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { dirname, resolve, sep } from 'node:path';
 
 import type { AuditRetentionArchivePort } from './maintenance-handlers';
 
@@ -14,7 +15,7 @@ export function createJsonlAuditRetentionArchivePort(
 ): AuditRetentionArchivePort {
   const rootDir = resolve(options.rootDir);
   const ensureDir = options.mkdir ?? mkdir;
-  const write = options.writeFile ?? writeFile;
+  const write = options.writeFile ?? writeFileDurably;
 
   return {
     async archive(input) {
@@ -49,6 +50,41 @@ export function createJsonlAuditRetentionArchivePort(
       await write(filePath, jsonl, { encoding: 'utf8' });
     },
   };
+}
+
+/**
+ * The caller deletes the archived audit rows right after this returns, and that
+ * DELETE is durable at COMMIT. A plain writeFile could still sit in the page
+ * cache, so a host crash would lose the only copy. Write to a temporary name,
+ * fsync, rename into place and fsync the directory entry.
+ */
+async function writeFileDurably(path: string, data: string, options: { encoding: 'utf8' }): Promise<void> {
+  const tmpPath = `${path}.${randomUUID()}.tmp`;
+  const handle = await open(tmpPath, 'wx');
+  try {
+    try {
+      await handle.writeFile(data, options);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmpPath, path);
+  } catch (error) {
+    await rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  await syncDirectory(dirname(path));
+}
+
+async function syncDirectory(dir: string): Promise<void> {
+  // Windows cannot open a directory for fsync; NTFS journals the rename itself.
+  if (process.platform === 'win32') return;
+  const handle = await open(dir, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 export function archiveFileName(input: {

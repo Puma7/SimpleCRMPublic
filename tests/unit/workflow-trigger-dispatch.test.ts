@@ -63,6 +63,31 @@ describe('workflow-trigger-dispatch dedup', () => {
     expect(mockSetSyncInfo).toHaveBeenCalled();
   });
 
+  // F-N-dwf-02: Nach einem erfolgreichen Lauf wurde '1' gespeichert; dedupStillActive wertet das als aktiv, derselbe Stufenwechsel feuerte nie wieder.
+  test('deal stage fires again after the debounce window following a successful run', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+    const start = 1_800_000_000_000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      now.mockReturnValue(start + 1_000);
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(start + 60_000);
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(2);
+      expect(Number(store.get('workflow_trigger_fired:crm.deal_stage_changed:4:lead:won')))
+        .toBeGreaterThan(1_000_000_000_000);
+    } finally {
+      now.mockRestore();
+      (executeWorkflowForTrigger as jest.Mock).mockReset();
+    }
+  });
+
   test('deal stage key includes old and new stage', async () => {
     await fireDealStageChangedWorkflows(9, 1, 'open', 'closed');
 
@@ -118,5 +143,55 @@ describe('workflow-trigger-dispatch dedup', () => {
       'workflow_trigger_fired:task.due:3:2026-05-24',
       '1',
     );
+  });
+
+  // F-A9-09: Ein fehlgeschlagener oder blockierter Lauf gab den Claim frei; task.due
+  // feuerte dieselbe Aufgabe dann bei jedem Cron-Tick (alle 2 Minuten) samt Seiteneffekten.
+  test.each(['error', 'blocked'] as const)(
+    'task.due does not re-fire on every tick after a %s run',
+    async (status) => {
+      const { executeWorkflowForTrigger } = await import(
+        '../../electron/workflow/workflow-executor'
+      );
+      (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({
+        status,
+        log: [],
+        blocked: status === 'blocked',
+        blockReason: null,
+      });
+      const event = {
+        trigger: 'task.due' as const,
+        taskId: 11,
+        customerId: null,
+        title: 'X',
+        dueDate: '2026-05-24',
+      };
+
+      await dispatchCrmWorkflowEvent(event);
+      await dispatchCrmWorkflowEvent(event);
+      await dispatchCrmWorkflowEvent(event);
+
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(1);
+      expect(store.get('workflow_trigger_fired:task.due:11:2026-05-24')).toBe('1');
+    },
+  );
+
+  test('task.due releases the claim when the run throws before finishing', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockRejectedValue(new Error('db locked'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await dispatchCrmWorkflowEvent({
+      trigger: 'task.due',
+      taskId: 12,
+      customerId: null,
+      title: 'Y',
+      dueDate: '2026-05-24',
+    });
+
+    expect(store.has('workflow_trigger_fired:task.due:12:2026-05-24')).toBe(false);
+    warn.mockRestore();
   });
 });

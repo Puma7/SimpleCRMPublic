@@ -8,27 +8,40 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
+
+type OAuthAppSettings = { clientId?: string; clientSecret?: string; hasSecret?: boolean }
+
+/** Das Secret kommt nur bei Owner/Admin im Klartext; sonst zeigt hasSecret, dass eines gesetzt ist. */
+const HIDDEN_SECRET_PLACEHOLDER = "Gesetzt (nur für Owner/Admin sichtbar)"
 
 /** Globale OAuth-App-Registrierung (Client-ID/Secret) — einmal pro Provider. */
 export function OAuthAppsPanel() {
+  const { user } = useAuth()
+  // Speichern verlangt Owner/Admin (Desktop-IPC und Server-Route).
+  const canEdit = user?.role === "owner" || user?.role === "admin"
   const [googleClientId, setGoogleClientId] = useState("")
   const [googleClientSecret, setGoogleClientSecret] = useState("")
+  const [googleHasSecret, setGoogleHasSecret] = useState(false)
   const [googleRedirect, setGoogleRedirect] = useState("http://127.0.0.1:1")
   const [msClientId, setMsClientId] = useState("")
   const [msClientSecret, setMsClientSecret] = useState("")
+  const [msHasSecret, setMsHasSecret] = useState(false)
   const [msRedirect, setMsRedirect] = useState("http://127.0.0.1:1")
 
   const load = useCallback(async () => {
     const g = await invokeRenderer(
       IPCChannels.Email.GetGoogleOAuthApp,
-    ) as { clientId?: string; clientSecret?: string }
+    ) as OAuthAppSettings
     setGoogleClientId(g.clientId ?? "")
     setGoogleClientSecret(g.clientSecret ?? "")
+    setGoogleHasSecret(g.hasSecret ?? Boolean(g.clientSecret))
     const m = await invokeRenderer(
       IPCChannels.Email.GetMicrosoftOAuthApp,
-    ) as { clientId?: string; clientSecret?: string }
+    ) as OAuthAppSettings
     setMsClientId(m.clientId ?? "")
     setMsClientSecret(m.clientSecret ?? "")
+    setMsHasSecret(m.hasSecret ?? Boolean(m.clientSecret))
   }, [])
 
   useEffect(() => {
@@ -57,13 +70,19 @@ export function OAuthAppsPanel() {
         <h4 className="text-sm font-semibold">Google (Gmail)</h4>
         <div className="space-y-1.5">
           <Label>Client-ID</Label>
-          <Input value={googleClientId} onChange={(e) => setGoogleClientId(e.target.value)} />
+          <Input
+            value={googleClientId}
+            disabled={!canEdit}
+            onChange={(e) => setGoogleClientId(e.target.value)}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Client-Secret</Label>
           <Input
             type="password"
             value={googleClientSecret}
+            placeholder={googleHasSecret && !googleClientSecret ? HIDDEN_SECRET_PLACEHOLDER : undefined}
+            disabled={!canEdit}
             onChange={(e) => setGoogleClientSecret(e.target.value)}
           />
         </div>
@@ -71,6 +90,7 @@ export function OAuthAppsPanel() {
           type="button"
           variant="secondary"
           size="sm"
+          disabled={!canEdit}
           onClick={async () => {
             await invokeRenderer(IPCChannels.Email.SetGoogleOAuthApp, {
               clientId: googleClientId,
@@ -110,13 +130,19 @@ export function OAuthAppsPanel() {
         <h4 className="text-sm font-semibold">Microsoft 365 / Outlook</h4>
         <div className="space-y-1.5">
           <Label>Application (Client) ID</Label>
-          <Input value={msClientId} onChange={(e) => setMsClientId(e.target.value)} />
+          <Input
+            value={msClientId}
+            disabled={!canEdit}
+            onChange={(e) => setMsClientId(e.target.value)}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Client Secret</Label>
           <Input
             type="password"
             value={msClientSecret}
+            placeholder={msHasSecret && !msClientSecret ? HIDDEN_SECRET_PLACEHOLDER : undefined}
+            disabled={!canEdit}
             onChange={(e) => setMsClientSecret(e.target.value)}
           />
         </div>
@@ -124,6 +150,7 @@ export function OAuthAppsPanel() {
           type="button"
           variant="secondary"
           size="sm"
+          disabled={!canEdit}
           onClick={async () => {
             await invokeRenderer(IPCChannels.Email.SetMicrosoftOAuthApp, {
               clientId: msClientId,

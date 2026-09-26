@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
@@ -47,6 +47,17 @@ const settingsSchema = z.object({
 
 type SettingsForm = z.infer<typeof settingsSchema>
 
+type StoredMssqlEndpoint = { server: string; port: number; forcePort: boolean; hasPassword: boolean }
+
+function storedMssqlEndpoint(settings: any): StoredMssqlEndpoint {
+  return {
+    server: String(settings?.server ?? "").trim().toLowerCase(),
+    port: Number(settings?.port) || 0,
+    forcePort: Boolean(settings?.forcePort),
+    hasPassword: Boolean(settings?.hasPassword),
+  }
+}
+
 export default function SettingsPage() {
   const { user, canWriteCrm } = useAuth()
   const serverClientMode = getRendererTransport().kind === "http"
@@ -60,9 +71,29 @@ export default function SettingsPage() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [isClearingPassword, setIsClearingPassword] = useState(false); // New state for clearing password
+  // Das Passwort selbst bleibt im Main-Prozess bzw. auf dem Server; GetSettings meldet nur hasPassword.
+  const [hasStoredPassword, setHasStoredPassword] = useState(false)
   const [syncStatusMessage, setSyncStatusMessage] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'error'>('unknown')
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<string | null>(null)
+  // Server edition: the stored SQL password belongs to the stored server. The
+  // API refuses a different server, port or instance without a new password
+  // (F-A13A14-11), so ask for it before testing or saving.
+  const storedEndpointRef = useRef<StoredMssqlEndpoint | null>(null)
+  const passwordRequiredForServerChange = (formData: SettingsForm): boolean => {
+    const stored = storedEndpointRef.current
+    if (!serverClientMode || !stored?.hasPassword || formData.password) return false
+    const current = storedMssqlEndpoint(formData)
+    const changed = current.server !== stored.server
+      || current.port !== stored.port
+      || current.forcePort !== stored.forcePort
+    if (!changed) return false
+    form.setError("password", { message: "Passwort erforderlich: Server, Port oder Instanz geändert." })
+    toast.error("Zugangsdaten bei Serverwechsel neu eingeben", {
+      description: "Server, Port oder Instanz geändert: Bitte das MSSQL-Passwort erneut eingeben. Das gespeicherte wird nicht an einen anderen Server gesendet.",
+    })
+    return true
+  }
 
   
   const form = useForm<SettingsForm>({
@@ -96,15 +127,19 @@ export default function SettingsPage() {
       try {
         const settingsFromIPC = await invokeRenderer(IPCChannels.Mssql.GetSettings);
         if (settingsFromIPC) {
+          const { hasPassword, password: _password, ...storedSettings } = settingsFromIPC;
+          setHasStoredPassword(Boolean(hasPassword));
+          storedEndpointRef.current = storedMssqlEndpoint(settingsFromIPC);
           const formValues = {
-            ...settingsFromIPC,
-            password: settingsFromIPC.password || "",
-            forcePort: settingsFromIPC.forcePort || false,
+            ...storedSettings,
+            password: "",
+            forcePort: storedSettings.forcePort || false,
           };
           form.reset(formValues);
 
           try {
-            const testResult = await invokeRenderer(IPCChannels.Mssql.TestConnection, settingsFromIPC);
+            // Ohne Passwort: der Main-Prozess nutzt das gespeicherte (gleiche Verbindung).
+            const testResult = await invokeRenderer(IPCChannels.Mssql.TestConnection, storedSettings);
             setConnectionStatus(testResult.success ? 'success' : 'error');
           } catch (error) {
             console.error("Error testing connection on load:", error);
@@ -150,7 +185,10 @@ export default function SettingsPage() {
           toast.success("Einstellungen gespeichert", { description: "Verbindung erfolgreich und Einstellungen gespeichert." })
           const newSettings = await invokeRenderer(IPCChannels.Mssql.GetSettings);
           if (newSettings) {
-            form.reset({ ...newSettings, password: newSettings.password || "" });
+            const { hasPassword, password: _password, ...storedSettings } = newSettings;
+            setHasStoredPassword(Boolean(hasPassword));
+            storedEndpointRef.current = storedMssqlEndpoint(newSettings);
+            form.reset({ ...storedSettings, password: "" });
           }
         } else {
           toast.error("Speichern fehlgeschlagen", { description: saveResult.error || "Konnte die Einstellungen nicht speichern." })
@@ -173,6 +211,7 @@ export default function SettingsPage() {
   }
 
   const onSubmit = async (formData: SettingsForm) => {
+    if (passwordRequiredForServerChange(formData)) return
     // formData contains the current values from the form fields
     const dataToSave: Partial<SettingsForm> = { ...formData };
     const dataToTest: SettingsForm = { ...formData }; // Start with all form data for testing
@@ -209,6 +248,7 @@ export default function SettingsPage() {
         }
         toast.success("Erfolg", { description: germanMessage });
         form.setValue('password', ''); // Clear password field in the form
+        setHasStoredPassword(false);
       } else {
         console.error('Fehler beim Löschen des Passworts (Backend-Nachricht):', result.message);
         toast.error("Fehlgeschlagen", { description: "Das Passwort konnte nicht gelöscht werden. Bitte überprüfen Sie die Konsolenprotokolle für weitere Details." });
@@ -222,8 +262,9 @@ export default function SettingsPage() {
   };
 
   const handleTestConnection = async () => {
-    setIsConnecting(true)
     const formData = form.getValues()
+    if (passwordRequiredForServerChange(formData)) return
+    setIsConnecting(true)
     const dataToTest = { ...formData };
     if (dataToTest.password === "") {
         delete dataToTest.password; // Don't send empty password for testing if not changed
@@ -458,10 +499,16 @@ export default function SettingsPage() {
                     <FormItem>
                       <FormLabel>Passwort</FormLabel>
                       <FormControl>
-                        <Input type="password" {...field} placeholder="Leer lassen, um nicht zu ändern" />
+                        <Input
+                          type="password"
+                          {...field}
+                          placeholder={hasStoredPassword ? "Gespeichert – leer lassen, um es zu behalten" : "Leer lassen, um nicht zu ändern"}
+                        />
                       </FormControl>
                       <FormDescription>
-                        Wenn Sie das Passwort nicht ändern möchten, lassen Sie dieses Feld leer.
+                        {hasStoredPassword ? "Ein Passwort ist gespeichert. " : ""}
+                        Wenn Sie das Passwort nicht ändern möchten, lassen Sie dieses Feld leer. Nach einem Wechsel
+                        von Server, Port, Datenbank oder Benutzer muss es neu eingegeben werden.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

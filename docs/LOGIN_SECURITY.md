@@ -48,11 +48,19 @@ Beide Keys müssen gesetzt sein, damit der Provider aktiv wird. In den Workspace
 
 Turnstile-Verifikation hat ein **5-Sekunden-Timeout** — hängende Provider-Antworten blockieren den Login nicht unbegrenzt.
 
+**Retourenportal:** Sobald Turnstile konfiguriert ist, verlangt die öffentliche
+Retouren-Anlage (`POST /api/v1/portal/returns/:token`) standardmäßig ein CAPTCHA,
+unabhängig vom Login-CAPTCHA (F-A3a-07). Der Workspace kann es unter
+**Login-Sicherheit → „CAPTCHA im Retourenportal“** abschalten (Feld
+`portalCaptchaEnabled`, Key `auth_security_portal_captcha_enabled`; fehlt der Key,
+gilt „an“). Ohne Turnstile bleibt das Portal ohne CAPTCHA nutzbar.
+
 ### Workspace-Toggles (Admin)
 
 **Einstellungen → Sicherheit → Login-Sicherheit** (nur Admin):
 
 - CAPTCHA aktivieren
+- CAPTCHA im Retourenportal (standardmäßig an, wirkt nur mit Turnstile)
 - PIN-Keypad aktivieren
 - MFA aktivieren (mit Unterwahl TOTP / E-Mail)
 
@@ -62,10 +70,12 @@ Einstellungen liegen in `sync_info` (Keys `auth_security_*`). PATCH auf `/api/v1
 
 **Einstellungen → Benutzer**:
 
-- **PIN setzen / ändern / zurücksetzen** (Admin oder eigener Account)
+- **PIN setzen / ändern / zurücksetzen** (Admin oder Benutzerverwalter mit `users.manage`, über die normale Benutzeränderung)
 - **TOTP einrichten** (QR + Bestätigungscode)
 - **E-Mail-MFA aktivieren** (Code per Invite-SMTP)
 - **MFA deaktivieren**
+
+TOTP bestätigen, E-Mail-MFA aktivieren und MFA deaktivieren verlangen das **aktuelle Passwort des Handelnden** (bei einem Admin sein eigenes). Die UI fragt es im Dialog ab.
 
 Wichtig: Wenn Workspace-PIN aktiv ist, aber ein Admin **keine eigene PIN** hat, erscheint eine Warnung in den Sicherheitseinstellungen. Der PIN-Keypad-Schritt erscheint im Login nur, wenn `loginConfig.user.pinRequired === true` (Benutzer hat PIN gesetzt).
 
@@ -119,12 +129,15 @@ PIN-Eingabe wird nach E-Mail-Wechsel zurückgesetzt.
 | POST | `/api/v1/auth/login` | — | Passwort-Login; kann `mfaRequired` zurückgeben |
 | POST | `/api/v1/auth/mfa/verify` | — | MFA-Challenge abschließen |
 | GET/PATCH | `/api/v1/auth/security-settings` | Admin | Workspace-Toggles |
-| POST | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN setzen |
-| DELETE | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN entfernen |
+| PATCH | `/api/v1/auth/users/{id}` | Admin oder `users.manage` | PIN setzen (`loginPin`: 6 Ziffern) oder entfernen (`loginPin: ""`); der Body trägt wie jede Benutzeränderung `email`, `displayName` und `role`. Beim Anlegen (`POST /api/v1/auth/users`) kann `loginPin` gleich mitgesetzt werden |
 | POST | `/api/v1/auth/users/{id}/mfa/totp/setup` | Admin / self | TOTP-Secret + otpauth-URI |
-| POST | `/api/v1/auth/users/{id}/mfa/totp/confirm` | Admin / self | TOTP aktivieren |
-| POST | `/api/v1/auth/users/{id}/mfa/email` | Admin / self | E-Mail-MFA aktivieren |
-| DELETE | `/api/v1/auth/users/{id}/mfa` | Admin / self | MFA deaktivieren |
+| POST | `/api/v1/auth/users/{id}/mfa/totp/confirm` | Admin / self + Step-up | TOTP aktivieren |
+| POST | `/api/v1/auth/users/{id}/mfa/email` | Admin / self + Step-up | E-Mail-MFA aktivieren |
+| DELETE | `/api/v1/auth/users/{id}/mfa` | Admin / self + Step-up | MFA deaktivieren |
+
+**Step-up:** Body-Feld `currentPassword` (Passwort des Aufrufers) oder `currentMfaCode` (aktueller Code seines Authenticators, einmal verwendbar). Fehlt beides: `403 reauth_required`; falsch: `403 reauth_failed`. Fehlversuche laufen in die (E-Mail, IP)-Staffelung des Logins, die Pfade liegen im Rate-Limit `auth-strict`. Audit: `auth.mfa_disabled`, `auth.mfa_totp_enabled`, `auth.mfa_email_enabled`, `auth.mfa_reauth_failed`.
+
+**Owner-Konten:** PIN und 2FA eines Owner-Kontos ändert außer dem Owner selbst nur ein anderer Owner; ein Admin bekommt `403 owner_management_requires_owner` (G3, siehe [GROUP_RIGHTS_MATRIX.md](GROUP_RIGHTS_MATRIX.md#owner-konten-nur-owner)).
 
 OpenAPI: `/api/v1/openapi.json` (Server-Modus).
 
@@ -157,6 +170,9 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
 - **Pending-E-Mail-MFA** gibt nur dem reservierenden Login ein Challenge-Token; parallele Anfragen koennen das Versuchsbudget nicht vervielfachen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
+- **Passwort ändern** (`/auth/change-password`) prüft das aktuelle Passwort wie ein Login: gleiche (E-Mail, IP)-Staffelung, Rate-Limit `auth-strict`, Audit `auth.password_change_failed`; neues Passwort 12–1000 Zeichen wie bei Setup und Einladung.
+- **Refresh-Token-Wiederverwendung**: Wird ein bereits rotiertes Refresh-Token mehr als 60 s nach der Rotation erneut vorgelegt, widerruft der Server alle Sitzungen des Nutzers (Audit `auth.refresh_token_reuse_detected`); innerhalb der 60 s (verlorene Antwort, paralleler Tab) nur `401`. Per Logout, Passwortwechsel oder Ablauf ungültige Tokens lösen das nicht aus.
+- **Abmelden** (Webclient): Bei `403 csrf_invalid` holt der Client einmal ein frisches CSRF-Token (`GET /auth/csrf`) und wiederholt, bei `429` wiederholt er nach kurzem Backoff. Die lokale Sitzung verwirft er nur bei Erfolg oder `401`; scheitert der Widerruf sonst, bleibt man angemeldet und bekommt eine Fehlermeldung, statt dass ein gültiges Refresh-Cookie zurückbleibt.
 - **Kontoweite Abwehr** gegen verteiltes Raten — siehe unten.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
 

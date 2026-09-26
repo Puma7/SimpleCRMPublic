@@ -7,6 +7,11 @@ import { createSqliteMock } from './helpers/sqlite-mock';
 const { db, stmt } = createSqliteMock();
 
 jest.mock('../../electron/sqlite-service', () => ({ getDb: () => db }));
+// The fake '/att/*' paths stand for files inside the attachments root; root
+// confinement of storage_path is covered in email-attachment-portable-paths.test.ts.
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  resolveAttachmentStoragePath: (storagePath: string) => storagePath,
+}));
 
 import { planSubjectErasure, eraseSubject } from '../../electron/email/email-gdpr-erase';
 

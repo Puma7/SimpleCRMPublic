@@ -732,6 +732,10 @@ describe('server mailbox ACL migration', () => {
     const draftApprovalMigration = serverMigrations.find((candidate) => candidate.id === '0046_email_draft_approval_fields');
     expect(draftApprovalMigration).toBeDefined();
     await applyStatements(draftApprovalMigration!.upSql);
+    // The account API selects trusted_authserv_id (0054, F-A5-12) with every row.
+    const authservIdMigration = serverMigrations.find((candidate) => candidate.id === '0054_email_account_trusted_authserv_id');
+    expect(authservIdMigration).toBeDefined();
+    await applyStatements(authservIdMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');
@@ -1510,6 +1514,86 @@ describe('server mailbox ACL migration', () => {
     expect(observedScopes).toEqual(Array.from({ length: 6 }, () => ({ kind: 'none' })));
   });
 
+  // F-A2a-03: the GDPR export authorized on mail.export but wrote the
+  // body-derived snippet of every in-scope message, while the list routes
+  // redact it for callers lacking mail.content.read.
+  test('injects the content scope into the GDPR export for restricted callers', async () => {
+    const observedContentScopes: Array<MailSqlScope | undefined> = [];
+    const overrides: Partial<ServerApiPorts> = {
+      emailGdprExport: {
+        async export(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return { ok: true, filename: 'empty.zip', stream: Readable.from([]) };
+        },
+      },
+    };
+    const exportGrant = { resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null };
+    const exportOnly = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.export', [exportGrant]]]),
+      overrides,
+    }));
+    const contentAuthorized = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.export', [exportGrant]],
+        ['mail.content.read', [exportGrant]],
+      ]),
+      overrides,
+    }));
+    const request = { method: 'GET' as const, path: '/api/v1/email/gdpr-export', query: { skipAttachments: 'true' } };
+
+    expect((await exportOnly.handle({ ...request, principal: makePrincipal() })).status).toBe(200);
+    expect((await contentAuthorized.handle({ ...request, principal: makePrincipal() })).status).toBe(200);
+    expect((await exportOnly.handle({ ...request, principal: makePrincipal('owner') })).status).toBe(200);
+
+    expect(observedContentScopes).toEqual([
+      { kind: 'none' },
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+      undefined,
+    ]);
+  });
+
+  // F-A2a-04: a method missing from the PGP route inventory skipped the mail
+  // enforcer but still reached the by-source handlers, whose workspace-wide
+  // lookup answered 404 or 405 depending on whether a foreign key existed.
+  test('rejects PGP by-source methods outside the inventory before any lookup', async () => {
+    let lookups = 0;
+    const foreignIdentity = { id: 5, sourceSqliteId: 5, userId: USER_FOLDER };
+    const api = createServerApi(makeHttpPorts({
+      overrides: {
+        pgpIdentities: {
+          async list() {
+            lookups += 1;
+            return { items: [foreignIdentity], nextCursor: null };
+          },
+          async get() { return null; },
+        },
+        pgpPeerKeys: {
+          async list() {
+            lookups += 1;
+            return { items: [{ id: 5, sourceSqliteId: 5 }], nextCursor: null };
+          },
+          async get() { return null; },
+        },
+      } as unknown as Partial<ServerApiPorts>,
+    }));
+    const principal = makePrincipal();
+    const requests = [
+      { method: 'GET' as const, path: '/api/v1/pgp/identities/by-source/5/private-key/passphrase' },
+      { method: 'GET' as const, path: '/api/v1/pgp/identities/by-source/999/private-key/passphrase' },
+      { method: 'POST' as const, path: '/api/v1/pgp/peer-keys/by-source/5' },
+      { method: 'POST' as const, path: '/api/v1/pgp/peer-keys/by-source/999' },
+      { method: 'POST' as const, path: '/api/v1/pgp/identities/by-source/5' },
+    ];
+
+    const statuses: number[] = [];
+    for (const request of requests) {
+      statuses.push((await api.handle({ ...request, body: {}, principal })).status);
+    }
+
+    expect(statuses).toEqual([405, 405, 405, 405, 405]);
+    expect(lookups).toBe(0);
+  });
+
   test('injects the content scope into triage mutations so restricted callers get redacted rows', async () => {
     const observedContentScopes: Array<MailSqlScope | undefined> = [];
     const overrides: Partial<ServerApiPorts> = {
@@ -1691,6 +1775,73 @@ describe('server mailbox ACL migration', () => {
       { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
       undefined,
     ]);
+  });
+
+  // F-A11a-04: Der Kontowechsel im Verfasser legte einen neuen Entwurf an; das Umhaengen per PATCH
+  // compose-draft braucht mail.draft.create auf dem Zielkonto wie POST /compose-drafts.
+  test('moving a draft to another account requires mail.draft.create on the target account', async () => {
+    const updateComposeDraft = jest.fn(async () => ({ ok: true as const, message: makeMessageRecord(MESSAGE_A) }));
+    const overrides: Partial<ServerApiPorts> = {
+      emailMessages: {
+        list: async () => ({ items: [], nextCursor: null }),
+        get: async () => null,
+        updateComposeDraft,
+      } as unknown as ServerApiPorts['emailMessages'],
+    };
+    const accountGrant = (accountId: number) => ({
+      resourceType: 'account' as const,
+      accountId,
+      folderId: null,
+      messageId: null,
+    });
+    const path = `/api/v1/email/messages/${MESSAGE_A}/compose-draft`;
+    const editOnDraftAccount = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', [accountGrant(ACCOUNT_A)]],
+      ['mail.draft.create', [accountGrant(ACCOUNT_A)]],
+      ['mail.content.read', [accountGrant(ACCOUNT_A)]],
+    ]);
+
+    const deniedApi = createServerApi(makeHttpPorts({ grants: editOnDraftAccount, overrides }));
+    const denied = await deniedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal(),
+      body: { accountId: ACCOUNT_A_OTHER },
+    });
+    expect(denied.status).toBe(404);
+    const unknown = await deniedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal('owner'),
+      body: { accountId: 999_999 },
+    });
+    expect(unknown.status).toBe(404);
+    expect(updateComposeDraft).not.toHaveBeenCalled();
+
+    const withTargetCreate = new Map(editOnDraftAccount);
+    withTargetCreate.set('mail.draft.create', [accountGrant(ACCOUNT_A), accountGrant(ACCOUNT_A_OTHER)]);
+    const allowedApi = createServerApi(makeHttpPorts({ grants: withTargetCreate, overrides }));
+    const allowed = await allowedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal(),
+      body: { accountId: ACCOUNT_A_OTHER, subject: 'Angebot Mai' },
+    });
+    expect(allowed.status).toBe(200);
+    expect(updateComposeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: MESSAGE_A,
+      values: expect.objectContaining({ accountId: ACCOUNT_A_OTHER, subject: 'Angebot Mai' }),
+    }));
+
+    const invalid = await allowedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal('owner'),
+      body: { accountId: 'zwei' },
+    });
+    expect(invalid.status).toBeGreaterThanOrEqual(400);
+    expect(invalid.status).toBeLessThan(500);
+    expect(updateComposeDraft).toHaveBeenCalledTimes(1);
   });
 
   test('denies non-GET mail-scope writes for restricted account, folder, and message grants', async () => {
@@ -2066,6 +2217,120 @@ describe('server mailbox ACL migration', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  // C-A9: Die Entwurfs-Ausnahme pruefte nur Praefix und split('/'), sodass ein Pfad mit Backslash-Traversal ohne Anhang-Pruefung als Entwurfs-Upload durchging.
+  test('compose send exempts only a single plain segment inside the draft upload folder', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));
+    const editSend = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const api = createServerApi(makeHttpPorts({
+      grants: editSend,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+    const draftFolder = `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}`;
+
+    for (const attachmentPath of [
+      `${draftFolder}/..\\..\\..\\workspace-b\\email-attachments\\555\\secret.pdf`,
+      `${draftFolder}/sub/file.pdf`,
+      `${draftFolder}/..`,
+      `${draftFolder}/C:secret.pdf`,
+      `${draftFolder}/file.pdf\0.txt`,
+    ]) {
+      const denied = await api.handle({
+        method: 'POST',
+        path: '/api/v1/email/compose/send',
+        principal: makePrincipal(),
+        body: {
+          accountId: ACCOUNT_A,
+          draftMessageId: MESSAGE_A,
+          subject: 'S',
+          bodyText: 'B',
+          to: 'recipient@example.test',
+          attachmentPaths: [attachmentPath],
+        },
+      });
+      expect(denied.status).toBe(404);
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  // F-A6-05: Weiterleiten in der Server-Edition verlor alle Anhaenge; der Server kopiert sie jetzt per
+  // Anhang-ID in den Entwurf und prueft dabei dieselben Rechte wie beim Herunterladen.
+  test('forwarding a stored attachment into a draft requires the download grants on the source attachment', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    let sourceFilename = 'invoice.pdf';
+    const copyStoredAttachment = jest.fn(async () => ({
+      ok: true as const,
+      path: `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}/ab12-${sourceFilename}`,
+      filename: sourceFilename,
+      sizeBytes: 12,
+    }));
+    const upload = jest.fn();
+    const getAttachment = jest.fn(async ({ id }: { id: number }) => ({
+      id,
+      sourceSqliteId: id,
+      messageSourceSqliteId: MESSAGE_A,
+      messageId: MESSAGE_A,
+      filename: sourceFilename,
+      contentType: 'application/octet-stream',
+      sizeBytes: 12,
+      contentSha256: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    }));
+    const account = [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+    const editOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', account],
+    ]);
+    const withRead = new Map(editOnly);
+    withRead.set('mail.attachment.read', account);
+    const withSuspicious = new Map(withRead);
+    withSuspicious.set('mail.attachment.suspicious_download', account);
+    const forward = (grants: typeof editOnly) => createServerApi(makeHttpPorts({
+      grants,
+      overrides: {
+        emailMessages: { get: getMessage },
+        emailAttachments: { get: getAttachment, listForMessage: async () => ({ items: [] }) },
+        emailComposeAttachments: { upload, copyStoredAttachment },
+      } as Partial<ServerApiPorts>,
+    })).handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/compose-attachments`,
+      principal: makePrincipal(),
+      body: { sourceAttachmentId: 701 },
+    });
+
+    const denied = await forward(editOnly);
+    expect(denied.status).toBe(404);
+    expect(copyStoredAttachment).not.toHaveBeenCalled();
+
+    const allowed = await forward(withRead);
+    expect(allowed.status).toBe(200);
+    expect((allowed.body as any).data).toEqual({
+      success: true,
+      path: `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}/ab12-invoice.pdf`,
+      filename: 'invoice.pdf',
+      sizeBytes: 12,
+    });
+    expect(copyStoredAttachment).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_A,
+      draftMessageId: MESSAGE_A,
+      sourceAttachmentId: 701,
+    });
+
+    // The copy is later sent as a draft-local file, so a risky filename needs the
+    // suspicious-download grant here, exactly like downloading it.
+    sourceFilename = 'tool.exe';
+    const riskyDenied = await forward(withRead);
+    expect(riskyDenied.status).toBe(404);
+    expect(copyStoredAttachment).toHaveBeenCalledTimes(1);
+    const riskyAllowed = await forward(withSuspicious);
+    expect(riskyAllowed.status).toBe(200);
+    expect(copyStoredAttachment).toHaveBeenCalledTimes(2);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
   test('requires mail.draft.edit to send (send rewrites the stored draft)', async () => {
     const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
     const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));
@@ -2234,6 +2499,60 @@ describe('server mailbox ACL migration', () => {
     expect(allowed.status).toBe(200);
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  // F-A7-05 (E9): shortcuts, disk images and macro documents were missing from
+  // the server list, so mail.attachment.read alone downloaded them.
+  test.each(['Rechnung.lnk', 'Setup.iso', 'Angebot.docm', 'app.jar', 'Rechnung.lnk. '])(
+    'downloading %p requires mail.attachment.suspicious_download',
+    async (filename) => {
+      const getAttachmentContent = jest.fn(async () => ({
+        ok: true as const,
+        record: {
+          id: 701,
+          filename,
+          contentType: 'application/octet-stream',
+          sizeBytes: 7,
+          contentSha256: null,
+          content: new Uint8Array(Buffer.from('payload')),
+        },
+      }));
+      const account = [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+      const readOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+        ['mail.attachment.read', account],
+      ]);
+      const download = (grants: typeof readOnly) => createServerApi(makeHttpPorts({
+        grants,
+        overrides: {
+          emailAttachments: {
+            get: async () => ({
+              id: 701,
+              sourceSqliteId: 701,
+              messageSourceSqliteId: Number(MESSAGE_A),
+              messageId: MESSAGE_A,
+              filename,
+              contentType: 'application/octet-stream',
+              sizeBytes: 7,
+              contentSha256: null,
+              updatedAt: '2026-07-19T12:00:00.000Z',
+            }),
+          },
+          emailAttachmentContent: { get: getAttachmentContent },
+        } as unknown as Partial<ServerApiPorts>,
+      })).handle({
+        method: 'GET',
+        path: '/api/v1/email/attachments/701/content',
+        principal: makePrincipal(),
+      });
+
+      const denied = await download(readOnly);
+      expect(denied).toMatchObject({ status: 404, body: { error: { code: 'mail_resource_not_found' } } });
+      expect(getAttachmentContent).not.toHaveBeenCalled();
+
+      const allowed = await download(new Map(readOnly).set('mail.attachment.suspicious_download', account));
+      expect(allowed.status).toBe(200);
+      expect(getAttachmentContent).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test('classifies the decrypted PGP attachment name for the suspicious-download grant', async () => {
     const attachmentRecord = (filename: string) => ({
@@ -3601,14 +3920,16 @@ describe('server mailbox ACL migration', () => {
           method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
           body: { ...createBody, messageId },
         });
-        expect(malformed.status).toBe(404);
+        expect(malformed.status).toBe(405);
       }
 
-      expect(allowedCreate.status).toBe(201);
-      expect(hiddenCreate.status).toBe(404);
-      expect(crossWorkspaceCreate.status).toBe(404);
-      expect(absentCreate.status).toBe(201);
-      expect(nullCreate.status).toBe(201);
+      // F-A8-05 (E29): Anlegen ist kein API-Vertrag mehr. Jeder POST endet mit
+      // 405, unabhaengig von der Nachricht (kein Existenz-Orakel ueber 404/405).
+      expect(allowedCreate.status).toBe(405);
+      expect(hiddenCreate.status).toBe(405);
+      expect(crossWorkspaceCreate.status).toBe(405);
+      expect(absentCreate.status).toBe(405);
+      expect(nullCreate.status).toBe(405);
 
       const allowedPatch = await api.handle({
         method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7801', principal: user,
@@ -3867,6 +4188,65 @@ describe('server mailbox ACL migration', () => {
       expect(accounts[0]?.imap_host).toBe('');
       expect(accounts[0]?.oauth_provider).toBeNull();
     } finally {
+      await db.destroy();
+    }
+  });
+
+  // F-A2a-03: messages_index.jsonl carried the body-derived snippet for callers
+  // whose mail.content.read scope does not cover the message.
+  test('omits the snippet from a PostgreSQL GDPR export outside the content scope', async () => {
+    await ensureScopedGrantFixtures();
+    await client.query(`UPDATE email_messages SET snippet = 'GEHEIMER BODY' WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}`);
+    const db = createApplicationDb();
+    try {
+      const access = new MailAccessService(createPostgresMailAccessPort({ db }));
+      const exportScope = await access.resolveScope({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_FOLDER, isOwner: false, isAdmin: false },
+        permission: 'mail.export',
+      });
+      const contentScope = await resolveContentScope(db, USER_FOLDER);
+      const exportSnippets = async (mailContentScope: MailSqlScope): Promise<Array<string | null>> => {
+        const entries = new Map<string, string>();
+        const pendingStreams: Array<{ name: string; stream: Readable }> = [];
+        let finalizeExport: (() => void) | undefined;
+        const finalized = new Promise<void>((resolve) => { finalizeExport = resolve; });
+        const archive = {
+          on() { return archive; },
+          pipe() { return archive; },
+          append(content: string | Buffer | Readable, options: { name: string }) {
+            if (content instanceof Readable) pendingStreams.push({ name: options.name, stream: content });
+            else entries.set(options.name, Buffer.isBuffer(content) ? content.toString('utf8') : content);
+            return archive;
+          },
+          async finalize() {
+            for (const pending of pendingStreams) {
+              entries.set(pending.name, (await readableToBuffer(pending.stream)).toString('utf8'));
+            }
+            finalizeExport?.();
+          },
+          abort() { finalizeExport?.(); },
+        };
+        const exporter = createPostgresEmailGdprExportPort({
+          db,
+          attachmentsRoot: postgresDir,
+          archiveFactory: () => archive,
+          outputStreamFactory: () => new PassThrough(),
+        });
+        const result = await exporter.export({
+          ...withMailScope({ workspaceId: WORKSPACE_A, skipAttachments: true }, exportScope),
+          mailContentScope,
+        } as Parameters<typeof exporter.export>[0]);
+        expect(result.ok).toBe(true);
+        await finalized;
+        return (entries.get('messages_index.jsonl') ?? '').trim().split('\n').filter(Boolean)
+          .map((line) => (JSON.parse(line) as { snippet: string | null }).snippet);
+      };
+
+      expect(await exportSnippets({ kind: 'none' })).toEqual([null]);
+      expect(await exportSnippets(contentScope)).toEqual(['GEHEIMER BODY']);
+    } finally {
+      await client.query(`UPDATE email_messages SET snippet = NULL WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}`);
       await db.destroy();
     }
   });
@@ -4834,6 +5214,69 @@ describe('server mailbox ACL migration', () => {
       await db.destroy();
     }
   }, 10_000);
+
+  // F-D2-01: a grant with a visibility filter needs the message facts. Those
+  // were loaded through a second pool connection while the evaluation kept its
+  // own, so as many parallel evaluations as pool slots deadlocked the API.
+  test('single-connection rollout evaluation of a constrained grant does not borrow a nested pool connection', async () => {
+    await ensureMailAclConstraintsSchema();
+    const db = createApplicationDb({ maxConnections: 1, applicationName: 'd2-01-constrained-evaluation' });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const service = new MailAccessRolloutService({
+      state,
+      legacy: createPostgresMailAclRolloutLegacyPort({ db }),
+      newAcl: createPostgresMailAccessPort({ db }),
+    });
+    let bindingId: string | null = null;
+    let settled = false;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const binding = await client.query<{ id: string }>(`
+        SELECT id::text AS id FROM mail_acl_bindings
+        WHERE workspace_id = '${WORKSPACE_A}' AND subject_type = 'user' AND subject_id = '${USER_READ}'
+          AND resource_type = 'account' AND account_id = ${ACCOUNT_A}
+      `);
+      bindingId = binding.rows[0]!.id;
+      await client.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+        VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'exclude', '{987654}'::bigint[])
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+
+      const evaluation = service.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: {
+          type: 'message',
+          accountId: String(ACCOUNT_A),
+          folderId: String(FOLDER_A),
+          messageId: String(MESSAGE_A),
+        },
+      }).finally(() => { settled = true; });
+      const outcome = await Promise.race([
+        evaluation.then(() => 'resolved' as const, () => 'rejected' as const),
+        new Promise<'deadlocked'>((resolve) => setTimeout(() => resolve('deadlocked'), 4_000)),
+      ]);
+      expect(outcome).toBe('resolved');
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      if (bindingId) {
+        await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`).catch(() => undefined);
+      }
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      if (!settled) {
+        // A deadlocked evaluation holds the only pool slot; terminate it so the
+        // pool can drain instead of hanging the suite.
+        await client.query(`
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+          WHERE application_name = 'd2-01-constrained-evaluation'
+        `).catch(() => undefined);
+      }
+      await Promise.race([db.destroy(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    }
+  }, 15_000);
 
   test('counter saturation marks telemetry unhealthy without changing allowed shadow decisions and reset starts a healthy window', async () => {
     const db = createApplicationDb({ maxConnections: 2 });

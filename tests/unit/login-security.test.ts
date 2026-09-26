@@ -1,4 +1,4 @@
-import { DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS } from '@simplecrm/core';
+import { DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, serializeAuthSecuritySyncValues } from '@simplecrm/core';
 
 jest.mock('../../packages/server/src/mail-smtp-send', () => ({
   sendSmtpMessage: jest.fn().mockRejectedValue(new Error('smtp down')),
@@ -347,6 +347,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -410,6 +411,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     // A wrong code records a failed-login against the (email,ip) lockout —
@@ -477,6 +479,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     await expect(service.completeMfaLogin({
@@ -492,6 +495,164 @@ describe('login security service MFA gate', () => {
       code: validCode,
     })).resolves.toEqual({ ok: false, code: 'mfa_attempts_exceeded' });
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
+  });
+
+  // F-A1-12: an accepted TOTP code could be replayed on a second, fresh MFA challenge within the tolerance window.
+  // F-A1-06: step-up before an MFA change needs to check a current authenticator code outside of a login challenge.
+  test('verifies a current TOTP code for step-up once and only for an enrolled authenticator', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const invalidCode = validCode === '000000' ? '000001' : '000000';
+    const workspaceDb = createWorkspaceLookupDb(mfaUser.email);
+    const createStepUpService = (user: Omit<typeof mfaUser, 'mfaMethod'> & { mfaMethod: 'totp' | 'email' }) => createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: { findUserByEmail: async () => user } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const totpService = createStepUpService({ ...mfaUser, mfaMethod: 'totp' as const });
+    const input = { workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID };
+
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: invalidCode })).resolves.toBe(false);
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: validCode })).resolves.toBe(true);
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: validCode })).resolves.toBe(false);
+    // An e-mail MFA user has no authenticator whose code could be checked.
+    await expect(createStepUpService(mfaUser).verifyCurrentTotpCode({ ...input, code: generateSync({ secret }) }))
+      .resolves.toBe(false);
+  });
+
+  test('rejects an already accepted TOTP code on a second challenge', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const user = { ...mfaUser, mfaMethod: 'totp' as const };
+    const recordFailedLogin = jest.fn(async () => 1);
+    const issueTokenPair = jest.fn(async () => ({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSeconds: 3600,
+    }));
+    const workspaceDb = createWorkspaceLookupDb(user.email);
+    const createReplica = () => createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: {
+        findUserByEmail: async () => user,
+        recordSuccessfulLogin: async () => undefined,
+        recordFailedLogin,
+        issueTokenPair,
+      } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const challenge = (issuedAt: string) => issueMfaChallengeToken({
+      signer,
+      userId: user.id,
+      workspaceId: user.workspaceId,
+      method: 'totp',
+      issuedAt: new Date(issuedAt),
+      passwordHash: user.passwordHash,
+    });
+    const firstChallenge = challenge('2026-01-01T11:59:50.000Z');
+    const secondChallenge = challenge('2026-01-01T11:59:55.000Z');
+    expect(secondChallenge).not.toBe(firstChallenge);
+
+    await expect(createReplica().completeMfaLogin({
+      mfaChallengeToken: firstChallenge,
+      code: validCode,
+    })).resolves.toMatchObject({ ok: true });
+    // A second API replica shares only the challenge store, as in production.
+    await expect(createReplica().completeMfaLogin({
+      mfaChallengeToken: secondChallenge,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_code_invalid' });
+    expect(issueTokenPair).toHaveBeenCalledTimes(1);
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+  });
+
+  // C-A15: Eine vor dem Passwortwechsel ausgestellte MFA-Challenge liess sich danach noch zu einer Sitzung abschliessen.
+  test('an MFA challenge does not outlive a password change of its user', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const user = { ...mfaUser, mfaMethod: 'totp' as const, passwordHash: 'hash-before-change' };
+    let currentUser = user;
+    const issueTokenPair = jest.fn(async (): Promise<{
+      accessToken: string;
+      refreshToken: string;
+      expiresInSeconds: number;
+    } | null> => ({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSeconds: 3600,
+    }));
+    const workspaceDb = createWorkspaceLookupDb(user.email);
+    const service = createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: {
+        findUserByEmail: async () => currentUser,
+        recordSuccessfulLogin: async () => undefined,
+        recordFailedLogin: async () => 1,
+        issueTokenPair,
+      } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const begin = () => service.beginMfaIfRequired({
+      user,
+      workspaceSettings: { ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, mfaEnabled: true, mfaTotpEnabled: true },
+    });
+
+    // The password changed after the challenge was issued.
+    const staleStep = await begin();
+    if (staleStep.kind !== 'mfa_required') throw new Error('expected an MFA challenge');
+    currentUser = { ...user, passwordHash: 'hash-after-change' };
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: staleStep.mfaChallengeToken,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_challenge_invalid' });
+    expect(issueTokenPair).not.toHaveBeenCalled();
+
+    // The password changes between the user lookup and the session issue: the
+    // port refuses the no longer current hash and the login must not succeed.
+    currentUser = user;
+    issueTokenPair.mockResolvedValueOnce(null);
+    const racingStep = await begin();
+    if (racingStep.kind !== 'mfa_required') throw new Error('expected an MFA challenge');
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: racingStep.mfaChallengeToken,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_challenge_invalid' });
+    expect(issueTokenPair).toHaveBeenCalledWith(expect.objectContaining({
+      expectedPasswordHash: 'hash-before-change',
+    }));
   });
 
   test('releases the MFA transaction before SMTP and rejects a concurrent challenge', async () => {
@@ -659,6 +820,67 @@ describe('login security service MFA gate', () => {
         mfaEmailEnabled: true,
       },
     })).resolves.toEqual({ kind: 'mfa_delivery_failed' });
+  });
+
+  function createEmailEnrollmentService(options: { mfaEmailEnabled: boolean; smtp: boolean }) {
+    const updateChain: Record<string, jest.Mock> = {};
+    updateChain.set = jest.fn(() => updateChain);
+    updateChain.where = jest.fn(() => updateChain);
+    updateChain.execute = jest.fn(async () => undefined);
+    const trx = { updateTable: jest.fn(() => updateChain) };
+    const settings = { ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, mfaEnabled: true, mfaEmailEnabled: options.mfaEmailEnabled };
+    const service = createLoginSecurityService({
+      db: {
+        transaction: () => ({
+          execute: async (operation: (transaction: typeof trx) => Promise<unknown>) => operation(trx),
+        }),
+      } as never,
+      syncInfo: {
+        getMany: async () => Object.entries(serializeAuthSecuritySyncValues(settings)).map(([key, value]) => ({ key, value })),
+        setMany: async () => undefined,
+      } as never,
+      listPublicWorkspaceSettings: async () => [settings],
+      secrets: {
+        readSecret: async () => null,
+        writeSecret: async () => undefined,
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: { findUserByEmail: async () => null } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      ...(options.smtp ? {
+        authInvitationSmtp: {
+          host: 'smtp.example.com',
+          port: 587,
+          tls: true,
+          user: 'smtp-user',
+          password: 'smtp-pass',
+          from: 'noreply@example.com',
+        },
+      } : {}),
+      applyWorkspaceSession: async () => undefined,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    return { service, updateTable: trx.updateTable };
+  }
+
+  // F-A1-04: e-mail MFA could be enrolled although the workspace does not offer it, so every later login ended in 503 mfa_delivery_failed.
+  test.each([
+    ['the workspace does not allow e-mail MFA', { mfaEmailEnabled: false, smtp: true }],
+    ['no invitation SMTP is configured', { mfaEmailEnabled: true, smtp: false }],
+  ])('refuses to enroll e-mail MFA when %s', async (_reason, options) => {
+    const { service, updateTable } = createEmailEnrollmentService(options);
+
+    await expect(service.enableEmailMfa({ workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID })).resolves.toBe(false);
+    expect(updateTable).not.toHaveBeenCalled();
+  });
+
+  test('enrolls e-mail MFA when the workspace offers it', async () => {
+    const { service, updateTable } = createEmailEnrollmentService({ mfaEmailEnabled: true, smtp: true });
+
+    await expect(service.enableEmailMfa({ workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID })).resolves.toBe(true);
+    expect(updateTable).toHaveBeenCalledWith('users');
   });
 });
 

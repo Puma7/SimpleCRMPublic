@@ -192,6 +192,51 @@ describe('email-workflow-store', () => {
     expect(() => updateWorkflow(9, { name: 'x' })).toThrow(/nicht gefunden/);
   });
 
+  // F-A13A14-04: Lookarounds und Rueckverweise in Workflow-Regex wurden gespeichert, obwohl V8 sie nicht auf die lineare Engine umstellen kann.
+  test('createWorkflow und updateWorkflow lehnen Regex mit Lookaround oder Rueckverweis ab (E1)', () => {
+    const graph = (value: string) => JSON.stringify({
+      version: 1,
+      nodes: [{ id: 'c1', type: 'condition', data: { field: 'subject', op: 'regex', value } }],
+      edges: [],
+    });
+    expect(() => createWorkflow({
+      name: 'Test',
+      trigger: 'inbound',
+      definitionJson: '{"version":1,"rules":[]}',
+      graphJson: graph('(?=a)(a|a)*b'),
+    })).toThrow(/Lookaround/);
+    expect(() => createWorkflow({
+      name: 'Test',
+      trigger: 'inbound',
+      definitionJson: JSON.stringify({
+        version: 1,
+        rules: [{ when: { field: 'subject', op: 'regex', value: '(a)\\1' }, then: [] }],
+      }),
+    })).toThrow(/Rückverweis/);
+    expect(stmt.run).not.toHaveBeenCalled();
+
+    stmt.get.mockReturnValue({
+      id: 1,
+      name: 'W',
+      trigger: 'inbound',
+      enabled: 1,
+      priority: 1,
+      definition_json: '{}',
+      graph_json: null,
+      cron_expr: null,
+      schedule_account_id: null,
+      execution_mode: 'graph',
+      engine_version: 1,
+      created_at: 't',
+      updated_at: 't',
+    });
+    expect(() => updateWorkflow(1, { graphJson: graph('(?<!Re: )Angebot') })).toThrow(/Lookaround/);
+    expect(stmt.run).not.toHaveBeenCalled();
+
+    updateWorkflow(1, { graphJson: graph('rechnung|invoice') });
+    expect(stmt.run).toHaveBeenCalledTimes(1);
+  });
+
   test('updateWorkflow all optional fields', () => {
     stmt.get.mockReturnValue({
       id: 1,

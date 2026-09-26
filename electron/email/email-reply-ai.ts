@@ -64,21 +64,26 @@ function interpolateReplyTemplate(
   customerId: number | null | undefined,
 ): string {
   const body = messageBodyForReply(row);
-  let user = template
-    .replace(/\{\{subject\}\}/g, () => row.subject ?? '')
-    .replace(/\{\{from\}\}/g, () => extractFromAddress(row.from_json))
-    .replace(/\{\{body\}\}/g, () => body)
-    .replace(/\{\{text\}\}/g, () => body);
+  const values: Record<string, string> = {
+    subject: row.subject ?? '',
+    from: extractFromAddress(row.from_json),
+    body,
+    text: body,
+  };
   if (customerId) {
     const cust = getCustomerById(customerId);
     if (cust) {
-      user = user
-        .replace(/\{\{customer\.name\}\}/g, () => cust.name ?? '')
-        .replace(/\{\{customer\.firstName\}\}/g, () => cust.firstName ?? '')
-        .replace(/\{\{customer\.email\}\}/g, () => cust.email ?? '');
+      values['customer.name'] = cust.name ?? '';
+      values['customer.firstName'] = cust.firstName ?? '';
+      values['customer.email'] = cust.email ?? '';
     }
   }
-  return user;
+  // Single pass: inserted mail values (subject, sender, body) are never
+  // rescanned, so placeholders inside them cannot expand (injection/amplification).
+  return template.replace(
+    /\{\{(subject|from|body|text|customer\.name|customer\.firstName|customer\.email)\}\}/g,
+    (match, key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key]! : match),
+  );
 }
 
 function isAutomatedInbound(row: EmailMessageRow): boolean {

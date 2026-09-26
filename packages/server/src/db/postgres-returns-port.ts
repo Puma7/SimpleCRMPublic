@@ -248,41 +248,54 @@ async function createReturn(
   if (items.length === 0) {
     return { ok: false, error: 'Mindestens eine Position mit Menge > 0 ist erforderlich' };
   }
+  // products.id / return_reasons.id are global and FK checks bypass RLS, so a
+  // caller-supplied id must be proven to belong to this workspace before it is
+  // referenced — otherwise another tenant's row (or an unknown id → 23503/500)
+  // would leak through.
+  if (!(await idsBelongToWorkspace(trx, 'products', workspaceId, items.map((item) => item.productId)))) {
+    return { ok: false, error: 'Unbekanntes Produkt' };
+  }
+  if (!(await idsBelongToWorkspace(trx, 'return_reasons', workspaceId, items.map((item) => item.reasonId)))) {
+    return { ok: false, error: 'Unbekannter Retourengrund' };
+  }
+  // Same for the header links (returns.customer_id / email_message_id are global FKs too).
+  if (!(await idsBelongToWorkspace(trx, 'customers', workspaceId, [input.customerId]))) {
+    return { ok: false, error: 'Unbekannter Kunde' };
+  }
+  if (!(await idsBelongToWorkspace(trx, 'email_messages', workspaceId, [input.emailMessageId]))) {
+    return { ok: false, error: 'Unbekannte E-Mail' };
+  }
 
   // Retry-safe insert: if the random return_number collides (vanishingly
   // unlikely with 4 random bytes per workspace), try again with a fresh one.
+  // ON CONFLICT DO NOTHING keeps the surrounding transaction usable; a caught
+  // unique violation would abort it and fail every later attempt.
   let insertedHeader: { id: number; return_number: string } | undefined;
-  let lastError: unknown;
-  for (let attempt = 0; attempt < RETURN_NUMBER_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < RETURN_NUMBER_MAX_ATTEMPTS && !insertedHeader; attempt++) {
     const returnNumber = generateReturnNumber();
-    try {
-      insertedHeader = await trx
-        .insertInto('returns')
-        .values({
-          workspace_id: workspaceId,
-          return_number: returnNumber,
-          customer_id: input.customerId ?? null,
-          email_message_id: input.emailMessageId ?? null,
-          jtl_order_number: input.jtlOrderNumber ?? null,
-          jtl_kauftrag: input.jtlKauftrag ?? null,
-          status: 'pending',
-          outcome: null,
-          customer_email: input.customerEmail ?? null,
-          customer_name: input.customerName ?? null,
-          notes: input.notes ?? null,
-        })
-        .returning(['id', 'return_number'])
-        .executeTakeFirstOrThrow();
-      break;
-    } catch (error) {
-      lastError = error;
-      if (!isUniqueViolation(error)) throw error;
-    }
+    insertedHeader = await trx
+      .insertInto('returns')
+      .values({
+        workspace_id: workspaceId,
+        return_number: returnNumber,
+        customer_id: input.customerId ?? null,
+        email_message_id: input.emailMessageId ?? null,
+        jtl_order_number: input.jtlOrderNumber ?? null,
+        jtl_kauftrag: input.jtlKauftrag ?? null,
+        status: 'pending',
+        outcome: null,
+        customer_email: input.customerEmail ?? null,
+        customer_name: input.customerName ?? null,
+        notes: input.notes ?? null,
+      })
+      .onConflict((oc) => oc.columns(['workspace_id', 'return_number']).doNothing())
+      .returning(['id', 'return_number'])
+      .executeTakeFirst();
   }
   if (!insertedHeader) {
     return {
       ok: false,
-      error: `Konnte keine eindeutige return_number erzeugen (${RETURN_NUMBER_MAX_ATTEMPTS} Versuche): ${describeError(lastError)}`,
+      error: `Konnte keine eindeutige return_number erzeugen (${RETURN_NUMBER_MAX_ATTEMPTS} Versuche)`,
     };
   }
 
@@ -305,6 +318,23 @@ async function createReturn(
   const record = await getReturn(trx, workspaceId, returnId);
   if (!record) return { ok: false, error: 'Retoure wurde angelegt, konnte aber nicht gelesen werden' };
   return { ok: true, record };
+}
+
+async function idsBelongToWorkspace(
+  trx: WorkspaceTransaction,
+  table: 'products' | 'return_reasons' | 'customers' | 'email_messages',
+  workspaceId: string,
+  candidates: ReadonlyArray<number | null | undefined>,
+): Promise<boolean> {
+  const ids = [...new Set(candidates.filter((id): id is number => typeof id === 'number'))];
+  if (ids.length === 0) return true;
+  const rows = await trx
+    .selectFrom(table)
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', ids)
+    .execute();
+  return rows.length === ids.length;
 }
 
 async function updateReturn(
@@ -626,15 +656,3 @@ function defaultGenerateReturnNumber(): string {
   return RETURN_NUMBER_PREFIX + randomBytes(RETURN_NUMBER_RANDOM_BYTES).toString('hex').toUpperCase();
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  // Postgres `unique_violation` SQLSTATE.
-  return code === '23505';
-}
-
-function describeError(error: unknown): string {
-  if (!error) return 'unknown';
-  if (error instanceof Error) return error.message;
-  return String(error);
-}

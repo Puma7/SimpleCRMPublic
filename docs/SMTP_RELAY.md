@@ -33,7 +33,12 @@ Ohne lesbares Zertifikat/Key startet der Relay **nicht** (die API läuft normal
 weiter; Fehlermeldung im Log unter `[smtp-relay]`). Caddy proxyt nur HTTP —
 die Ports 587/465 müssen zusätzlich zum Container durchgereicht werden; das TLS
 des Relays kommt aus den beiden PEM-Dateien (z. B. dieselben Let's-Encrypt-
-Dateien, die Caddy nutzt).
+Dateien, die Caddy nutzt). Der Relay liest beide Dateien alle 15 Minuten neu
+ein; ein erneuertes Zertifikat gilt dann ohne Neustart für neue Verbindungen.
+Passen Schlüssel und Zertifikat (noch) nicht zusammen, bleibt das bisherige
+aktiv und das Log meldet `inbound smtp tls reload rejected`. Werden die Dateien
+nach `SMTP_RELAY_TLS_DIR` kopiert, muss die Kopie nach jeder Erneuerung
+wiederholt werden (z. B. per Cron).
 
 ### Docker Compose
 
@@ -47,9 +52,24 @@ mountet:
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.relay.yml up -d
 ```
 
+Die Betriebsskripte (`docker/simplecrm`, `docker/update.sh`, `docker/restore-compose.sh`)
+nehmen die Override-Datei nur mit, wenn sie in `COMPOSE_FILE` steht (mehrere Dateien
+mit `:` getrennt, wie bei Docker Compose selbst). Sonst erstellen Update und Restore
+die API ohne Relay-Ports neu:
+
+```
+export COMPOSE_FILE="$PWD/docker/docker-compose.yml:$PWD/docker/docker-compose.relay.yml"
+sh docker/simplecrm update
+```
+
+`update.sh` warnt, wenn `SMTP_RELAY_ENABLED` gesetzt ist, die Override-Datei aber fehlt.
+
 In `.env` mindestens setzen: `SMTP_RELAY_ENABLED=true`, `SMTP_RELAY_HOSTNAME`,
 und `SMTP_RELAY_TLS_DIR` auf ein Host-Verzeichnis mit `cert.pem`+`key.pem` (Default
 `./relay-tls`; z. B. die Let's-Encrypt-Dateien für `SMTP_RELAY_HOSTNAME`).
+Der `api`-Container läuft als unprivilegierter Nutzer `node` (uid 1000): `key.pem`
+muss für diese uid lesbar sein (z. B. `chown 1000 relay-tls/key.pem`), sonst meldet
+die API `[smtp-relay] TLS key/cert could not be read` und startet das Relay nicht.
 
 Tracking setzt zusätzlich die bestehende Tracking-Infrastruktur voraus
 (`PUBLIC_BASE_URL` + `SIMPLECRM_MASTER_KEY` und eine aktivierte
@@ -95,6 +115,11 @@ Relay normal weiter — nur ohne Pixel.
   müssen zum erlaubten Konto der Zugangsdaten passen (Spoofing-Schutz).
 - Limits pro Relay: max. Empfänger/Mail, Nachrichtengröße, Rate-Limit
   pro Zugangsdaten (Token-Bucket, `451` bei Überschreitung).
+- Empfängeradressen werden nicht auf bekannte Kontakte beschränkt. Den früheren
+  Schalter `allowArbitraryRecipients` hat SimpleCRM nie durchgesetzt; er ist aus
+  API, IPC und UI entfernt (F-A3b-04). Ältere Clients dürfen ihn weiter senden,
+  der Server ignoriert ihn. Die DB-Spalte `smtp_relays.allow_arbitrary_recipients`
+  bleibt bis zu einer eigenen Migration ungenutzt stehen.
 - Eingehende `X-SimpleCRM-*`-Header werden beim Durchleiten **entfernt**
   (keine Steuer-Header-Injektion von außen).
 - Antworten: `535` (Login), `550 5.7.1` (From nicht erlaubt), `452` (zu viele

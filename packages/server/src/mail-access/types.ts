@@ -105,15 +105,21 @@ export interface MailAccessPort {
     evaluationContext?: MailAclRolloutEvaluationContext,
   ): Promise<readonly MailAccessGrant[]>;
 
+  /**
+   * Like resolveGrants, both lookups below must run on the rollout evaluation's
+   * own transaction when one is passed: the evaluation already holds a pool
+   * connection, so borrowing a second one deadlocks once as many evaluations
+   * run in parallel as the pool has slots.
+   */
   resolveScopeActorContext?(input: Readonly<{
     workspaceId: string;
     userId: string;
-  }>): Promise<MailScopeActorContext>;
+  }>, evaluationContext?: MailAclRolloutEvaluationContext): Promise<MailScopeActorContext>;
 
   resolveMessageVisibilityFacts?(input: Readonly<{
     workspaceId: string;
     messageId: number;
-  }>): Promise<MailMessageVisibilityFacts | null>;
+  }>, evaluationContext?: MailAclRolloutEvaluationContext): Promise<MailMessageVisibilityFacts | null>;
 
   /**
    * Nutzer, deren Bindings eine der genannten Kategorien/Tags als

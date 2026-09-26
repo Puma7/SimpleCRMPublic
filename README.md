@@ -57,10 +57,10 @@ SimpleCRM leverages the Electron framework to deliver a web-powered experience o
 2. **Install Dependencies:**
    ```bash
    corepack enable
-   corepack prepare pnpm@11.12.0 --activate
+   corepack prepare pnpm@11.13.1 --activate
    pnpm install
    ```
-   The root workspace is pinned to **Node.js 24 LTS**, **pnpm 11.12.0**, and
+   The root workspace is pinned to **Node.js 24 LTS**, **pnpm 11.13.1**, and
    **TypeScript 7.0.2+**. pnpm resolves the root peer-dependency tree without
    `--legacy-peer-deps`.
 3. **Prepare Native Modules:**

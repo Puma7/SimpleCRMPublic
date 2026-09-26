@@ -34,6 +34,7 @@ describe('server dashboard API', () => {
     });
     expect(dashboard.getStats).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
+      viewer: { userId: 'user-1', role: 'owner' },
     });
   });
 
@@ -72,6 +73,7 @@ describe('server dashboard API', () => {
     expect(dashboard.getUpcomingTasks).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
       limit: 2,
+      viewer: { userId: 'user-1', role: 'owner' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('invalid_limit');

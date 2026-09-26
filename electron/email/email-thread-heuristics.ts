@@ -5,6 +5,7 @@ import {
 } from '../database-schema';
 import { canonicalThreadId } from './email-thread-resolve';
 import { normalizeSubject } from './email-thread-resolve';
+import { accountAccessSql, type MailScopeSession } from './mail-scope-access';
 
 export type ThreadAliasWarning = {
   messageId: number;
@@ -98,9 +99,10 @@ export function runCrossAccountThreadHeuristics(messageId: number): ThreadAliasW
   return null;
 }
 
-export function listPendingThreadAliasWarnings(limit = 50): ThreadAliasWarning[] {
+export function listPendingThreadAliasWarnings(limit = 50, access?: MailScopeSession): ThreadAliasWarning[] {
   const db = getDb();
   if (!db) return [];
+  const scope = accountAccessSql(db, access);
   return db
     .prepare(
       `SELECT m.id AS messageId, m.account_id AS accountId, m.subject,
@@ -108,9 +110,9 @@ export function listPendingThreadAliasWarnings(limit = 50): ThreadAliasWarning[]
               a.confidence
        FROM ${EMAIL_THREAD_ALIASES_TABLE} a
        JOIN ${EMAIL_MESSAGES_TABLE} m ON m.thread_id = a.alias_thread_id
-       WHERE a.source LIKE 'cross_account%'
+       WHERE a.source LIKE 'cross_account%'${scope.sql}
        ORDER BY a.created_at DESC
        LIMIT ?`,
     )
-    .all(limit) as ThreadAliasWarning[];
+    .all(...scope.params, limit) as ThreadAliasWarning[];
 }

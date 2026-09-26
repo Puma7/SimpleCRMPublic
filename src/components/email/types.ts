@@ -1,4 +1,6 @@
 import { getRendererTransport } from "@/services/transport"
+import { replaceElementBlocks, replaceTags } from "../../../packages/core/src/email/parse-utils"
+import { escapeHtmlText } from "@shared/compose-body"
 
 export type MailView =
   | "inbox"
@@ -29,6 +31,9 @@ export type EmailAccount = {
   smtp_tls?: number | null
   smtp_username?: string | null
   smtp_use_imap_auth?: number | null
+  /** Desktop: OAuth-Anmeldung (google/microsoft), aktiv mit Refresh-Key. */
+  oauth_provider?: string | null
+  oauth_refresh_keytar_key?: string | null
   sent_folder_path?: string | null
   sync_spam_folder_path?: string | null
   sync_archive_folder_path?: string | null
@@ -42,6 +47,8 @@ export type EmailAccount = {
   vacation_body_text?: string | null
   request_read_receipt?: number
   imap_delete_opt_in?: number | null
+  /** Server edition: RFC 8601 authserv-id for the Authentication-Results fallback (null = default). */
+  trusted_authserv_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -198,11 +205,15 @@ export const invokeIpc = <T,>(channel: string, ...args: unknown[]): Promise<T> =
   return invoke(channel, ...args) as Promise<T>
 }
 
+/** Comparable key for a mail server endpoint; host case and whitespace do not count. */
+export function mailEndpointKey(host: string, port: number, tls: boolean): string {
+  return `${host.trim().toLowerCase()}|${port}|${tls ? 1 : 0}`
+}
+
 export function stripHtmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
+  // Linear scans from core instead of lazy/negated-class regexes: unclosed
+  // <script/<style/< in a hostile mail made those quadratic and froze the UI.
+  return replaceTags(replaceElementBlocks(replaceElementBlocks(html, "script", ""), "style", ""))
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -360,7 +371,12 @@ export type CannedTemplateContext = {
   userPublicName?: string | null
 }
 
-/** Plain-text placeholder interpolation for canned responses (customer + account + user). */
+/**
+ * Placeholder interpolation for canned responses (customer + account + user).
+ * The result is inserted into the compose HTML, so values are data, not
+ * markup: HTML-escaped and inserted via callback so `$&` in a value is no
+ * replacement pattern.
+ */
 export function applyCannedTemplate(
   body: string,
   customer?: CustomerOpt | null,
@@ -369,15 +385,13 @@ export function applyCannedTemplate(
   const c = customer ?? undefined
   const ctx = context ?? {}
   const publicName = (ctx.userPublicName ?? "").trim() || (ctx.userName ?? "").trim()
+  const firstName = (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || ""
   return body
-    .replace(/\{\{customer\.name\}\}/g, c?.name ?? "")
-    .replace(
-      /\{\{customer\.firstName\}\}/g,
-      (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || "",
-    )
-    .replace(/\{\{customer\.email\}\}/g, c?.email ?? "")
-    .replace(/\{\{account\.display_name\}\}/g, (ctx.accountDisplayName ?? "").trim())
-    .replace(/\{\{user\.publicName\}\}/g, publicName)
-    .replace(/\{\{user\.name\}\}/g, (ctx.userName ?? "").trim())
-    .replace(/\{\{user\.email\}\}/g, (ctx.userEmail ?? "").trim())
+    .replace(/\{\{customer\.name\}\}/g, () => escapeHtmlText(c?.name ?? ""))
+    .replace(/\{\{customer\.firstName\}\}/g, () => escapeHtmlText(firstName))
+    .replace(/\{\{customer\.email\}\}/g, () => escapeHtmlText(c?.email ?? ""))
+    .replace(/\{\{account\.display_name\}\}/g, () => escapeHtmlText((ctx.accountDisplayName ?? "").trim()))
+    .replace(/\{\{user\.publicName\}\}/g, () => escapeHtmlText(publicName))
+    .replace(/\{\{user\.name\}\}/g, () => escapeHtmlText((ctx.userName ?? "").trim()))
+    .replace(/\{\{user\.email\}\}/g, () => escapeHtmlText((ctx.userEmail ?? "").trim()))
 }

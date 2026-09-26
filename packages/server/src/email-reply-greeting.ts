@@ -65,19 +65,35 @@ export function buildReplyGreeting(input: {
   }
   const fromName = parseFromName(input.fromJson)
   if (fromName) {
-    const last = lastNameFromFullName(fromName)
-    const lower = fromName.toLowerCase()
-    if (lower.includes('herr')) return `Sehr geehrter Herr ${last},`
-    if (lower.includes('frau')) return `Sehr geehrte Frau ${last},`
+    // Nur eine VORANGESTELLTE Anrede als eigenes Wort zaehlt: ein Teilstring
+    // ("Sherry", "Frauke", "Herrmann") oder "Herr" als Nachname ist keine.
+    const salutation = /^(herr|frau)\.?\s+(\S.*)$/i.exec(fromName)
+    if (salutation) {
+      const last = lastNameFromFullName(salutation[2]!)
+      return salutation[1]!.toLowerCase() === 'herr'
+        ? `Sehr geehrter Herr ${last},`
+        : `Sehr geehrte Frau ${last},`
+    }
     return `Guten Tag ${fromName},`
   }
   return 'Guten Tag,'
 }
 
+function escapeGreetingHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function replyGreetingPlainToHtml(greeting: string): string {
   const trimmed = greeting.trim()
   if (!trimmed) return ''
-  return `<p>${trimmed}</p>`
+  // Die Anrede enthaelt den From-Anzeigenamen der Fremdmail: escapen, sonst
+  // wird Markup (auch ein Zonenmarker-Kommentar) im Antwort-HTML wirksam.
+  return `<p>${escapeGreetingHtml(trimmed)}</p>`
 }
 
 /** Avoid duplicating greeting when AI draft already starts with one. */

@@ -10,6 +10,8 @@ import {
   definitionToJson,
 } from "@shared/email-workflow-graph-compile"
 import {
+  findInboundDelaysHoldingChain,
+  findLoopBodyDeferringNodes,
   findOutboundGraphTraps,
   findWorkflowConfigRisks,
   formatOutboundGraphTraps,
@@ -148,11 +150,16 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 export function WorkflowShell() {
   const electronReady = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
-  const { hasCapability, canViewWorkflows, capabilitiesReady } = useAuth()
-  // Desktop edition has full local control; server edition respects capabilities.
-  const canEditWorkflows = !serverClientMode || hasCapability("workflows.edit")
-  const canManageWorkflows = !serverClientMode || hasCapability("workflows.manage")
+  const { hasCapability, canViewWorkflows, capabilitiesReady, user } = useAuth()
+  // Server edition respects capabilities. Desktop (G1): gespeicherte Workflows
+  // laufen per Cron/Inbound im Main-Prozess, deshalb verlangen die IPC-Kanaele
+  // zum Anlegen, Aendern, Loeschen, Importieren, fuer Versionen, Backfill und
+  // "Jetzt ausfuehren" Owner/Admin — alle anderen sehen den Editor nur lesend.
+  const desktopWorkflowAdmin = user?.role === "owner" || user?.role === "admin"
+  const canEditWorkflows = serverClientMode ? hasCapability("workflows.edit") : desktopWorkflowAdmin
+  const canManageWorkflows = serverClientMode ? hasCapability("workflows.manage") : desktopWorkflowAdmin
   const canRunWorkflows = !serverClientMode || hasCapability("workflows.run")
+  const canExecuteWorkflowsNow = canRunWorkflows && (serverClientMode || desktopWorkflowAdmin)
   const workflowFileTransferAvailable = electronReady || serverClientMode
   const workflowBackfillAvailable = electronReady || serverClientMode
   const workflowDryRunAvailable = electronReady || serverClientMode
@@ -465,6 +472,34 @@ export function WorkflowShell() {
       if (configRisks.length > 0) {
         toast.warning(formatWorkflowConfigRisks(configRisks), { duration: 12000 })
       }
+      // Hinweis, kein Riegel: Der Server schaltet die Inbound-Kette an einer
+      // Verzögerung nur dann sofort weiter, wenn danach nichts mehr die Kette
+      // stoppen kann. Sonst wartet sie seriell. Standalone-Electron führt
+      // nachrangige Workflows immer sofort aus, dort gibt es keinen Hinweis.
+      if (serverClientMode && trig === "inbound") {
+        const holdingDelays = findInboundDelaysHoldingChain(graphDoc, { effectiveTrigger: "inbound" })
+        if (holdingDelays.length > 0) {
+          toast.warning(
+            `Nachrangige Inbound-Workflows warten bis zum Ende der Verzögerung (${holdingDelays
+              .map((id) => `„${id}“`)
+              .join(", ")}), weil danach noch ein Knoten weitere Workflows stoppen kann.`,
+            { duration: 12000 },
+          )
+        }
+      }
+      // Hinweis, kein Riegel: Ein asynchroner Knoten im Je-Eintrag-Zweig einer
+      // Schleife lässt den Lauf zur Laufzeit mit Fehler enden (F-A9-04).
+      const loopBodyAsync = findLoopBodyDeferringNodes(graphDoc, {
+        edition: serverClientMode ? "server" : "desktop",
+      })
+      if (loopBodyAsync.length > 0) {
+        toast.warning(
+          `Asynchrone Knoten im Je-Eintrag-Zweig einer Schleife (${loopBodyAsync
+            .map((id) => `„${id}“`)
+            .join(", ")}) beenden den Lauf mit Fehler. Bitte hinter den Fertig-Ausgang der Schleife verschieben.`,
+          { duration: 12000 },
+        )
+      }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {
           workflowId: selectedId,
@@ -502,6 +537,11 @@ export function WorkflowShell() {
           // und verlangt serverseitig dieselbe Stufe wie ein Seiteneffekt.
           hasSideEffects:
             workflowGraphHasSideEffectNode(graphDoc) || workflowGraphHasChainStopNode(graphDoc),
+          // Den gespeicherten Graphen stilllegen oder entschaerfen verlangt
+          // serverseitig dieselbe Stufe (C-A20).
+          baselineHasSideEffects:
+            workflowGraphHasSideEffectNode(saveBaselineRef.current?.graphJson)
+            || workflowGraphHasChainStopNode(saveBaselineRef.current?.graphJson),
         },
       )
       if (gate.blocked) {
@@ -618,11 +658,12 @@ export function WorkflowShell() {
       graphJson,
       cronExpr: w.cron_expr,
       scheduleAccountId: w.schedule_account_id,
-      enabled: w.enabled,
+      // Wie der Desktop-Import: erst prüfen, dann selbst aktivieren.
+      enabled: false,
       executionMode: w.execution_mode ?? "graph",
       engineVersion: w.engine_version ?? 1,
     }) as { success: boolean; id?: number | null }
-    toast.success("Workflow importiert.")
+    toast.success("Workflow importiert (deaktiviert) – bitte prüfen und dann aktivieren.")
     await load()
     if (res.id != null) {
       const imported = await invokeRenderer(
@@ -659,7 +700,7 @@ export function WorkflowShell() {
       }>(IPCChannels.Email.ImportWorkflowBundleFromFile)
       if (res.canceled) return
       if (res.id != null) {
-        toast.success("Workflow importiert.")
+        toast.success("Workflow importiert (deaktiviert) – bitte prüfen und dann aktivieren.")
         await load()
         const imported = await invokeRenderer(
           IPCChannels.Email.GetWorkflow,
@@ -824,7 +865,9 @@ export function WorkflowShell() {
                 <p className="text-[10px] text-muted-foreground">
                   {canEditWorkflows
                     ? "Im Graph am Trigger-Knoten bearbeiten"
-                    : "Nur Ansicht — Bearbeitung erfordert workflows.edit"}
+                    : serverClientMode
+                      ? "Nur Ansicht — Bearbeitung erfordert workflows.edit"
+                      : "Nur Ansicht — Bearbeitung erfordert die Rolle Owner oder Admin"}
                 </p>
               </div>
               <div className="flex items-center gap-2 self-center pb-1">
@@ -901,48 +944,53 @@ export function WorkflowShell() {
                       advancedOpen && "rotate-180",
                     )}
                   />
-                  Erweitert (Zeitplan, Test, Backfill)
+                  {serverClientMode ? "Erweitert (Test, Backfill)" : "Erweitert (Zeitplan, Test, Backfill)"}
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-2">
                 <div className="flex flex-wrap items-end gap-3 rounded-md border bg-background/80 p-3">
-                  <div className="w-[180px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Cron (Zeitplan)
-                    </Label>
-                    <Input
-                      value={editCron}
-                      onChange={(e) => setEditCron(e.target.value)}
-                      placeholder="*/15 * * * *"
-                      className="h-8 font-mono text-xs"
-                      disabled={!canEditWorkflows}
-                      readOnly={!canEditWorkflows}
-                    />
-                  </div>
-                  <div className="min-w-[180px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Geplantes Konto
-                    </Label>
-                    <select
-                      className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                      value={
-                        editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
-                      }
-                      disabled={!canEditWorkflows}
-                      onChange={(e) =>
-                        setEditScheduleAccountId(
-                          e.target.value ? parseInt(e.target.value, 10) : "",
-                        )
-                      }
-                    >
-                      <option value="">— keins (nur Graph-Lauf) —</option>
-                      {accounts.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.display_name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {/* Zeitplan-Trigger löst nur die Desktop-Runtime aus (F-A9-01). */}
+                  {!serverClientMode ? (
+                    <>
+                      <div className="w-[180px] space-y-1">
+                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Cron (Zeitplan)
+                        </Label>
+                        <Input
+                          value={editCron}
+                          onChange={(e) => setEditCron(e.target.value)}
+                          placeholder="*/15 * * * *"
+                          className="h-8 font-mono text-xs"
+                          disabled={!canEditWorkflows}
+                          readOnly={!canEditWorkflows}
+                        />
+                      </div>
+                      <div className="min-w-[180px] space-y-1">
+                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Geplantes Konto
+                        </Label>
+                        <select
+                          className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                          value={
+                            editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
+                          }
+                          disabled={!canEditWorkflows}
+                          onChange={(e) =>
+                            setEditScheduleAccountId(
+                              e.target.value ? parseInt(e.target.value, 10) : "",
+                            )
+                          }
+                        >
+                          <option value="">— keins (nur Graph-Lauf) —</option>
+                          {accounts.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  ) : null}
                   <div className="w-[120px] space-y-1">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
                       Test-Nachricht-ID
@@ -1006,7 +1054,7 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="default"
-                        disabled={!canRunWorkflows || selectedId == null || !msgOk || executingNow}
+                        disabled={!canExecuteWorkflowsNow || selectedId == null || !msgOk || executingNow}
                         onClick={async () => {
                           if (selectedId == null || executingNow) return
                           setExecutingNow(true)
@@ -1242,6 +1290,11 @@ export function WorkflowShell() {
         <WorkflowVersionsDialog
           workflowId={selectedId}
           canEdit={canEditWorkflows}
+          readOnlyHint={
+            serverClientMode
+              ? undefined
+              : "Nur lesbar — Speichern und Laden von Versionen ist Owner und Admin vorbehalten."
+          }
           open={versionsOpen}
           onOpenChange={setVersionsOpen}
           onRestored={() => {

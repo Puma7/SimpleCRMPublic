@@ -25,6 +25,12 @@ import yauzl from 'yauzl';
  *  exists purely to stop a malicious gzip/zip bomb from exhausting the worker. */
 export const MAX_DECOMPRESSED_BYTES = 32 * 1024 * 1024;
 
+/** Upper bound on `<record>` rows in one report. Real aggregate reports carry a
+ *  few to a few thousand rows; 32 MiB of minimal rows are ~450,000, which cost
+ *  ~7.8 s of synchronous parsing and as many DB rows (F-A3b-01). Checked with a
+ *  cheap pre-count before the XML parse. */
+export const MAX_DMARC_RECORDS_PER_REPORT = 100_000;
+
 const GZIP_MAGIC = [0x1f, 0x8b] as const;
 const ZIP_MAGIC = [0x50, 0x4b] as const;
 
@@ -139,10 +145,22 @@ export async function parseDmarcReportAttachment(
   return parseDmarcXml(xml.toString('utf8'));
 }
 
+/** Number of `<record>` start tags, counted without parsing the XML. */
+export function countDmarcRecordTags(xml: string): number {
+  let count = 0;
+  for (let index = xml.indexOf('<record'); index !== -1; index = xml.indexOf('<record', index + 7)) {
+    const next = xml[index + 7];
+    if (next === '>' || next === '/' || next === ' ' || next === '\t' || next === '\n' || next === '\r') count += 1;
+  }
+  return count;
+}
+
 /** Parse a decompressed RUA XML string into a {@link ParsedDmarcReport}, or `null`
- *  when it is not a recognisable DMARC aggregate report. */
+ *  when it is not a recognisable DMARC aggregate report or has more than
+ *  {@link MAX_DMARC_RECORDS_PER_REPORT} records. */
 export function parseDmarcXml(xml: string): ParsedDmarcReport | null {
   if (!xml || xml.indexOf('<feedback') === -1) return null;
+  if (countDmarcRecordTags(xml) > MAX_DMARC_RECORDS_PER_REPORT) return null;
 
   let doc: unknown;
   try {
@@ -193,6 +211,21 @@ export function parseDmarcXml(xml: string): ParsedDmarcReport | null {
 export function summarizeDmarcRecords(
   records: readonly DmarcRecordRow[],
 ): DmarcReportSummary {
+  const aggregator = createDmarcRecordAggregator();
+  aggregator.add(records);
+  return aggregator.summary();
+}
+
+export type DmarcRecordAggregator = Readonly<{
+  add(records: readonly DmarcRecordRow[]): void;
+  summary(): DmarcReportSummary;
+}>;
+
+/** Running form of {@link summarizeDmarcRecords}: adding several reports' rows
+ *  one after another gives the same summary as summarizing all rows at once,
+ *  without keeping the rows themselves. */
+export function createDmarcRecordAggregator(): DmarcRecordAggregator {
+  let recordCount = 0;
   let messageCount = 0;
   let passCount = 0;
   let failCount = 0;
@@ -201,38 +234,44 @@ export function summarizeDmarcRecords(
   const unauthorizedSources = new Set<string>();
   const volumeByIp = new Map<string, number>();
 
-  for (const row of records) {
-    const count = row.count > 0 ? row.count : 0;
-    messageCount += count;
-    const dmarcPass = row.dkimEval === 'pass' || row.spfEval === 'pass';
-    if (dmarcPass) passCount += count;
-    else {
-      failCount += count;
-      if (row.sourceIp) unauthorizedSources.add(row.sourceIp);
-    }
-    if (row.disposition === 'reject') rejectCount += count;
-    else if (row.disposition === 'quarantine') quarantineCount += count;
-    if (row.sourceIp) volumeByIp.set(row.sourceIp, (volumeByIp.get(row.sourceIp) ?? 0) + count);
-  }
-
-  let topSourceIp: string | null = null;
-  let topVolume = -1;
-  for (const [ip, volume] of volumeByIp) {
-    if (volume > topVolume) {
-      topVolume = volume;
-      topSourceIp = ip;
-    }
-  }
-
   return {
-    recordCount: records.length,
-    messageCount,
-    passCount,
-    failCount,
-    rejectCount,
-    quarantineCount,
-    unauthorizedSourceCount: unauthorizedSources.size,
-    topSourceIp,
+    add(records) {
+      recordCount += records.length;
+      for (const row of records) {
+        const count = row.count > 0 ? row.count : 0;
+        messageCount += count;
+        const dmarcPass = row.dkimEval === 'pass' || row.spfEval === 'pass';
+        if (dmarcPass) passCount += count;
+        else {
+          failCount += count;
+          if (row.sourceIp) unauthorizedSources.add(row.sourceIp);
+        }
+        if (row.disposition === 'reject') rejectCount += count;
+        else if (row.disposition === 'quarantine') quarantineCount += count;
+        if (row.sourceIp) volumeByIp.set(row.sourceIp, (volumeByIp.get(row.sourceIp) ?? 0) + count);
+      }
+    },
+    summary() {
+      let topSourceIp: string | null = null;
+      let topVolume = -1;
+      for (const [ip, volume] of volumeByIp) {
+        if (volume > topVolume) {
+          topVolume = volume;
+          topSourceIp = ip;
+        }
+      }
+
+      return {
+        recordCount,
+        messageCount,
+        passCount,
+        failCount,
+        rejectCount,
+        quarantineCount,
+        unauthorizedSourceCount: unauthorizedSources.size,
+        topSourceIp,
+      };
+    },
   };
 }
 

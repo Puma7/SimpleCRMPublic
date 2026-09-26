@@ -58,6 +58,16 @@ export type SmtpSendDiagnosticEvent = Readonly<{
 }>;
 
 const DEFAULT_TIMEOUT_MS = 90_000;
+// SMTP replies are short status lines (RFC 5321: 512 octets). Bound what a
+// hostile server can make us buffer (one endless line) or collect (endless
+// continuation lines, each arriving within the per-line timeout).
+const MAX_BUFFERED_RESPONSE_BYTES = 64 * 1024;
+const MAX_RESPONSE_LINES = 1000;
+// The line timeout alone lets a server stretch one reply over 1000 lines, each
+// just in time. Whole replies get the RFC 5321 section 4.5.3.2 limits: 5 min
+// per command, 10 min for the reply to the end of the message data.
+const RESPONSE_DEADLINE_MS = 5 * 60_000;
+const DATA_END_RESPONSE_DEADLINE_MS = 10 * 60_000;
 
 /**
  * Failure before any part of the message body was transmitted (connect,
@@ -69,6 +79,21 @@ export class SmtpPreDataSendError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SmtpPreDataSendError';
+  }
+}
+
+/**
+ * The server answered the transmitted message with an explicit 4xx/5xx reply.
+ * It did not accept the message, so the outcome is not ambiguous: nothing was
+ * delivered and the usual retry rules (temporary 4xx) apply.
+ */
+export class SmtpDataRejectedError extends Error {
+  readonly smtpCode: number;
+
+  constructor(message: string, smtpCode: number) {
+    super(message);
+    this.name = 'SmtpDataRejectedError';
+    this.smtpCode = smtpCode;
   }
 }
 
@@ -118,6 +143,9 @@ async function sendSmtpMessageAttempt(
       ...(input.diagnosticsContext ? { context: input.diagnosticsContext } : {}),
       rfc822: rfc822Diagnostics,
     });
+    if (stage === 'DATA_FINAL' && response.code >= 400 && response.code < 600) {
+      throw new SmtpDataRejectedError(response.text, response.code);
+    }
     throw new Error(response.text);
   };
   const socket = await socketFactory({
@@ -164,7 +192,7 @@ async function sendSmtpMessageAttempt(
     // a failure no longer proves nothing was delivered.
     markBodySubmitted();
     client.writeData(input.rfc822);
-    response = await readSmtpResponse(client);
+    response = await readSmtpResponse(client, DATA_END_RESPONSE_DEADLINE_MS);
     if (response.code !== 250) failWithResponse('DATA_FINAL', response);
 
     await smtpCommand(client, 'QUIT').catch(() => undefined);
@@ -188,10 +216,15 @@ async function smtpCommand(client: LineProtocolClient, command: string): Promise
   return readSmtpResponse(client);
 }
 
-async function readSmtpResponse(client: LineProtocolClient): Promise<SmtpResponse> {
+async function readSmtpResponse(
+  client: LineProtocolClient,
+  deadlineMs = RESPONSE_DEADLINE_MS,
+): Promise<SmtpResponse> {
+  const deadlineAt = client.responseDeadline(deadlineMs);
   const lines: string[] = [];
   for (;;) {
-    const line = await client.readLine();
+    if (lines.length >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
+    const line = await client.readLine(deadlineAt);
     lines.push(line);
     const match = /^(\d{3})([ -])(.*)$/.exec(line);
     if (!match) return { code: 0, lines, text: line };
@@ -455,6 +488,7 @@ class LineProtocolClient {
     resolve: (line: string) => void;
     reject: (error: Error) => void;
   }> = [];
+  private failure: Error | null = null;
   private socket: net.Socket;
 
   constructor(socket: net.Socket, private readonly timeoutMs: number) {
@@ -475,14 +509,22 @@ class LineProtocolClient {
     return this.socket;
   }
 
-  readLine(): Promise<string> {
+  /** End of a whole reply; never earlier than one line timeout from now. */
+  responseDeadline(deadlineMs: number): number {
+    return Date.now() + Math.max(deadlineMs, this.timeoutMs);
+  }
+
+  readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
+    if (this.failure) return Promise.reject(this.failure);
     const existing = this.shiftLine();
     if (existing !== null) return Promise.resolve(existing);
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) return Promise.reject(this.failResponseDeadline());
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters = this.waiters.filter((waiter) => waiter.resolve !== resolve);
-        reject(new Error('Connection timed out'));
-      }, this.timeoutMs);
+        reject(remainingMs < this.timeoutMs ? this.failResponseDeadline() : new Error('Connection timed out'));
+      }, Math.min(this.timeoutMs, remainingMs));
       this.waiters.push({
         resolve: (line) => {
           clearTimeout(timer);
@@ -520,6 +562,12 @@ class LineProtocolClient {
     socket.on('data', (chunk) => {
       this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
       this.flushWaiters();
+      if (this.buffer.length > MAX_BUFFERED_RESPONSE_BYTES) {
+        this.buffer = Buffer.alloc(0);
+        this.failure = new Error('Server-Antwort zu gross');
+        this.rejectWaiters(this.failure);
+        socket.destroy();
+      }
     });
     socket.once('error', (error) => this.rejectWaiters(error));
     socket.once('close', () => this.rejectWaiters(new Error('Connection closed')));
@@ -536,6 +584,13 @@ class LineProtocolClient {
   private rejectWaiters(error: Error): void {
     const waiters = this.waiters.splice(0);
     for (const waiter of waiters) waiter.reject(error);
+  }
+
+  private failResponseDeadline(): Error {
+    this.failure = new Error('Zeitlimit der Server-Antwort ueberschritten');
+    this.rejectWaiters(this.failure);
+    this.socket.destroy();
+    return this.failure;
   }
 
   private shiftLine(): string | null {

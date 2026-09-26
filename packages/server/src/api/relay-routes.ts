@@ -19,7 +19,12 @@ import type {
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
 } from './types';
-import { extractRelaySubjectRegexSources } from '@simplecrm/core';
+import {
+  describeUnsupportedUserRegex,
+  describeUnsupportedUserRegexFlags,
+  extractRelaySubjectRegexes,
+  extractRelaySubjectRegexSources,
+} from '@simplecrm/core';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 
 // Same catastrophic-backtracking guard the workflow regex conditions use.
@@ -397,10 +402,13 @@ function parseRelayMutation(
   if (!isPlainObject(body)) {
     return invalidRelay('Payload muss ein JSON-Objekt sein');
   }
+  // allowArbitraryRecipients was stored but never enforced and is gone
+  // (F-A3b-04). Older clients may still send it: accepted and ignored.
+  const ignored = new Set(['allowArbitraryRecipients']);
   const allowed = new Set([
     'label', 'enabled', 'trackingMode', 'trackingSubjectPatterns', 'allowHeaderOverride',
-    'maxRecipients', 'maxMessageBytes', 'rateLimitPerMin', 'allowArbitraryRecipients',
-    'followupWorkflowId',
+    'maxRecipients', 'maxMessageBytes', 'rateLimitPerMin', 'followupWorkflowId',
+    ...ignored,
   ]);
   const unknown = Object.keys(body).filter((key) => !allowed.has(key));
   if (unknown.length > 0) {
@@ -418,7 +426,7 @@ function parseRelayMutation(
     return invalidRelay('label ist erforderlich');
   }
 
-  for (const key of ['enabled', 'allowHeaderOverride', 'allowArbitraryRecipients'] as const) {
+  for (const key of ['enabled', 'allowHeaderOverride'] as const) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== 'boolean') {
       return invalidRelay(`${key} muss boolesch sein`);
@@ -445,11 +453,26 @@ function parseRelayMutation(
     // subjects during SMTP DATA, so reject a catastrophically-backtracking
     // pattern (e.g. /(a+)+$/) at save time — the same safe-regex check the
     // workflow regex conditions use. Substring patterns carry no such risk.
-    const unsafe = extractRelaySubjectRegexSources(
+    const regexSources = extractRelaySubjectRegexSources(
       typeof body.trackingSubjectPatterns === 'string' ? body.trackingSubjectPatterns : null,
-    ).find((source) => !safeRegex(source));
+    );
+    const unsafe = regexSources.find((source) => !safeRegex(source));
     if (unsafe !== undefined) {
       return invalidRelay('Ein Betreff-Regex ist potenziell unsicher (katastrophales Backtracking) und wurde abgelehnt');
+    }
+    // safe-regex erkennt nicht jedes katastrophale Muster; den Rest faengt V8s
+    // lineare Engine ab, die aber Lookarounds und Rueckverweise nicht kann
+    // (F-A13A14-04).
+    for (const source of regexSources) {
+      const unsupported = describeUnsupportedUserRegex(source);
+      if (unsupported) return invalidRelay(unsupported);
+    }
+    // Mit Flag u oder v stellt V8 nicht auf die lineare Engine um.
+    for (const { flags } of extractRelaySubjectRegexes(
+      typeof body.trackingSubjectPatterns === 'string' ? body.trackingSubjectPatterns : null,
+    )) {
+      const unsupportedFlags = describeUnsupportedUserRegexFlags(flags);
+      if (unsupportedFlags) return invalidRelay(unsupportedFlags);
     }
     values.trackingSubjectPatterns = body.trackingSubjectPatterns as string | null;
   }

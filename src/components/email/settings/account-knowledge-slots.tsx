@@ -20,7 +20,8 @@ import {
   KNOWLEDGE_CONTEXT_LABELS,
   type KnowledgeContext,
 } from "@shared/knowledge-context"
-import { invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import {
   assignKnowledgeBaseToAccountSlot,
   resetKnowledgeBaseAccountOverride,
@@ -57,9 +58,11 @@ function slotOverrideKey(context: KnowledgeContext): string {
 function SlotDocumentEditor({
   knowledgeBaseId,
   onSaved,
+  readOnly,
 }: {
   knowledgeBaseId: number
   onSaved: () => void
+  readOnly: boolean
 }) {
   const [markdown, setMarkdown] = useState("")
   const [loading, setLoading] = useState(true)
@@ -99,42 +102,51 @@ function SlotDocumentEditor({
 
   return (
     <div className="mt-2 space-y-2 rounded-md border bg-muted/20 p-2">
-      <KnowledgeMarkdownEditor value={markdown} onChange={setMarkdown} />
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        disabled={saving}
-        onClick={() => {
-          setSaving(true)
-          void (async () => {
-            try {
-              const r = (await invokeRenderer(IPCChannels.Email.SaveKnowledgeBaseDocument, {
-                knowledgeBaseId,
-                content: markdown,
-              })) as { success: boolean; error?: string }
-              if (!r.success) {
-                toast.error(r.error ?? "Speichern fehlgeschlagen.")
-                return
+      <KnowledgeMarkdownEditor value={markdown} onChange={setMarkdown} readOnly={readOnly} />
+      {readOnly ? null : (
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={saving}
+          onClick={() => {
+            setSaving(true)
+            void (async () => {
+              try {
+                const r = (await invokeRenderer(IPCChannels.Email.SaveKnowledgeBaseDocument, {
+                  knowledgeBaseId,
+                  content: markdown,
+                })) as { success: boolean; error?: string }
+                if (!r.success) {
+                  toast.error(r.error ?? "Speichern fehlgeschlagen.")
+                  return
+                }
+                toast.success("Wissensbasis-Inhalt gespeichert.")
+                onSaved()
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen.")
+              } finally {
+                setSaving(false)
               }
-              toast.success("Wissensbasis-Inhalt gespeichert.")
-              onSaved()
-            } catch (e) {
-              toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen.")
-            } finally {
-              setSaving(false)
-            }
-          })()
-        }}
-      >
-        {saving ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
-        Inhalt speichern
-      </Button>
+            })()
+          }}
+        >
+          {saving ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+          Inhalt speichern
+        </Button>
+      )}
     </div>
   )
 }
 
 export function AccountKnowledgeSlots({ accountId }: Props) {
+  const { user } = useAuth()
+  // Desktop (G1): Die Slots legen Wissensbasen an, benennen sie um, ueberschreiben
+  // ihren Inhalt und loeschen sie — per IPC nur Owner/Admin. Andere Rollen sehen
+  // die Zuordnung und den Inhalt nur lesend.
+  const canEdit = getRendererTransport().kind === "http"
+    || user?.role === "owner"
+    || user?.role === "admin"
   const [rows, setRows] = useState<KbRow[]>([])
   const [allKbs, setAllKbs] = useState<KbRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -310,6 +322,12 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
           Pro Postfach können eingehende, ausgehende und allgemeine Firmeninfos getrennt hinterlegt
           werden. Inhalt direkt hier bearbeiten oder eine bestehende Wissensbasis zuweisen.
         </p>
+        {canEdit ? null : (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Nur lesbar: Wissensbasen können nur von Ownern und Admins angelegt, zugewiesen oder
+            geändert werden.
+          </p>
+        )}
       </div>
       <div className="space-y-3">
         {KNOWLEDGE_CONTEXTS.map((context) => {
@@ -333,7 +351,7 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
                       <Badge variant="destructive">Nicht konfiguriert</Badge>
                     )}
                   </div>
-                  {assigned ? (
+                  {assigned && canEdit ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <Input
                         className="h-8 max-w-xs text-xs"
@@ -364,7 +382,21 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
                   )}
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
-                  {!assigned ? (
+                  {!canEdit ? (
+                    assigned ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        onClick={() =>
+                          setExpandedDocId((id) => (id === assigned.id ? null : assigned.id))
+                        }
+                      >
+                        {expandedDocId === assigned.id ? "Inhalt schließen" : "Inhalt ansehen"}
+                      </Button>
+                    ) : null
+                  ) : !assigned ? (
                     <>
                       <Input
                         className="h-8 w-[160px] text-xs"
@@ -447,7 +479,11 @@ export function AccountKnowledgeSlots({ accountId }: Props) {
                 </div>
               </div>
               {assigned && expandedDocId === assigned.id ? (
-                <SlotDocumentEditor knowledgeBaseId={assigned.id} onSaved={() => void load()} />
+                <SlotDocumentEditor
+                  knowledgeBaseId={assigned.id}
+                  onSaved={() => void load()}
+                  readOnly={!canEdit}
+                />
               ) : null}
             </div>
           )

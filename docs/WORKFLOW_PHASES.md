@@ -68,6 +68,7 @@ Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwen
 | **2 Spam-Score-Parität** | Ehrliche Server-Hinweise zu `ai.spam_score`; Schema-Doku Desktop vs. Server |
 | **3 Editor-Transparenz** | Read-only Graph-JSON im Editor; Vorlagen-Port-Erklärungen; Doku-Updates |
 | **4 Server-Parität & Spam-Kette** | `ai.draft_reply`/`ai.review_draft` auf dem Server; `approval_state` in PostgreSQL; HTTP Freigabe (`approve-draft-send` / `dismiss-draft-approval`); einheitliche fail-closed KI + Spam-Short-Circuit (`inboundChainStop`); Inbound-Kette überlebt KI/HTTP/Delay-Continuations; Run-Historie mit Port-Labels ok/block/error; Desktop-KI überspringt Spam-Mails |
+| **F-D1-03 Delay in der Kette** | Deferiert ein Inbound-Lauf nur an `logic.delay` und folgt dahinter kein kettenstoppender Knoten (`stopFurtherWorkflows`, `logic.stop_after_spam`), schaltet der Server die Kette sofort weiter (Hop-Claim verhindert doppeltes Einreihen durch die Continuation). Mit Stopper hinter dem Delay bleibt sie seriell; der Editor zeigt dann einen Hinweis |
 
 ## Smoke-Check 2026-06-01
 
@@ -89,6 +90,8 @@ Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt au
 - HTTP-Allowlist: `sync_info` Key `workflow_http_allowlist` (kommaseparierte Hosts).
 - `draft_created` nur bei neuem Entwurf, nicht bei jedem Update.
 - Externe Outbound-Webhook-Subscriptions bleiben API-Roadmap; der interne Trigger `webhook.incoming` ist angebunden.
+- Schleifen (F-A9-04): Ein Knoten, der den Lauf deferiert, ist im Je-Eintrag-Zweig nicht erlaubt (Desktop: `logic.delay`; Server zusätzlich KI-, HTTP-, Weiterleitungs- und DMARC-Knoten mit Folgeknoten, `ai.draft_reply`/`ai.agent`/`ai.pick_canned`/`ai.review_draft` immer). Die Runtime beendet den Lauf vor dem Einreihen mit Fehler, der Editor warnt (`findLoopBodyDeferringNodes`). Server: Fortsetzungen zählen `__continuation_hops`; ab 100 Fortsetzungen einer Lauf-Kette bricht der Lauf ab (Schranke gegen Kreise über asynchrone Knoten).
+- Server, asynchrone Knoten (KI, HTTP, Weiterleitung, DMARC, Verzögerung, Subflow): Job-Payload und Fortsetzung tragen `body_text` höchstens mit 48 000 Zeichen (`combined_text` aus dem gekürzten Text neu gebaut, `body_truncated = 'true'`). Der synchrone Teil vor der Pause sieht den vollen Text; Bedingungen nach der Fortsetzung sehen nur den Anfang (F-D1-05).
 
 *Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle.
 

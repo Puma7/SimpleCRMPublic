@@ -95,7 +95,12 @@ test.describe.serial('Nachverfolgung — log-activity dialog', () => {
     const alert = page.getByRole('alertdialog');
     await expect(alert).toBeVisible();
     await alert.getByRole('button', { name: 'Löschen' }).click();
-    await expect(alert).not.toBeVisible();
+    // F-A10-10: the customer still owns the follow-up task, so the list asks
+    // before deleting it too instead of cascading silently.
+    const cascade = page.getByRole('alertdialog').filter({ hasText: 'Verknüpfte Daten mitlöschen?' });
+    await expect(cascade).toBeVisible();
+    await cascade.getByRole('button', { name: 'Mitlöschen' }).click();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
     await expect(row).toHaveCount(0);
   });
 });

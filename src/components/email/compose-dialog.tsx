@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  copyServerComposeAttachment,
   getRendererTransport,
   invokeRenderer,
   uploadServerComposeAttachment,
@@ -62,6 +63,7 @@ import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   buildReplyComposeHtml,
   composeAiContextText,
+  escapeHtmlText,
   mergeComposeHtml,
   mergeComposeZones,
   mergeEditorAndSignature,
@@ -137,7 +139,7 @@ import { useNavigate } from "@tanstack/react-router"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useAuth } from "@/components/auth/auth-context"
 import { resolveComposeTeamMemberId } from "@shared/compose-sender-identity"
-import { prepareScheduledSend } from "@shared/compose-scheduled-send"
+import { prepareScheduledSend, scheduledSendPgpBlockReason } from "@shared/compose-scheduled-send"
 
 type Props = {
   accounts: EmailAccount[]
@@ -145,6 +147,21 @@ type Props = {
   cannedList: CannedResponse[]
   aiPrompts: AiPrompt[]
   onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
+}
+
+/**
+ * The per-message tracking choice only exists inside an admin-enabled policy
+ * with at least one signal; the server ignores the override otherwise, so the
+ * checkbox stays hidden instead of suggesting tracking that won't happen.
+ */
+export function composeTrackingChoice(policy: {
+  enabled?: boolean
+  trackOpens?: boolean
+  trackLinks?: boolean
+  defaultTrackNewMessages?: boolean
+}): { available: boolean; defaultOn: boolean } {
+  const available = Boolean(policy.enabled && (policy.trackOpens || policy.trackLinks))
+  return { available, defaultOn: available && policy.defaultTrackNewMessages !== false }
 }
 
 export function handleSubjectTabToEditor(
@@ -163,6 +180,54 @@ export function handleSubjectTabToEditor(
 
 const MAX_SERVER_CLIENT_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
+/**
+ * Forwarding in server-client mode: attachment lists carry no storage paths, so
+ * each source attachment is copied into the draft by id. Attachments the server
+ * refuses (missing, no permission, draft limit) are reported by name instead of
+ * being dropped silently.
+ */
+export async function forwardServerComposeAttachments(
+  attachments: readonly { id: number; filename_display: string }[],
+  copy: (attachmentId: number) => Promise<{ path: string }>,
+): Promise<{ paths: string[]; failedFilenames: string[] }> {
+  const paths: string[] = []
+  const failedFilenames: string[] = []
+  for (const attachment of attachments) {
+    try {
+      paths.push((await copy(attachment.id)).path)
+    } catch {
+      failedFilenames.push(attachment.filename_display || `Anhang ${attachment.id}`)
+    }
+  }
+  return { paths, failedFilenames }
+}
+
+/**
+ * Uploads files one by one. The server rejects uploads beyond the per-draft
+ * limit (413); files uploaded before a rejection are still returned so the
+ * caller attaches them — otherwise they would sit unreferenced on the server
+ * and count against the draft's limit.
+ */
+export async function uploadServerComposeFiles(
+  files: readonly File[],
+  upload: (file: File) => Promise<{ path: string }>,
+  onTooLarge: (file: File) => void,
+): Promise<{ uploadedPaths: string[]; error: unknown }> {
+  const uploadedPaths: string[] = []
+  for (const file of files) {
+    if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
+      onTooLarge(file)
+      continue
+    }
+    try {
+      uploadedPaths.push((await upload(file)).path)
+    } catch (error) {
+      return { uploadedPaths, error }
+    }
+  }
+  return { uploadedPaths, error: null }
+}
+
 function getComposeContextMessageId(
   intent: ComposeIntent,
   replyToId: number | null,
@@ -177,7 +242,7 @@ function getComposeContextMessageId(
   return replyToId
 }
 
-function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
+export function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   replyToId: number | null
   editorHtml: string
   signatureHtml: string
@@ -187,7 +252,7 @@ function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   const html = existing.body_html
     ? existing.body_html
     : existing.body_text
-      ? sanitizeComposeHtml(`<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`)
+      ? sanitizeComposeHtml(`<p>${escapeHtmlText(existing.body_text).replace(/\n/g, "<br/>")}</p>`)
       : ""
   const split = splitAndSanitizeComposeHtml(html, sanitizeComposeHtml)
   return {
@@ -218,16 +283,25 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
-type FileWithPath = File & { path?: string }
-
 function hasFileDrag(dataTransfer: DataTransfer | null): boolean {
   if (!dataTransfer) return false
   return Array.from(dataTransfer.types).includes("Files")
 }
 
-function localPathFromDroppedFile(file: File): string | null {
-  const path = (file as FileWithPath).path?.trim()
-  return path || null
+/**
+ * Lokale Anhaenge per Drag & Drop: den Pfad ermittelt der Preload und gibt ihn im
+ * Main-Prozess frei; nur so freigegebene Pfade nimmt der Entwurf an (C-A30).
+ */
+async function registerDroppedLocalFiles(files: File[]): Promise<string[]> {
+  const register = typeof window === "undefined"
+    ? undefined
+    : window.electronAPI?.registerDroppedComposeAttachments
+  if (typeof register !== "function") return []
+  try {
+    return await register(files)
+  } catch {
+    return []
+  }
 }
 
 export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
@@ -286,6 +360,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
+  const scheduledSendPgpBlock = scheduledSendPgpBlockReason({ pgpEncrypt, pgpSign })
   const [pgpPassphrase, setPgpPassphrase] = useState("")
   // Per-message tracking choice (server edition only). null until the policy
   // default is known; the checkbox then reflects a concrete boolean.
@@ -315,6 +390,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const closingRef = useRef(false)
   const editorRef = useRef<ComposeQuillEditorHandle>(null)
   const serverAttachmentInputRef = useRef<HTMLInputElement>(null)
+  // Latest attachment list for async uploads: a parallel upload may finish
+  // after this render, so merging into the closure value would drop its file.
+  const attachmentPathsRef = useRef<string[]>([])
+  useEffect(() => {
+    attachmentPathsRef.current = attachmentPaths
+  }, [attachmentPaths])
+  const serverUploadsInFlightRef = useRef(0)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const signatureRequestRef = useRef(0)
   /** Bumped to re-run draft bootstrap (e.g. „Von“-Konto gewechselt) without stale-effect cancel. */
@@ -652,8 +734,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             const atts = await invokeRenderer(
               IPCChannels.Email.ListMessageAttachments,
               sourceMsg.id,
-            ) as { storage_path: string; filename_display: string }[]
-            forwardPaths = atts.map((a) => a.storage_path).filter(Boolean)
+            ) as { id: number; storage_path?: string; filename_display: string }[]
+            if (serverClientMode) {
+              const draftMessageId = res.id
+              const forwarded = await forwardServerComposeAttachments(atts, (sourceAttachmentId) =>
+                copyServerComposeAttachment({ draftMessageId, sourceAttachmentId }),
+              )
+              forwardPaths = forwarded.paths
+              if (forwarded.failedFilenames.length > 0) {
+                toast.warning(
+                  `Nicht übernommene Anhänge: ${forwarded.failedFilenames.join(", ")}`,
+                )
+              }
+            } else {
+              forwardPaths = atts.map((a) => a.storage_path ?? "").filter(Boolean)
+            }
           }
           setAttachmentPaths(forwardPaths)
           await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
@@ -745,18 +840,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const getEditorHtml = getFullComposeHtml
 
-  const reloadComposeSignature = useCallback(async (teamMemberId = composeTeamMemberId) => {
-    if (!isOpen || composeAccountId == null || composeIntent.mode === "forward") return
+  const reloadComposeSignature = useCallback(async (
+    teamMemberId = composeTeamMemberId,
+    accountId = composeAccountId,
+  ) => {
+    if (!isOpen || accountId == null || composeIntent.mode === "forward") return
     const requestId = ++signatureRequestRef.current
     try {
       const sigRes = await invokeRenderer(
         IPCChannels.Email.GetComposeSignature,
         {
-          accountId: composeAccountId,
+          accountId,
           ...(teamMemberId ? { teamMemberId } : {}),
         },
       ) as { html: string | null }
-      const ownSigHtml = await fetchOwnSignatureHtml(composeAccountId)
+      const ownSigHtml = await fetchOwnSignatureHtml(accountId)
       const baseSigHtml = ownSigHtml ?? sigRes.html
       const sourceMsg = getComposeSourceMessage(composeIntent)
       let customerForSig: CustomerOpt | null = null
@@ -771,7 +869,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           customerForSig = null
         }
       }
-      const accountRow = accounts.find((a) => a.id === composeAccountId)
+      const accountRow = accounts.find((a) => a.id === accountId)
       const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
       const sigRaw = baseSigHtml
         ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
@@ -986,6 +1084,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     void (async () => {
       try {
         const ok = await saveDraft({ silent: true })
+        if (!ok && draftId != null) {
+          // Nicht schließen: closeDialog() verwirft den ungespeicherten Inhalt.
+          toast.error("Entwurf konnte nicht gespeichert werden. Der Verfasser bleibt geöffnet.")
+          return
+        }
         if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
         await finishComposeClose(contextId)
       } finally {
@@ -1068,8 +1171,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   )
 
   // Load the workspace tracking policy to seed the per-message checkbox
-  // (server edition only). Default checked when tracking is enabled, has a
-  // signal configured, and defaults new messages to tracked.
+  // (server edition only). Shown only when tracking is enabled with a signal
+  // configured; default checked when it also defaults new messages to tracked.
   useEffect(() => {
     if (!serverClientMode) return
     let cancelled = false
@@ -1082,11 +1185,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           defaultTrackNewMessages?: boolean
         } | null
         if (cancelled || !policy) return
-        const defaultOn = Boolean(
-          policy.enabled
-          && (policy.trackOpens || policy.trackLinks)
-          && policy.defaultTrackNewMessages !== false,
-        )
+        const { available, defaultOn } = composeTrackingChoice(policy)
         trackingDefaultRef.current = defaultOn
         // Re-seed from the *current* policy: on first load, and whenever a new
         // (non-draft) compose opens — so an admin's tracking-settings change is
@@ -1097,7 +1196,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           if (isOpen && composeIntent?.mode !== "draft") return defaultOn
           return current
         })
-        setTrackingConfigured(true)
+        setTrackingConfigured(available)
       } catch {
         // Tracking settings unavailable — leave the checkbox hidden.
       }
@@ -1108,44 +1207,49 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const handleServerAttachmentFiles = useCallback(
     async (files: FileList | readonly File[] | null) => {
       if (!serverClientMode || draftId == null || !files?.length) return
+      serverUploadsInFlightRef.current += 1
       setUploadingAttachment(true)
       try {
-        const uploadedPaths: string[] = []
-        for (const file of Array.from(files)) {
-          if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
-            toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
-            continue
-          }
-          const contentBase64 = await fileToBase64(file)
-          const uploaded = await uploadServerComposeAttachment({
+        const { uploadedPaths, error: uploadError } = await uploadServerComposeFiles(
+          Array.from(files),
+          async (file) => uploadServerComposeAttachment({
             draftMessageId: draftId,
             filename: file.name || "attachment",
-            contentBase64,
+            contentBase64: await fileToBase64(file),
             contentType: file.type || undefined,
-          })
-          uploadedPaths.push(uploaded.path)
-        }
-        if (uploadedPaths.length === 0) return
-        const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
-        setAttachmentPaths(nextPaths)
-        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
-          messageId: draftId,
-          draftAttachmentPaths: nextPaths,
-        })
-        toast.success(
-          uploadedPaths.length === 1
-            ? "Anhang hochgeladen"
-            : `${uploadedPaths.length} Anhänge hochgeladen`,
+          }),
+          (file) => toast.error(`${file.name}: Anhang ist größer als 25 MB.`),
         )
+        // Already uploaded files of this batch are recorded even if a later one
+        // failed (e.g. the per-draft quota); merge into the current list, not the
+        // closure's, so parallel uploads do not drop each other's paths.
+        if (uploadedPaths.length > 0) {
+          const nextPaths = [...new Set([...attachmentPathsRef.current, ...uploadedPaths])]
+          attachmentPathsRef.current = nextPaths
+          setAttachmentPaths(nextPaths)
+          await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+            messageId: draftId,
+            draftAttachmentPaths: nextPaths,
+          })
+          if (uploadError == null) {
+            toast.success(
+              uploadedPaths.length === 1
+                ? "Anhang hochgeladen"
+                : `${uploadedPaths.length} Anhänge hochgeladen`,
+            )
+          }
+        }
+        if (uploadError != null) throw uploadError
       } catch (e) {
         logError("compose-dialog: upload server attachment", e)
         toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
       } finally {
-        setUploadingAttachment(false)
+        serverUploadsInFlightRef.current -= 1
+        if (serverUploadsInFlightRef.current === 0) setUploadingAttachment(false)
         if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
       }
     },
-    [attachmentPaths, draftId, serverClientMode],
+    [draftId, serverClientMode],
   )
 
   const handleDroppedAttachmentFiles = useCallback(
@@ -1161,11 +1265,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       if (!localAttachmentPickerAvailable) return
 
-      const paths: string[] = []
-      for (const file of Array.from(files)) {
-        const path = localPathFromDroppedFile(file)
-        if (path) paths.push(path)
-      }
+      const paths = await registerDroppedLocalFiles(Array.from(files))
       if (paths.length === 0) {
         toast.error("Anhänge per Drag & Drop sind nur für lokale Dateien verfügbar.")
         return
@@ -1359,6 +1459,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const handleSend = async () => {
     if (draftId == null || composeAccountId == null) return
+    if (serverUploadsInFlightRef.current > 0) {
+      toast.info("Anhang wird noch hochgeladen — bitte kurz warten.")
+      return
+    }
     const toCheck = validateRecipientField(to, "An")
     if (!toCheck.ok) {
       toast.error(toCheck.error)
@@ -1875,11 +1979,42 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   void (async () => {
                     const id = parseInt(v, 10)
                     if (!Number.isFinite(id)) return
-                    await saveDraft({ silent: true })
-                    initialisedDraftKeyRef.current = null
-                    setDraftId(null)
+                    const saved = await saveDraft({ silent: true })
+                    if (!saved && draftId != null) {
+                      toast.error("Entwurf konnte nicht gespeichert werden. Das Konto wurde nicht gewechselt.")
+                      return
+                    }
+                    if (draftId == null) {
+                      initialisedDraftKeyRef.current = null
+                      setComposeAccountId(id)
+                      setDraftBootstrapGen((g) => g + 1)
+                      return
+                    }
+                    // Den Entwurf umhaengen statt neu anlegen: Empfaenger, Text und
+                    // Anhaenge bleiben, nur Konto und Signatur wechseln.
+                    try {
+                      await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+                        messageId: draftId,
+                        accountId: id,
+                      })
+                    } catch (e) {
+                      logError("compose-dialog: move draft to account", e)
+                      toast.error("Das Konto konnte nicht gewechselt werden. Der Entwurf bleibt im bisherigen Konto.")
+                      return
+                    }
+                    initialisedDraftKeyRef.current = buildComposeDraftInitKey(composeIntent, id, draftBootstrapGen)
                     setComposeAccountId(id)
-                    setDraftBootstrapGen((g) => g + 1)
+                    setComposeSession(
+                      buildComposeSessionSnapshot(
+                        composeIntent,
+                        id,
+                        draftId,
+                        replyToId,
+                        { keepReplyOpenInInbox, pgpEncrypt, pgpSign },
+                      ),
+                    )
+                    setSignatureEditing(false)
+                    await reloadComposeSignature(composeTeamMemberId, id)
                   })()
                 }}
               >
@@ -2193,12 +2328,16 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                 onChange={(e) => setScheduledSendAt(e.target.value)}
                 title="Geplante Versendung"
               />
+              {scheduledSendPgpBlock ? (
+                <span className="text-xs text-muted-foreground">{scheduledSendPgpBlock}</span>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
-                disabled={!scheduledSendAt || draftId == null}
+                disabled={!scheduledSendAt || draftId == null || uploadingAttachment || scheduledSendPgpBlock != null}
+                title={scheduledSendPgpBlock ?? undefined}
                 onClick={() => {
-                  if (!draftId || !scheduledSendAt) return
+                  if (!draftId || !scheduledSendAt || scheduledSendPgpBlock) return
                   void (async () => {
                     try {
                       const iso = await prepareScheduledSend(
@@ -2208,6 +2347,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       const result = await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
                         messageId: draftId,
                         sendAt: iso,
+                        pgpEncrypt,
+                        pgpSign,
                       }) as { success: boolean; error?: string }
                       if (!result.success) {
                         throw new Error(result.error ?? "Versand konnte nicht geplant werden.")
@@ -2227,7 +2368,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <Button
                 type="button"
                 onClick={() => void handleSend()}
-                disabled={sending || draftId == null || draftBootstrapping || composeAccountId == null}
+                disabled={
+                  sending ||
+                  draftId == null ||
+                  draftBootstrapping ||
+                  composeAccountId == null ||
+                  uploadingAttachment
+                }
               >
                 {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Senden

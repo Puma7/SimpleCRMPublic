@@ -2,6 +2,13 @@
 set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
+# Zwei Verbindungen mit getrennten Aufgaben: DATABASE_URL meldet sich als
+# eingeschraenkte App-Rolle an; aus ihr wird die Drill-URL abgeleitet, und nur
+# ueber sie laufen pg_restore und die Pruefung. Die Admin-Verbindung legt die
+# Drill-Datenbank nur an und entfernt sie wieder. Frueher lief alles ueber die
+# Admin-URL und --role, und SQL aus dem Dump kam per RESET ROLE zum Superuser
+# des Produktionsclusters zurueck.
+: "${RESTORE_DRILL_MAINTENANCE_DATABASE_URL:?RESTORE_DRILL_MAINTENANCE_DATABASE_URL is required: the admin connection that creates and drops the drill database}"
 
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/backup-metadata.sh"
@@ -10,7 +17,6 @@ DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
 PG_APP_USER="${PG_APP_USER:-simplecrm_app}"
-PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-$PG_APP_USER}"
 
 if [ -z "$DUMP_PATH" ]; then
   echo "usage: restore-drill.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
@@ -103,7 +109,7 @@ if ! printf '%s\n' "$PG_APP_USER" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]{0,62}$'; th
 fi
 
 DRILL_DATABASE_URL="${RESTORE_DRILL_DATABASE_URL:-$(derive_database_url "$DATABASE_URL" "$DRILL_DB_NAME")}"
-MAINTENANCE_DATABASE_URL="${RESTORE_DRILL_MAINTENANCE_DATABASE_URL:-$DATABASE_URL}"
+MAINTENANCE_DATABASE_URL="$RESTORE_DRILL_MAINTENANCE_DATABASE_URL"
 DRILL_DB_SQL="$(quote_ident_literal "$DRILL_DB_NAME")"
 PG_APP_USER_SQL="$(quote_ident_literal "$PG_APP_USER")"
 CREATED_DRILL_DB="false"
@@ -119,16 +125,18 @@ psql "$MAINTENANCE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS 
 psql "$MAINTENANCE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$DRILL_DB_SQL\" OWNER \"$PG_APP_USER_SQL\";" >/dev/null
 CREATED_DRILL_DB="true"
 
-if [ -n "$PG_RESTORE_ROLE" ]; then
-  pg_restore --role="$PG_RESTORE_ROLE" --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"
-else
-  pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"
-fi
+assert_restricted_restore_session "$DRILL_DATABASE_URL" 'restore drill'
+pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"
 # Frueher endete der Drill hier mit einem blossen count(*) auf workspaces: das
 # belegt, dass die Wiederherstellung nicht abgestuerzt ist, nicht dass die Daten
 # vollstaendig sind. Jetzt wird gegen die Zeilenzahlen geprueft, die das Backup
 # selbst festgehalten hat — eine halb leere Sicherung faellt damit auf.
-psql "$DRILL_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM workspaces;" >/dev/null
+# Kein rohes count(*) ueber einen Namen aus dem Dump: waere workspaces dort eine
+# View ueber eine Funktion, liefe diese hier mit — frueher sogar als Admin.
+if [ "$(backup_metadata_count "$DRILL_DATABASE_URL" workspaces)" = 'n/a' ]; then
+  echo "restore drill: workspaces is not a readable table after restore" >&2
+  exit 1
+fi
 if [ -n "$METADATA_PATH" ]; then
   verify_backup_metadata "$METADATA_PATH" "$DRILL_DATABASE_URL" 'restore drill'
 fi

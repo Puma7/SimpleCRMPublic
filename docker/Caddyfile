@@ -11,6 +11,14 @@
 		-X-Powered-By
 	}
 
+	# HSTS closes the plain-http first visit that SSL stripping relies on. One
+	# year, without includeSubDomains and preload: those would bind the
+	# operator's other subdomains and the browser preload list, which is their
+	# call (docs/SETUP_SERVER.md). Not for localhost: browsers apply HSTS to every
+	# port of a host, so a local test run would lock other local http services.
+	@hsts not host localhost 127.0.0.1
+	header @hsts Strict-Transport-Security "max-age=31536000"
+
 	# API, public email evidence endpoints, health probes, OpenAPI and the
 	# SSE/WebSocket event stream (/api/v1/events) go to Fastify. Tracking URLs
 	# are intentionally excluded from access logs because their paths contain
@@ -18,6 +26,11 @@
 	# Spoofable identity headers are stripped before requests reach Fastify.
 	@backend path /api/* /t/* /health /health/* /openapi.json
 	handle @backend {
+		# Defense in depth: Fastify caps request bodies per route (1 MiB, 40 MiB
+		# for the compose and PGP upload routes); nothing larger reaches the API.
+		request_body {
+			max_size 40MiB
+		}
 		reverse_proxy api:3000 {
 			header_up -x-simplecrm-user-id
 			header_up -x-simplecrm-workspace-id
@@ -32,8 +45,20 @@
 		file_server
 	}
 
+	# Other bearer-like secrets are redacted rather than skipped, so the requests
+	# stay visible. Caddy on its own only hides Cookie and Authorization: the
+	# event stream carries the access token as WebSocket subprotocol (echoed in
+	# the response), and invitation links carry the invitation token in the path
+	# (/api/v1/auth/invitations/<token>) or the query (/login?invite=<token>).
 	log {
 		output file /var/log/access.log
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>Sec-Websocket-Protocol delete
+				resp_headers>Sec-Websocket-Protocol delete
+				request>uri regexp "(/api/v1/auth/invitations/|[?&]invite=)[^/?&#]+" "$1[redacted]"
+			}
+		}
 	}
 }

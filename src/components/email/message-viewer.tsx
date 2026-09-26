@@ -102,6 +102,7 @@ import {
 import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
+import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
 
 type Props = {
   accounts: EmailAccount[]
@@ -270,7 +271,13 @@ export function MessageViewer(props: Props) {
   // einen echten Versand — Doppelklick darf keinen zweiten Aufruf auslösen.
   const [approvalBusy, setApprovalBusy] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
-  const [loadRemoteImages, setLoadRemoteImages] = useState(false)
+  // Remote-Freigabe gilt nur fuer die Nachricht, fuer die sie erteilt wurde: eine
+  // spaete Policy-Antwort oder ein abgeschlossenes "Absender erlauben" darf keine
+  // inzwischen ausgewaehlte andere Nachricht freischalten.
+  const [remoteAllowedForId, setRemoteAllowedForId] = useState<number | null>(null)
+  const loadRemoteImages =
+    selectedMessage?.id != null && remoteAllowedForId === selectedMessage.id
+  const selectedMessageIdRef = useRef<number | null>(selectedMessage?.id ?? null)
   const [readReceiptRequested, setReadReceiptRequested] = useState(false)
   const [readReceiptRespond, setReadReceiptRespond] = useState<string>("never")
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
@@ -355,8 +362,9 @@ export function MessageViewer(props: Props) {
   }, [])
 
   useEffect(() => {
+    selectedMessageIdRef.current = selectedMessage?.id ?? null
     setHtmlView(false)
-    setLoadRemoteImages(false)
+    setRemoteAllowedForId(null)
     setReadReceiptRequested(false)
     setDecryptedPlain(null)
     setThreadAliasHint(null)
@@ -380,21 +388,23 @@ export function MessageViewer(props: Props) {
   useEffect(() => {
     if (!selectedMessage?.id) return
     const messageId = selectedMessage.id
+    // Antworten fuer eine inzwischen abgewaehlte Nachricht verwerfen.
+    let cancelled = false
     void (async () => {
       try {
         const policy = await invokeRenderer(IPCChannels.Email.GetRemoteContentPolicy, {
           messageId,
         })
+        if (cancelled) return
         if (policy && typeof policy === "object" && "allowRemote" in policy) {
-          setLoadRemoteImages((prev) => {
-            if (selectedMessage?.id !== messageId) return prev
-            return Boolean((policy as { allowRemote: boolean }).allowRemote)
-          })
+          setRemoteAllowedForId(
+            (policy as { allowRemote: boolean }).allowRemote ? messageId : null,
+          )
         }
         const rr = await invokeRenderer(IPCChannels.Email.GetReadReceiptState, { messageId })
+        if (cancelled) return
         if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
           const s = rr as unknown as { requested: boolean; respond: string }
-          if (selectedMessage?.id !== messageId) return
           setReadReceiptRequested(Boolean(s.requested))
           setReadReceiptRespond(s.respond)
         }
@@ -402,6 +412,9 @@ export function MessageViewer(props: Props) {
         /* ignore */
       }
     })()
+    return () => {
+      cancelled = true
+    }
   }, [selectedMessage?.id])
 
   const sanitizedHtml = useMemo(() => {
@@ -616,7 +629,19 @@ export function MessageViewer(props: Props) {
   }
 
   const handleSoftDelete = async () => {
-    await invokeRenderer(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
+    try {
+      const r = await invokeRenderer(
+        IPCChannels.Email.SoftDeleteMessage,
+        selectedMessage.id,
+      ) as { success?: boolean; error?: string } | null
+      if (r?.success === false) {
+        toast.error(r.error ?? "Löschen fehlgeschlagen")
+        return
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Löschen fehlgeschlagen")
+      return
+    }
     toast.success("In den Papierkorb verschoben")
     await advanceSelectionAfterMessageRemoved(selectedMessage.id)
   }
@@ -636,7 +661,19 @@ export function MessageViewer(props: Props) {
   }
 
   const handleRestore = async () => {
-    await invokeRenderer(IPCChannels.Email.RestoreMessage, selectedMessage.id)
+    try {
+      const r = await invokeRenderer(
+        IPCChannels.Email.RestoreMessage,
+        selectedMessage.id,
+      ) as { success?: boolean; error?: string } | null
+      if (r?.success === false) {
+        toast.error(r.error ?? "Wiederherstellen fehlgeschlagen")
+        return
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Wiederherstellen fehlgeschlagen")
+      return
+    }
     toast.success("Wiederhergestellt (vorheriger Ordner)")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })
@@ -1325,7 +1362,7 @@ export function MessageViewer(props: Props) {
                       className="h-8 gap-1.5 text-xs"
                       onClick={() => {
                         setHtmlView((v) => {
-                          if (v) setLoadRemoteImages(false)
+                          if (v) setRemoteAllowedForId(null)
                           return !v
                         })
                       }}
@@ -1452,7 +1489,11 @@ export function MessageViewer(props: Props) {
                           const status = res && typeof res === "object" && "status" in res
                             ? String((res as { status?: string }).status ?? "")
                             : ""
-                          toast.success(status ? `Signatur geprueft: ${status}` : "Signatur geprueft")
+                          if (status === PGP_SIGNED_PARTIAL_STATUS) {
+                            toast.warning(`Signatur geprueft: ${PGP_SIGNED_PARTIAL_WARNING}`)
+                          } else {
+                            toast.success(status ? `Signatur geprueft: ${status}` : "Signatur geprueft")
+                          }
                           await refreshCurrentMessage()
                           await refreshList({ preserveSelection: true })
                         } catch (e) {
@@ -1464,7 +1505,22 @@ export function MessageViewer(props: Props) {
                     </Button>
                   </div>
                 ) : null}
-                {selectedMessage.pgp_status?.startsWith("signed_") ? (
+                {selectedMessage.pgp_status === PGP_SIGNED_PARTIAL_STATUS ? (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200"
+                  >
+                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      <strong>{PGP_SIGNED_PARTIAL_WARNING}</strong>{" "}
+                      Text außerhalb des signierten Blocks und die HTML-Ansicht stammen nicht
+                      nachweislich vom Absender – die Signatur gilt nicht für die ganze Nachricht.
+                      {selectedMessage.pgp_signer_fingerprint
+                        ? ` (Signatur von ${selectedMessage.pgp_signer_fingerprint.slice(0, 16)}…)`
+                        : ""}
+                    </span>
+                  </div>
+                ) : selectedMessage.pgp_status?.startsWith("signed_") ? (
                   <p className="rounded-md border border-muted px-3 py-2 text-xs text-muted-foreground">
                     PGP-Signatur: {selectedMessage.pgp_status.replace("signed_", "")}
                     {selectedMessage.pgp_signer_fingerprint
@@ -1490,7 +1546,7 @@ export function MessageViewer(props: Props) {
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs"
-                          onClick={() => setLoadRemoteImages(true)}
+                          onClick={() => setRemoteAllowedForId(selectedMessage.id)}
                         >
                           Einmal laden
                         </Button>
@@ -1501,12 +1557,14 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={async () => {
                             if (!selectedMessage) return
+                            const messageId = selectedMessage.id
                             await invokeRenderer(IPCChannels.Email.SetRemoteContentPolicy, {
-                              messageId: selectedMessage.id,
+                              messageId,
                               policy: "allowed_sender",
                               rememberSender: true,
                             })
-                            setLoadRemoteImages(true)
+                            if (selectedMessageIdRef.current !== messageId) return
+                            setRemoteAllowedForId(messageId)
                           }}
                         >
                           Absender erlauben

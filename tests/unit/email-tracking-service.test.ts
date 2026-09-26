@@ -7,6 +7,7 @@ import {
   EmailTrackingIpInsightNotFoundError,
   EmailTrackingIpInsightRawDataUnavailableError,
   emailTrackingEventAssociatedData,
+  emailTrackingLinkAssociatedData,
   effectiveRetryTrackingFlags,
   effectiveTrackingTokenExpiry,
   retryLinkCountMismatch,
@@ -398,15 +399,23 @@ describe('email tracking service security helpers', () => {
       ...overrides,
     });
 
-    // Explicit true instruments even when the workspace default is off, and
-    // turns on both signals when the policy configured none.
-    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({
-      enabled: true,
+    // F-A3a-02: an explicit true must never switch tracking on while the
+    // admin policy is disabled (no legal basis / compliance acknowledgement).
+    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({ enabled: false });
+    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({ enabled: false });
+    expect(resolveOutboundTrackingPolicy(basePolicy({
       trackOpens: true,
       trackLinks: true,
-    });
-    // Explicit true respects a narrower configured signal set.
-    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({
+      legalBasis: 'legitimate_interest',
+      privacyNoticeUrl: 'https://example.test/privacy',
+      complianceAcknowledgedAt: '2026-01-01T00:00:00.000Z',
+    }), true)).toMatchObject({ enabled: false });
+    // Within an enabled policy, explicit true overrides the "default off for
+    // new messages" toggle and keeps the configured signal set.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, defaultTrackNewMessages: false }),
+      true,
+    )).toMatchObject({
       enabled: true,
       trackOpens: true,
       trackLinks: false,
@@ -433,6 +442,30 @@ describe('email tracking service security helpers', () => {
       basePolicy({ enabled: true, trackLinks: true, defaultTrackNewMessages: false }),
       null,
     )).toMatchObject({ enabled: false });
+  });
+
+  // F-A3a-02: trackingOverride:true instrumented mails although the admin policy had tracking disabled.
+  test('ignores a per-message tracking override while the workspace policy is disabled', async () => {
+    const { db, state } = disabledPolicyOutboundDatabase();
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+    const html = '<p>Hallo <a href="https://customer.example/invoice/7">Rechnung</a></p>';
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<override-17@crm.example>',
+      recipientCount: 1,
+      html,
+      pgpProtected: false,
+      trackingOverride: true,
+    })).resolves.toEqual({ html, trackingMessageId: null, warning: null });
+    expect(state.insertedTables).toEqual([]);
   });
 
   test('the real revoke and public-open chain cannot reactivate revoked tracking', async () => {
@@ -546,6 +579,96 @@ describe('email tracking service security helpers', () => {
         link_id: '77777777-7777-4777-8777-777777777777',
       }),
     ]));
+  });
+
+  // F-A3a-04: revoked, disabled or expired click tokens broke the links of already delivered mails.
+  test.each([
+    ['a revoked resolver (link tracking disabled)', { resolverRevokedAt: new Date('2026-07-01T00:00:00.000Z') }],
+    ['an expired resolver', { resolverExpiresAt: new Date('2026-07-01T00:00:00.000Z') }],
+    ['a revoked tracking message', { messageRevokedAt: new Date('2026-07-01T00:00:00.000Z') }],
+    ['an expired tracking message', { messageTokenExpiresAt: new Date('2026-07-01T00:00:00.000Z') }],
+  ])('redirects a click token with %s to the stored target without recording evidence', async (_label, overrides) => {
+    const { service, state, publish, token } = clickTrackingService(overrides);
+
+    await expect(service.resolvePublicClick({
+      token,
+      ip: '203.0.113.9',
+      userAgent: 'MailClient/1.0',
+      headers: {},
+    })).resolves.toEqual({ targetUrl: 'https://customer.example/invoice/7' });
+    await flushBackgroundWork();
+
+    expect(state.policyReads).toBe(0);
+    expect(state.eventRows).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  test('still records click evidence for an active click token', async () => {
+    const { service, state, publish, token } = clickTrackingService({});
+
+    await expect(service.resolvePublicClick({
+      token,
+      ip: '203.0.113.9',
+      userAgent: 'MailClient/1.0',
+      headers: {},
+    })).resolves.toEqual({ targetUrl: 'https://customer.example/invoice/7' });
+    await flushBackgroundWork(() => publish.mock.calls.length > 0);
+
+    expect(state.eventRows).toHaveLength(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  // F-A3a-05: Jeder Klick startete per `void` eigene Hintergrundarbeit; bei einer Flut stauten sich beliebig viele Laeufe vor dem Pool.
+  test('bounds the background work of public clicks to four at a time plus a bounded queue (E12)', async () => {
+    const key = Buffer.alloc(32, 7);
+    const crypto = createEmailTrackingCrypto(key);
+    const token = 'C'.repeat(43);
+    const workspaceId = '11111111-1111-4111-8111-111111111111';
+    const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+    const linkId = '77777777-7777-4777-8777-777777777777';
+    const sealed = crypto.sealJson(
+      { url: 'https://customer.example/invoice/7' },
+      emailTrackingLinkAssociatedData(workspaceId, trackingMessageId, linkId),
+    );
+    const { db } = publicInteractionDatabase(crypto.tokenHash(token), { click: { linkId, sealed } });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    // The provider lookup runs inside the background work and outside any
+    // transaction: blocking it keeps a click "in flight".
+    const lookup = jest.fn(async () => {
+      await released;
+      return ipInsight({});
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      emailTrackingIpIntelligence: readyIpIntelligence(lookup),
+      now: () => new Date('2026-07-15T12:00:30.000Z'),
+    });
+    try {
+      const redirects = await Promise.all(Array.from({ length: 100 }, (_, index) => service.resolvePublicClick({
+        token,
+        ip: `203.0.113.${index + 1}`,
+        userAgent: 'MailClient/1.0',
+        headers: {},
+      })));
+      // Every visitor is redirected at once, whatever happens to the evidence.
+      expect(redirects.every((result) => result?.targetUrl === 'https://customer.example/invoice/7')).toBe(true);
+      await flushBackgroundWork();
+      expect(lookup).toHaveBeenCalledTimes(4);
+
+      release();
+      await flushBackgroundWork(() => lookup.mock.calls.length >= 68);
+      await flushBackgroundWork();
+      // 4 running + 64 queued; the other 32 clicks were dropped, not queued.
+      expect(lookup).toHaveBeenCalledTimes(68);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('verworfen'));
+    } finally {
+      release();
+      warn.mockRestore();
+    }
   });
 
   test('looks up provider context outside transactions and persists only the V2 projection', async () => {
@@ -677,6 +800,66 @@ describe('email tracking service security helpers', () => {
     await service.recordPublicOpen(request);
     expect(state.eventRows).toHaveLength(2);
     expect(state.classificationRows).toHaveLength(2);
+  });
+
+  // F-A3a-09: every pixel fetch published a persisted server event, even when dedupe or the capacity cap stored nothing.
+  test('publishes a tracking change only when a public interaction stored new evidence', async () => {
+    const token = 'G'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const request = {
+      token,
+      ip: '8.8.8.8',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    };
+
+    const deduped = publicInteractionDatabase(tokenHash);
+    const dedupedPublish = jest.fn(async () => undefined);
+    let current = new Date('2026-07-15T12:00:09.000Z');
+    const dedupedService = createPostgresEmailTrackingService({
+      db: deduped.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: dedupedPublish },
+      now: () => current,
+    });
+    await dedupedService.recordPublicOpen(request);
+    current = new Date('2026-07-15T12:00:14.000Z');
+    await dedupedService.recordPublicOpen(request);
+    expect(deduped.state.eventRows).toHaveLength(1);
+    expect(dedupedPublish).toHaveBeenCalledTimes(1);
+
+    const atCap = publicInteractionDatabase(tokenHash, { publicEventCount: 10_000 });
+    const atCapPublish = jest.fn(async () => undefined);
+    await createPostgresEmailTrackingService({
+      db: atCap.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: atCapPublish },
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    }).recordPublicOpen(request);
+    expect(atCap.state.eventRows).toEqual([]);
+    expect(atCapPublish).not.toHaveBeenCalled();
+
+    const conflict = publicInteractionDatabase(tokenHash, { duplicateEvent: true });
+    const conflictPublish = jest.fn(async () => undefined);
+    await createPostgresEmailTrackingService({
+      db: conflict.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: conflictPublish },
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    }).recordPublicOpen(request);
+    expect(conflict.state.eventRows).toEqual([]);
+    expect(conflictPublish).not.toHaveBeenCalled();
+
+    const click = clickTrackingService({ publicEventCount: 10_000 });
+    await expect(click.service.resolvePublicClick({ ...request, token: click.token }))
+      .resolves.toEqual({ targetUrl: 'https://customer.example/invoice/7' });
+    await flushBackgroundWork(() => click.state.operations.includes('capacity_precheck'));
+    await flushBackgroundWork();
+    expect(click.state.eventRows).toEqual([]);
+    expect(click.publish).not.toHaveBeenCalled();
   });
 
   test('policy-gates lookup and discards context when the write-time policy opted out', async () => {
@@ -1702,6 +1885,91 @@ describe('email tracking service security helpers', () => {
   });
 });
 
+function clickTrackingService(overrides: Parameters<typeof publicInteractionDatabase>[1]) {
+  const key = Buffer.alloc(32, 7);
+  const crypto = createEmailTrackingCrypto(key);
+  const token = 'C'.repeat(43);
+  const workspaceId = '11111111-1111-4111-8111-111111111111';
+  const trackingMessageId = '55555555-5555-4555-8555-555555555555';
+  const linkId = '77777777-7777-4777-8777-777777777777';
+  const sealed = crypto.sealJson(
+    { url: 'https://customer.example/invoice/7' },
+    emailTrackingLinkAssociatedData(workspaceId, trackingMessageId, linkId),
+  );
+  const { db, state } = publicInteractionDatabase(crypto.tokenHash(token), {
+    ...overrides,
+    click: { linkId, sealed },
+  });
+  const publish = jest.fn(async () => undefined);
+  const service = createPostgresEmailTrackingService({
+    db,
+    publicBaseUrl: 'https://crm.example',
+    masterKey: key,
+    events: { publish },
+    now: () => new Date('2026-07-15T12:00:30.000Z'),
+  });
+  return { service, state, publish, token };
+}
+
+async function flushBackgroundWork(done: () => boolean = () => false): Promise<void> {
+  for (let index = 0; index < 50 && !done(); index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function disabledPolicyOutboundDatabase(): {
+  db: Kysely<ServerDatabase>;
+  state: { insertedTables: string[] };
+} {
+  const state = { insertedTables: [] as string[] };
+  const fixtures: Record<string, unknown> = {
+    email_tracking_policies: {
+      enabled: false,
+      track_opens: false,
+      track_links: false,
+      default_track_new_messages: true,
+      collect_derived_metadata: false,
+      collect_raw_metadata: false,
+      ip_insights_enabled: false,
+      raw_metadata_retention_days: 7,
+      event_retention_days: 365,
+      token_ttl_days: 730,
+      legal_basis: null,
+      privacy_notice_url: null,
+      compliance_acknowledged_at: null,
+      updated_at: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    email_messages: { id: 17, account_id: 3 },
+  };
+  const db = {
+    transaction() {
+      return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
+    },
+    getExecutor() {
+      return { executeQuery: async () => ({ rows: [] }) };
+    },
+    selectFrom(table: string) {
+      return new TrackingRetrySelect(fixtures[table]);
+    },
+    updateTable() {
+      return new TrackingRetryMutation();
+    },
+    insertInto(table: string) {
+      state.insertedTables.push(table);
+      const insert = {
+        values: () => insert,
+        onConflict: () => insert,
+        execute: async () => undefined,
+      };
+      return insert;
+    },
+    deleteFrom() {
+      return new TrackingRetryMutation();
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
+
 function trackingRetryMismatchDatabase(existingTargetHash: string): {
   db: Kysely<ServerDatabase>;
   state: { trackingMessageDeleted: boolean; resolverRows: Array<Record<string, unknown>> };
@@ -2006,6 +2274,11 @@ function publicInteractionDatabase(
     trackedCollectRawMetadata?: boolean;
     publicEventCount?: number;
     duplicateEvent?: boolean;
+    click?: Readonly<{ linkId: string; sealed: { ciphertext: Buffer; nonce: Buffer; authTag: Buffer } }>;
+    resolverRevokedAt?: Date | null;
+    resolverExpiresAt?: Date;
+    messageRevokedAt?: Date | null;
+    messageTokenExpiresAt?: Date;
   }> = {},
 ): { db: Kysely<ServerDatabase>; state: PublicInteractionTestState } {
   const state: PublicInteractionTestState = {
@@ -2028,6 +2301,11 @@ function publicInteractionDatabase(
     trackedCollectRawMetadata: options.trackedCollectRawMetadata ?? false,
     publicEventCount: options.publicEventCount ?? 0,
     duplicateEvent: options.duplicateEvent ?? false,
+    click: options.click ?? null,
+    resolverRevokedAt: options.resolverRevokedAt ?? null,
+    resolverExpiresAt: options.resolverExpiresAt ?? new Date('2027-07-15T12:00:00.000Z'),
+    messageRevokedAt: options.messageRevokedAt ?? null,
+    messageTokenExpiresAt: options.messageTokenExpiresAt ?? new Date('2027-07-15T12:00:00.000Z'),
   };
   const db = {
     transaction() {
@@ -2083,6 +2361,11 @@ class PublicInteractionSelect {
       trackedCollectDerivedMetadata: boolean;
       trackedCollectRawMetadata: boolean;
       publicEventCount: number;
+      click: Readonly<{ linkId: string; sealed: { ciphertext: Buffer; nonce: Buffer; authTag: Buffer } }> | null;
+      resolverRevokedAt: Date | null;
+      resolverExpiresAt: Date;
+      messageRevokedAt: Date | null;
+      messageTokenExpiresAt: Date;
     }>,
   ) {}
 
@@ -2104,19 +2387,27 @@ class PublicInteractionSelect {
       return {
         workspace_id: this.fixture.workspaceId,
         tracking_message_id: this.fixture.trackingMessageId,
-        link_id: null,
-        token_kind: 'open',
-        expires_at: new Date('2027-07-15T12:00:00.000Z'),
-        revoked_at: null,
+        link_id: this.fixture.click?.linkId ?? null,
+        token_kind: this.fixture.click ? 'click' : 'open',
+        expires_at: this.fixture.resolverExpiresAt,
+        revoked_at: this.fixture.resolverRevokedAt,
       };
     }
     if (this.table === 'email_tracking_messages') {
       return {
         message_id: 17,
-        revoked_at: null,
-        token_expires_at: new Date('2027-07-15T12:00:00.000Z'),
+        revoked_at: this.fixture.messageRevokedAt,
+        token_expires_at: this.fixture.messageTokenExpiresAt,
         collect_derived_metadata: this.fixture.trackedCollectDerivedMetadata,
         collect_raw_metadata: this.fixture.trackedCollectRawMetadata,
+      };
+    }
+    if (this.table === 'email_tracking_links' && this.fixture.click) {
+      return {
+        id: this.fixture.click.linkId,
+        target_ciphertext: this.fixture.click.sealed.ciphertext,
+        target_nonce: this.fixture.click.sealed.nonce,
+        target_auth_tag: this.fixture.click.sealed.authTag,
       };
     }
     if (this.table === 'email_tracking_policies') {

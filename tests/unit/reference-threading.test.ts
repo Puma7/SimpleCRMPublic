@@ -2,6 +2,7 @@ import {
   MAX_THREAD_REF_IDS,
   collectRelatedIds,
   normalizeMessageId,
+  normalizeThreadingMessageId,
   parseReferenceIds,
 } from '../../packages/core/src/email/reference-threading';
 
@@ -33,12 +34,12 @@ describe('normalizeMessageId', () => {
 
 describe('parseReferenceIds', () => {
   it('splits on any whitespace run (spaces, tabs, folded newlines) and normalizes each', () => {
-    const header = '<a@h>\t<B@H>\n  <c@h>';
-    expect(parseReferenceIds(header)).toEqual(['a@h', 'b@h', 'c@h']);
+    const header = '<a@h.de>\t<B@H.DE>\n  <c@h.de>';
+    expect(parseReferenceIds(header)).toEqual(['a@h.de', 'b@h.de', 'c@h.de']);
   });
 
   it('drops empties and preserves order', () => {
-    expect(parseReferenceIds('   <x@h>   <y@h>   ')).toEqual(['x@h', 'y@h']);
+    expect(parseReferenceIds('   <x@h.de>   <y@h.de>   ')).toEqual(['x@h.de', 'y@h.de']);
   });
 
   it('returns [] for empty / missing', () => {
@@ -60,13 +61,35 @@ describe('collectRelatedIds', () => {
   });
 
   it('works with only a References header (no Message-ID / In-Reply-To)', () => {
-    expect(collectRelatedIds(null, null, '<a@h> <b@h>')).toEqual(['a@h', 'b@h']);
+    expect(collectRelatedIds(null, null, '<a@h.de> <b@h.de>')).toEqual(['a@h.de', 'b@h.de']);
   });
 
   it(`caps the collected ids at MAX_THREAD_REF_IDS (${MAX_THREAD_REF_IDS})`, () => {
-    const refs = Array.from({ length: MAX_THREAD_REF_IDS + 20 }, (_, i) => `<r${i}@h>`).join(' ');
+    const refs = Array.from({ length: MAX_THREAD_REF_IDS + 20 }, (_, i) => `<r${i}@h.de>`).join(' ');
     const out = collectRelatedIds('<self@h>', null, refs);
     expect(out.length).toBe(MAX_THREAD_REF_IDS);
     expect(out[0]).toBe('self@h');
+  });
+});
+
+// C-A62: Referenzen ohne Form id@rechts (etwa der Token "com") wurden als Message-IDs
+// uebernommen; der Desktop fuehrte darueber fremde Konversationen zusammen.
+describe('plausible threading Message-IDs (shared with the desktop JWZ path)', () => {
+  it('accepts only id-left@id-right of at least five characters without brackets or whitespace', () => {
+    expect(normalizeThreadingMessageId('<ABC@Example.COM>')).toBe('abc@example.com');
+    expect(normalizeThreadingMessageId('x@y.z')).toBe('x@y.z');
+    for (const raw of ['com', '<com>', 'kunde-b.com', '@kunde.de', 'kunde@', 'a@b', '<<x@y.de>>', '<a>b@c.de>', null, '']) {
+      expect(normalizeThreadingMessageId(raw)).toBeNull();
+    }
+  });
+
+  it('drops implausible References tokens and splits adjacent bracketed ids', () => {
+    expect(parseReferenceIds('com <y7@kunde-b.com> lieferant.com')).toEqual(['y7@kunde-b.com']);
+    expect(parseReferenceIds('<a@h.de><B@H.DE>')).toEqual(['a@h.de', 'b@h.de']);
+  });
+
+  it('collects no related id from bare tokens', () => {
+    expect(collectRelatedIds('com', 'de', 'com kunde')).toEqual([]);
+    expect(collectRelatedIds('<self@h.de>', '<x>', 'com')).toEqual(['self@h.de']);
   });
 });

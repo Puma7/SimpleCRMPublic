@@ -1,3 +1,5 @@
+import { replaceElementBlocks, replaceTags } from './parse-utils';
+
 export const OUTBOUND_WARNING_MARKER = '⚠️ AUSGANGSPRÜFUNG — VERSAND BLOCKIERT';
 
 export type OutboundReviewParse = {
@@ -88,14 +90,43 @@ export function stripOutboundWarningFromPlain(body: string): string {
   return text.slice(0, idx).trim();
 }
 
+/**
+ * Same result as
+ * `input.replace(/<div[^>]*>[\s\S]*?AUSGANGSPRÜFUNG[\s\S]*?<\/div>/gi, '')`,
+ * but linear: the lazy regex backtracks over every later marker and `<div` for
+ * each unclosed candidate (cubic on hostile drafts). If one `<div` has no `>`,
+ * marker or `</div>` after it, no later `<div` can have one either.
+ */
+function removeOutboundWarningDivs(input: string): string {
+  const open = /<div/gi;
+  const marker = /AUSGANGSPRÜFUNG/gi;
+  const close = /<\/div>/gi;
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    open.lastIndex = cursor;
+    const start = open.exec(input);
+    if (!start) break;
+    const gt = input.indexOf('>', start.index + start[0].length);
+    if (gt === -1) break;
+    marker.lastIndex = gt + 1;
+    const hit = marker.exec(input);
+    if (!hit) break;
+    close.lastIndex = hit.index + hit[0].length;
+    const end = close.exec(input);
+    if (!end) break;
+    out += input.slice(cursor, start.index);
+    cursor = end.index + end[0].length;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
 /** Strip prior outbound-warning banner div(s) from HTML draft body. */
 export function stripOutboundWarningFromHtml(html: string): string {
   let inner = (html ?? '').trim();
   if (!inner) return '';
   for (let i = 0; i < 5; i++) {
-    const next = inner
-      .replace(/<div[^>]*>[\s\S]*?AUSGANGSPRÜFUNG[\s\S]*?<\/div>/gi, '')
-      .trim();
+    const next = removeOutboundWarningDivs(inner).trim();
     if (next === inner) break;
     inner = next;
   }
@@ -103,12 +134,12 @@ export function stripOutboundWarningFromHtml(html: string): string {
 }
 
 function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
+  // Linear scans (parse-utils) instead of lazy/negated-class regexes, which
+  // are quadratic on unclosed <script/<style/< in hostile drafts.
+  const withoutBlocks = replaceElementBlocks(replaceElementBlocks(html, 'script', ''), 'style', '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<\/p>/gi, '\n');
+  return replaceTags(withoutBlocks)
     .replace(/\s+/g, ' ')
     .trim();
 }

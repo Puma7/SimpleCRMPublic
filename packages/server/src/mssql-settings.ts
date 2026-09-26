@@ -1,3 +1,4 @@
+import { validateReadOnlyMssqlQuery } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
 
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
@@ -9,7 +10,6 @@ import {
 const MSSQL_SETTINGS_KEY = 'mssql_settings_v1';
 const MSSQL_PASSWORD_SECRET_KIND = 'mssql.password';
 const MSSQL_PASSWORD_SECRET_NAME = 'mssql:default';
-const MAX_MSSQL_QUERY_CHARS = 8_000;
 const MAX_MSSQL_RESULT_ROWS = 100;
 const MAX_MSSQL_RESULT_JSON_CHARS = 256_000;
 
@@ -47,7 +47,12 @@ export type MssqlQueryResult = {
 
 export type MssqlSettingsPort = Readonly<{
   getSettings(input: { workspaceId: string }): Promise<MssqlSettingsRecord | null>;
-  saveSettings(input: { workspaceId: string; settings: MssqlSettingsInput }): Promise<{ success: boolean; error?: string }>;
+  saveSettings(input: { workspaceId: string; settings: MssqlSettingsInput }): Promise<{
+    success: boolean;
+    error?: string;
+    /** The endpoint changed while a stored password would have been kept (F-A13A14-11). */
+    code?: 'credentials_required';
+  }>;
   clearPassword(input: { workspaceId: string }): Promise<{ success: boolean; message: string }>;
   testConnection(input: { workspaceId: string; settings?: MssqlSettingsInput }): Promise<MssqlQueryResult>;
   executeReadOnlyQuery(input: { workspaceId: string; query: string }): Promise<MssqlQueryResult>;
@@ -117,6 +122,25 @@ export function createPostgresMssqlSettingsPort(
         : undefined;
       if (passwordToWrite && !secrets) {
         return { success: false, error: 'MSSQL secret storage is not configured' };
+      }
+      // The stored password belongs to the stored server (same rule as the
+      // connection test): moving to another server, port or instance must not
+      // keep it, or the next sync presents the write-only secret to that host.
+      const clearsPassword = 'password' in input.settings
+        && (input.settings.password === '' || input.settings.password === null);
+      if (!passwordToWrite && !clearsPassword) {
+        const stored = await loadMssqlSettings(options.db, input.workspaceId, options.applyWorkspaceSession);
+        if (
+          stored
+          && mssqlEndpointKey(stored) !== mssqlEndpointKey(normalized.settings)
+          && await hasMssqlPassword(secrets, input.workspaceId)
+        ) {
+          return {
+            success: false,
+            code: 'credentials_required',
+            error: 'Zugangsdaten bei Serverwechsel neu eingeben: MSSQL-Passwort erforderlich (Server, Port oder Instanz geaendert)',
+          };
+        }
       }
       await withWorkspaceTransaction(
         options.db,
@@ -195,23 +219,8 @@ export function createPostgresMssqlSettingsPort(
   };
 }
 
-export function validateReadOnlyMssqlQuery(query: unknown): { ok: true; query: string } | { ok: false; error: string } {
-  const text = String(query ?? '').trim();
-  if (!text) return { ok: false, error: 'SQL darf nicht leer sein' };
-  if (text.length > MAX_MSSQL_QUERY_CHARS) {
-    return { ok: false, error: `SQL zu lang (max ${MAX_MSSQL_QUERY_CHARS} Zeichen)` };
-  }
-
-  const normalized = text.replace(/^\s*--.*$/gm, '').trim();
-  const upper = normalized.toUpperCase();
-  if (!upper.startsWith('SELECT') && !upper.startsWith('WITH')) {
-    return { ok: false, error: 'Query muss mit SELECT oder WITH beginnen' };
-  }
-  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE|GRANT|REVOKE|BACKUP|RESTORE)\b/.test(upper)) {
-    return { ok: false, error: 'Nur lesende SELECT-Abfragen sind erlaubt' };
-  }
-  return { ok: true, query: normalized };
-}
+// Shared with the desktop mssql.query node (@simplecrm/core).
+export { validateReadOnlyMssqlQuery };
 
 export function mssqlPasswordSecretIdentifier(workspaceId: string): SecretIdentifier {
   return {
@@ -244,10 +253,31 @@ export async function resolveMssqlSettingsForConnection(input: {
   if (!password) {
     const secret = await input.secrets?.readSecret(mssqlPasswordSecretIdentifier(input.workspaceId));
     password = secret?.toString('utf8');
+    // The stored password belongs to the stored server. Caller-supplied
+    // settings may only borrow it for that same endpoint; otherwise the test
+    // would hand the write-only secret to any host the caller names.
+    if (password && input.settings !== undefined) {
+      const stored = await loadMssqlSettings(input.db, input.workspaceId, input.applyWorkspaceSession);
+      if (!stored || mssqlEndpointKey(stored) !== mssqlEndpointKey(base)) {
+        return {
+          ok: false,
+          error: 'Zugangsdaten bei Serverwechsel neu eingeben: MSSQL-Passwort erforderlich (Server oder Port geaendert)',
+        };
+      }
+    }
   }
   if (!password) return { ok: false, error: 'MSSQL-Passwort ist nicht konfiguriert' };
 
   return { ok: true, settings: { ...base, password } };
+}
+
+function mssqlEndpointKey(settings: MssqlSettings): string {
+  const config = buildConnectionConfig(settings);
+  return [
+    config.server.trim().toLowerCase(),
+    config.port ?? '',
+    config.options.instanceName?.trim().toLowerCase() ?? '',
+  ].join('|');
 }
 
 async function loadMssqlSettings(

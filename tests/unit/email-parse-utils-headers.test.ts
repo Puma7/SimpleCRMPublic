@@ -1,8 +1,15 @@
+import { simpleParser } from 'mailparser';
 import {
   formatMailparserHeaderValue,
+  isAutomatedInboundMessage,
   isCorruptRawHeaders,
+  isUnsafeAutoReplyTarget,
   rawHeadersFromParsed,
 } from '../../packages/core/src/email';
+
+if (typeof setImmediate === 'undefined') {
+  (globalThis as any).setImmediate = setTimeout;
+}
 
 describe('formatMailparserHeaderValue', () => {
   it('formats address objects with text', () => {
@@ -12,6 +19,14 @@ describe('formatMailparserHeaderValue', () => {
         value: [{ address: 'shop@example.com', name: 'Shop' }],
       }),
     ).toBe('Shop <shop@example.com>');
+  });
+
+  // F-N-redos-01: HTML-Headerwerte wurden per /<[^>]+>/g gestrippt; unverschlossene '<' liefen quadratisch.
+  it('strips html header values in linear time with the same result', () => {
+    expect(formatMailparserHeaderValue({ html: '<span>Shop</span>  &lt;x&gt; <b' })).toBe('Shop &lt;x&gt; <b');
+    const started = Date.now();
+    formatMailparserHeaderValue({ html: '<'.repeat(50_000) });
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('formats structured content-type', () => {
@@ -42,6 +57,32 @@ describe('rawHeadersFromParsed', () => {
     expect(out).toContain('from: Alice <alice@test.com>');
     expect(out).toContain('subject: Hello');
     expect(out).not.toContain('[object Object]');
+  });
+});
+
+describe('rawHeadersFromParsed with real mailparser output', () => {
+  // F-N-sm-01: mailparser liefert headerLines als { key, line }-Objekte; join() ergab "[object Object]", Auto-Submitted/List-* griffen nie.
+  it('keeps the original header lines so automation checks see them', async () => {
+    const source = [
+      'From: "Shop" <noreply-shop@example.com>',
+      'To: kunde@example.com',
+      'Subject: Ihre Bestellung',
+      'Auto-Submitted: auto-generated',
+      'List-Id: <news.example.com>',
+      'Content-Type: text/plain;',
+      ' charset=utf-8',
+      '',
+      'Hallo',
+    ].join('\r\n');
+    const parsed = await simpleParser(Buffer.from(source, 'utf8'));
+    const raw = rawHeadersFromParsed(parsed as never);
+    expect(raw).not.toContain('[object Object]');
+    expect(isCorruptRawHeaders(raw)).toBe(false);
+    expect(raw).toContain('From: "Shop" <noreply-shop@example.com>');
+    expect(raw).toContain('Auto-Submitted: auto-generated');
+    expect(raw).toContain('Content-Type: text/plain;\r\n charset=utf-8');
+    expect(isAutomatedInboundMessage(raw)).toBe(true);
+    expect(isUnsafeAutoReplyTarget(raw)).toBe(true);
   });
 });
 

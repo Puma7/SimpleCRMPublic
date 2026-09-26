@@ -66,6 +66,7 @@ Kalender (calendar_events)
 - Stammdaten: Name, Firma, E-Mail, Telefon, Adresse, Notizen, Status, Affiliate-Link.
 - **JTL:** `jtl_kKunde`, Kundennummer, Sync-Zeitstempel — Datensätze können aus der Wawi stammen oder **lokal** angelegt werden (`jtl_kKunde` null).
 - **E-Mail-Verknüpfung:** Im E-Mail-Modul kann eine Nachricht einem Kunden zugeordnet werden; Workflows und Textbausteine nutzen `{{customer.*}}`.
+- **Löschen:** Hat der Kunde Deals, Aufgaben oder Termine, lehnen beide Editionen das Löschen zunächst ab und nennen die Anzahl (Server: `409 customer_has_dependents` mit `details.dependents`). Erst nach Bestätigung im Dialog („Mitlöschen“, API: `DELETE /api/v1/customers/:id?cascade=true`, IPC: `db:delete-customer` mit `[id, { cascade: true }]`) werden Deals samt Positionen, Aufgaben und deren Termine in einer Transaktion mitgelöscht.
 
 ### Deal
 
@@ -105,7 +106,7 @@ Definiert in `src/types/deal.ts` (`DealStage`):
 | Gewonnen / Verloren | Abschluss (offen) |
 | Abgeschlossen Gewonnen / Abgeschlossen Verloren | Finaler Abschluss |
 
-**Nachverfolgung:** Offene Deals in Queues „Stagnierend“ und „High-Value-Risk“ schließen **Gewonnen**, **Verloren** und legacy-Namen `Closed Won` / `Closed Lost` aus (SQL in `sqlite-service.ts`).
+**Geschlossene Deals:** **Gewonnen** und **Abgeschlossen Gewonnen** gelten als gewonnen, **Verloren** und **Abgeschlossen Verloren** als verloren, dazu die Legacy-Namen `Closed Won` / `Closed Lost`. Dashboard (aktive Deals, Pipeline-Wert, Conversion-Rate) und die Queues „Stagnierend“ und „High-Value-Risk“ schließen alle geschlossenen Deals aus, in beiden Editionen. Die Listen stehen zentral in `packages/core/src/crm/deal-stages.ts`.
 
 ---
 

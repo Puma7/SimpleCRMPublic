@@ -1,11 +1,15 @@
+import { normalizeEmailAddress } from './email-address-normalize';
 import {
-  extractEmailAddressesFromRecipientField,
+  extractDeliveryAddressesFromRecipientField,
   recipientFieldFromJson,
 } from './email-recipient-parse';
 
+// The returned addresses prefill To/Cc and are delivery data (plus tag and
+// local-part case stay intact); own-address and duplicate checks compare the
+// normalized identity instead.
 function addressesFromJson(json: string | null | undefined): string[] {
   const field = recipientFieldFromJson(json);
-  return extractEmailAddressesFromRecipientField(field);
+  return extractDeliveryAddressesFromRecipientField(field);
 }
 
 /** Parse Reply-To / List-Post from stored RFC822 headers (best-effort). */
@@ -14,7 +18,7 @@ export function replyAddressesFromRawHeaders(rawHeaders: string | null | undefin
   const out: string[] = [];
   const replyTo = rawHeaders.match(/^Reply-To:\s*(.+)$/im);
   if (replyTo?.[1]) {
-    out.push(...extractEmailAddressesFromRecipientField(replyTo[1].trim()));
+    out.push(...extractDeliveryAddressesFromRecipientField(replyTo[1].trim()));
   }
   const listPost = rawHeaders.match(/^List-Post:\s*<?mailto:([^>\s;]+)>?/im);
   if (listPost?.[1]) {
@@ -27,7 +31,7 @@ function uniquePreserveOrder(addrs: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const a of addrs) {
-    const key = a.toLowerCase();
+    const key = normalizeEmailAddress(a);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(a);
@@ -53,13 +57,14 @@ export function buildReplyAllRecipients(
 
   const primaryCandidates = [...replyToAddrs, ...fromAddrs];
   const primary =
-    primaryCandidates.find((a) => !own.has(a.toLowerCase())) ??
-    toAddrs.find((a) => !own.has(a.toLowerCase())) ??
+    primaryCandidates.find((a) => !own.has(normalizeEmailAddress(a))) ??
+    toAddrs.find((a) => !own.has(normalizeEmailAddress(a))) ??
     primaryCandidates[0] ??
     '';
 
   const ccCandidates = uniquePreserveOrder([...toAddrs, ...ccAddrs]).filter(
-    (a) => !own.has(a.toLowerCase()) && a.toLowerCase() !== primary.toLowerCase(),
+    (a) => !own.has(normalizeEmailAddress(a))
+      && normalizeEmailAddress(a) !== normalizeEmailAddress(primary),
   );
 
   return {

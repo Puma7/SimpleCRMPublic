@@ -173,8 +173,15 @@ export type AuthInvitationRecord = {
 export type AuthUserSaveInput = {
   workspaceId: string;
   actorUserId: string;
-  /** Only owners/admins may assign or change roles; delegated managers cannot. */
-  actorIsAdmin: boolean;
+  /**
+   * Only owners/admins may assign or change roles; delegated managers cannot.
+   * Only owners may assign the owner role or change owner accounts (isForbiddenUserMutation).
+   */
+  actorRole: AuthenticatedPrincipal['role'];
+  /** Expanded group capabilities of a delegated manager (see isTargetMorePrivileged). */
+  actorCapabilities?: readonly string[];
+  /** Session of the acting admin; kept alive when an admin resets its own password. */
+  actorSessionId?: string;
   id?: string;
   email: string;
   displayName: string;
@@ -189,7 +196,11 @@ export type AuthUserSaveInput = {
 
 export type AuthUserSaveResult =
   | { ok: true; user: AuthUserAdminRecord }
-  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden' };
+  | {
+    ok: false;
+    code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden'
+      | 'owner_management_requires_owner' | 'target_more_privileged';
+  };
 
 export type AuthInvitationCreateInput = {
   workspaceId: string;
@@ -216,7 +227,10 @@ export type AuthInvitationAcceptInput = {
 
 export type AuthInvitationAcceptResult =
   | { ok: true; user: AuthUserRecord; tokens: TokenPair }
-  | { ok: false; code: 'invalid_token' | 'expired' | 'accepted' | 'revoked' | 'duplicate_email' };
+  | {
+    ok: false;
+    code: 'invalid_token' | 'expired' | 'accepted' | 'revoked' | 'duplicate_email' | 'owner_management_requires_owner';
+  };
 
 export type AuthInvitationDeliveryStatus =
   | { status: 'sent'; recipient: string; sentAt: string }
@@ -240,6 +254,8 @@ export type AuthSecurityWorkspaceSettings = {
   mfaEnabled: boolean;
   mfaTotpEnabled: boolean;
   mfaEmailEnabled: boolean;
+  /** Returns portal CAPTCHA, on by default once Turnstile is configured (F-A3a-07). */
+  portalCaptchaEnabled: boolean;
 };
 
 export type LoginSecurityApiPort = Readonly<{
@@ -299,8 +315,11 @@ export type LoginSecurityApiPort = Readonly<{
     secret: string;
     code: string;
   }): Promise<boolean>;
-  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** Step-up outside a login: a current code of the user's enrolled authenticator, usable once. */
+  verifyCurrentTotpCode(input: { workspaceId: string; userId: string; code: string }): Promise<boolean>;
 }>;
 
 export type AuthApiPort = {
@@ -312,6 +331,7 @@ export type AuthApiPort = {
   // fetch the whole workspace user list.
   getUser?(input: { workspaceId: string; userId: string }): Promise<{
     id: string;
+    email?: string;
     role: 'owner' | 'admin' | 'user';
     disabledAt: string | null;
   } | null>;
@@ -319,14 +339,24 @@ export type AuthApiPort = {
   deleteUser?(input: {
     workspaceId: string;
     actorUserId: string;
-    actorIsAdmin: boolean;
+    actorRole: AuthenticatedPrincipal['role'];
+    actorCapabilities?: readonly string[];
     id: string;
-  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' }>;
+  }): Promise<
+    | { ok: true }
+    | {
+      ok: false;
+      code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' | 'owner_management_requires_owner'
+        | 'target_more_privileged';
+    }
+  >;
   changePassword?(input: {
     workspaceId: string;
     userId: string;
     currentPassword: string;
     newPassword: string;
+    /** The caller's own session survives; every other session of the user is revoked. */
+    currentSessionId?: string;
   }): Promise<{ ok: true } | { ok: false; code: 'invalid_current' | 'not_found' }>;
   createInvitation?(input: AuthInvitationCreateInput): Promise<AuthInvitationCreateResult>;
   getInvitationByToken?(input: { token: string }): Promise<AuthInvitationLookupResult>;
@@ -392,10 +422,22 @@ export type AuthApiPort = {
   issueTokenPair(input: {
     user: AuthUserRecord;
     device?: string;
-  }): Promise<TokenPair>;
+    /**
+     * Nur ausstellen, wenn users.password_hash noch diesem Wert entspricht
+     * (geprueft unter FOR SHARE, also nach einem parallel laufenden
+     * Passwortwechsel); sonst null. Login und MFA-Abschluss reichen den Hash
+     * durch, mit dem sie das Passwort geprueft haben.
+     */
+    expectedPasswordHash?: string;
+  }): Promise<TokenPair | null>;
   rotateRefreshToken(input: {
     refreshToken: string;
-  }): Promise<{ user: AuthUserRecord; tokens: TokenPair } | null>;
+  }): Promise<
+    | { user: AuthUserRecord; tokens: TokenPair }
+    /** An already rotated token came back after the grace period; all sessions of the user were revoked. */
+    | { reuseDetected: true; userId: string; workspaceId: string }
+    | null
+  >;
   revokeRefreshToken(input: {
     refreshToken: string;
     principal?: AuthenticatedPrincipal;
@@ -654,6 +696,17 @@ export type SyncInfoApiPort = {
     workspaceId: string;
     keys: readonly string[];
   }): Promise<number>;
+  /**
+   * Atomically claims `key` (value = nowMs) unless it already holds a claim
+   * newer than `ttlMs`. Resolves true only for the caller that now owns it;
+   * concurrent callers for the same key get exactly one winner.
+   */
+  claimIfExpired(input: {
+    workspaceId: string;
+    key: string;
+    nowMs: number;
+    ttlMs: number;
+  }): Promise<boolean>;
 };
 
 export type AuditApiPort = {
@@ -711,6 +764,8 @@ export type CustomerRecord = {
   country: string | null;
   notes?: string | null;
   status: string;
+  /** JTL-Wawi customer key (kKunde); null for customers without JTL link. */
+  jtlKkunde: number | null;
   updatedAt: string;
 };
 
@@ -962,11 +1017,22 @@ export type CustomerApiPort = {
     id: number;
     values: CustomerMutationInput;
   }): Promise<CustomerRecord | null>;
+  /**
+   * Refuses (returns the dependent counts) while deals, tasks or appointments
+   * still reference the customer, unless `cascade` confirms deleting them too.
+   */
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
-  }): Promise<CustomerRecord | null>;
+    cascade?: boolean;
+  }): Promise<CustomerRecord | { dependents: CustomerDependentsRecord } | null>;
+};
+
+export type CustomerDependentsRecord = {
+  deals: number;
+  tasks: number;
+  appointments: number;
 };
 
 export type DashboardStatsRecord = {
@@ -1000,6 +1066,7 @@ export type DashboardApiPort = {
   getStats(input: {
     workspaceId: string;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<DashboardStatsRecord>;
   getRecentCustomers(input: {
     workspaceId: string;
@@ -1008,6 +1075,7 @@ export type DashboardApiPort = {
   getUpcomingTasks(input: {
     workspaceId: string;
     limit: number;
+    viewer?: TaskViewer;
   }): Promise<readonly DashboardUpcomingTaskRecord[]>;
 };
 
@@ -1044,6 +1112,7 @@ export type FollowUpApiPort = {
   getQueueCounts(input: {
     workspaceId: string;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<FollowUpQueueCountsRecord>;
   getItems(input: {
     workspaceId: string;
@@ -1055,12 +1124,14 @@ export type FollowUpApiPort = {
     limit: number;
     offset: number;
     now?: Date;
+    viewer?: TaskViewer;
   }): Promise<readonly FollowUpItemRecord[]>;
   snoozeTask(input: {
     workspaceId: string;
     actorUserId: string;
     taskId: number;
     snoozedUntil: string;
+    viewer?: TaskViewer;
   }): Promise<{ success: boolean; error?: string }>;
 };
 
@@ -1294,7 +1365,11 @@ export type TaskApiPort = {
     search?: string;
     customerId?: number;
     completed?: boolean;
+    /** Exact task priority (e.g. 'High'), like the desktop task list filter. */
+    priority?: string;
     cursor?: number;
+    /** Rows to skip (page-based task list); not combined with cursor. */
+    offset?: number;
     limit: number;
     viewer?: TaskViewer;
   }): Promise<TaskListResult>;
@@ -1830,6 +1905,8 @@ export type EmailAccountRecord = {
   imapDeleteOptIn: boolean;
   defaultRemoteContentPolicy: string;
   respondToReadReceipts: string;
+  /** Configured RFC 8601 authserv-id; null = default (domain of the incoming server). */
+  trustedAuthservId: string | null;
   imapPasswordConfigured: boolean;
   smtpPasswordConfigured: boolean;
   oauthRefreshConfigured: boolean;
@@ -1899,6 +1976,7 @@ export type EmailAccountMutationInput = {
   vacationBodyText?: string | null;
   requestReadReceipt?: boolean;
   imapDeleteOptIn?: boolean;
+  trustedAuthservId?: string | null;
 };
 
 export type EmailAccountMutationPortResult =
@@ -2028,6 +2106,8 @@ export type MailConnectionTestInput = {
   host: string;
   port: number;
   tls: boolean;
+  /** SMTP ad-hoc test: the form's TLS switch (request field `tls`); `tls` above is implicit TLS (`secure`). */
+  requireTls?: boolean;
   user: string;
   password?: string;
   accessToken?: string;
@@ -2454,6 +2534,8 @@ export type EmailComposeDraftCreateInput = {
 };
 
 export type EmailComposeDraftUpdateInput = {
+  /** Moves the local draft to this account (composer "Von" switch); id and attachments stay. */
+  accountId?: number;
   subject?: string;
   bodyText?: string;
   bodyHtml?: string | null;
@@ -2522,7 +2604,8 @@ export type EmailComposeSendResult =
      * the delivery outcome is unknown and callers holding a durable send
      * reservation must keep it. Absent/false for failures that provably
      * happened before any delivery attempt (validation, auth, host, pre-DATA
-     * SMTP stages).
+     * SMTP stages) or that the server explicitly rejected (4xx/5xx reply to
+     * the message).
      */
     deliveryAmbiguous?: boolean;
   };
@@ -2544,7 +2627,7 @@ export type EmailComposeAttachmentUploadResult =
   }
   | {
     ok: false;
-    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'write_failed';
+    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'quota_exceeded' | 'source_not_found' | 'write_failed';
     error: string;
   };
 
@@ -2555,6 +2638,12 @@ export type EmailComposeAttachmentUploadApiPort = {
     filename: string;
     contentBase64: string;
     contentType?: string;
+  }): Promise<EmailComposeAttachmentUploadResult>;
+  /** Copies a stored message attachment into the draft's uploads (forwarding without exposing storage paths). */
+  copyStoredAttachment?(input: {
+    workspaceId: string;
+    draftMessageId: number;
+    sourceAttachmentId: number;
   }): Promise<EmailComposeAttachmentUploadResult>;
 };
 
@@ -2679,6 +2768,10 @@ export type EmailMessageApiPort = {
     // mail.attachment.read (R50-2). Absent ⇒ scope 'all' ⇒ neither predicate ⇒ full row.
     mailScope?: MailSqlScope;
     mailAttachmentScope?: MailSqlScope;
+    // Set only when a triage/draft-edit mutation re-reads its echoed row: the single-message
+    // GET route already requires mail.content.read, a mutation does not, so the read port
+    // computes content_readable from it and blanks the body-derived fields.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   createComposeDraft?(input: {
     workspaceId: string;
@@ -2977,6 +3070,9 @@ export type EmailGdprExportApiPort = {
     // scope, so a mail.export delegate lacking attachment.read cannot bulk-exfiltrate attachment
     // content the dedicated attachment routes would deny. Absent ⇒ scope 'all' ⇒ no gating. (R51-1)
     mailAttachmentScope?: MailSqlScope;
+    // Same for the caller's mail.content.read scope: the message index blanks the body-derived
+    // snippet of messages outside it, as the list routes do. Absent ⇒ no gating.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailGdprExportResult>;
 };
 
@@ -5385,7 +5481,6 @@ export type SmtpRelayRecord = {
   maxRecipients: number;
   maxMessageBytes: number;
   rateLimitPerMin: number;
-  allowArbitraryRecipients: boolean;
   followupWorkflowId: number | null;
   createdAt: string;
   allowedAccounts: readonly SmtpRelayAllowedAccountRecord[];
@@ -5401,7 +5496,6 @@ export type SmtpRelayMutationInput = {
   maxRecipients?: number;
   maxMessageBytes?: number;
   rateLimitPerMin?: number;
-  allowArbitraryRecipients?: boolean;
   followupWorkflowId?: number | null;
 };
 

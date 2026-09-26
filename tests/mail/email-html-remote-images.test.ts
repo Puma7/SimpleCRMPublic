@@ -1,7 +1,9 @@
 import {
   blockRemoteImagesInHtml,
+  blockRemoteInStyleBlock,
   htmlHasRemoteResources,
   isRemoteUrl,
+  mapStyleBlockContents,
 } from '../../shared/email-html-remote-images';
 
 describe('blockRemoteImagesInHtml', () => {
@@ -22,6 +24,17 @@ describe('blockRemoteImagesInHtml', () => {
   test('leaves data urls unchanged', () => {
     const html = '<img src="data:image/png;base64,abc">';
     expect(blockRemoteImagesInHtml(html)).toBe(html);
+  });
+
+  // C-A71: Verweise ueber dem Inline-Budget bleiben cid:; der Viewer zeigt sie als Platzhalter neben den eingebetteten Bildern.
+  test('shows cid references left over by the inline budget as placeholders', () => {
+    const inlined = '<img src="data:image/png;base64,AQID">';
+    const html = `${inlined.repeat(2)}<img src="cid:a"><img alt='x' src='cid:a'>`;
+    const out = blockRemoteImagesInHtml(html);
+    expect(out.startsWith(inlined.repeat(2))).toBe(true);
+    expect(out).not.toContain('cid:');
+    expect(out.match(/data:image\/svg\+xml/g)).toHaveLength(2);
+    expect(htmlHasRemoteResources(html)).toBe(true);
   });
 
   test('blocks https srcset on img', () => {
@@ -73,6 +86,75 @@ describe('blockRemoteImagesInHtml', () => {
     expect(out).not.toContain('https://t.example');
   });
 
+  // F-A6-06: Der bereinigte Style-Text ging als Ersetzungs-String an String.replace ('$&' holte die Remote-URL zurueck) und ersetzte nur das erste Vorkommen.
+  test.each([
+    ['$&', '<style>$& b{} a{background:url(https://x.test/p.png)}</style>'],
+    ['$`', '<style>$` b{} a{background:url(https://x.test/p.png)}</style>'],
+    ["$'", "<style>a{background:url(https://x.test/p.png)} b{} $'</style>"],
+    ['title attribute', '<style title="a{background:url(https://x.test/p)}">a{background:url(https://x.test/p)}</style>'],
+  ])('blocks remote url in style block with replacement pattern trick (%s)', (_case, html) => {
+    const out = blockRemoteImagesInHtml(html);
+    const styleBody = /<style\b[^>]*>([\s\S]*?)<\/style>/i.exec(out)?.[1] ?? '';
+    expect(styleBody).toContain('url(about:blank)');
+    expect(styleBody).not.toContain('https://x.test');
+  });
+
+  test('leaves a harmless style block with dollar signs byte-identical', () => {
+    const html = '<style>p::after { content: "$5 $& $\'"; }</style><p>x</p>';
+    expect(blockRemoteImagesInHtml(html)).toBe(html);
+  });
+
+  // F-N-redos-03: Die <style>-Regex lief bei nicht geschlossenen <style>-Tags quadratisch (140 KB wiederholtes <style> kostete 1,4 s im Renderer).
+  test('stays linear for many unclosed style tags', () => {
+    for (const html of [
+      '<style>'.repeat(40_000),
+      '<style media="x">'.repeat(15_000),
+      `<style>a{background:url(https://x.test/p.png)}</style>${'<style>'.repeat(40_000)}`,
+      '<style'.repeat(40_000),
+    ]) {
+      const started = Date.now();
+      const out = blockRemoteImagesInHtml(html);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(out).not.toContain('https://x.test');
+    }
+  });
+
+  // F-N-redos-03: Der lineare Scan muss exakt das Ergebnis der bisherigen Regex liefern.
+  test('mapStyleBlockContents matches the previous style regex', () => {
+    const transform = (inner: string) => `[${inner.length}:${inner.toUpperCase()}]`;
+    const legacy = (html: string) => html.replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+      (_full, open: string, inner: string, close: string) => `${open}${transform(inner)}${close}`,
+    );
+    const samples = [
+      '',
+      '<p>kein Style</p>',
+      '<style>a{}</style>',
+      '<STYLE type="text/css">b{}</Style><style>c{}</STYLE>',
+      '<style>unverschlossen',
+      '<styles>kein Treffer</style>',
+      '<style-x>Grenze</style>',
+      '<style x="a>b">innen</style>',
+      '<style><style>doppelt</style></style>',
+      '<style>$& $1 $\'</style>',
+    ];
+    const tokens = ['<style', '<STYLE', '<styles', '<style-', '>', '</style>', '</STYLE>', '</style >', '<', '/', ' ', 'a', 'ü', '\n', '"', '$&'];
+    let seed = 0x5eed03;
+    const random = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    };
+    for (let n = 0; n < 5000; n += 1) {
+      const count = Math.floor(random() * 16);
+      let html = '';
+      for (let i = 0; i < count; i += 1) html += tokens[Math.floor(random() * tokens.length)];
+      samples.push(html);
+    }
+    for (const html of samples) {
+      expect(mapStyleBlockContents(html, transform)).toBe(legacy(html));
+    }
+  });
+
   test('isRemoteUrl', () => {
     expect(isRemoteUrl('https://a.com')).toBe(true);
     expect(isRemoteUrl('//a.com/x')).toBe(true);
@@ -84,5 +166,44 @@ describe('blockRemoteImagesInHtml', () => {
     expect(htmlHasRemoteResources('<img src="https://x.com/a">')).toBe(true);
     expect(htmlHasRemoteResources('<img src="cid:a@b">')).toBe(true);
     expect(htmlHasRemoteResources('<p>plain</p>')).toBe(false);
+  });
+});
+
+// N-redos-04: `url\s*\(…\/\/[^)'"]+…\)` rescans to the end of the style text for
+// every `url(//` without a closing parenthesis, so hostile CSS froze the viewer
+// for seconds (140 KB: ~13 s).
+describe('blockRemoteInStyleBlock runs in linear time', () => {
+  const legacy = (styleBody: string): string => styleBody
+    .replace(/@import\s+url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, '')
+    .replace(/url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, 'url(about:blank)');
+
+  test('unterminated url(// and @import url(// stay fast', () => {
+    for (const hostile of ['url(//a'.repeat(20_000), '@import url(//a'.repeat(10_000)]) {
+      const started = Date.now();
+      expect(blockRemoteInStyleBlock(hostile)).toBe(hostile);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    }
+  });
+
+  test('matches the previous regex on ordinary and random CSS', () => {
+    const samples = [
+      'body{background:url(https://t.example/p.gif)}',
+      "@import url('//cdn.example/x.css'); a{b:url( \"http://x/y\" )}",
+      'p{background:URL(//a b )} q{background:url(data:image/png;base64,AAAA)}',
+      "x{background:url('//a'x)} y{background:url(//a' )}",
+    ];
+    for (const sample of samples) expect(blockRemoteInStyleBlock(sample)).toBe(legacy(sample));
+    const alphabet = ['url(', 'URL(', '@import ', '//', 'https:', 'http:', ')', '(', "'", '"', ' ', '\n', 'a', 'b/', ';', '{', '}'];
+    let seed = 7;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed;
+    };
+    for (let i = 0; i < 5_000; i += 1) {
+      let css = '';
+      const parts = 1 + (next() % 24);
+      for (let j = 0; j < parts; j += 1) css += alphabet[next() % alphabet.length];
+      expect(blockRemoteInStyleBlock(css)).toBe(legacy(css));
+    }
   });
 });

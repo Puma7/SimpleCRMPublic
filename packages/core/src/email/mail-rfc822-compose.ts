@@ -271,7 +271,7 @@ function isCompleteMailboxToken(value: string): boolean {
 }
 
 function encodeSingleMailbox(mailbox: string): string {
-  const match = /^(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>$/.exec(mailbox);
+  const match = /^(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]+)>$/.exec(mailbox);
   if (!match) {
     // The clean "phrase <addr>" parse failed — the usual cause is a display name
     // that itself contains angle brackets, e.g. `Attacker <evil@x> <ceo@ok>`, a
@@ -292,7 +292,9 @@ function encodeSingleMailbox(mailbox: string): string {
     }
     return mailbox;
   }
-  const rawName = (match[1] ?? match[2] ?? '').trim();
+  // A quoted-string name is unescaped (RFC 5322 quoted-pair) so it is re-quoted
+  // once below instead of shipping its backslashes double-escaped.
+  const rawName = (match[1]?.replace(/\\(.)/g, '$1') ?? match[2] ?? '').trim();
   const email = match[3]!.trim();
   if (!rawName) return `<${email}>`;
   const encoded = encodeRfc2047(rawName);

@@ -1,8 +1,11 @@
 /**
  * @jest-environment node
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import * as tls from 'node:tls';
 
 import * as nodemailer from 'nodemailer';
 
@@ -31,6 +34,8 @@ const GOOD_AUTH = { user: 'erp-user', pass: 'relay-secret' };
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures', 'relay-tls');
 const TLS_KEY = readFileSync(path.join(FIXTURES_DIR, 'key.pem'));
 const TLS_CERT = readFileSync(path.join(FIXTURES_DIR, 'cert.pem'));
+const RENEWED_TLS_KEY = readFileSync(path.join(FIXTURES_DIR, 'renewed-key.pem'));
+const RENEWED_TLS_CERT = readFileSync(path.join(FIXTURES_DIR, 'renewed-cert.pem'));
 
 // --- Fakes -------------------------------------------------------------------
 
@@ -66,7 +71,6 @@ function relayConfig(overrides: Partial<SmtpRelayConfig> = {}): SmtpRelayConfig 
     maxRecipients: 50,
     maxMessageBytes: 26_214_400,
     rateLimitPerMin: 1_000,
-    allowArbitraryRecipients: false,
     followupWorkflowId: null,
     ...overrides,
   };
@@ -366,8 +370,160 @@ describe('startInboundSmtpService', () => {
     }).then(() => null, (error: Error & { responseCode?: number }) => error);
 
     expect(failure?.responseCode).toBe(451);
-    // Multi-line pipeline messages must be collapsed to a single response line.
-    expect(failure?.message).toContain('SMTP upstream ist gerade nicht erreichbar');
+    expect(failure?.message).toContain('Temporary failure, retry later');
+  });
+
+  it('collapses a multi-line client-facing pipeline message to a single response line', async () => {
+    const { ports } = await startService({
+      submitResult: {
+        ok: false,
+        code: 'from_mismatch',
+        message: 'Header-From ist\nfuer dieses Relay nicht freigegeben',
+        retryable: false,
+      },
+    });
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    const failure = await transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(),
+    }).then(() => null, (error: Error & { responseCode?: number }) => error);
+
+    expect(failure?.responseCode).toBe(550);
+    expect(failure?.message).toContain('Header-From ist fuer dieses Relay nicht freigegeben');
+  });
+
+  // F-A3b-09: internal failure texts (database, secret store, downstream SMTP) were sent to the relay client.
+  it.each([
+    ['persist_failed', 'duplicate key value violates unique constraint "smtp_relay_submissions_dedup_idx"', true, 451],
+    ['relay_failed', 'secret store: relay master key unavailable at /run/secrets/master', true, 451],
+    ['relay_failed', '550 5.7.1 smtp.intern-provider.example: sender buchhaltung@acme.test rejected', false, 550],
+    ['parse_failed', 'Unexpected token in mailparser at node_modules/mailparser/lib/mail-parser.js:77', false, 550],
+  ] as const)('keeps the internal %s text out of the SMTP response', async (code, message, retryable, responseCode) => {
+    const warn = jest.fn();
+    const { ports } = await startService({
+      submitResult: { ok: false, code, message, retryable },
+      service: { log: { ...silentLog, warn } },
+    });
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    const failure = await transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(),
+    }).then(() => null, (error: Error & { responseCode?: number }) => error);
+
+    expect(failure?.responseCode).toBe(responseCode);
+    expect(failure?.message).not.toContain(message.slice(0, 20));
+    expect(failure?.message).toContain(retryable ? 'Temporary failure, retry later' : 'Message rejected');
+    expect(warn).toHaveBeenCalledWith('inbound smtp message rejected by pipeline', expect.objectContaining({
+      code,
+      error: message,
+    }));
+  });
+});
+
+async function implicitTlsPeerCn(port: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ host: '127.0.0.1', port, rejectUnauthorized: false, servername: 'localhost' }, () => {
+      const cn = String(socket.getPeerCertificate().subject?.CN ?? '');
+      socket.destroy();
+      resolve(cn);
+    });
+    socket.once('error', reject);
+  });
+}
+
+async function starttlsPeerCn(port: number): Promise<string> {
+  const plain = net.connect(port, '127.0.0.1');
+  let buffered = '';
+  const waitFor = (pattern: RegExp) => new Promise<void>((resolve, reject) => {
+    const check = () => {
+      if (!pattern.test(buffered)) return;
+      plain.off('data', onData);
+      buffered = '';
+      resolve();
+    };
+    const onData = (chunk: Buffer) => {
+      buffered += chunk.toString('latin1');
+      check();
+    };
+    plain.on('data', onData);
+    plain.once('error', reject);
+    check();
+  });
+  await waitFor(/^220 /m);
+  plain.write('EHLO relay-test\r\n');
+  await waitFor(/^250 /m);
+  plain.write('STARTTLS\r\n');
+  await waitFor(/^220 /m);
+  return new Promise((resolve, reject) => {
+    const secure = tls.connect({ socket: plain, rejectUnauthorized: false, servername: 'localhost' }, () => {
+      const cn = String(secure.getPeerCertificate().subject?.CN ?? '');
+      secure.destroy();
+      resolve(cn);
+    });
+    secure.once('error', reject);
+  });
+}
+
+// F-A3b-05: the relay read its TLS certificate once at start, so a renewed (Let's Encrypt) certificate never went live.
+describe('startInboundSmtpService TLS reload', () => {
+  let tlsDir: string;
+  let keyFile: string;
+  let certFile: string;
+
+  beforeEach(() => {
+    tlsDir = mkdtempSync(path.join(os.tmpdir(), 'relay-tls-'));
+    keyFile = path.join(tlsDir, 'key.pem');
+    certFile = path.join(tlsDir, 'cert.pem');
+    writeFileSync(keyFile, TLS_KEY);
+    writeFileSync(certFile, TLS_CERT);
+  });
+
+  afterEach(() => {
+    rmSync(tlsDir, { recursive: true, force: true });
+  });
+
+  it('serves a renewed certificate on both ports after the files change', async () => {
+    const { ports } = await startService({ service: { tlsKeyFile: keyFile, tlsCertFile: certFile } });
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('localhost');
+    expect(await starttlsPeerCn(ports.submission)).toBe('localhost');
+
+    writeFileSync(keyFile, RENEWED_TLS_KEY);
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+    await expect(service!.reloadTls()).resolves.toBe(true);
+
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('relay-renewed.localhost');
+    expect(await starttlsPeerCn(ports.submission)).toBe('relay-renewed.localhost');
+    await expect(service!.reloadTls()).resolves.toBe(false);
+  });
+
+  it('checks the files periodically on its own', async () => {
+    const { ports } = await startService({
+      service: { tlsKeyFile: keyFile, tlsCertFile: certFile, tlsReloadIntervalMs: 25 },
+    });
+    writeFileSync(keyFile, RENEWED_TLS_KEY);
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+
+    let cn = '';
+    for (let attempt = 0; attempt < 80 && cn !== 'relay-renewed.localhost'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      cn = await implicitTlsPeerCn(ports.smtps);
+    }
+    expect(cn).toBe('relay-renewed.localhost');
+  });
+
+  it('keeps the active certificate when the renewed files do not match', async () => {
+    const warn = jest.fn();
+    const { ports } = await startService({
+      service: { tlsKeyFile: keyFile, tlsCertFile: certFile, log: { ...silentLog, warn } },
+    });
+    // Half-written renewal: new certificate, old key.
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+
+    await expect(service!.reloadTls()).resolves.toBe(false);
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('localhost');
+    expect(warn).toHaveBeenCalledWith('inbound smtp tls reload rejected', expect.any(Object));
   });
 });
 

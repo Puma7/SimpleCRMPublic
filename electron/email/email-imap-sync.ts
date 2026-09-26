@@ -1,5 +1,4 @@
 import { ImapFlow } from 'imapflow';
-import { simpleParser } from 'mailparser';
 import { assertInboundRfc822Size } from '@simplecrm/core';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
@@ -16,6 +15,7 @@ import {
   processNewMessagesAfterSync,
   type SyncNewMessageItem,
 } from './email-sync-post-process';
+import { persistParsedAttachments } from './email-message-attachments-store';
 import {
   serverUidValidityToString,
   storedUidValidityString,
@@ -39,6 +39,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { parseInboundMailSource } from './email-inbound-parse';
 import { canAdvanceImapSyncCursor } from './imap-sync-cursor';
 import {
   clearImapUidFetchFailure,
@@ -84,6 +85,11 @@ async function syncFolderImapInternal(
   let folderRow = getFolderByAccountAndPath(accountId, folderPath);
   let lastUid = folderRow?.last_uid ?? 0;
   let fetched = 0;
+  // F-A7b-04: Ein nie synchronisierter Ordner (kein UIDVALIDITY, last_uid 0)
+  // liefert nur Bestand. last_synced_at taugt auf dem Desktop nicht, es wird
+  // schon beim Anlegen des Ordners gesetzt. Ein UIDVALIDITY-Reset bleibt Live-Eingang.
+  const historical = !folderRow
+    || (folderRow.last_uid === 0 && folderRow.uidvalidity == null && !folderRow.uidvalidity_str);
 
   const lock = await client.getMailboxLock(folderPath);
   try {
@@ -142,7 +148,10 @@ async function syncFolderImapInternal(
       let uids: number[];
       if (lastUid > 0) {
         const searchResult = await client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
-        uids = searchResult === false ? [] : searchResult;
+        // RFC 3501 §6.4.8: "n:*" always contains the highest existing UID, even
+        // when it is below n; without this filter the newest message is refetched
+        // and re-upserted on every poll (as on the server, mail-sync.ts).
+        uids = (searchResult === false ? [] : searchResult).filter((uid) => uid > lastUid);
       } else {
         const searchResult = await client.search({ all: true }, { uid: true });
         const allUids = searchResult === false ? [] : searchResult;
@@ -181,7 +190,7 @@ async function syncFolderImapInternal(
         }
         const sourceBuf = Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source as Buffer);
         assertInboundRfc822Size(sourceBuf.length);
-        const parsed = await simpleParser(sourceBuf);
+        const parsed = await parseInboundMailSource(sourceBuf);
         const messageId = parsed.messageId ?? null;
         const inReplyTo = parsed.inReplyTo ?? null;
         const refs = parsed.references
@@ -228,9 +237,22 @@ async function syncFolderImapInternal(
         );
         if (isNew && localMsgId > 0) {
           tryRestoreLocalMetaFromUidValidityBackup(folderRow.id, localMsgId, messageId);
+          // Stored per message so the run does not hold the decoded attachments
+          // of every new message until the folder is done (C-A59). [] = stored;
+          // undefined makes the post-process recover them from raw_rfc822_b64.
+          let parsedAttachments: SyncNewMessageItem['parsedAttachments'] = [];
+          try {
+            await persistParsedAttachments(localMsgId, parsed.attachments);
+          } catch (attErr) {
+            parsedAttachments = undefined;
+            console.warn(
+              `[imap-sync] attachments of message ${localMsgId} not stored, retried in post-process:`,
+              attErr instanceof Error ? attErr.message : attErr,
+            );
+          }
           newAfterSync.push({
             localMsgId,
-            parsedAttachments: parsed.attachments,
+            parsedAttachments,
             threading: {
               messageIdHeader: messageId,
               inReplyTo,
@@ -263,6 +285,7 @@ async function syncFolderImapInternal(
       try {
         await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id, {
           runInboundWorkflows: spec.runInboundWorkflows,
+          historical,
         });
       } catch (postErr) {
         console.error(

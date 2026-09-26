@@ -104,7 +104,7 @@ describe('email-compose-send expanded', () => {
     mockPersistLocalComposeAttachments.mockReturnValue(undefined);
     mockGetMessage.mockImplementation((id: number) =>
       id === 99
-        ? { id: 99, ticket_code: 'T-P', thread_id: 'th', message_id: '<p@x>', references_header: '<p@x>' }
+        ? { id: 99, account_id: 1, ticket_code: 'T-P', thread_id: 'th', message_id: '<p@x>', references_header: '<p@x>' }
         : draft(),
     );
   });
@@ -363,6 +363,8 @@ describe('email-compose-send expanded', () => {
     const fp = path.join(dir, 'recover.pdf');
     fs.writeFileSync(fp, 'pdf');
     mockGetSyncInfo.mockImplementation((key: string) => (key === 'email_compose_smtp_ok:10' ? '1' : null));
+    // Recovery reads the attachment list the original send stored on the draft (F-A7b-13).
+    mockGetMessage.mockImplementation(() => ({ ...draft(), draft_attachment_paths_json: JSON.stringify([fp]) }));
 
     const r = await sendComposeDraft({
       accountId: 1,

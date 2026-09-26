@@ -294,6 +294,13 @@ export function deleteInternalNote(noteId: number): void {
   getDb().prepare(`DELETE FROM ${EMAIL_INTERNAL_NOTES_TABLE} WHERE id = ?`).run(noteId);
 }
 
+export function getInternalNoteMessageId(noteId: number): number | undefined {
+  const row = getDb()
+    .prepare(`SELECT message_id FROM ${EMAIL_INTERNAL_NOTES_TABLE} WHERE id = ?`)
+    .get(noteId) as { message_id: number } | undefined;
+  return row?.message_id;
+}
+
 export function listInternalNotes(messageId: number): { id: number; body: string; created_at: string }[] {
   return getDb()
     .prepare(
@@ -450,6 +457,12 @@ export function deleteCannedResponse(id: number): void {
   getDb().prepare(`DELETE FROM ${EMAIL_CANNED_RESPONSES_TABLE} WHERE id = ?`).run(id);
 }
 
+export function getCannedResponseById(id: number): CannedRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM ${EMAIL_CANNED_RESPONSES_TABLE} WHERE id = ?`)
+    .get(id) as CannedRow | undefined;
+}
+
 export type AiPromptRow = {
   id: number;
   label: string;
@@ -471,6 +484,12 @@ function listAllAiPromptRows(): AiPromptRow[] {
   return getDb()
     .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} ORDER BY sort_order ASC, id ASC`)
     .all() as AiPromptRow[];
+}
+
+export function getAiPromptById(id: number): AiPromptRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM ${EMAIL_AI_PROMPTS_TABLE} WHERE id = ?`)
+    .get(id) as AiPromptRow | undefined;
 }
 
 export function createAiPrompt(input: {

@@ -1,5 +1,7 @@
+export * from './attachment-filename';
 export * from './attachment-safety';
 export * from './attachment-text';
+export * from './authentication-results';
 export * from './automation-headers';
 export * from './imap-sync-cursor';
 export * from './inbound-message-size';
@@ -14,6 +16,7 @@ export * from './outbound-approval-marker';
 export * from './outbound-review-parse';
 export * from './outbound-threading';
 export * from './parse-utils';
+export * from './pgp-signature-status';
 export * from './pop3-uidl-cache';
 export * from './read-receipt';
 export * from './reference-threading';

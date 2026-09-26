@@ -43,6 +43,14 @@ const TRACKING_LINK_HASH_CONTEXT = 'simplecrm/email-tracking/link-hash/v1';
 const AES_GCM_NONCE_BYTES = 12;
 const MAX_SEALED_JSON_BYTES = 64 * 1024;
 const MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE = 10_000;
+// Oeffentliche Abrufe schreiben ihre Evidenz weiter, wenn die HTTP-Antwort
+// laengst raus ist (Klick: sofortiger Redirect, Pixel: nach 1,5 s). Ohne Grenze
+// staute eine Flut beliebig viele solcher Laeufe vor dem Pool (F-A3a-05): Es
+// laufen hoechstens vier gleichzeitig, weitere warten in einer begrenzten
+// Schlange, der Rest wird verworfen. Wartende Laeufe halten keine Verbindung.
+const MAX_ACTIVE_PUBLIC_INTERACTIONS = 4;
+const MAX_QUEUED_PUBLIC_INTERACTIONS = 64;
+const PUBLIC_INTERACTION_DROP_WARN_INTERVAL_MS = 60_000;
 const MAX_TRACKED_HTML_BYTES = 5 * 1024 * 1024;
 const MAX_PRIVACY_NOTICE_URL_LENGTH = 2_048;
 const EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE = 500;
@@ -448,6 +456,8 @@ export function createPostgresEmailTrackingService(
   const publicBaseUrl = normalizeTrackingBaseUrl(options.publicBaseUrl);
   const crypto = options.emailTrackingCrypto ?? (options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null);
 
+  const runPublicInteraction = createPublicInteractionLimiter();
+
   const service: EmailTrackingService = {
     async getPolicy(input) {
       const row = await loadPolicyRow(options.db, input.workspaceId);
@@ -570,12 +580,12 @@ export function createPostgresEmailTrackingService(
           // Recovery resends re-instrument the exact message they prepared
           // before, so they keep their own decision. For fresh sends: an
           // explicit false suppresses; an explicit true forces tracking even
-          // when the workspace default is off (user's per-message choice);
-          // undefined follows the policy default (gated by
-          // defaultTrackNewMessages). PGP/oversized exclusions already returned
-          // above and always win.
+          // when the "default off for new messages" toggle is set, but never
+          // while the admin policy itself is disabled; undefined follows the
+          // policy default (gated by defaultTrackNewMessages). PGP/oversized
+          // exclusions already returned above and always win.
           const effectivePolicy = resolveOutboundTrackingPolicy(policy, override);
-          if (!input.recovery && override !== true
+          if (!input.recovery
             && (!effectivePolicy.enabled || (!effectivePolicy.trackOpens && !effectivePolicy.trackLinks))) {
             return { html: input.html, trackingMessageId: null, warning: null };
           }
@@ -671,8 +681,8 @@ export function createPostgresEmailTrackingService(
     async recordPublicOpen(input) {
       if (!crypto) return;
       const resolver = await resolvePublicToken(options.db, crypto, input.token, 'open', now());
-      if (!resolver) return;
-      await recordPublicInteraction({
+      if (!resolver?.recordable) return;
+      const stored = await runPublicInteraction(() => recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
@@ -680,7 +690,8 @@ export function createPostgresEmailTrackingService(
         interaction: 'open',
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
-      });
+      }));
+      if (!stored) return;
       await publishTrackingChanged(
         options.events,
         resolver.workspaceId,
@@ -718,7 +729,8 @@ export function createPostgresEmailTrackingService(
       } catch {
         return null;
       }
-      void recordPublicInteraction({
+      if (!resolver.recordable) return { targetUrl };
+      void runPublicInteraction(() => recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
@@ -726,13 +738,13 @@ export function createPostgresEmailTrackingService(
         interaction: 'click',
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
-      }).then(() => publishTrackingChanged(
+      })).then((stored) => (stored ? publishTrackingChanged(
         options.events,
         resolver.workspaceId,
         resolver.messageId,
         'click',
         now(),
-      )).catch((error) => {
+      ) : undefined)).catch((error) => {
         console.warn(`[email-tracking] click evidence could not be recorded for message ${resolver.messageId}: ${error instanceof Error ? error.message : String(error)}`);
       });
       return { targetUrl };
@@ -1226,6 +1238,56 @@ async function lockTrackingPolicy(trx: WorkspaceTransaction, workspaceId: string
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
 }
 
+/**
+ * Oeffentliche Abrufe lesen die Policy nur. Untereinander duerfen sie
+ * gleichzeitig laufen (die Evidenz einer Nachricht schuetzt lockTrackingMessage);
+ * setPolicy, prepareOutbound und die Neuklassifizierung schliessen sie mit dem
+ * exklusiven Lock weiterhin aus.
+ */
+async function lockTrackingPolicyShared(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
+}
+
+/**
+ * Laeuft `task`, sobald einer von MAX_ACTIVE_PUBLIC_INTERACTIONS Plaetzen frei
+ * ist; ist auch die Warteschlange voll, wird der Abruf verworfen (false).
+ */
+function createPublicInteractionLimiter(): (task: () => Promise<boolean>) => Promise<boolean> {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  let dropped = 0;
+  let lastDropWarningAt = 0;
+  return (task) => {
+    let slot: Promise<void> | null = null;
+    if (active < MAX_ACTIVE_PUBLIC_INTERACTIONS) {
+      active += 1;
+    } else if (queue.length < MAX_QUEUED_PUBLIC_INTERACTIONS) {
+      slot = new Promise<void>((resolve) => queue.push(resolve));
+    } else {
+      dropped += 1;
+      const nowMs = Date.now();
+      if (nowMs - lastDropWarningAt >= PUBLIC_INTERACTION_DROP_WARN_INTERVAL_MS) {
+        console.warn(`[email-tracking] ${dropped} oeffentliche Abrufe verworfen: zu viele gleichzeitig`);
+        lastDropWarningAt = nowMs;
+        dropped = 0;
+      }
+      return Promise.resolve(false);
+    }
+    return (async () => {
+      if (slot) await slot;
+      try {
+        return await task();
+      } finally {
+        // Den Platz direkt an den naechsten Wartenden uebergeben, damit kein
+        // neuer Aufruf dazwischen die Grenze ueberschreitet.
+        const next = queue.shift();
+        if (next) next();
+        else active -= 1;
+      }
+    })();
+  };
+}
+
 async function lockTrackingMessage(trx: WorkspaceTransaction, trackingMessageId: string): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(hashtext(${trackingMessageId}))`.execute(trx);
 }
@@ -1250,22 +1312,23 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
 
 /**
  * Applies the per-message override to the workspace policy for one outbound
- * send. true forces tracking on (turning on both signals if the policy has
- * none configured); false and the "default off for new messages" toggle both
- * disable it; undefined without that toggle follows the policy unchanged.
+ * send. The override only chooses within an admin-enabled policy: legal basis,
+ * privacy notice and compliance acknowledgement are enforced when the policy
+ * is enabled, so a disabled policy (or one without any signal) never tracks.
+ * Within an enabled policy, true tracks with the configured signals even when
+ * new messages default to untracked; false and the "default off for new
+ * messages" toggle both disable it; undefined without that toggle follows the
+ * policy unchanged.
  */
 export function resolveOutboundTrackingPolicy(
   policy: NormalizedEmailTrackingPolicy,
   override: boolean | null | undefined,
 ): NormalizedEmailTrackingPolicy {
+  if (!policy.enabled || (!policy.trackOpens && !policy.trackLinks)) {
+    return { ...policy, enabled: false };
+  }
   if (override === true) {
-    const nothingGranular = !policy.trackOpens && !policy.trackLinks;
-    return {
-      ...policy,
-      enabled: true,
-      trackOpens: nothingGranular ? true : policy.trackOpens,
-      trackLinks: nothingGranular ? true : policy.trackLinks,
-    };
+    return policy;
   }
   if (override === false) {
     return { ...policy, enabled: false };
@@ -1630,7 +1693,9 @@ async function insertTrackingEvent(
   input: InsertEventInput,
   classification?: EmailEvidenceClassification,
   options: { messageLockHeld?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
+  // Resolves false when the dedupe key already existed. Only the classified
+  // insert can tell (RETURNING); the unclassified path always resolves true.
   if (!options.messageLockHeld) await lockTrackingMessage(trx, input.trackingMessageId);
   const insert = trx
     .insertInto('email_tracking_events')
@@ -1654,10 +1719,10 @@ async function insertTrackingEvent(
     .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing());
   if (!classification) {
     await insert.execute();
-    return;
+    return true;
   }
   const event = await insert.returning('id').executeTakeFirst();
-  if (!event) return;
+  if (!event) return false;
   await trx
     .insertInto('email_tracking_event_classifications')
     .values({
@@ -1673,6 +1738,7 @@ async function insertTrackingEvent(
       classified_at: input.occurredAt,
     })
     .execute();
+  return true;
 }
 
 type PublicResolver = {
@@ -1682,6 +1748,9 @@ type PublicResolver = {
   linkId: string | null;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  // false once the token or its tracking was revoked or expired: a click still
+  // redirects to the stored target, but no evidence is recorded any more.
+  recordable: boolean;
 };
 
 async function resolvePublicToken(
@@ -1701,12 +1770,11 @@ async function resolvePublicToken(
       .where('token_hash', '=', tokenHash)
       .executeTakeFirst();
   });
-  if (
-    !resolver
-    || resolver.token_kind !== kind
-    || resolver.revoked_at
-    || toDate(resolver.expires_at).getTime() <= now.getTime()
-  ) return null;
+  if (!resolver || resolver.token_kind !== kind) return null;
+  const resolverActive = !resolver.revoked_at && toDate(resolver.expires_at).getTime() > now.getTime();
+  // A revoked/expired pixel has nothing left to do. Clicks still need the
+  // stored target so links in already delivered mails keep working.
+  if (!resolverActive && kind === 'open') return null;
   return withWorkspaceTransaction(
     db,
     { workspaceId: resolver.workspace_id, role: 'system' },
@@ -1717,7 +1785,11 @@ async function resolvePublicToken(
         .where('workspace_id', '=', resolver.workspace_id)
         .where('id', '=', resolver.tracking_message_id)
         .executeTakeFirst();
-      if (!tracking || tracking.revoked_at || toDate(tracking.token_expires_at).getTime() <= now.getTime()) return null;
+      if (!tracking) return null;
+      const recordable = resolverActive
+        && !tracking.revoked_at
+        && toDate(tracking.token_expires_at).getTime() > now.getTime();
+      if (!recordable && kind === 'open') return null;
       return {
         workspaceId: resolver.workspace_id,
         trackingMessageId: resolver.tracking_message_id,
@@ -1725,6 +1797,7 @@ async function resolvePublicToken(
         linkId: resolver.link_id,
         collectDerivedMetadata: Boolean(tracking.collect_derived_metadata),
         collectRawMetadata: Boolean(tracking.collect_raw_metadata),
+        recordable,
       };
     },
   );
@@ -1738,7 +1811,9 @@ async function recordPublicInteraction(input: {
   interaction: 'open' | 'click';
   now: Date;
   ipIntelligence?: EmailTrackingIpIntelligencePort;
-}): Promise<void> {
+}): Promise<boolean> {
+  // Resolves true only when new evidence was stored; dedupe hits and the
+  // capacity cap store nothing and must not publish a change either.
   const precheck = await preparePublicInteraction({
     db: input.db,
     workspaceId: input.resolver.workspaceId,
@@ -1747,12 +1822,15 @@ async function recordPublicInteraction(input: {
     requestIp: input.request.ip,
     ipIntelligence: input.ipIntelligence,
   });
-  if (precheck.atCapacity) return;
-  await withWorkspaceTransaction(
+  if (precheck.atCapacity) return false;
+  return withWorkspaceTransaction(
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
-      await lockTrackingPolicy(trx, input.resolver.workspaceId);
+      // Evidenz ist kein Muss: lieber verwerfen, als eine Pool-Verbindung auf
+      // einen belegten Lock warten zu lassen (F-A3a-05).
+      await sql`SET LOCAL lock_timeout = '1s'`.execute(trx);
+      await lockTrackingPolicyShared(trx, input.resolver.workspaceId);
       await lockTrackingMessage(trx, input.resolver.trackingMessageId);
       const policy = await trx
         .selectFrom('email_tracking_policies')
@@ -1777,7 +1855,7 @@ async function recordPublicInteraction(input: {
         input.resolver.workspaceId,
         input.resolver.trackingMessageId,
       );
-      if (atCapacity) return;
+      if (atCapacity) return false;
       const secondsSinceSmtpAccepted = accepted
         ? Math.max(0, (input.now.getTime() - toDate(accepted.occurred_at).getTime()) / 1_000)
         : null;
@@ -1811,7 +1889,7 @@ async function recordPublicInteraction(input: {
       if (
         recentDuplicate
         && input.now.getTime() - toDate(recentDuplicate.occurred_at).getTime() < 10_000
-      ) return;
+      ) return false;
       const metadata = buildStoredTrackingMetadata({
         collectDerivedMetadata: input.resolver.collectDerivedMetadata,
         ip: input.request.ip,
@@ -1825,7 +1903,7 @@ async function recordPublicInteraction(input: {
           classifierHeaders: trackingClassifierHeaderSubset(input.request.headers),
         }, emailTrackingEventAssociatedData(input.resolver.workspaceId, input.resolver.trackingMessageId, dedupeKey))
         : null;
-      await insertTrackingEvent(trx, {
+      return insertTrackingEvent(trx, {
         workspaceId: input.resolver.workspaceId,
         trackingMessageId: input.resolver.trackingMessageId,
         messageId: input.resolver.messageId,

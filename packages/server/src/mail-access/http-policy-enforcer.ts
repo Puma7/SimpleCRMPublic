@@ -4,10 +4,12 @@ import type { MailPermission, MailResource } from '@simplecrm/core';
 import type {
   ApiRequest,
   ApiResponse,
+  EmailMessageRecord,
   MailRouteAccessContext,
   ServerApiPorts,
 } from '../api/types';
 import { error, requirePrincipal } from '../api/http';
+import { isDraftLocalAttachmentPath } from './draft-attachment-path';
 import {
   assertMailRoutePolicy,
   type MailResourceResolution,
@@ -308,9 +310,18 @@ export async function enforceMailHttpPolicy(
       if (accountScope.kind === 'all') {
         return { ok: true, context: { permission: entry.policy.permission } };
       }
+      if (accountScope.kind === 'none') return denied();
+      // The URL carries a public id (postgres id or legacy source_sqlite_id) while the scope
+      // holds canonical ids. Resolve it like the strict account routes do — fail closed when it
+      // names two different accounts — so the grant check covers the account get() serves. (C-A67)
+      const [account, ...ambiguous] = await ports.mailResourceLookup!.resolve({
+        workspaceId: principal.workspaceId,
+        target: { kind: 'account', id: Number(resources.accountId) },
+      });
       if (
-        accountScope.kind === 'none'
-        || !await restrictedScopeSeesAccount(accountScope, resources.accountId, principal.workspaceId, ports)
+        !account
+        || ambiguous.length > 0
+        || !await restrictedScopeSeesAccount(accountScope, account.accountId, principal.workspaceId, ports)
       ) {
         return denied();
       }
@@ -350,11 +361,14 @@ export async function enforceMailHttpPolicy(
         ports,
       );
       const isContentPath = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
-      const contentScope = isContentPath ? await resolveContentScope() : undefined;
+      const isExportPath = scope.kind !== 'all' && ATTACHMENT_EXPORT_SCOPE_PATHS.has(entry.route.path);
+      // The GDPR export's message index carries the body-derived snippet, so it needs the
+      // content scope just like the list/search routes.
+      const contentScope = isContentPath || isExportPath ? await resolveContentScope() : undefined;
       // Resolve the caller's mail.attachment.read scope for the content list/search routes
       // (attachment-text search gating) AND for the GDPR export (attachment-bytes gating,
       // R51-1). Owner/admin never reach here (scope 'all' skips the wrapper).
-      const attachmentScope = isContentPath || (scope.kind !== 'all' && ATTACHMENT_EXPORT_SCOPE_PATHS.has(entry.route.path))
+      const attachmentScope = isContentPath || isExportPath
         ? await resolveAttachmentScope()
         : undefined;
       const signatureScope = scope.kind !== 'all' && ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS.has(entry.route.path)
@@ -439,8 +453,10 @@ export async function enforceMailHttpPolicy(
     // Triage/draft-edit mutations echo the mutated message back whole. Owner/admin
     // read everything; a restricted delegate gets its body-derived content redacted
     // per its independent mail.content.read scope (the read port turns this into a
-    // per-row content_readable flag on the returned row). A caller whose content
-    // scope is 'all' can read everything anyway, so skip the injection — there is
+    // per-row content_readable flag on the returned row), and — like the single-message
+    // GET — a reply-parent id outside that scope and draft attachment paths outside its
+    // mail.attachment.read scope nulled. A caller whose content and attachment scopes
+    // are both 'all' can read everything anyway, so skip the injection — there is
     // nothing to redact and the read port would compute no predicate.
     if (
       !actor.isOwner
@@ -448,10 +464,15 @@ export async function enforceMailHttpPolicy(
       && MESSAGE_CONTENT_SCOPE_MUTATION_PATHS.has(entry.route.path)
     ) {
       const mutationContentScope = await resolveContentScope();
-      if (mutationContentScope.kind !== 'all') {
+      const mutationAttachmentScope = await resolveAttachmentScope();
+      if (mutationContentScope.kind !== 'all' || mutationAttachmentScope.kind !== 'all') {
         return {
           ok: true,
-          context: { permission: entry.policy.permission, contentScope: mutationContentScope },
+          context: {
+            permission: entry.policy.permission,
+            contentScope: mutationContentScope,
+            attachmentScope: mutationAttachmentScope,
+          },
         };
       }
     }
@@ -517,7 +538,7 @@ export function portsWithMailAccessContext(
   // three mutation ports to inject the caller's content scope; the read port turns
   // it into a per-row content_readable flag that blanks the body-derived fields.
   if ((!context?.scope || context.scope.kind === 'all') && context?.contentScope) {
-    return portsWithContentRedactedMutations(ports, context.contentScope);
+    return portsWithContentRedactedMutations(ports, context.contentScope, context.attachmentScope);
   }
   if (!context?.scope || context.scope.kind === 'all') return ports;
   const mailScope = context.scope;
@@ -645,6 +666,7 @@ export function portsWithMailAccessContext(
         export: (input) => ports.emailGdprExport!.export({
           ...scopedInput(input),
           ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+          ...(contentScope ? { mailContentScope: contentScope } : {}),
         }),
       },
     } : {}),
@@ -698,24 +720,57 @@ export function portsWithMailAccessContext(
 function portsWithContentRedactedMutations(
   ports: ServerApiPorts,
   contentScope: MailSqlScope,
+  attachmentScope: MailSqlScope | undefined,
 ): ServerApiPorts {
   if (!ports.emailMessages) return ports;
   const messages = ports.emailMessages;
+  // The mutation ports flag only content_readable on the row they return. Re-read the
+  // mutated row through get() with the scopes the single-message GET applies — the
+  // content-read scope for the reply parent (R50-1), the attachment-read scope for the
+  // draft attachment paths (R50-2) — plus the content scope itself, so the echo never
+  // shows more than GET /messages/:id would. A row gone in between fails closed.
+  const project = async (
+    workspaceId: string,
+    message: EmailMessageRecord,
+    includeBody: boolean,
+  ): Promise<EmailMessageRecord> => {
+    const projected = await messages.get({
+      workspaceId,
+      id: message.id,
+      includeBody,
+      mailScope: contentScope,
+      mailContentScope: contentScope,
+      ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+    });
+    return projected ?? { ...message, draftAttachmentPathsJson: null, replyParentMessageId: null };
+  };
   return {
     ...ports,
     emailMessages: {
       ...messages,
       ...(messages.linkCustomer ? {
-        linkCustomer: (input) => messages.linkCustomer!({ ...input, mailContentScope: contentScope }),
+        linkCustomer: async (input) => {
+          const result = await messages.linkCustomer!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, false) } : result;
+        },
       } : {}),
       ...(messages.assign ? {
-        assign: (input) => messages.assign!({ ...input, mailContentScope: contentScope }),
+        assign: async (input) => {
+          const result = await messages.assign!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, false) } : result;
+        },
       } : {}),
       ...(messages.setSpamStatus ? {
-        setSpamStatus: (input) => messages.setSpamStatus!({ ...input, mailContentScope: contentScope }),
+        setSpamStatus: async (input) => {
+          const message = await messages.setSpamStatus!({ ...input, mailContentScope: contentScope });
+          return message ? project(input.workspaceId, message, false) : message;
+        },
       } : {}),
       ...(messages.updateComposeDraft ? {
-        updateComposeDraft: (input) => messages.updateComposeDraft!({ ...input, mailContentScope: contentScope }),
+        updateComposeDraft: async (input) => {
+          const result = await messages.updateComposeDraft!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, true) } : result;
+        },
       } : {}),
     },
   };
@@ -986,16 +1041,12 @@ async function assertSupplementalHttpPermissions(
       const draftMessageId = draftResource && draftResource.type === 'message'
         ? draftResource.messageId
         : undefined;
-      const draftLocalPrefix = draftMessageId === undefined
-        ? undefined
-        : `${workspaceId}/compose-drafts/${draftMessageId}/`;
       for (const rawPath of rawAttachmentPaths) {
         if (typeof rawPath !== 'string' || rawPath.length === 0) throw new MailAccessDeniedError();
-        // Draft-local upload carve-out: under this draft's folder and no `..` escape.
+        // Draft-local upload carve-out: a single file directly in this draft's folder.
         if (
-          draftLocalPrefix
-          && rawPath.startsWith(draftLocalPrefix)
-          && !rawPath.split('/').includes('..')
+          draftMessageId !== undefined
+          && isDraftLocalAttachmentPath(rawPath, workspaceId, draftMessageId)
         ) {
           continue;
         }
@@ -1032,6 +1083,27 @@ async function assertSupplementalHttpPermissions(
           }
         }
       }
+    }
+  }
+
+  if (canonicalPath === '/api/v1/email/messages/:messageId/compose-draft') {
+    // An accountId moves the draft to that account (composer "Von" switch). The
+    // base mail.draft.edit only covers the draft's current account; placing a
+    // draft in the target account is a draft creation there, so require
+    // mail.draft.create on it exactly like POST /compose-drafts (accountBody).
+    const targetAccountId = optionalPositiveInt(bodyField(req.body, 'accountId'));
+    if (targetAccountId !== undefined) {
+      const target = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: targetAccountId },
+      });
+      if (target.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.draft.create',
+        resource: target[0]!,
+      });
     }
   }
 
@@ -1099,9 +1171,8 @@ async function assertSupplementalHttpPermissions(
             workspaceId,
             draftId,
           });
-          const draftLocalPrefix = `${workspaceId}/compose-drafts/${draftId}/`;
           for (const path of paths ?? []) {
-            if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+            if (isDraftLocalAttachmentPath(path, workspaceId, draftId)) continue;
             const owners = await ports.mailResourceLookup.resolve({
               workspaceId,
               target: { kind: 'attachment_path', path },
@@ -1618,6 +1689,43 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // Forwarding copies a stored attachment (sourceAttachmentId) into the draft's own
+  // upload folder. The base policy only covers the draft (mail.draft.edit), and the
+  // send path later accepts that draft-local copy without another attachment check,
+  // so authorize the source exactly like downloading it: mail.attachment.read on its
+  // message, plus mail.attachment.suspicious_download for a risky filename (fail
+  // closed when the filename cannot be classified).
+  if (
+    req.method === 'POST'
+    && canonicalPath === '/api/v1/email/messages/:messageId/compose-attachments'
+    && isBodyObject(req.body)
+    && Object.prototype.hasOwnProperty.call(req.body, 'sourceAttachmentId')
+  ) {
+    const sourceAttachmentId = requirePositiveInt(bodyField(req.body, 'sourceAttachmentId'));
+    const owners = await ports.mailResourceLookup!.resolve({
+      workspaceId,
+      target: { kind: 'attachment', id: sourceAttachmentId },
+    });
+    if (owners.length !== 1) throw new MailAccessDeniedError();
+    await ports.mailAccess!.assertPermission({
+      workspaceId,
+      actor,
+      permission: 'mail.attachment.read',
+      resource: owners[0]!,
+    });
+    const source = ports.emailAttachments
+      ? await ports.emailAttachments.get({ workspaceId, id: sourceAttachmentId })
+      : null;
+    if (!source || isPotentiallyDangerousAttachment(source.filename)) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.attachment.suspicious_download',
+        resource: owners[0]!,
+      });
+    }
+  }
+
   // Verifying a detached signature loads a SECOND attachment (signatureAttachmentId)
   // whose bytes reveal whether an otherwise-inaccessible file is a valid PGP
   // signature (and its fingerprint). The base policy only authorizes the path
@@ -1724,11 +1832,8 @@ async function assertSupplementalHttpPermissions(
 }
 
 function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {
-  return (method === 'POST' && canonicalPath === '/api/v1/workflow-delayed-jobs')
-    || (
-      (method === 'PATCH' || method === 'DELETE')
-      && canonicalPath === '/api/v1/workflow-delayed-jobs/:id'
-    );
+  return (method === 'PATCH' || method === 'DELETE')
+    && canonicalPath === '/api/v1/workflow-delayed-jobs/:id';
 }
 
 function selectorValue(

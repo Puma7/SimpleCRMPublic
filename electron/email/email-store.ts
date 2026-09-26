@@ -32,6 +32,8 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
+import { escapeHtmlText } from '../../shared/compose-body';
+import { clearScheduledSendActor } from './email-scheduled-send-actor';
 
 export type EmailAccountRow = {
   id: number;
@@ -456,12 +458,12 @@ function getTeamFallbackSignatureHtml(teamMemberId?: string | null): string | nu
     : undefined;
   if (selected?.signature_html?.trim()) return selected.signature_html.trim();
   if (selected) {
-    return `<p>Mit freundlichen Grüßen<br/>${selected.display_name}</p>`;
+    return `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(selected.display_name)}</p>`;
   }
   const withSig = rows.find((r) => r.signature_html?.trim());
   if (withSig?.signature_html) return withSig.signature_html.trim();
   if (rows.length > 0) {
-    return `<p>Mit freundlichen Grüßen<br/>${rows[0]!.display_name}</p>`;
+    return `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(rows[0]!.display_name)}</p>`;
   }
   return null;
 }
@@ -498,7 +500,7 @@ export function getComposeSignatureHtml(accountId: number, teamMemberId?: string
   } else {
     const teamFallback = getTeamFallbackSignatureHtml(teamMemberId);
     if (teamFallback) rawHtml = teamFallback;
-    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
+    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(acc.display_name)}</p>`;
   }
   if (!rawHtml.includes('{{')) return rawHtml;
   const teamMembers = listEmailTeamMembers();
@@ -1097,8 +1099,27 @@ export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   return stmt.get(id) as EmailMessageRow | undefined;
 }
 
+/** Owning account per message id; unknown ids are missing from the map. Bulk lists are schema-capped at 500. */
+export function getMessageAccountIds(messageIds: readonly number[]): Map<number, number> {
+  const ids = [...new Set(messageIds)];
+  if (ids.length === 0) return new Map();
+  const rows = getDb()
+    .prepare(`SELECT id, account_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids) as { id: number; account_id: number }[];
+  return new Map(rows.map((r) => [r.id, r.account_id]));
+}
+
 /** POP3 synthetic UIDs stay at or below this (drafts use uid > POP3_UID_CEILING). */
 export const POP3_UID_CEILING = -1_000_000;
+
+/**
+ * A local compose draft, and nothing else with a negative uid: received POP3 mail
+ * (uid <= POP3_UID_CEILING, pop3_uidl set) and sent local copies (folder 'sent')
+ * must not be edited or permanently deleted through the draft functions.
+ */
+function isLocalComposeDraftRow(row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>): boolean {
+  return row.uid < 0 && row.uid > POP3_UID_CEILING && row.pop3_uidl == null && row.folder_kind === 'draft';
+}
 
 export function allocatePop3NegativeUid(accountId: number, folderId: number): number {
   const row = getDb()
@@ -1677,11 +1698,18 @@ export function bulkSetMessagesDoneLocal(
 export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
+  const draftIds = (
+    getDb()
+      .prepare(`SELECT id, uid, pop3_uidl, folder_kind FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders})`)
+      .all(...messageIds) as Pick<EmailMessageRow, 'id' | 'uid' | 'pop3_uidl' | 'folder_kind'>[]
+  )
+    .filter(isLocalComposeDraftRow)
+    .map((row) => row.id);
+  if (draftIds.length === 0) return 0;
   const r = getDb()
-    .prepare(
-      `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders}) AND uid < 0`,
-    )
-    .run(...messageIds);
+    .prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${draftIds.map(() => '?').join(',')})`)
+    .run(...draftIds);
+  clearScheduledSendActor(...draftIds);
   return r.changes;
 }
 
@@ -1827,6 +1855,16 @@ export function setOutboundHold(messageId: number, hold: boolean, reason: string
     .run(hold ? 1 : 0, reason, messageId);
 }
 
+function nextLocalDraftUid(accountId: number, folderId: number): number {
+  const minRow = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid < 0 AND uid > ?`,
+    )
+    .get(accountId, folderId, POP3_UID_CEILING) as { m: number | null };
+  return minRow.m != null ? minRow.m - 1 : -1;
+}
+
 /** Negative IMAP UID: local compose draft only, never from server sync. */
 export function createComposeDraft(input: {
   accountId: number;
@@ -1840,13 +1878,7 @@ export function createComposeDraft(input: {
   const fromJson = acc?.email_address
     ? senderJsonFromMailbox(acc.email_address, acc.display_name)
     : null;
-  const minRow = getDb()
-    .prepare(
-      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
-       WHERE account_id = ? AND folder_id = ? AND uid < 0 AND uid > ?`,
-    )
-    .get(input.accountId, folder.id, POP3_UID_CEILING) as { m: number | null };
-  const uid = minRow.m != null ? minRow.m - 1 : -1;
+  const uid = nextLocalDraftUid(input.accountId, folder.id);
   const { id } = insertOrUpdateEmailMessage({
     accountId: input.accountId,
     folderId: folder.id,
@@ -1947,10 +1979,11 @@ export function deleteLocalComposeDraft(messageId: number): void {
   if (!row) {
     throw new Error('Entwurf nicht gefunden');
   }
-  if (row.uid >= 0) {
+  if (!isLocalComposeDraftRow(row)) {
     throw new Error('Nur lokale Entwürfe können endgültig gelöscht werden');
   }
   getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
+  clearScheduledSendActor(messageId);
 }
 
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {
@@ -2077,6 +2110,8 @@ export function markDraftAsSent(draftMessageId: number): void {
 export function updateComposeDraft(
   messageId: number,
   input: {
+    /** Moves the draft to this account (composer "Von" switch); id and attachments stay. */
+    accountId?: number;
     subject?: string;
     bodyText?: string;
     bodyHtml?: string | null;
@@ -2089,7 +2124,7 @@ export function updateComposeDraft(
   },
 ): void {
   const row = getEmailMessageById(messageId);
-  if (!row || row.uid >= 0) {
+  if (!row || !isLocalComposeDraftRow(row)) {
     throw new Error('Nur lokale Entwürfe (negative UID) können hier bearbeitet werden');
   }
   const subj = input.subject !== undefined ? input.subject : row.subject;
@@ -2112,6 +2147,19 @@ export function updateComposeDraft(
     sets.push('reply_parent_message_id = ?');
     vals.push(input.replyParentMessageId);
   }
+  let accountMoved = false;
+  if (input.accountId !== undefined && input.accountId !== row.account_id) {
+    const account = getEmailAccountById(input.accountId);
+    if (!account) throw new Error('E-Mail-Konto nicht gefunden');
+    const folder = ensureInboxFolderForAccount(input.accountId);
+    sets.push('account_id = ?', 'folder_id = ?', 'uid = ?');
+    vals.push(input.accountId, folder.id, nextLocalDraftUid(input.accountId, folder.id));
+    if (input.fromJson === undefined) {
+      sets.push('from_json = ?');
+      vals.push(account.email_address ? senderJsonFromMailbox(account.email_address, account.display_name) : null);
+    }
+    accountMoved = true;
+  }
   // Inhaltliche Änderung entwertet die KI-Freigabe-Empfehlung — der
   // "Wartet auf Freigabe"-Zustand bezieht sich auf den geprüften Stand.
   // Auch der RFC-3834-Marker fällt: eine vom Menschen umgeschriebene Antwort
@@ -2124,7 +2172,8 @@ export function updateComposeDraft(
     input.toJson !== undefined ||
     input.ccJson !== undefined ||
     input.bccJson !== undefined ||
-    input.draftAttachmentPaths !== undefined;
+    input.draftAttachmentPaths !== undefined ||
+    accountMoved;
   if (contentEdited) {
     sets.push('approval_state = NULL', 'approval_reason = NULL', 'auto_submitted = 0');
   }

@@ -1,12 +1,12 @@
+import { validateReadOnlyMssqlQuery } from '../../../packages/core/src/workflow/mssql-readonly';
 import { getSyncInfo } from '../../sqlite-service';
 import { isHttpMethodAllowed } from '../../../shared/workflow-http-allowlist';
-import { assertWorkflowHttpUrlAllowed } from '../http-request-guard';
+import { assertWorkflowHttpUrlAllowed, sendWorkflowHttpRequest } from '../http-request-guard';
 import type { RegisteredWorkflowNode } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
 const HTTP_ALLOWLIST_KEY = 'workflow_http_allowlist';
-const MAX_MSSQL_QUERY_CHARS = 8_000;
 
 export function registerIntegrationNodes(register: Reg): void {
   register({
@@ -101,11 +101,19 @@ export function registerIntegrationNodes(register: Reg): void {
           message: `HTTP-Methode ${method} nicht erlaubt (nur GET, POST)`,
         };
       }
-      const res = await fetch(url, {
-        method,
+      const res = await sendWorkflowHttpRequest({
+        url,
+        allowlistRaw,
+        addresses: urlCheck.addresses,
+        method: method === 'POST' ? 'POST' : 'GET',
         body: method === 'GET' ? undefined : String(config.body ?? ''),
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(30_000),
+        headers: {
+          'Content-Type': 'application/json',
+          // Global fetch added these on its own; some APIs reject requests without a User-Agent.
+          Accept: '*/*',
+          'User-Agent': 'node',
+        },
+        timeoutMs: 30_000,
       });
       const text = await res.text();
       return {
@@ -124,24 +132,11 @@ export function registerIntegrationNodes(register: Reg): void {
     execute: async (ctx, config) => {
       const sqlText = String(config.sql ?? '').trim();
       if (!sqlText) return { status: 'skipped' };
-      if (sqlText.length > MAX_MSSQL_QUERY_CHARS) {
-        return {
-          status: 'error',
-          message: `SQL zu lang (max ${MAX_MSSQL_QUERY_CHARS} Zeichen)`,
-        };
-      }
-      const upper = sqlText.toUpperCase();
-      if (
-        /\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE)\b/.test(upper)
-      ) {
-        return { status: 'error', message: 'Nur SELECT erlaubt' };
-      }
-      if (!upper.startsWith('SELECT')) {
-        return { status: 'error', message: 'Query muss mit SELECT beginnen' };
-      }
+      const validation = validateReadOnlyMssqlQuery(sqlText);
+      if (!validation.ok) return { status: 'error', message: validation.error };
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run mssql' };
       const { executeReadOnlyMssqlQuery } = await import('../../mssql-keytar-service.js');
-      const r = await executeReadOnlyMssqlQuery(sqlText);
+      const r = await executeReadOnlyMssqlQuery(validation.query);
       if (!r.success) return { status: 'error', message: r.error ?? 'MSSQL-Fehler' };
       return {
         status: 'ok',

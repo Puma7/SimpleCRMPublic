@@ -1,4 +1,10 @@
-import type { ApiRequest, ApiResponse, AuthSecurityWorkspaceSettings, ServerApiPorts } from './types';
+import type {
+  ApiRequest,
+  ApiResponse,
+  AuthenticatedPrincipal,
+  AuthSecurityWorkspaceSettings,
+  ServerApiPorts,
+} from './types';
 import {
   data,
   error,
@@ -7,6 +13,9 @@ import {
   requirePrincipal,
 } from './http';
 import { authSessionData } from './auth-session-cookie';
+import { verifyStepUpAuthentication } from './password-check-lockout';
+import { isForbiddenUserMutation } from './capabilities';
+import { ownerManagementRequiresOwnerError } from './auth-routes';
 
 export async function handleAuthSecurityRoute(
   req: ApiRequest,
@@ -183,6 +192,8 @@ async function handleTotpSetup(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity || !ports.auth.findUserByEmail) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -210,6 +221,8 @@ async function handleTotpConfirm(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -218,6 +231,8 @@ async function handleTotpConfirm(
   if (!secret || !code) {
     return error(400, 'validation_error', 'secret und code sind erforderlich');
   }
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_totp_enable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
   const ok = await ports.loginSecurity.confirmTotpSetup({
     workspaceId: principal.workspaceId,
     userId,
@@ -225,6 +240,7 @@ async function handleTotpConfirm(
     code,
   });
   if (!ok) return error(400, 'mfa_setup_failed', 'Authenticator-Code konnte nicht bestaetigt werden');
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_totp_enabled', stepUp.method);
   return data(200, { enabled: true, method: 'totp' });
 }
 
@@ -238,13 +254,25 @@ async function handleEnableEmailMfa(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
-  await ports.loginSecurity.enableEmailMfa({
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_email_enable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
+  const enabled = await ports.loginSecurity.enableEmailMfa({
     workspaceId: principal.workspaceId,
     userId,
   });
+  if (enabled === false) {
+    return error(
+      409,
+      'mfa_method_not_allowed',
+      'E-Mail-2FA ist in diesem Workspace nicht freigegeben oder der E-Mail-Versand (AUTH_INVITE_SMTP_*) ist nicht eingerichtet. Bitte die Authenticator-App verwenden oder den Administrator fragen.',
+    );
+  }
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_email_enabled', stepUp.method);
   return data(200, { enabled: true, method: 'email' });
 }
 
@@ -258,14 +286,54 @@ async function handleDisableMfa(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_disable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
   await ports.loginSecurity.disableUserMfa({
     workspaceId: principal.workspaceId,
     userId,
   });
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_disabled', stepUp.method);
   return data(200, { enabled: false });
+}
+
+// G3: Only an owner changes the second factor of another owner. Otherwise an admin
+// could switch it off or enroll an own authenticator for the owner account.
+async function rejectOwnerAccountChange(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  userId: string,
+): Promise<ApiResponse | null> {
+  if (principal.role === 'owner' || principal.userId === userId) return null;
+  if (!ports.auth.getUser) {
+    return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
+  }
+  const target = await ports.auth.getUser({ workspaceId: principal.workspaceId, userId });
+  if (!target) return null;
+  return isForbiddenUserMutation(principal.role, target.role, target.role)
+    ? ownerManagementRequiresOwnerError()
+    : null;
+}
+
+async function recordMfaChange(
+  ports: ServerApiPorts,
+  principal: { userId: string; workspaceId: string },
+  userId: string,
+  action: 'auth.mfa_disabled' | 'auth.mfa_totp_enabled' | 'auth.mfa_email_enabled',
+  reauthMethod: 'password' | 'totp',
+): Promise<void> {
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action,
+    entityType: 'user',
+    entityId: userId,
+    metadata: { reauthMethod },
+  });
 }
 
 function parseSecuritySettingsBody(
@@ -279,6 +347,7 @@ function parseSecuritySettingsBody(
     mfaEnabled: readOptionalBoolean(record, 'mfaEnabled', existing?.mfaEnabled ?? false),
     mfaTotpEnabled: readOptionalBoolean(record, 'mfaTotpEnabled', existing?.mfaTotpEnabled ?? true),
     mfaEmailEnabled: readOptionalBoolean(record, 'mfaEmailEnabled', existing?.mfaEmailEnabled ?? false),
+    portalCaptchaEnabled: readOptionalBoolean(record, 'portalCaptchaEnabled', existing?.portalCaptchaEnabled ?? true),
   };
   return { values };
 }

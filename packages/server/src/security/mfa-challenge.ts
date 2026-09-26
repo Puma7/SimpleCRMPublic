@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import type { AccessTokenSigner } from './access-token';
 
@@ -13,6 +13,11 @@ export type MfaChallengeClaims = Readonly<{
   iat: number;
   exp: number;
   nonce: string;
+  /**
+   * Fingerabdruck des Passwort-Hashes bei Ausstellung. Ein Passwortwechsel
+   * (auch ein Admin-Reset) macht eine offene Challenge damit ungueltig.
+   */
+  passwordFingerprint: string;
 }>;
 
 export function issueMfaChallengeToken(input: {
@@ -21,6 +26,8 @@ export function issueMfaChallengeToken(input: {
   workspaceId: string;
   method: 'totp' | 'email';
   issuedAt: Date;
+  /** users.password_hash bei Ausstellung; bindet die Challenge an dieses Passwort. */
+  passwordHash: string;
   ttlSeconds?: number;
 }): string {
   const ttlSeconds = input.ttlSeconds ?? DEFAULT_TTL_SECONDS;
@@ -33,6 +40,7 @@ export function issueMfaChallengeToken(input: {
     iat: issuedAtSeconds,
     exp: issuedAtSeconds + ttlSeconds,
     nonce: randomBytes(16).toString('base64url'),
+    passwordFingerprint: passwordHashFingerprint(input.passwordHash),
   } satisfies MfaChallengeClaims);
   const signature = sign(payload, input.signer.secret);
   return `${payload}.${signature}`;
@@ -56,7 +64,17 @@ export function parseMfaChallengeToken(input: {
   if (!Number.isInteger(claims.iat) || claims.iat > nowSeconds) return null;
   if (!claims.userId || !claims.workspaceId) return null;
   if (claims.method !== 'totp' && claims.method !== 'email') return null;
+  if (typeof claims.passwordFingerprint !== 'string' || !claims.passwordFingerprint) return null;
   return claims;
+}
+
+/** Ob die Challenge fuer das noch aktuelle Passwort ausgestellt wurde. */
+export function mfaChallengeMatchesPassword(claims: MfaChallengeClaims, passwordHash: string): boolean {
+  return safeEqualBase64Url(claims.passwordFingerprint, passwordHashFingerprint(passwordHash));
+}
+
+function passwordHashFingerprint(passwordHash: string): string {
+  return createHash('sha256').update(passwordHash, 'utf8').digest('base64url');
 }
 
 function sign(payload: string, secret: Buffer): string {

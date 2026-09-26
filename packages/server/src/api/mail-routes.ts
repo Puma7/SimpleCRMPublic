@@ -12,6 +12,7 @@ import type {
   EmailAccountMutationPortResult,
   EmailAccountRecord,
   EmailAccountSyncSlotPrevious,
+  EmailComposeAttachmentUploadResult,
   EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
@@ -49,9 +50,13 @@ import {
   requirePrincipal,
 } from './http';
 import { MailAccessDeniedError } from '../mail-access/service';
+import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 import type { MailAccessActor } from '../mail-access/types';
+import { emailAddressForDelivery, normalizeTrustedAuthservIdSetting } from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
+import { mailSyncJobTypeForProtocol } from '../jobs/mail-sync-scheduler';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
+import { parseRegexSearch } from '../mail-search-sql';
 import {
   handleMailMetadataReadRoute,
   MAIL_METADATA_ROUTE_INVENTORY,
@@ -124,6 +129,7 @@ type EmailComposeDraftUpdateParseResult =
   | {
     ok: true;
     values: {
+      accountId?: number;
       subject?: string;
       bodyText?: string;
       bodyHtml?: string | null;
@@ -480,8 +486,9 @@ async function handleEmailAccountSync(
   const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id: accountId });
   if (!account) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
 
-  const protocol = String(account.protocol ?? '').toLowerCase();
-  const jobType = protocol === 'imap' ? 'mail.sync.imap' : protocol === 'pop3' ? 'mail.sync.pop3' : null;
+  // Same exact mapping as the sync handler and the scheduler: a normalized
+  // 'IMAP' would queue a job the handler always rejects.
+  const jobType = mailSyncJobTypeForProtocol(account.protocol);
   if (!jobType) {
     return error(409, 'unsupported_email_account_protocol', 'Email account protocol wird nicht unterstuetzt');
   }
@@ -588,7 +595,14 @@ async function handleEmailAccountSyncLockClear(
   if (accountId === null) return error(400, 'invalid_email_account_id', 'email account id muss eine positive Ganzzahl sein');
   if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
   if (!ports.jobQueue?.releaseAccountSyncLocks) {
-    return error(503, 'job_queue_lock_release_unavailable', 'Job queue lock release API nicht konfiguriert');
+    // Production runs mail syncs on the Graphile queue, which has no manual
+    // release; it frees an orphaned account-<id> queue lock on its own.
+    return error(
+      503,
+      'job_queue_lock_release_unavailable',
+      'Manuelles Loesen der Sync-Sperre wird von dieser Job-Queue nicht unterstuetzt; '
+        + 'verwaiste Sperren gibt der Worker selbst frei (spaetestens nach 4 Stunden, beim geordneten Neustart sofort).',
+    );
   }
 
   const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id: accountId });
@@ -1108,18 +1122,35 @@ async function handleComposeAttachmentUpload(
   if (!ports.emailComposeAttachments) {
     return error(503, 'email_compose_attachment_upload_unavailable', 'Email compose-attachment API nicht konfiguriert');
   }
-  const parsed = parseComposeAttachmentUploadBody(req.body);
-  if (!parsed.ok) return parsed.response;
-  const result = await ports.emailComposeAttachments.upload({
-    workspaceId: principal.workspaceId,
-    draftMessageId,
-    filename: parsed.filename,
-    contentBase64: parsed.contentBase64,
-    ...(parsed.contentType === undefined ? {} : { contentType: parsed.contentType }),
-  });
+  let result: EmailComposeAttachmentUploadResult;
+  if (isPlainObject(req.body) && Object.prototype.hasOwnProperty.call(req.body, 'sourceAttachmentId')) {
+    // Forwarding variant: copy a stored attachment (authorized by the policy layer) into the draft.
+    const parsedCopy = parseComposeAttachmentCopyBody(req.body);
+    if (!parsedCopy.ok) return parsedCopy.response;
+    if (!ports.emailComposeAttachments.copyStoredAttachment) {
+      return error(503, 'email_compose_attachment_copy_unavailable', 'Email compose-attachment copy API nicht konfiguriert');
+    }
+    result = await ports.emailComposeAttachments.copyStoredAttachment({
+      workspaceId: principal.workspaceId,
+      draftMessageId,
+      sourceAttachmentId: parsedCopy.sourceAttachmentId,
+    });
+  } else {
+    const parsed = parseComposeAttachmentUploadBody(req.body);
+    if (!parsed.ok) return parsed.response;
+    result = await ports.emailComposeAttachments.upload({
+      workspaceId: principal.workspaceId,
+      draftMessageId,
+      filename: parsed.filename,
+      contentBase64: parsed.contentBase64,
+      ...(parsed.contentType === undefined ? {} : { contentType: parsed.contentType }),
+    });
+  }
   if (!result.ok) {
     if (result.reason === 'not_found') return error(404, 'compose_draft_not_found', result.error);
+    if (result.reason === 'source_not_found') return error(404, 'compose_attachment_source_not_found', result.error);
     if (result.reason === 'not_local_draft') return error(409, 'compose_draft_not_local', result.error);
+    if (result.reason === 'quota_exceeded') return error(413, 'compose_attachment_quota_exceeded', result.error);
     if (result.reason === 'write_failed') return error(500, 'compose_attachment_write_failed', result.error);
     return error(400, 'invalid_compose_attachment', result.error);
   }
@@ -1490,6 +1521,19 @@ async function handleEmailAccountUpdate(
   if (!ports.emailAccounts?.update) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
   const parsed = parseEmailAccountMutationBody(req.body);
   if (!parsed.ok) return parsed.response;
+  if (EMAIL_ACCOUNT_ENDPOINT_FIELDS.some((field) => parsed.values[field] !== undefined)) {
+    const current = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id });
+    if (!current) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+    const missing = missingCredentialsForEndpointChange(current, parsed.values);
+    if (missing.length > 0) {
+      return error(
+        400,
+        'email_account_credentials_required',
+        `Zugangsdaten bei Serverwechsel neu eingeben: ${missing.map((entry) => entry.message).join('; ')}`,
+        { fields: missing },
+      );
+    }
+  }
 
   const result = await ports.emailAccounts.update({
     workspaceId: principal.workspaceId,
@@ -1573,6 +1617,125 @@ async function handleEmailAccountDelete(
   return data(200, { success: true, deleted: true, account: sanitizeEmailAccount(result.account) });
 }
 
+const EMAIL_ACCOUNT_ENDPOINT_FIELDS = [
+  'imapHost',
+  'imapPort',
+  'imapTls',
+  'smtpHost',
+  'smtpPort',
+  'smtpTls',
+  'smtpUseImapAuth',
+  'pop3Host',
+  'pop3Port',
+  'pop3Tls',
+] as const satisfies readonly (keyof EmailAccountMutationInput)[];
+
+type EmailAccountEndpointSettings = Pick<EmailAccountRecord,
+  | 'imapHost'
+  | 'imapPort'
+  | 'imapTls'
+  | 'smtpHost'
+  | 'smtpPort'
+  | 'smtpTls'
+  | 'smtpUseImapAuth'
+  | 'pop3Host'
+  | 'pop3Port'
+  | 'pop3Tls'>;
+
+type MailEndpoint = Readonly<{ host: string; port: number; tls: boolean }>;
+
+type MissingEndpointCredential = {
+  field: 'imapPassword' | 'smtpPassword';
+  protocols: Array<'imap' | 'pop3' | 'smtp'>;
+  message: string;
+};
+
+// Stored secrets are bound to the account id only, not to the server they were
+// entered for: sync, send and the stored-account connection test present them to
+// whatever host/port/TLS the row names. Redirecting an endpoint without the
+// credential would hand the stored password (or the OAuth access token) to the
+// new server, which lets a delegated account manager harvest a mailbox password
+// they never knew. Every protocol whose effective endpoint changes therefore
+// needs the credential it logs in with in the same request. The effective values
+// mirror mail-sync/mail-compose-send (POP3 falls back to the IMAP host, NULL
+// ports to 995/587), so re-sending unchanged values is not a change. A fresh
+// IMAP password also covers OAuth accounts: the IMAP secret takes precedence over
+// the OAuth token in every resolver, so the token never reaches the new host.
+function missingCredentialsForEndpointChange(
+  current: EmailAccountEndpointSettings,
+  values: EmailAccountMutationInput,
+): MissingEndpointCredential[] {
+  const next: EmailAccountEndpointSettings = {
+    imapHost: values.imapHost ?? current.imapHost,
+    imapPort: values.imapPort ?? current.imapPort,
+    imapTls: values.imapTls ?? current.imapTls,
+    smtpHost: values.smtpHost === undefined ? current.smtpHost : values.smtpHost,
+    smtpPort: values.smtpPort === undefined ? current.smtpPort : values.smtpPort,
+    smtpTls: values.smtpTls ?? current.smtpTls,
+    smtpUseImapAuth: values.smtpUseImapAuth ?? current.smtpUseImapAuth,
+    pop3Host: values.pop3Host === undefined ? current.pop3Host : values.pop3Host,
+    pop3Port: values.pop3Port === undefined ? current.pop3Port : values.pop3Port,
+    pop3Tls: values.pop3Tls ?? current.pop3Tls,
+  };
+  const fresh = {
+    imapPassword: typeof values.imapPassword === 'string' && values.imapPassword.length > 0,
+    smtpPassword: typeof values.smtpPassword === 'string' && values.smtpPassword.length > 0,
+  };
+  // IMAP and POP3 log in with the IMAP secret (or OAuth); SMTP with the IMAP
+  // secret when it reuses the IMAP login, otherwise with its own SMTP secret.
+  // Switching that source is an endpoint change too: otherwise a caller first
+  // points SMTP at their host with their own SMTP password and then only turns
+  // on "wie IMAP", and the IMAP password (or OAuth token) follows.
+  const smtpLoginSwitched = next.smtpUseImapAuth !== current.smtpUseImapAuth;
+  const checks = [
+    { protocol: 'imap', endpoint: imapEndpoint, credential: 'imapPassword', switched: false },
+    { protocol: 'pop3', endpoint: pop3Endpoint, credential: 'imapPassword', switched: false },
+    {
+      protocol: 'smtp',
+      endpoint: smtpEndpoint,
+      credential: next.smtpUseImapAuth ? 'imapPassword' : 'smtpPassword',
+      switched: smtpLoginSwitched,
+    },
+  ] as const;
+  const missing = new Map<MissingEndpointCredential['field'], MissingEndpointCredential['protocols']>();
+  for (const check of checks) {
+    const after = check.endpoint(next);
+    // An emptied host disables the protocol; no credential goes anywhere.
+    if (!after.host || fresh[check.credential]) continue;
+    if (!check.switched && sameMailEndpoint(check.endpoint(current), after)) continue;
+    missing.set(check.credential, [...(missing.get(check.credential) ?? []), check.protocol]);
+  }
+  return [...missing].map(([field, protocols]) => ({
+    field,
+    protocols,
+    message: `${field === 'imapPassword' ? 'IMAP-Passwort' : 'SMTP-Passwort'} erforderlich (${
+      protocols.map((protocol) => `${protocol.toUpperCase()}-Server`).join(', ')
+    } geaendert)`,
+  }));
+}
+
+function imapEndpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return { host: account.imapHost.trim(), port: account.imapPort, tls: account.imapTls };
+}
+
+function pop3Endpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return {
+    host: account.pop3Host?.trim() || account.imapHost.trim(),
+    port: account.pop3Port ?? 995,
+    tls: account.pop3Tls,
+  };
+}
+
+function smtpEndpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return { host: account.smtpHost?.trim() ?? '', port: account.smtpPort ?? 587, tls: account.smtpTls };
+}
+
+function sameMailEndpoint(left: MailEndpoint, right: MailEndpoint): boolean {
+  return left.host.toLowerCase() === right.host.toLowerCase()
+    && left.port === right.port
+    && left.tls === right.tls;
+}
+
 function emailAccountMutationError(result: Extract<EmailAccountMutationPortResult, { ok: false }>): ApiResponse {
   switch (result.code) {
     case 'secret_port_unavailable':
@@ -1606,6 +1769,13 @@ function requireEmailAccountCreateValues(
 function publicEmailAccountId(account: EmailAccountRecord): number {
   return account.sourceSqliteId > 0 ? account.sourceSqliteId : account.id;
 }
+
+// Eine Regex-Suche haelt bis zum statement_timeout (10 s) eine der zehn
+// Verbindungen des gemeinsamen Pools; ein Nutzer darf deshalb hoechstens zwei
+// gleichzeitig laufen haben (F-A6-03). Der Zaehler ist prozesslokal: laufen
+// mehrere API-Prozesse, gilt die Grenze je Prozess.
+const MAX_CONCURRENT_REGEX_SEARCHES_PER_USER = 2;
+const activeRegexSearches = new Map<string, number>();
 
 async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -1662,26 +1832,60 @@ async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promis
         : undefined;
 
   if (!ports.emailMessages) return error(503, 'email_messages_unavailable', 'Email message API nicht konfiguriert');
-  const result = await ports.emailMessages.list({
-    workspaceId: principal.workspaceId,
-    limit,
-    ...(cursor === undefined ? {} : { cursor }),
-    ...(offset === undefined ? {} : { offset }),
-    ...(accountId === undefined ? {} : { accountId }),
-    ...(folderPath === undefined ? {} : { folderPath }),
-    ...(folderKind === undefined ? {} : { folderKind }),
-    ...(view === undefined ? {} : { view }),
-    ...(categoryId === undefined ? {} : { categoryId }),
-    ...(sort === undefined ? {} : { sort }),
-    ...(listFilter === undefined ? {} : { listFilter }),
-    ...(doneFilter === undefined ? {} : { doneFilter }),
-    ...(seen === undefined ? {} : { seen }),
-    ...(done === undefined ? {} : { done }),
-    ...(spam === undefined ? {} : { spam }),
-    ...(search === undefined ? {} : { search }),
-    ...(scope === undefined ? {} : { scope }),
-  });
+  const regexSlot = search !== undefined && parseRegexSearch(search)
+    ? acquireRegexSearchSlot(`${principal.workspaceId}:${principal.userId}`)
+    : null;
+  if (regexSlot === false) {
+    return {
+      ...error(
+        429,
+        'regex_search_busy',
+        `Es laufen bereits ${MAX_CONCURRENT_REGEX_SEARCHES_PER_USER} Regex-Suchen. Bitte warte, bis eine davon fertig ist.`,
+      ),
+      headers: { 'Retry-After': '1' },
+    };
+  }
+  let result: Awaited<ReturnType<NonNullable<ServerApiPorts['emailMessages']>['list']>>;
+  try {
+    result = await ports.emailMessages.list({
+      workspaceId: principal.workspaceId,
+      limit,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(offset === undefined ? {} : { offset }),
+      ...(accountId === undefined ? {} : { accountId }),
+      ...(folderPath === undefined ? {} : { folderPath }),
+      ...(folderKind === undefined ? {} : { folderKind }),
+      ...(view === undefined ? {} : { view }),
+      ...(categoryId === undefined ? {} : { categoryId }),
+      ...(sort === undefined ? {} : { sort }),
+      ...(listFilter === undefined ? {} : { listFilter }),
+      ...(doneFilter === undefined ? {} : { doneFilter }),
+      ...(seen === undefined ? {} : { seen }),
+      ...(done === undefined ? {} : { done }),
+      ...(spam === undefined ? {} : { spam }),
+      ...(search === undefined ? {} : { search }),
+      ...(scope === undefined ? {} : { scope }),
+    });
+  } finally {
+    regexSlot?.release();
+  }
   return data(200, sanitizeEmailMessageList(result));
+}
+
+function acquireRegexSearchSlot(key: string): { release(): void } | false {
+  const active = activeRegexSearches.get(key) ?? 0;
+  if (active >= MAX_CONCURRENT_REGEX_SEARCHES_PER_USER) return false;
+  activeRegexSearches.set(key, active + 1);
+  let released = false;
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      const remaining = (activeRegexSearches.get(key) ?? 1) - 1;
+      if (remaining > 0) activeRegexSearches.set(key, remaining);
+      else activeRegexSearches.delete(key);
+    },
+  };
 }
 
 async function handleMailFolderCounts(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -2540,23 +2744,17 @@ async function publishAssignmentAclInvalidation(
       `[mail] assignment filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  for (const targetUserId of targets) {
-    try {
-      await ports.events?.publish({
-        type: 'email_acl.changed',
-        workspaceId,
-        entityType: 'email_acl',
-        entityId: targetUserId,
-        actorUserId,
-        occurredAt: new Date().toISOString(),
-        payload: { targetUserId, state: 'changed' },
-      });
-    } catch (error) {
-      console.warn(
-        `[mail] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  if (!ports.events) return;
+  // Eine Zuweisung aendert nur, WELCHE Nachrichten sichtbar sind — keine Rolle,
+  // kein Binding, keine Konten- oder Teamliste. Ohne reason 'visibility_filter'
+  // erneuerte jeder Betroffene seine Sitzung und verloere Auswahl und Filter.
+  await publishMailVisibilityInvalidation({
+    workspaceId,
+    actorUserId,
+    targetUserIds: targets,
+    events: ports.events,
+    logPrefix: '[mail]',
+  });
 }
 
 async function handleMessageSetArchived(
@@ -3099,6 +3297,7 @@ function sanitizeEmailAccount(account: EmailAccountRecord): EmailAccountRecord {
     imapDeleteOptIn: account.imapDeleteOptIn,
     defaultRemoteContentPolicy: account.defaultRemoteContentPolicy,
     respondToReadReceipts: account.respondToReadReceipts,
+    trustedAuthservId: account.trustedAuthservId,
     imapPasswordConfigured: account.imapPasswordConfigured,
     smtpPasswordConfigured: account.smtpPasswordConfigured,
     oauthRefreshConfigured: account.oauthRefreshConfigured,
@@ -3905,6 +4104,7 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
   }
   const errors: Array<{ field: string; message: string }> = [];
   const allowedFields = new Set([
+    'accountId',
     'subject',
     'bodyText',
     'bodyHtml',
@@ -3920,6 +4120,14 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
   const values: Partial<Extract<EmailComposeDraftUpdateParseResult, { ok: true }>['values']> = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    // Composer "Von" switch: moves the draft; the policy enforcer requires
+    // mail.draft.create on the target account.
+    const parsed = normalizePositiveBodyInt(body.accountId, 'accountId');
+    if (parsed.ok) values.accountId = parsed.value;
+    else errors.push({ field: 'accountId', message: parsed.message });
+  }
 
   assignComposeText(values, errors, body, 'subject', 'subject', 1000);
   assignComposeText(values, errors, body, 'bodyText', 'bodyText', 2_000_000);
@@ -4089,6 +4297,26 @@ function parseComposeSendBody(body: unknown): EmailComposeSendParseResult {
   };
 }
 
+function parseComposeAttachmentCopyBody(
+  body: Record<string, unknown>,
+): { ok: true; sourceAttachmentId: number } | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  const errors: Array<{ field: string; message: string }> = [];
+  for (const key of Object.keys(body)) {
+    if (key !== 'sourceAttachmentId') errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+  }
+  const sourceAttachmentId = positiveIntFromValue(body.sourceAttachmentId);
+  if (sourceAttachmentId === null) {
+    errors.push({ field: 'sourceAttachmentId', message: 'sourceAttachmentId muss eine positive Ganzzahl sein' });
+  }
+  if (errors.length > 0 || sourceAttachmentId === null) {
+    return {
+      ok: false,
+      response: error(400, 'validation_error', 'Compose-attachment payload ist ungueltig', { fields: errors }),
+    };
+  }
+  return { ok: true, sourceAttachmentId };
+}
+
 function parseComposeAttachmentUploadBody(body: unknown): EmailComposeAttachmentUploadParseResult {
   if (!isPlainObject(body)) {
     return {
@@ -4221,7 +4449,16 @@ function parseScheduledSendBody(body: unknown): EmailScheduledSendParseResult {
   }
   const errors: Array<{ field: string; message: string }> = [];
   for (const key of Object.keys(body)) {
-    if (key !== 'sendAt') errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+    if (key !== 'sendAt' && key !== 'pgpEncrypt' && key !== 'pgpSign') {
+      errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+    }
+  }
+  let pgpRequested = false;
+  for (const field of ['pgpEncrypt', 'pgpSign'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const parsed = normalizeBooleanBody(body[field], field);
+    if (!parsed.ok) errors.push({ field, message: parsed.message });
+    else if (parsed.value) pgpRequested = true;
   }
   if (body.sendAt === null || body.sendAt === undefined || body.sendAt === '') {
     return errors.length > 0
@@ -4237,6 +4474,18 @@ function parseScheduledSendBody(body: unknown): EmailScheduledSendParseResult {
     return {
       ok: false,
       response: error(400, 'validation_error', 'Scheduled-send payload ist ungueltig', { fields: errors }),
+    };
+  }
+  if (pgpRequested) {
+    // The scheduled-send ticker has no PGP intent or passphrase to work with and
+    // would transmit the draft in plaintext, so refuse the schedule outright.
+    return {
+      ok: false,
+      response: error(
+        400,
+        'email_scheduled_send_pgp_unsupported',
+        'Geplanter Versand ist mit PGP-Verschluesselung oder -Signatur nicht moeglich',
+      ),
     };
   }
   return { ok: true, sendAt };
@@ -4299,31 +4548,23 @@ function recipientJsonObjectFromField(raw: string): { value: { address: string }
 
 function extractEmailAddressesFromRecipientField(raw: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
-    const match = /^(.+)<([^>]+)>$/.exec(text);
+    const match = /^(.*)<([^>]+)>$/.exec(text);
     const candidate = (match ? match[2] : text)?.trim() ?? '';
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) {
-      out.push(normalizeRecipientEmailAddress(candidate));
+      // Drafts store delivery addresses (scheduled send reads them back):
+      // local part incl. case and plus tag is kept, duplicates collapse case-insensitively.
+      const address = emailAddressForDelivery(candidate);
+      const identity = address.toLowerCase();
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      out.push(address);
     }
   }
-  return [...new Set(out)];
-}
-
-function normalizeRecipientEmailAddress(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  const at = trimmed.lastIndexOf('@');
-  if (at <= 0) return trimmed;
-  const local = trimmed.slice(0, at);
-  let domain = trimmed.slice(at + 1);
-  try {
-    domain = new URL(`http://${domain}`).hostname || domain;
-  } catch {
-    /* keep lower-cased domain */
-  }
-  const plus = local.indexOf('+');
-  return `${plus >= 0 ? local.slice(0, plus) : local}@${domain}`;
+  return out;
 }
 
 function normalizeDraftAttachmentPaths(rawValue: unknown): { ok: true; value: readonly string[] } | { ok: false; message: string } {
@@ -4380,6 +4621,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
     'vacationBodyText',
     'requestReadReceipt',
     'imapDeleteOptIn',
+    'trustedAuthservId',
   ]);
 
   for (const key of Object.keys(body)) {
@@ -4415,6 +4657,7 @@ function parseEmailAccountMutationBody(body: unknown): EmailAccountMutationParse
   assignParsed(values, errors, body, 'vacationBodyText', (value) => normalizeNullableBodyText(value, 'vacationBodyText', 10000));
   assignParsed(values, errors, body, 'requestReadReceipt', (value) => normalizeBooleanBody(value, 'requestReadReceipt'));
   assignParsed(values, errors, body, 'imapDeleteOptIn', (value) => normalizeBooleanBody(value, 'imapDeleteOptIn'));
+  assignParsed(values, errors, body, 'trustedAuthservId', normalizeTrustedAuthservIdBody);
 
   if (errors.length > 0) {
     return {
@@ -5036,7 +5279,7 @@ function parseMailConnectionTestBody(
     ? new Set(['accountId', 'imapHost', 'imapPort', 'imapTls', 'imapUsername', 'imapPassword'])
     : protocol === 'pop3'
       ? new Set(['accountId', 'host', 'port', 'tls', 'user', 'password'])
-      : new Set(['accountId', 'host', 'port', 'secure', 'user', 'password', 'smtpUseImapAuth']);
+      : new Set(['accountId', 'host', 'port', 'secure', 'tls', 'user', 'password', 'smtpUseImapAuth']);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
@@ -5078,6 +5321,14 @@ function parseMailConnectionTestBody(
     const smtpUseImapAuth = normalizeBooleanBody(body.smtpUseImapAuth, 'smtpUseImapAuth');
     if (smtpUseImapAuth.ok) values.smtpUseImapAuth = smtpUseImapAuth.value;
     else errors.push({ field: 'smtpUseImapAuth', message: smtpUseImapAuth.message });
+  }
+
+  // SMTP: `secure` is implicit TLS, the optional `tls` is the form's TLS switch
+  // (enforce STARTTLS off port 465). Older clients omit it.
+  if (protocol === 'smtp' && body.tls !== undefined) {
+    const requireTls = normalizeBooleanBody(body.tls, 'tls');
+    if (requireTls.ok) values.requireTls = requireTls.value;
+    else errors.push({ field: 'tls', message: requireTls.message });
   }
 
   if (errors.length > 0) {
@@ -5129,6 +5380,16 @@ function normalizeNullableBodyText(
   if (!value) return { ok: true, value: null };
   if (value.length > maxLength) return { ok: false, message: `${field} darf maximal ${maxLength} Zeichen haben` };
   return { ok: true, value };
+}
+
+function normalizeTrustedAuthservIdBody(
+  rawValue: unknown,
+): { ok: true; value: string | null } | { ok: false; message: string } {
+  if (rawValue !== null && typeof rawValue !== 'string') {
+    return { ok: false, message: 'trustedAuthservId muss ein String oder null sein' };
+  }
+  const result = normalizeTrustedAuthservIdSetting(rawValue);
+  return result.ok ? result : { ok: false, message: `trustedAuthservId: ${result.message}` };
 }
 
 function normalizePasswordBody(rawValue: unknown): { ok: true; value: string } | { ok: false; message: string } {

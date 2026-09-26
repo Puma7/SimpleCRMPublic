@@ -36,7 +36,8 @@ export const taskService = {
       return tasks.map(normalizeTask);
     } catch (error) {
       console.error('Failed to fetch tasks:', error);
-      return [];
+      // The task page shows its error state only when the failure reaches it.
+      throw error;
     }
   },
 

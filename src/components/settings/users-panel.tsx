@@ -63,6 +63,10 @@ export function UsersPanel() {
   // und bearbeiten, aber weder einladen noch fremde 2FA umstellen — solche
   // Knoepfe waeren garantierte 403er und bleiben deshalb aus.
   const isAdmin = currentUser?.role === "owner" || currentUser?.role === "admin"
+  // G3: Owner-Konten aendern nur Owner (Server owner_management_requires_owner,
+  // Desktop saveLocalAuthUser/deleteLocalAuthUser). Fuer alle anderen waeren die
+  // Knoepfe an einer Owner-Zeile garantierte Ablehnungen.
+  const canChangeUser = (u: UserRow) => u.role !== "owner" || currentUser?.role === "owner"
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -148,7 +152,7 @@ export function UsersPanel() {
       setError(null)
       setRowBusy(u.id)
       try {
-        await invokeRenderer(IPCChannels.Auth.SaveUser, {
+        const result = (await invokeRenderer(IPCChannels.Auth.SaveUser, {
           id: u.id,
           username: u.username,
           displayName: u.display_name,
@@ -158,7 +162,13 @@ export function UsersPanel() {
           // reactivates a disabled user. An explicit toggle in `changes` wins.
           isActive: Boolean(u.is_active),
           ...changes,
-        })
+        })) as { success: boolean; error?: string } | undefined
+        // The desktop store rejects an update (e.g. the last active owner) with
+        // { success: false } instead of throwing, same as DeleteUser.
+        if (result && result.success === false) {
+          setError(result.error || "Benutzer konnte nicht gespeichert werden.")
+          return
+        }
         await load()
         // If the signed-in user edited their own row (notably the public name),
         // force a fresh auth session so {{user.publicName}} interpolation in
@@ -239,42 +249,26 @@ export function UsersPanel() {
                   {u.is_active ? "aktiv" : "inaktiv"}
                 </span>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  // Block self-deactivation: disabling your own account fails the
-                  // next authenticated request (server) or blocks the next login
-                  // (standalone) and can lock the operator out.
-                  disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
-                  title={
-                    currentUser?.id === u.id && u.is_active
-                      ? "Sie können Ihr eigenes Konto nicht deaktivieren"
-                      : undefined
-                  }
-                  onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
-                >
-                  {u.is_active ? "Deaktivieren" : "Reaktivieren"}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  disabled={rowBusy === u.id}
-                  onClick={() => {
-                    setPwEditId(pwEditId === u.id ? null : u.id)
-                    setPwValue("")
-                  }}
-                >
-                  Passwort neu setzen
-                </Button>
-                {/* Public name is a server-edition concept: the local Electron
-                    auth store has no public_name column, so a desktop save would
-                    silently revert. Hide the control outside server mode. */}
-                {serverClientMode ? (
+              {canChangeUser(u) ? (
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    // Block self-deactivation: disabling your own account fails the
+                    // next authenticated request (server) or blocks the next login
+                    // (standalone) and can lock the operator out.
+                    disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
+                    title={
+                      currentUser?.id === u.id && u.is_active
+                        ? "Sie können Ihr eigenes Konto nicht deaktivieren"
+                        : undefined
+                    }
+                    onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
+                  >
+                    {u.is_active ? "Deaktivieren" : "Reaktivieren"}
+                  </Button>
                   <Button
                     type="button"
                     size="sm"
@@ -282,25 +276,45 @@ export function UsersPanel() {
                     className="h-7 text-xs"
                     disabled={rowBusy === u.id}
                     onClick={() => {
-                      setPnEditId(pnEditId === u.id ? null : u.id)
-                      setPnValue(u.public_name ?? "")
+                      setPwEditId(pwEditId === u.id ? null : u.id)
+                      setPwValue("")
                     }}
                   >
-                    Öffentl. Name
+                    Passwort neu setzen
                   </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-destructive hover:text-destructive"
-                  disabled={rowBusy === u.id || currentUser?.id === u.id}
-                  title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
-                  onClick={() => void deleteUser(u)}
-                >
-                  Löschen
-                </Button>
-              </div>
+                  {/* Public name is a server-edition concept: the local Electron
+                      auth store has no public_name column, so a desktop save would
+                      silently revert. Hide the control outside server mode. */}
+                  {serverClientMode ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs"
+                      disabled={rowBusy === u.id}
+                      onClick={() => {
+                        setPnEditId(pnEditId === u.id ? null : u.id)
+                        setPnValue(u.public_name ?? "")
+                      }}
+                    >
+                      Öffentl. Name
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-destructive hover:text-destructive"
+                    disabled={rowBusy === u.id || currentUser?.id === u.id}
+                    title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
+                    onClick={() => void deleteUser(u)}
+                  >
+                    Löschen
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">Nur Owner können Owner-Konten ändern.</p>
+              )}
               {pwEditId === u.id ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Input
@@ -377,6 +391,7 @@ export function UsersPanel() {
                   user={u}
                   disabled={busy}
                   canManageMfa={isAdmin || currentUser?.id === u.id}
+                  readOnly={!canChangeUser(u)}
                   onChanged={() => void load()}
                 />
               ) : null}
@@ -503,6 +518,8 @@ function UserSecurityActions(props: {
   disabled?: boolean
   /** Admin oder der Nutzer selbst — nur dann lassen die 2FA-Endpunkte zu. */
   canManageMfa?: boolean
+  /** Nur Status anzeigen, keine PIN-/2FA-Aktionen (Owner-Konto fuer Nicht-Owner, G3). */
+  readOnly?: boolean
   onChanged: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -511,6 +528,10 @@ function UserSecurityActions(props: {
   const [totpSecret, setTotpSecret] = useState("")
   const [totpUri, setTotpUri] = useState("")
   const [totpCode, setTotpCode] = useState("")
+  // The server requires the actor's current password before any MFA change.
+  const [totpPassword, setTotpPassword] = useState("")
+  const [stepUpAction, setStepUpAction] = useState<"disable" | "email" | null>(null)
+  const [stepUpPassword, setStepUpPassword] = useState("")
   const [pinOpen, setPinOpen] = useState(false)
   const [pinValue, setPinValue] = useState("")
 
@@ -535,6 +556,7 @@ function UserSecurityActions(props: {
       setTotpSecret(setup.secret)
       setTotpUri(setup.otpauthUri)
       setTotpCode("")
+      setTotpPassword("")
       setTotpOpen(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Authenticator-Setup fehlgeschlagen")
@@ -552,6 +574,7 @@ function UserSecurityActions(props: {
       await client.confirmUserTotpSetup(session!.tokens.accessToken, props.user.id, {
         secret: totpSecret,
         code: totpCode.trim(),
+        currentPassword: totpPassword,
       })
       setTotpOpen(false)
       props.onChanged()
@@ -562,13 +585,13 @@ function UserSecurityActions(props: {
     }
   }
 
-  async function enableEmailMfa() {
+  async function enableEmailMfa(currentPassword: string) {
     setError(null)
     setBusy(true)
     try {
       const client = getClient()
       const session = client.getSession()
-      await client.enableUserEmailMfa(session!.tokens.accessToken, props.user.id)
+      await client.enableUserEmailMfa(session!.tokens.accessToken, props.user.id, { currentPassword })
       props.onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : "E-Mail-2FA konnte nicht aktiviert werden")
@@ -577,13 +600,13 @@ function UserSecurityActions(props: {
     }
   }
 
-  async function disableMfa() {
+  async function disableMfa(currentPassword: string) {
     setError(null)
     setBusy(true)
     try {
       const client = getClient()
       const session = client.getSession()
-      await client.disableUserMfa(session!.tokens.accessToken, props.user.id)
+      await client.disableUserMfa(session!.tokens.accessToken, props.user.id, { currentPassword })
       props.onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : "2FA konnte nicht deaktiviert werden")
@@ -614,6 +637,19 @@ function UserSecurityActions(props: {
     }
   }
 
+  function openStepUp(action: "disable" | "email") {
+    setError(null)
+    setStepUpPassword("")
+    setStepUpAction(action)
+  }
+
+  function confirmStepUp() {
+    const action = stepUpAction
+    setStepUpAction(null)
+    if (action === "disable") void disableMfa(stepUpPassword)
+    if (action === "email") void enableEmailMfa(stepUpPassword)
+  }
+
   const securityBits = [
     props.user.login_pin_enabled ? "PIN" : null,
     props.user.mfa_enabled
@@ -628,78 +664,80 @@ function UserSecurityActions(props: {
       <p className="text-xs text-muted-foreground">
         Login-Sicherheit: {securityBits.length > 0 ? securityBits.join(", ") : "keine Zusatzfaktoren"}
       </p>
-      <div className="flex flex-wrap gap-2">
-        {props.user.login_pin_enabled ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => void saveLoginPin(null)}
-          >
-            PIN entfernen
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => {
-              setPinValue("")
-              setPinOpen(true)
-            }}
-          >
-            Login-PIN setzen
-          </Button>
-        )}
-        {props.user.login_pin_enabled ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => {
-              setPinValue("")
-              setPinOpen(true)
-            }}
-          >
-            PIN aendern
-          </Button>
-        ) : null}
-        {props.canManageMfa === false ? null : !props.user.mfa_enabled ? (
-          <>
+      {props.readOnly ? null : (
+        <div className="flex flex-wrap gap-2">
+          {props.user.login_pin_enabled ? (
             <Button
               type="button"
               size="sm"
               variant="outline"
               disabled={props.disabled || busy}
-              onClick={() => void beginTotp()}
+              onClick={() => void saveLoginPin(null)}
             >
-              Authenticator einrichten
+              PIN entfernen
             </Button>
+          ) : (
             <Button
               type="button"
               size="sm"
               variant="outline"
               disabled={props.disabled || busy}
-              onClick={() => void enableEmailMfa()}
+              onClick={() => {
+                setPinValue("")
+                setPinOpen(true)
+              }}
             >
-              E-Mail-2FA aktivieren
+              Login-PIN setzen
             </Button>
-          </>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => void disableMfa()}
-          >
-            2FA deaktivieren
-          </Button>
-        )}
-      </div>
+          )}
+          {props.user.login_pin_enabled ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => {
+                setPinValue("")
+                setPinOpen(true)
+              }}
+            >
+              PIN aendern
+            </Button>
+          ) : null}
+          {props.canManageMfa === false ? null : !props.user.mfa_enabled ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={props.disabled || busy}
+                onClick={() => void beginTotp()}
+              >
+                Authenticator einrichten
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={props.disabled || busy}
+                onClick={() => openStepUp("email")}
+              >
+                E-Mail-2FA aktivieren
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => openStepUp("disable")}
+            >
+              2FA deaktivieren
+            </Button>
+          )}
+        </div>
+      )}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <Dialog open={pinOpen} onOpenChange={setPinOpen}>
         <DialogContent>
@@ -762,6 +800,16 @@ function UserSecurityActions(props: {
                 onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
               />
             </div>
+            <div>
+              <Label htmlFor={`totp-password-${props.user.id}`}>Ihr aktuelles Passwort</Label>
+              <Input
+                id={`totp-password-${props.user.id}`}
+                type="password"
+                autoComplete="current-password"
+                value={totpPassword}
+                onChange={(e) => setTotpPassword(e.target.value)}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setTotpOpen(false)}>
@@ -769,10 +817,40 @@ function UserSecurityActions(props: {
             </Button>
             <Button
               type="button"
-              disabled={busy || totpCode.length !== 6}
+              disabled={busy || totpCode.length !== 6 || !totpPassword}
               onClick={() => void confirmTotp()}
             >
               Aktivieren
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={stepUpAction !== null} onOpenChange={(open) => { if (!open) setStepUpAction(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {stepUpAction === "disable" ? "2FA deaktivieren" : "E-Mail-2FA aktivieren"}
+            </DialogTitle>
+            <DialogDescription>
+              Änderungen am zweiten Faktor bitte mit Ihrem eigenen aktuellen Passwort bestätigen.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor={`mfa-step-up-password-${props.user.id}`}>Ihr aktuelles Passwort</Label>
+            <Input
+              id={`mfa-step-up-password-${props.user.id}`}
+              type="password"
+              autoComplete="current-password"
+              value={stepUpPassword}
+              onChange={(e) => setStepUpPassword(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setStepUpAction(null)}>
+              Abbrechen
+            </Button>
+            <Button type="button" disabled={busy || !stepUpPassword} onClick={confirmStepUp}>
+              Bestätigen
             </Button>
           </DialogFooter>
         </DialogContent>

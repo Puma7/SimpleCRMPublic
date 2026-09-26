@@ -10,10 +10,11 @@
  * a manipulated row must not pull arbitrary files into the search index.
  */
 import fs from 'fs';
-import path from 'path';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
+import { resolveStoredAttachmentPath } from './attachment-storage-path';
+import { extractDocxTextInWorker } from './attachment-text-docx';
 import {
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
@@ -40,18 +41,15 @@ export type ExtractOpts = {
   attachmentsRoot?: string;
 };
 
-/** storage_path -> absoluter Pfad, nur wenn er im Attachments-Root liegt. */
+/** storage_path (relativ oder Altpfad) -> absoluter Pfad, nur wenn er im Attachments-Root liegt. */
 function resolveConfinedStoragePath(storagePath: string, attachmentsRoot?: string): string | null {
-  const root = path.resolve(attachmentsRoot ?? getAttachmentsRootForExport());
-  const resolved = path.resolve(storagePath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
-  return resolved;
+  return resolveStoredAttachmentPath(storagePath, attachmentsRoot ?? getAttachmentsRootForExport());
 }
 
 /**
- * Reject after ms. NB: the underlying parse promise cannot be cancelled and
- * may keep running detached — acceptable, the row is marked as tried and the
- * pipeline moves on.
+ * Reject after ms. NB: a pdf parse cannot be cancelled and may keep running
+ * detached — acceptable, the row is marked as tried and the pipeline moves
+ * on. The docx worker is terminated at the same deadline.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -89,11 +87,9 @@ export async function extractAttachmentTextFromBuffer(
         await parser.destroy().catch(() => undefined);
       }
     }
-    case 'docx': {
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      return capAttachmentText(result.value ?? '');
-    }
+    case 'docx':
+      // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
+      return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
   }
 }
 
@@ -131,6 +127,9 @@ export async function extractTextForAttachmentRow(
       return false;
     }
     const buf = await fs.promises.readFile(resolvedPath);
+    // Mark as tried before parsing: if a parse takes the process down, the
+    // backfill must not pick the same row again on every start.
+    markExtracted(row.id, null);
     const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     markExtracted(row.id, text.length > 0 ? text : null);
     return text.length > 0;

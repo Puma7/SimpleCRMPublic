@@ -294,11 +294,16 @@ function createHarnessPorts(input: HarnessState, events: ServerEventPort): Serve
       async get() { return null; },
     },
     mailAccess: {
-      async assertPermission() {
-        if (!input.managerHasAccess) throw new Error('mail_access_denied');
+      async assertPermission(request) {
+        // Unrelated users must remain unrelated while the manager has access.
+        // Resource-scoped ACL notifications consult this port for each recipient.
+        if (request.actor.userId !== MANAGER_ID || !input.managerHasAccess) {
+          throw new Error('mail_access_denied');
+        }
       },
-      async resolveScope() {
-        return input.managerHasAccess ? { kind: 'all' } : { kind: 'none' };
+      async resolveScope(request) {
+        return request.actor.userId === MANAGER_ID && input.managerHasAccess
+          ? { kind: 'all' } : { kind: 'none' };
       },
     },
     mailResourceLookup: {

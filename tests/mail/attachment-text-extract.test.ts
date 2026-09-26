@@ -8,6 +8,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'node:child_process';
+import { deflateRawSync } from 'zlib';
 import Database from 'better-sqlite3';
 
 let db: Database.Database;
@@ -79,6 +81,65 @@ async function buildMiniDocx(text: string): Promise<Buffer> {
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
+/** ZIP with DEFLATE entries from node:zlib (JSZip's JS deflate is too slow for a 40 MiB bomb). */
+function buildDeflatedZip(files: Array<[string, Buffer]>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const [name, data] of files) {
+    const nameBytes = Buffer.from(name);
+    const compressed = deflateRawSync(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    localParts.push(local, nameBytes, compressed);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + compressed.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+/** DOCX whose document.xml inflates far beyond its compressed size. */
+async function buildExpandingDocx(uncompressedTextBytes: number): Promise<Buffer> {
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>');
+  zip.file(
+    'word/document.xml',
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${'a'.repeat(uncompressedTextBytes)}</w:t></w:r></w:p></w:body></w:document>`,
+  );
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+}
+
+/** Rewrites the central-directory uncompressed size of every entry (lying archive). */
+function forgeDeclaredSizes(zipBuf: Buffer, declared: number): Buffer {
+  const out = Buffer.from(zipBuf);
+  for (let i = out.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); i >= 0; i = out.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), i + 4)) {
+    out.writeUInt32LE(declared, i + 24);
+  }
+  return out;
+}
+
 describe('attachment text extraction', () => {
   let tmpDir: string;
 
@@ -138,20 +199,86 @@ describe('attachment text extraction', () => {
     ).toBe('Hallo Welt');
   });
 
-  // pdf-parse (pdfjs) laedt seinen Worker per dynamischem ESM-Import, was in
-  // Jests CJS-VM ohne --experimental-vm-modules nicht funktioniert. Derselbe
-  // Codepfad ist unter echtem Node verifiziert (siehe PR-/Report-Notiz):
-  //   new PDFParse({data}) -> getText() liefert den Textinhalt des Mini-PDFs.
-  test.skip('buffer extraction: pdf (pdf-parse) — nur unter echtem Node lauffaehig', async () => {
-    const text = await extractAttachmentTextFromBuffer(buildMiniPdf('Suchtext PDF Inhalt'), 'pdf');
-    expect(text).toContain('Suchtext PDF Inhalt');
-  });
+  // Use real Node workers outside Jest's CJS VM, with the production source.
+  test('buffer extraction: pdf through desktop and server Node runtimes', () => {
+    const script = `
+      import { readFileSync } from 'node:fs';
+      import { extractAttachmentTextFromBuffer as desktop } from './electron/email/attachment-text-extract.ts';
+      import { extractAttachmentTextFromBuffer as server } from './packages/server/src/mail-attachment-text.ts';
+      const input = readFileSync(0);
+      process.stdout.write(JSON.stringify({
+        desktop: await desktop(input, 'pdf'),
+        server: await server(input, 'pdf'),
+      }));
+    `;
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        // Match Jest's source aliases; a fresh checkout has no core/dist yet.
+        TSX_TSCONFIG_PATH: path.resolve(__dirname, '../setup/tsconfig.node-runtime.json'),
+      },
+      input: buildMiniPdf('Suchtext PDF Inhalt'),
+      encoding: 'utf8',
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    const result = JSON.parse(output) as { desktop: string; server: string };
+    expect(result.desktop).toContain('Suchtext PDF Inhalt');
+    expect(result.server).toContain('Suchtext PDF Inhalt');
+  }, 20_000);
 
   test('buffer extraction: docx (mammoth)', async () => {
     const docx = await buildMiniDocx('Suchtext DOCX Inhalt');
     const text = await extractAttachmentTextFromBuffer(docx, 'docx');
     expect(text).toContain('Suchtext DOCX Inhalt');
   });
+
+  // F-A5-04: DOCX wurde ohne jede Groessenpruefung an mammoth gegeben; ein kleines Archiv mit 40 MiB Deflate-Inhalt wurde voll entpackt.
+  test('buffer extraction: docx zip bomb is rejected before mammoth inflates it', async () => {
+    const docx = buildDeflatedZip([
+      [
+        '[Content_Types].xml',
+        Buffer.from(
+          '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        ),
+      ],
+      [
+        'word/document.xml',
+        Buffer.concat([
+          Buffer.from(
+            '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Bombe</w:t></w:r></w:p></w:body></w:document>',
+          ),
+          Buffer.alloc(40 * 1024 * 1024, 0x20),
+        ]),
+      ],
+    ]);
+    expect(docx.length).toBeLessThan(1024 * 1024);
+
+    await expect(extractAttachmentTextFromBuffer(docx, 'docx')).rejects.toThrow(
+      /DOCX archive exceeds safe expansion limit/,
+    );
+  }, 30_000);
+
+  // F-A7b-12: Nur die komprimierte Groesse war begrenzt; eine DOCX-Zip-Bombe wurde im Hauptprozess vollstaendig entpackt und geparst.
+  test('buffer extraction: docx archives that expand beyond the limit are rejected before parsing', async () => {
+    const bomb = await buildExpandingDocx(34 * 1024 * 1024);
+    expect(bomb.length).toBeLessThan(1024 * 1024);
+    await expect(extractAttachmentTextFromBuffer(bomb, 'docx')).rejects.toThrow(/expansion/i);
+  }, 60_000);
+
+  test('buffer extraction: docx archives with forged small entry sizes are still stopped', async () => {
+    const forged = forgeDeclaredSizes(await buildExpandingDocx(34 * 1024 * 1024), 64);
+    await expect(extractAttachmentTextFromBuffer(forged, 'docx')).rejects.toThrow();
+  }, 60_000);
+
+  test('buffer extraction: docx archives with too many entries are rejected', async () => {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    for (let i = 0; i < 2100; i += 1) zip.file(`word/part${i}.xml`, '<x/>');
+    const buf = await zip.generateAsync({ type: 'nodebuffer' });
+    await expect(extractAttachmentTextFromBuffer(buf, 'docx')).rejects.toThrow(/expansion/i);
+  }, 60_000);
 
   test('row extraction stores text and marks the row', async () => {
     const file = path.join(tmpDir, 'brief.txt');

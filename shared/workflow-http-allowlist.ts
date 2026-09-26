@@ -1,4 +1,7 @@
-import { isIP } from 'node:net';
+import { isPrivateOrReservedIp } from '../packages/core/src/net/reserved-ip';
+
+// Same private/reserved address ranges as the server edition's webhooks.
+export { isPrivateOrReservedIp };
 
 export const MIN_ALLOWLIST_LABEL_LENGTH = 4;
 export const DEFAULT_HTTP_METHODS = ['GET', 'POST'] as const;
@@ -49,38 +52,6 @@ export function isBlockedHttpHostname(host: string): boolean {
   if (h.endsWith('.local') || h.endsWith('.internal')) return true;
   if (h === 'metadata.google.internal' || h === 'metadata') return true;
   return false;
-}
-
-export function isPrivateOrReservedIp(host: string): boolean {
-  const h = host.replace(/^\[|\]$/g, '').toLowerCase();
-  const kind = isIP(h);
-  if (kind === 4) {
-    const [a, b] = h.split('.').map((x) => parseInt(x, 10));
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true;
-    return false;
-  }
-  if (kind === 6) {
-    if (h === '::1' || h === '::') return true;
-    // fe80::/10 (link-local), not only the fe80: textual prefix.
-    if (isIpv6LinkLocal(h) || h.startsWith('fc') || h.startsWith('fd')) return true;
-    if (h.startsWith('::ffff:')) {
-      const mapped = h.slice('::ffff:'.length);
-      if (isIP(mapped) === 4) return isPrivateOrReservedIp(mapped);
-    }
-  }
-  return false;
-}
-
-/** IPv6 link-local is fe80::/10 (fe80–febf), not merely hosts starting with "fe80:". */
-function isIpv6LinkLocal(host: string): boolean {
-  const first = host.split(':', 1)[0] ?? '';
-  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
-  const n = Number.parseInt(first, 16);
-  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 export function isHttpMethodAllowed(method: string): boolean {

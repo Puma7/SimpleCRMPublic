@@ -88,8 +88,12 @@ export function AccountsMasterDetailSettings() {
   //   dort auch mit mail.account.manage — Anlegen ist faktisch Owner/Admin.
   //   Deshalb `mailAccessUnrestricted` statt der blossen Berechtigung; wer das
   //   fuer Delegierte oeffnen will, muss zuerst die Server-Policy aendern.
-  const { hasMailPermissionForAccount, mailAccessUnrestricted } = useAuth()
-  const canCreateAccount = mailAccessUnrestricted
+  const { hasMailPermissionForAccount, mailAccessUnrestricted, user } = useAuth()
+  // Im Desktop gibt es keine Mail-ACL (dort ist alles "erlaubt"); Anlegen,
+  // Bearbeiten, Loeschen und die Verbindungstests verlangen per IPC Owner/Admin
+  // (E16). Ohne diese Rolle waeren Formular und Test-Knoepfe garantierte Fehler.
+  const accountAdminByRole = serverClientMode || user?.role === "owner" || user?.role === "admin"
+  const canCreateAccount = mailAccessUnrestricted && accountAdminByRole
 
   // Faellt das Recht weg (Bericht trifft spaet ein, oder eine ACL-Aenderung
   // entzieht es), darf kein offenes Anlege-Formular stehenbleiben — sein
@@ -186,6 +190,7 @@ export function AccountsMasterDetailSettings() {
   // Wer das Konto nur sehen darf, bekaeme beim Speichern garantiert ein 403 —
   // die Editoren bleiben deshalb weg, die Auswahl selbst nicht.
   const canManageSelectedAccount = selected != null
+    && accountAdminByRole
     && hasMailPermissionForAccount("mail.account.manage", selected.id)
 
   // Sichtbarkeit ist nicht dasselbe wie Zugriff AUF DAS KONTO. Wer nur einen
