@@ -20,10 +20,34 @@ import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { brotliCompress, brotliDecompress, constants as zlibConstants } from 'node:zlib';
 
+import {
+  packPartsContainer,
+  rawPartsDir,
+  readVerifiedPart,
+  reassembleParts,
+  unpackPartsContainer,
+  type StrippedPart,
+} from './mail-raw-parts';
+
 const brotliCompressAsync = promisify(brotliCompress);
 const brotliDecompressAsync = promisify(brotliDecompress);
 
 export const STORED_RAW_CODEC_BROTLI = 'br';
+/** Attachment parts that exist as files are taken out (mail-raw-parts.ts). */
+export const STORED_RAW_CODEC_PARTS = 'br-parts';
+
+/** Returns the verified bytes of a taken-out part (size and sha256 checked). */
+export type RawPartReader = (sha256: string, size: number) => Promise<Buffer>;
+
+export type LoadStoredRawOptions = Readonly<{ readPart?: RawPartReader }>;
+
+/** Part reader of a workspace, or undefined without an attachments root. */
+export function rawPartReaderFor(attachmentsRoot: string | undefined, workspaceId: string): RawPartReader | undefined {
+  if (!attachmentsRoot) return undefined;
+  const dir = rawPartsDir(attachmentsRoot, workspaceId);
+  if (!dir) return undefined;
+  return (sha256, size) => readVerifiedPart(dir, sha256, size);
+}
 
 /** Quality 5: about gzip -9 ratio at gzip -6 speed; decompression is fast at any level. */
 const BROTLI_QUALITY = 5;
@@ -34,6 +58,7 @@ export const storedRawColumns = [
   'raw_rfc822_codec',
   'raw_rfc822_sha256',
   'raw_rfc822_size',
+  'raw_rfc822_part_sha256s',
 ] as const;
 
 export type StoredRawColumns = {
@@ -42,6 +67,7 @@ export type StoredRawColumns = {
   raw_rfc822_codec?: string | null;
   raw_rfc822_sha256?: string | null;
   raw_rfc822_size?: number | string | bigint | null;
+  raw_rfc822_part_sha256s?: readonly string[] | null;
 };
 
 export type EncodedStoredRaw = {
@@ -96,20 +122,77 @@ export function hasStoredRaw(row: StoredRawColumns): boolean {
   return Boolean(row.raw_rfc822_z && row.raw_rfc822_z.length > 0) || Boolean(row.raw_rfc822_b64?.trim());
 }
 
+export type EncodedStoredRawParts = {
+  raw_rfc822_b64: null;
+  raw_rfc822_z: Buffer;
+  raw_rfc822_codec: typeof STORED_RAW_CODEC_PARTS;
+  raw_rfc822_sha256: string;
+  raw_rfc822_size: number;
+  raw_rfc822_part_sha256s: string[];
+};
+
+/**
+ * Stores an original without the given parts and proves that reading it back
+ * through `readPart` yields exactly the original; otherwise this throws and
+ * nothing is stored.
+ */
+export async function encodeRawWithPartsForStorage(
+  original: Buffer,
+  stripped: { skeleton: Buffer; parts: readonly StrippedPart[] },
+  readPart: RawPartReader,
+): Promise<EncodedStoredRawParts> {
+  const container = packPartsContainer(stripped.skeleton, stripped.parts);
+  const compressed = await brotliCompressAsync(container, {
+    params: {
+      [zlibConstants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY,
+      [zlibConstants.BROTLI_PARAM_SIZE_HINT]: container.length,
+    },
+  });
+  const encoded: EncodedStoredRawParts = {
+    raw_rfc822_b64: null,
+    raw_rfc822_z: compressed,
+    raw_rfc822_codec: STORED_RAW_CODEC_PARTS,
+    raw_rfc822_sha256: sha256Hex(original),
+    raw_rfc822_size: original.length,
+    raw_rfc822_part_sha256s: [...new Set(stripped.parts.map((part) => part.sha256))],
+  };
+  const roundTrip = await loadStoredRaw(encoded, { readPart });
+  if (!roundTrip || !roundTrip.equals(original)) {
+    throw new StoredRawIntegrityError('original without parts does not round-trip');
+  }
+  return encoded;
+}
+
 /**
  * The original bytes of a stored message, or null when none is stored.
- * Throws StoredRawIntegrityError when the stored value is damaged.
+ * Throws StoredRawIntegrityError when the stored value is damaged or a
+ * taken-out part is missing.
  */
-export async function loadStoredRaw(row: StoredRawColumns): Promise<Buffer | null> {
+export async function loadStoredRaw(
+  row: StoredRawColumns,
+  options: LoadStoredRawOptions = {},
+): Promise<Buffer | null> {
   if (row.raw_rfc822_z && row.raw_rfc822_z.length > 0) {
-    if (row.raw_rfc822_codec !== STORED_RAW_CODEC_BROTLI) {
-      throw new StoredRawIntegrityError(`unknown raw_rfc822_codec ${String(row.raw_rfc822_codec)}`);
+    const codec = row.raw_rfc822_codec;
+    if (codec !== STORED_RAW_CODEC_BROTLI && codec !== STORED_RAW_CODEC_PARTS) {
+      throw new StoredRawIntegrityError(`unknown raw_rfc822_codec ${String(codec)}`);
     }
     let original: Buffer;
     try {
       original = await brotliDecompressAsync(Buffer.from(row.raw_rfc822_z));
     } catch (error) {
       throw new StoredRawIntegrityError(`stored original cannot be decompressed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (codec === STORED_RAW_CODEC_PARTS) {
+      if (!options.readPart) {
+        throw new StoredRawIntegrityError('stored original needs its attachment parts, but no attachments root is configured');
+      }
+      try {
+        const { skeleton, parts } = unpackPartsContainer(original);
+        original = await reassembleParts(skeleton, parts, options.readPart);
+      } catch (error) {
+        throw new StoredRawIntegrityError(`stored original cannot be reassembled: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     const expectedSize = row.raw_rfc822_size === null || row.raw_rfc822_size === undefined
       ? null
@@ -131,9 +214,10 @@ export async function loadStoredRaw(row: StoredRawColumns): Promise<Buffer | nul
 export async function loadStoredRawOrNull(
   row: StoredRawColumns,
   context: string,
+  options: LoadStoredRawOptions = {},
 ): Promise<Buffer | null> {
   try {
-    return await loadStoredRaw(row);
+    return await loadStoredRaw(row, options);
   } catch (error) {
     console.error(`[mail] ${context}: ${error instanceof Error ? error.message : String(error)}`);
     return null;

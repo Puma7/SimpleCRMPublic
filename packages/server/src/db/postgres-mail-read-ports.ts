@@ -104,7 +104,7 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
-import { loadStoredRawOrNull, storedRawColumns, type StoredRawColumns } from '../mail-raw-storage';
+import { loadStoredRawOrNull, rawPartReaderFor, storedRawColumns, type StoredRawColumns } from '../mail-raw-storage';
 import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
 import {
   approveDraftSendInTransaction,
@@ -395,6 +395,7 @@ type SpamLearningSettings = {
 
 type RspamdLearningRequest = {
   label: RspamdLearnLabel;
+  workspaceId: string;
   messageId: number;
   storedRaw: StoredRawColumns;
   rawHeaders: string | null;
@@ -1666,6 +1667,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           input.messageId,
           values,
           new Date(),
+          options.attachmentsRoot,
         ),
         { applySession: options.applyWorkspaceSession },
       );
@@ -1682,7 +1684,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('id', '=', input.id)
             .executeTakeFirst();
           if (!row) return null;
-          return mapEmailMessageRawHeadersRow(row, await loadStoredRawOrNull(row, `raw source of message ${input.id}`));
+          return mapEmailMessageRawHeadersRow(row, await loadStoredRawOrNull(row, `raw source of message ${input.id}`, {
+            readPart: rawPartReaderFor(options.attachmentsRoot, input.workspaceId),
+          }));
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -2257,7 +2261,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                   now,
                 });
               }
-              const rspamdLearning = rspamdLearningRequestForMessage(current, label, learningSettings);
+              const rspamdLearning = rspamdLearningRequestForMessage(current, label, learningSettings, input.workspaceId);
               if (rspamdLearning) rspamdLearningRequests.push(rspamdLearning);
             }
           }
@@ -2331,6 +2335,7 @@ async function runPostgresMailSecurityCheck(
   messageId: number,
   values: { applyStatus: boolean },
   now: Date,
+  attachmentsRoot?: string,
 ): Promise<EmailMessageSecurityCheckResult | null> {
   const current = await trx
     .selectFrom('email_messages')
@@ -2342,7 +2347,9 @@ async function runPostgresMailSecurityCheck(
 
   const settings = await loadMailSecurityCheckSettings(trx, workspaceId);
   const checks = await runStoredMailSecurityChecks({
-    rawRfc822: await loadStoredRawOrNull(current, `security check of message ${messageId}`),
+    rawRfc822: await loadStoredRawOrNull(current, `security check of message ${messageId}`, {
+      readPart: rawPartReaderFor(attachmentsRoot, workspaceId),
+    }),
     rawHeaders: current.raw_headers,
     bodyText: current.body_text,
     bodyHtml: current.body_html,
@@ -3030,7 +3037,7 @@ async function bulkSetSpamStatusRows(
             now,
           });
         }
-        const rspamdLearning = rspamdLearningRequestForMessage(current, label, learningSettings);
+        const rspamdLearning = rspamdLearningRequestForMessage(current, label, learningSettings, input.workspaceId);
         if (rspamdLearning) rspamdLearningRequests.push(rspamdLearning);
       }
     }
@@ -4578,10 +4585,12 @@ function rspamdLearningRequestForMessage(
   message: EmailMessageSpamStatusMutationRow,
   label: RspamdLearnLabel,
   settings: SpamLearningSettings,
+  workspaceId: string,
 ): RspamdLearningRequest | null {
   if (!settings.rspamdLearningEnabled) return null;
   return {
     label,
+    workspaceId,
     messageId: Number(message.id),
     storedRaw: {
       raw_rfc822_b64: message.raw_rfc822_b64,
@@ -4600,10 +4609,12 @@ function rspamdLearningRequestForMessage(
 
 async function runRspamdLearningBestEffort(
   requests: readonly RspamdLearningRequest[],
-  options: Pick<PostgresMailReadPortOptions, 'rspamdFetch'>,
+  options: Pick<PostgresMailReadPortOptions, 'rspamdFetch' | 'attachmentsRoot'>,
 ): Promise<void> {
-  for (const { storedRaw, messageId, ...request } of requests) {
-    const rawRfc822 = await loadStoredRawOrNull(storedRaw, `rspamd learning of message ${messageId}`);
+  for (const { storedRaw, messageId, workspaceId, ...request } of requests) {
+    const rawRfc822 = await loadStoredRawOrNull(storedRaw, `rspamd learning of message ${messageId}`, {
+      readPart: rawPartReaderFor(options.attachmentsRoot, workspaceId),
+    });
     await learnMessageWithRspamd({
       ...request,
       rawRfc822,

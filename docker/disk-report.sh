@@ -108,7 +108,7 @@ if psql_run "SELECT pg_size_pretty(pg_database_size(current_database())) AS date
   # Mail-Originale: komprimiert (raw_rfc822_z) oder noch als base64-Text (Altbestand,
   # wird nach dem Update im Hintergrund umgestellt). Ältere Schemata ohne die neuen
   # Spalten bekommen die einfache Abfrage.
-  psql_run "SELECT count(*) AS mails, count(raw_rfc822_z) AS original_komprimiert, count(raw_rfc822_b64) AS original_base64, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_z)), 0) + coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS originale_belegt, pg_size_pretty(coalesce(sum(raw_rfc822_size), 0)) AS originale_entpackt, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;" \
+  psql_run "SELECT count(*) AS mails, count(raw_rfc822_z) AS original_komprimiert, count(*) FILTER (WHERE raw_rfc822_codec = 'br-parts') AS davon_ohne_anhangkopie, count(raw_rfc822_b64) AS original_base64, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_z)), 0) + coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS originale_belegt, pg_size_pretty(coalesce(sum(raw_rfc822_size), 0)) AS originale_entpackt, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;" \
     || psql_run "SELECT count(*) AS mails, pg_size_pretty(coalesce(sum(pg_column_size(raw_rfc822_b64)), 0)) AS original_mails, pg_size_pretty(coalesce(sum(pg_column_size(body_text)), 0) + coalesce(sum(pg_column_size(body_html)), 0)) AS texte FROM email_messages;"
   # Kopien aus der Übernahme vom Desktop (SQLite): source_row trägt das Original ein zweites Mal,
   # die Zwischentabelle ein drittes. Nur Anzeige; entfernt wird nichts automatisch.
