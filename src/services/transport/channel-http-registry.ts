@@ -742,6 +742,7 @@ type WorkflowRunRecord = {
   messageId?: number | null
   direction?: string | null
   status?: string | null
+  dryRun?: boolean | null
   log?: unknown | null
   startedAt?: string | null
   finishedAt?: string | null
@@ -3466,12 +3467,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.TestWorkflowOnMessage, ([payload]) => {
     const input = objectPayload(payload, "workflow test payload")
+    const dryRun = input.dryRun !== false
     return {
       method: "POST",
       path: `/api/v1/workflows/by-source/${nonZeroPathId(input.workflowId, "workflow id")}/execute`,
       body: {
         messageId: positiveId(input.messageId, "email message id"),
-        dryRun: input.dryRun !== false,
+        dryRun,
+        // Plan 047: Testlauf speichern (Schritt für Schritt ansehbar), wie am Desktop.
+        ...(dryRun ? { testRun: true } : {}),
       },
       transform: (body) => dataBody<Record<string, unknown>>(body),
     }
@@ -6525,6 +6529,7 @@ function mapWorkflowRunRecord(record: WorkflowRunRecord) {
     message_source_sqlite_id: record.messageSourceSqliteId ?? undefined,
     direction: record.direction ?? "",
     status: record.status ?? "",
+    dry_run: record.dryRun === true ? 1 : 0,
     log_json: record.log === undefined || record.log === null ? null : stringifyJsonValue(record.log, null),
     started_at: record.startedAt ?? null,
     finished_at: record.finishedAt ?? null,
@@ -6606,6 +6611,7 @@ async function listWorkflowRunsForMessageTransform(
       status: mapped.status,
       started_at: mapped.started_at,
       finished_at: mapped.finished_at,
+      dry_run: record.dryRun === true,
       ...summary,
     }
   })

@@ -6507,7 +6507,8 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/workflows/by-source/-23/execute',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ messageId: 11, dryRun: true }),
+        // Plan 047: der Testlauf wird auf dem Server gespeichert (dry_run).
+        body: JSON.stringify({ messageId: 11, dryRun: true, testRun: true }),
       }),
     );
   });
@@ -6939,6 +6940,7 @@ describe('renderer transport', () => {
               messageId: 505,
               direction: 'inbound',
               status: 'succeeded',
+              dryRun: true,
               startedAt: '2026-06-03T11:00:00.000Z',
               finishedAt: '2026-06-03T11:00:01.000Z',
               updatedAt: '2026-06-03T11:00:01.000Z',
@@ -6981,6 +6983,7 @@ describe('renderer transport', () => {
         message_id: 55,
         direction: 'inbound',
         status: 'succeeded',
+        dry_run: 1,
         started_at: '2026-06-03T11:00:00.000Z',
         finished_at: '2026-06-03T11:00:01.000Z',
       }),
@@ -7109,7 +7112,7 @@ describe('renderer transport', () => {
   test('maps workflow runs for message with steps, workflow names and continuations', async () => {
     const runs = [
       { id: 401, sourceSqliteId: -91, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', startedAt: '2026-06-03T11:00:00.000Z', finishedAt: '2026-06-03T11:00:02.000Z' },
-      { id: 402, sourceSqliteId: -92, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', startedAt: '2026-06-03T11:01:00.000Z', finishedAt: null },
+      { id: 402, sourceSqliteId: -92, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', dryRun: true, startedAt: '2026-06-03T11:01:00.000Z', finishedAt: null },
     ];
     const stepRecord = (runSource: number, extra: Record<string, unknown>) => ({
       id: 1, sourceSqliteId: 1, runSourceSqliteId: runSource, nodeId: 'n', status: 'ok', durationMs: 1,
@@ -7140,10 +7143,10 @@ describe('renderer transport', () => {
     expect(result).toEqual([
       expect.objectContaining({
         id: -92, server_id: 402, workflow_id: -23, workflow_name: 'Rückgaben', continued_from_run_id: 401,
-        last_step: { node_type: 'email.tag', status: 'ok', port: 'default' }, decision: null,
+        last_step: { node_type: 'email.tag', status: 'ok', port: 'default' }, decision: null, dry_run: true,
       }),
       expect.objectContaining({
-        id: -91, server_id: 401, workflow_name: 'Rückgaben', continued_from_run_id: null,
+        id: -91, server_id: 401, workflow_name: 'Rückgaben', continued_from_run_id: null, dry_run: false,
         decision: { answer: 'yes', probability: 88, summary: 'Rückgabe' },
       }),
     ]);

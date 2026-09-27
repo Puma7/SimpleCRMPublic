@@ -96,7 +96,7 @@ export function getEmailReportingSnapshot(
         COUNT(*) as count,
         SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
        FROM ${EMAIL_WORKFLOW_RUNS_TABLE}
-       WHERE datetime(finished_at) >= datetime(?)
+       WHERE datetime(finished_at) >= datetime(?) AND dry_run = 0
        GROUP BY workflow_id
        ORDER BY count DESC
        LIMIT 30`,

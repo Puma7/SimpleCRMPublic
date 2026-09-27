@@ -77,8 +77,10 @@ const STEP_DETAIL_PRUNE_MAX_BATCHES = 20;
 /**
  * Aufbewahrung der Lauf-Details (Standard 30 Tage): leert detail_json älterer
  * Schritte eines Workspaces; die Schrittzeile bleibt für die Lauf-Übersicht.
- * In Chargen mit eigener Transaktion, damit ein großer Rückstand keine lange
- * Sperre hält. Gibt die Zahl der geleerten Schritte zurück.
+ * Testläufe (dry_run, Plan 047) werden nach derselben Frist ganz gelöscht,
+ * ihre Schritte fallen per ON DELETE CASCADE mit. In Chargen mit eigener
+ * Transaktion, damit ein großer Rückstand keine lange Sperre hält. Gibt die
+ * Zahl der geleerten Schritte zurück.
  */
 export async function pruneWorkflowRunStepDetails(
   options: {
@@ -113,6 +115,28 @@ export async function pruneWorkflowRunStepDetails(
     }, { applySession: options.applyWorkspaceSession });
     cleared += changed;
     if (changed < STEP_DETAIL_PRUNE_BATCH) break;
+  }
+  for (let batch = 0; batch < STEP_DETAIL_PRUNE_MAX_BATCHES; batch += 1) {
+    const deleted = await withWorkspaceTransaction(options.db, { workspaceId, role: 'system' }, async (trx) => {
+      const ids = await trx
+        .selectFrom('email_workflow_runs')
+        .select('id')
+        .where('workspace_id', '=', workspaceId)
+        .where('dry_run', '=', true)
+        .where('started_at', '<', cutoff)
+        .orderBy('id', 'asc')
+        .limit(STEP_DETAIL_PRUNE_BATCH)
+        .execute();
+      if (ids.length === 0) return 0;
+      await trx
+        .deleteFrom('email_workflow_runs')
+        .where('workspace_id', '=', workspaceId)
+        .where('dry_run', '=', true)
+        .where('id', 'in', ids.map((row) => Number(row.id)))
+        .execute();
+      return ids.length;
+    }, { applySession: options.applyWorkspaceSession });
+    if (deleted < STEP_DETAIL_PRUNE_BATCH) break;
   }
   return cleared;
 }

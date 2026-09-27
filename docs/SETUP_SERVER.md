@@ -253,7 +253,7 @@ erstellen" on the deal page.
   ```
 
 - **Dry runs read live.** On the server, `mssql.query` ("MSSQL (Read-only)") and
-  `jtl.order_context` ("JTL Bestell-Kontext") also run in a workflow dry run ("Dry-Run testen")
+  `jtl.order_context` ("JTL Bestell-Kontext") also run in a workflow dry run ("Testlauf")
   and query the real JTL database, so the preview shows real rows; other side effects are only
   simulated. The desktop edition simulates `mssql.query` in a dry run.
 - **Exception "JTL Auftrag erstellen":** creating a JTL order from a deal writes into the

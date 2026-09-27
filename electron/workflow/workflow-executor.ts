@@ -44,6 +44,9 @@ export async function executeWorkflowForTrigger(input: {
     workflowId: input.workflow.id,
     messageId: input.message?.id ?? input.outbound?.messageId ?? null,
     direction: input.direction,
+    // Nur echte Testläufe kennzeichnen: die Versandvorschau läuft auch trocken,
+    // ihr Lauf erklärt aber im Hinweis „Versand blockiert“, warum die Mail hängt.
+    dryRun: input.dryRun === true && input.previewOutbound !== true,
   });
 
   try {
@@ -123,11 +126,12 @@ export async function executeWorkflowNow(
 }> {
   const wf = getWorkflowById(workflowId);
   if (!wf) return { success: false, error: 'Workflow nicht gefunden' };
-  if (wf.enabled !== 1) return { success: false, error: 'Workflow ist deaktiviert' };
+  const dryRun = options.dryRun === true;
+  // Testlauf auch für deaktivierte Workflows: vor dem Einschalten gefahrlos prüfen.
+  if (wf.enabled !== 1 && !dryRun) return { success: false, error: 'Workflow ist deaktiviert' };
 
   const trigger = (wf.trigger as WorkflowTriggerKind) || 'manual';
   const direction = workflowDirectionForTrigger(trigger);
-  const dryRun = options.dryRun === true;
 
   let message: EmailMessageRow | null = null;
   if (options.messageId != null) {

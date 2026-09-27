@@ -932,6 +932,7 @@ export const createEmailWorkflowRunsTable = `
     log_json TEXT,
     started_at TEXT DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
+    dry_run INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
   );

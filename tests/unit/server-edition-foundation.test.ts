@@ -399,6 +399,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0059_attachment_text_extractor_version',
   '0060_workflow_run_step_detail_retention_index',
   '0061_ai_learning_digest_accepted_content',
+  '0062_workflow_run_dry_run_flag',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -16775,6 +16776,8 @@ describe('server edition foundation', () => {
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       // … und leert Eingang/Ausgang alter Lauf-Schritte (30 Tage), ebenfalls eigene Transaktion.
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und löscht alte Testläufe (Plan 047), ebenfalls eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16888,6 +16891,19 @@ describe('server edition foundation', () => {
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['detail_json', 'is not', null],
           ['created_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
+      },
+      // Testläufe älter als 30 Tage (Plan 047; hier keine).
+      {
+        kind: 'select',
+        table: 'email_workflow_runs',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['dry_run', '=', true],
+          ['started_at', '<', new Date('2026-05-04T12:00:00.000Z')],
         ],
         orderBy: ['id', 'asc'],
         limit: 5000,
@@ -38228,6 +38244,81 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('server workflow execute route forwards testRun only together with dryRun (Plan 047)', async () => {
+    const workflow = { ...makeWorkflowRecord(23), sourceSqliteId: -23 };
+    const dryRunCalls: any[] = [];
+    const queueCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() {
+          return { items: [workflow], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? workflow : null;
+        },
+      },
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 11 ? makeEmailMessageRecord(11) : null;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+      workflowExecution: {
+        async dryRun(input) {
+          dryRunCalls.push(input);
+          return {
+            success: true,
+            dryRun: true,
+            workflowId: 23,
+            messageId: input.messageId,
+            status: 'ok',
+            blocked: false,
+            blockReason: null,
+            log: ['dry_run:server'],
+            ...(input.testRun ? { runId: -501 } : {}),
+          };
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    const testRun = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, testRun: true },
+      principal,
+    });
+    expect(testRun.status).toBe(200);
+    expect((testRun.body as any).data).toMatchObject({ success: true, dryRun: true, runId: -501, workflowId: -23 });
+    expect(dryRunCalls).toEqual([expect.objectContaining({ messageId: 11, testRun: true })]);
+
+    const live = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false, testRun: true },
+      principal,
+    });
+    expect(live.status).toBe(202);
+    expect(dryRunCalls).toHaveLength(1);
+    expect(queueCalls).toHaveLength(1);
+    expect(queueCalls[0].payload).not.toHaveProperty('testRun');
+
+    const invalid = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, testRun: 'ja' },
+      principal,
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   test('server workflow inbound backfill route delegates to workspace-scoped backfill port', async () => {
     const calls: unknown[] = [];
     const api = createServerApi(makeServerApiPorts({
@@ -46846,6 +46937,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     trackingEventClassifications: input.trackingEventClassifications ?? [],
     teamMembers: input.teamMembers ?? [],
   };
+  // Postgres-Standardwert (Migration 0062): Läufe ohne Angabe sind keine Testläufe.
+  for (const run of rows.runs) run.dry_run ??= false;
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table.split(' ')[0]) {
       case 'email_message_attachments':
@@ -47138,6 +47231,7 @@ class FakeWorkflowExecutionInsert {
     }
     const nextId = Math.max(0, ...this.rows.map((row) => Number(row.id ?? 0))) + 1;
     const stored = {
+      ...(this.table === 'email_workflow_runs' ? { dry_run: false } : {}),
       ...this.row,
       id: this.row.id ?? nextId,
     };

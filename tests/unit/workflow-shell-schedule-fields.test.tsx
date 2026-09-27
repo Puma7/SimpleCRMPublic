@@ -89,7 +89,7 @@ async function openAdvanced(name = 'Eingang sortieren'): Promise<void> {
   render(<WorkflowShell />);
   fireEvent.click(await screen.findByText(name));
   fireEvent.click(await screen.findByRole('button', { name: /Erweitert/ }));
-  await screen.findByText('Test-Nachricht-ID');
+  await screen.findByText('Test-Mail');
 }
 
 // F-A9-01 (E30): Im Server-Modus war das Cron-Feld sichtbar, obwohl der Server

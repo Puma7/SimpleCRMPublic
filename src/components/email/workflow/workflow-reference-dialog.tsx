@@ -258,9 +258,9 @@ function BasicsReference() {
         verfügbar ist, und fügt es per Klick ein. Die Gesamtliste steht im Tab „Variablen“.
       </Section>
       <Section title="Testen ohne Risiko">
-        <strong>„Dry-Run testen“</strong> führt den Workflow mit einer echten Mail aus, ohne etwas
-        zu verändern oder zu versenden — man sieht nur, welchen Weg der Lauf durch die Knoten
-        nimmt. <strong>„Jetzt ausführen“</strong> führt dagegen wirklich aus. Nach jedem Lauf
+        <strong>„Testlauf“</strong> führt den Workflow mit einer ausgewählten Mail aus, ohne etwas
+        zu verändern oder zu versenden — auch einen noch deaktivierten Workflow. Man sieht
+        Schritt für Schritt, welchen Weg der Lauf durch die Knoten nimmt. <strong>„Jetzt ausführen“</strong> führt dagegen wirklich aus. Nach jedem Lauf
         zeigt die <strong>Lauf-Historie</strong> Schritt für Schritt jeden Knoten mit Status,
         gewähltem Ausgang (Port) und Meldung — der beste Einstieg, wenn etwas nicht wie erwartet
         läuft.

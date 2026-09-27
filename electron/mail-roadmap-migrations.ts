@@ -31,6 +31,7 @@ import {
   EMAIL_THREAD_EDGES_TABLE,
   EMAIL_THREADS_TABLE,
   EMAIL_WORKFLOWS_TABLE,
+  EMAIL_WORKFLOW_RUNS_TABLE,
   WORKFLOW_KNOWLEDGE_BASES_TABLE,
   PGP_IDENTITIES_TABLE,
   PGP_PEER_KEYS_TABLE,
@@ -200,6 +201,12 @@ export function runMailRoadmapMigrations(conn: Database.Database): void {
     addCol(conn, EMAIL_WORKFLOWS_TABLE, 'workspace_id', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN workspace_id TEXT`);
     addCol(conn, EMAIL_WORKFLOWS_TABLE, 'account_id', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN account_id INTEGER REFERENCES ${EMAIL_ACCOUNTS_TABLE}(id) ON DELETE CASCADE`);
     addCol(conn, EMAIL_WORKFLOWS_TABLE, 'override_key', `ALTER TABLE ${EMAIL_WORKFLOWS_TABLE} ADD COLUMN override_key TEXT`);
+  }
+
+  // Testläufe (Plan 047): gespeichert, aber gekennzeichnet.
+  const runsExists = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(EMAIL_WORKFLOW_RUNS_TABLE);
+  if (runsExists) {
+    addCol(conn, EMAIL_WORKFLOW_RUNS_TABLE, 'dry_run', `ALTER TABLE ${EMAIL_WORKFLOW_RUNS_TABLE} ADD COLUMN dry_run INTEGER NOT NULL DEFAULT 0`);
   }
 
 

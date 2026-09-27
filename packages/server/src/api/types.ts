@@ -4344,6 +4344,8 @@ export type WorkflowRunRecord = {
   messageId: number | null;
   direction: string;
   status: string;
+  /** Plan 047: Testlauf mit einer ausgewählten Mail, ohne Seiteneffekte. */
+  dryRun: boolean;
   log?: unknown | null;
   startedAt: string | null;
   finishedAt: string | null;

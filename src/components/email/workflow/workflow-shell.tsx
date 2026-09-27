@@ -85,6 +85,8 @@ import { WorkflowTemplatesDialog, type WorkflowTemplatePickInfo } from "./workfl
 import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
+import { WorkflowRunDetailDialog } from "./workflow-run-detail-dialog"
+import { WorkflowTestMessagePicker } from "./workflow-test-message-picker"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import { templatePickEdits } from "./workflow-template-checks"
 import { decideWorkflowSaveGate, type WorkflowSaveBaseline } from "./workflow-save-gate"
@@ -202,6 +204,8 @@ export function WorkflowShell() {
   const [referenceOpen, setReferenceOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
+  const [testRunView, setTestRunView] = useState<{ runId: number; title: string } | null>(null)
+  const [runHistoryRefresh, setRunHistoryRefresh] = useState(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   /**
    * Baseline for omitting unchanged execution-relevant fields on editor-only
@@ -1064,17 +1068,11 @@ export function WorkflowShell() {
                       />
                     </div>
                   ) : null}
-                  <div className="w-[120px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Test-Nachricht-ID
-                    </Label>
-                    <Input
-                      value={testMessageId}
-                      onChange={(e) => setTestMessageId(e.target.value)}
-                      className="h-8 font-mono text-xs"
-                      placeholder="aus Details-Panel"
-                    />
-                  </div>
+                  <WorkflowTestMessagePicker
+                    trigger={rows.find((w) => w.id === selectedId)?.trigger ?? "inbound"}
+                    value={testMessageId}
+                    onChange={setTestMessageId}
+                  />
                   {(() => {
                     const trimmed = testMessageId.trim()
                     const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
@@ -1085,31 +1083,42 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="secondary"
+                        title="Simuliert den Workflow mit dieser Mail – nichts wird gesendet, getaggt oder verschoben"
                         disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid}
                         onClick={async () => {
                           if (!Number.isFinite(parsedId) || selectedId == null) return
-                          const r = await invokeRenderer(
-                            IPCChannels.Email.TestWorkflowOnMessage,
-                            {
-                              workflowId: selectedId,
-                              messageId: parsedId,
-                              dryRun: true,
-                            },
-                          ) as {
-                            success: boolean
-                            log?: string[]
-                            error?: string
-                          }
-                          if (r.success) {
-                            toast.success(
-                              `Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`,
-                            )
-                          } else {
-                            toast.error(r.error ?? "Test fehlgeschlagen")
+                          try {
+                            const r = await invokeRenderer(
+                              IPCChannels.Email.TestWorkflowOnMessage,
+                              {
+                                workflowId: selectedId,
+                                messageId: parsedId,
+                                dryRun: true,
+                              },
+                            ) as {
+                              success: boolean
+                              runId?: number
+                              log?: string[]
+                              error?: string
+                            }
+                            if (!r.success) {
+                              toast.error(r.error ?? "Testlauf fehlgeschlagen")
+                            } else if (typeof r.runId === "number") {
+                              const name = rows.find((w) => w.id === selectedId)?.name ?? "Workflow"
+                              setTestRunView({ runId: r.runId, title: `Testlauf – ${name}` })
+                              setRunHistoryRefresh((n) => n + 1)
+                            } else {
+                              toast.success(
+                                `Testlauf OK: ${(r.log ?? []).slice(-3).join(", ")}`,
+                              )
+                            }
+                          } catch (e) {
+                            logError("workflow-shell: test run", e)
+                            toast.error(e instanceof Error ? e.message : "Testlauf fehlgeschlagen")
                           }
                         }}
                       >
-                        Dry-Run testen
+                        Testlauf
                       </Button>
                     )
                   })()}
@@ -1316,7 +1325,11 @@ export function WorkflowShell() {
                     />
                   </div>
                   <div className="flex min-h-[200px] flex-[2] flex-col overflow-hidden border-t">
-                    <WorkflowRunHistory workflowId={selectedId} graphNodes={graphNodes} />
+                    <WorkflowRunHistory
+                      workflowId={selectedId}
+                      graphNodes={graphNodes}
+                      refreshToken={runHistoryRefresh}
+                    />
                   </div>
                 </div>
               ) : (
@@ -1374,6 +1387,16 @@ export function WorkflowShell() {
             )
           }}
         />
+        {testRunView ? (
+          <WorkflowRunDetailDialog
+            runId={testRunView.runId}
+            open
+            onOpenChange={(open) => {
+              if (!open) setTestRunView(null)
+            }}
+            title={testRunView.title}
+          />
+        ) : null}
         <WorkflowVersionsDialog
           workflowId={selectedId}
           canEdit={canEditWorkflows}

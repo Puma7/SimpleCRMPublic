@@ -39,6 +39,8 @@ type RunRow = {
   message_id: number | null
   started_at: string | null
   finished_at: string | null
+  /** 1 = Testlauf (Plan 047), ohne Seiteneffekte. */
+  dry_run?: number | boolean | null
 }
 
 type StepRow = {
@@ -56,10 +58,12 @@ type StepRow = {
 type Props = {
   workflowId: number | null
   graphNodes: Node[]
+  /** Ändert sich nach einem Testlauf: Läufe neu laden. */
+  refreshToken?: number
 }
 
 
-export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
+export function WorkflowRunHistory({ workflowId, graphNodes, refreshToken = 0 }: Props) {
   const { labelByType } = useWorkflowNodeCatalog()
   const [runs, setRuns] = useState<RunRow[]>([])
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
@@ -87,7 +91,7 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
     void loadRuns()
     setSelectedRunId(null)
     setSteps([])
-  }, [loadRuns])
+  }, [loadRuns, refreshToken])
 
   const loadSteps = async (runId: number) => {
     setSelectedRunId(runId)
@@ -143,7 +147,17 @@ export function WorkflowRunHistory({ workflowId, graphNodes }: Props) {
                     className={`w-full px-3 py-2 text-left hover:bg-muted/60 ${selectedRunId === r.id ? "bg-muted" : ""}`}
                     onClick={() => void loadSteps(r.id)}
                   >
-                    <div className="font-medium">Lauf #{r.id}</div>
+                    <div className="font-medium">
+                      Lauf #{r.id}
+                      {r.dry_run === 1 || r.dry_run === true ? (
+                        <span
+                          className="ml-1.5 rounded border px-1 text-[10px] font-normal text-muted-foreground"
+                          title="Testlauf – ohne Seiteneffekte, zählt nicht in Statistiken"
+                        >
+                          Test
+                        </span>
+                      ) : null}
+                    </div>
                     <div className={TONE_TEXT[stepTone(r.status, null)]}>
                       {r.status} ·{" "}
                       {r.finished_at ? new Date(r.finished_at).toLocaleString("de-DE") : "—"}

@@ -1183,7 +1183,13 @@ export function createPostgresWorkflowExecutionJobPort(
                 ...(prepared.message ? { messageId: Number(prepared.message.id) } : {}),
               });
             }
-            if (!prepared.workflow.enabled) {
+            // Testlauf (Plan 047): gespeichert und gekennzeichnet, auch für einen
+            // deaktivierten Workflow – nie in der Versandvorschau und nie für
+            // einen fortgesetzten Lauf.
+            const testRun = input.testRun === true
+              && prepared.jobContext.previewOutbound !== true
+              && input.runId === undefined;
+            if (!prepared.workflow.enabled && !testRun) {
               return {
                 success: true,
                 dryRun: true,
@@ -1196,12 +1202,22 @@ export function createPostgresWorkflowExecutionJobPort(
               };
             }
 
+            const storedRun = testRun
+              ? await startOrReuseRun(trx, {
+                workspaceId: input.workspaceId,
+                workflow: prepared.workflow,
+                message: prepared.message,
+                direction: prepared.direction,
+                now,
+                dryRun: true,
+              })
+              : null;
             const context = await buildWorkflowContext(trx, {
               workspaceId: input.workspaceId,
               workflowId: Number(prepared.workflow.id),
               workflowSourceSqliteId: workflowSourceSqliteId(prepared.workflow),
-              runId: 0,
-              runSourceSqliteId: 0,
+              runId: storedRun?.id ?? 0,
+              runSourceSqliteId: storedRun?.sourceSqliteId ?? 0,
               messageId: prepared.message?.id === undefined
                 ? outboundMessageIdFromContext(prepared.jobContext)
                 : Number(prepared.message.id),
@@ -1219,8 +1235,17 @@ export function createPostgresWorkflowExecutionJobPort(
               startNodeId: prepared.resumeNodeId,
               now,
               dryRun: true,
+              recordSteps: storedRun !== null,
               ports,
             });
+            const log = ['dry_run:server', ...result.log];
+            if (storedRun) {
+              await finishExistingRun(trx, input.workspaceId, storedRun.id, {
+                status: result.status,
+                log,
+                now,
+              });
+            }
             return {
               success: true,
               dryRun: true,
@@ -1229,7 +1254,8 @@ export function createPostgresWorkflowExecutionJobPort(
               status: result.status,
               blocked: result.blocked,
               blockReason: result.blockReason,
-              log: ['dry_run:server', ...result.log],
+              log,
+              ...(storedRun ? { runId: storedRun.sourceSqliteId } : {}),
             };
           },
           { applySession: options.applyWorkspaceSession },
@@ -1565,6 +1591,8 @@ async function startOrReuseRun(
     direction: WorkflowDirection;
     requestedRunId?: number;
     now: Date;
+    /** Testlauf (Plan 047); nie zusammen mit requestedRunId. */
+    dryRun?: boolean;
   },
 ): Promise<{ id: number; sourceSqliteId: number }> {
   if (input.requestedRunId !== undefined) {
@@ -1619,6 +1647,7 @@ async function startOrReuseRun(
       started_at: input.now,
       finished_at: null,
       updated_at: input.now,
+      ...(input.dryRun === true ? { dry_run: true } : {}),
     })
     .returning(['id', 'source_sqlite_id'])
     .executeTakeFirstOrThrow();
@@ -1676,6 +1705,8 @@ async function runServerWorkflowGraph(
     startNodeId?: string | null;
     now: Date;
     dryRun?: boolean;
+    /** Testlauf (Plan 047): Schritte trotz Probelauf speichern, sonst keine Seiteneffekte. */
+    recordSteps?: boolean;
     ports: ServerWorkflowRuntimePorts;
   },
 ): Promise<GraphRunResult> {
@@ -1714,6 +1745,7 @@ async function runServerWorkflowGraph(
       log: [`graph_resume:${input.startNodeId}`],
       now: input.now,
       dryRun: input.dryRun === true,
+      recordSteps: input.recordSteps === true,
       ports: input.ports,
       inboundGate: inboundGateFromContext(input.context),
     });
@@ -1730,7 +1762,7 @@ async function runServerWorkflowGraph(
 
   const triggerEdges = outgoing(doc.edges, triggerNode.id);
   if (triggerEdges.length === 0) {
-    if (input.dryRun !== true) {
+    if (input.dryRun !== true || input.recordSteps === true) {
       await insertRunStep(trx, input.context, triggerNode, {
         status: 'ok',
         port: 'default',
@@ -1762,6 +1794,7 @@ async function runServerWorkflowGraph(
       log,
       now: input.now,
       dryRun: input.dryRun === true,
+      recordSteps: input.recordSteps === true,
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
       totalSteps,
@@ -1802,6 +1835,8 @@ async function walkGraph(
     log: string[];
     now: Date;
     dryRun: boolean;
+    /** Testlauf: Schritte trotz Probelauf speichern (siehe runServerWorkflowGraph). */
+    recordSteps?: boolean;
     ports: ServerWorkflowRuntimePorts;
     seen?: Set<string>;
     allowRevisit?: boolean;
@@ -1845,7 +1880,7 @@ async function walkGraph(
       // Record the skip as a run step so the run history shows *why* nothing
       // happened (otherwise an inbound side-effect node is silently dropped and
       // the run looks like an empty "OK").
-      if (!input.dryRun) {
+      if (!input.dryRun || input.recordSteps) {
         await insertRunStep(trx, input.context, node, {
           status: 'skipped',
           port: 'blocked',
@@ -1871,7 +1906,7 @@ async function walkGraph(
         const started = Date.now();
         const items = workflowLoopItems(nodeConfig(node), input.context, input.log);
         const activeItems = eachEdge ? items : [];
-        if (!input.dryRun) {
+        if (!input.dryRun || input.recordSteps) {
           await insertRunStep(trx, input.context, node, {
             status: 'ok',
             port: activeItems.length > 0 ? 'each' : 'done',
@@ -1914,6 +1949,7 @@ async function walkGraph(
             log: input.log,
             now: input.now,
             dryRun: input.dryRun,
+            recordSteps: input.recordSteps,
             ports: input.ports,
             seen: new Set<string>(),
             allowRevisit: true,
@@ -1961,7 +1997,7 @@ async function walkGraph(
         input.dryRun,
       ));
     const durationMs = Math.max(0, Date.now() - started);
-    if (!input.dryRun) {
+    if (!input.dryRun || input.recordSteps) {
       await insertRunStep(trx, input.context, node, {
         status: result.status,
         port: result.port ?? null,
@@ -6280,6 +6316,7 @@ async function releaseWorkflowOutboundHold(
     .where('direction', '=', 'outbound')
     .where('status', 'in', ['queued', 'running'])
     .where('id', '!=', context.runId)
+    .where('dry_run', '=', false)
     .limit(1)
     .execute();
   if (otherOpenOutboundRuns.length > 0) {

@@ -1872,6 +1872,7 @@ function sanitizeWorkflowRun(run: WorkflowRunRecord, includeLog: boolean): Workf
     messageId: run.messageId,
     direction: run.direction,
     status: run.status,
+    dryRun: run.dryRun,
     ...(includeLog ? { log: run.log } : {}),
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,

@@ -34,6 +34,7 @@ function run(overrides: Partial<MessageWorkflowRunSummary>): MessageWorkflowRunS
     last_step: null,
     decision: null,
     continued_from_run_id: null,
+    dry_run: false,
     ...overrides,
   };
 }
@@ -91,5 +92,15 @@ describe('MessageAutomationHistory', () => {
     mockInvoke.mockResolvedValueOnce([]);
     render(<MessageAutomationHistory messageId={56} />);
     await waitFor(() => expect(screen.getByText('Noch keine Automatik-Läufe für diese Mail.')).toBeInTheDocument());
+  });
+
+  // Plan 047: Testläufe sind gekennzeichnet.
+  test('kennzeichnet Testläufe mit „Test“', async () => {
+    mockInvoke.mockResolvedValue([run({ id: 3, server_id: 3, dry_run: true }), run({ id: 2, server_id: 2 })]);
+    render(<MessageAutomationHistory messageId={55} />);
+    const rows = await screen.findAllByTestId('automation-run');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Test');
+    expect(rows[1]).not.toHaveTextContent('Test');
   });
 });

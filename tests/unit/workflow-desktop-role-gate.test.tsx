@@ -91,7 +91,9 @@ async function openWorkflow(): Promise<void> {
   render(<WorkflowShell />);
   fireEvent.click(await screen.findByText('Eingang sortieren'));
   fireEvent.click(await screen.findByRole('button', { name: /Erweitert/ }));
-  await screen.findByText('Test-Nachricht-ID');
+  await screen.findByText('Test-Mail');
+  // Test-Mail per ID (Rückfall der Mail-Auswahl, Plan 047).
+  fireEvent.change(screen.getByLabelText('Test-Mail'), { target: { value: '__manual__' } });
   fireEvent.change(screen.getByPlaceholderText('aus Details-Panel'), { target: { value: '12' } });
 }
 
@@ -133,8 +135,8 @@ describe('Desktop-Workflow-Editor nach Rolle (G1)', () => {
     expect(screen.getByRole('button', { name: 'Jetzt ausführen' })).toBeDisabled();
     expect(screen.getByText(/Nur Ansicht — Bearbeitung erfordert die Rolle Owner oder Admin/)).toBeInTheDocument();
 
-    // Ansehen bleibt offen: Dry-Run, Export, Versionsliste.
-    expect(screen.getByRole('button', { name: 'Dry-Run testen' })).not.toBeDisabled();
+    // Ansehen bleibt offen: Testlauf, Export, Versionsliste.
+    expect(screen.getByRole('button', { name: 'Testlauf' })).not.toBeDisabled();
     expect(screen.getByRole('button', { name: 'Export' })).not.toBeDisabled();
     expect(screen.getByRole('button', { name: 'Versionen' })).not.toBeDisabled();
 

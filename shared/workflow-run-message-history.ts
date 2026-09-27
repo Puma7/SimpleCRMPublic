@@ -29,6 +29,8 @@ export type MessageWorkflowRunSummary = {
   decision: { answer: string | null; probability: number | null; summary: string | null } | null;
   /** server_id des Ursprungslaufs. */
   continued_from_run_id: number | null;
+  /** Testlauf (Plan 047): ohne Seiteneffekte, zählt nicht in Statistiken. */
+  dry_run: boolean;
 };
 
 export type MessageWorkflowRunStepInput = {

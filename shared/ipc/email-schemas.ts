@@ -1636,7 +1636,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       messageId: positiveInt,
       dryRun: z.boolean().optional(),
     }),
-    result: z.object({}).passthrough(),
+    // runId: gespeicherter Testlauf (Plan 047), am Server negative Quell-ID.
+    result: z.object({ runId: z.number().int().optional() }).passthrough(),
   });
   set(IPCChannels.Email.ExecuteWorkflowNow, {
     payload: z.object({

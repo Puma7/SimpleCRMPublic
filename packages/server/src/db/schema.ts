@@ -1295,6 +1295,8 @@ export type EmailWorkflowRunsTable = SourceImportedTable & {
   log_json: JsonColumn | null;
   started_at: TimestampColumn | null;
   finished_at: TimestampColumn | null;
+  /** Testlauf (Migration 0062): gespeichert, aber ohne Seiteneffekte und nicht in Statistiken. */
+  dry_run: Generated<boolean>;
 };
 
 export type EmailWorkflowRunStepsTable = SourceImportedTable & {

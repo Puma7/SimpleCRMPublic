@@ -129,6 +129,7 @@ describe('Desktop: Eingang/Ausgang je Lauf-Schritt', () => {
       last_step: { node_type: 'ai.decide', port: 'nein' },
       decision: { answer: 'nein', probability: 10 },
       continued_from_run_id: null,
+      dry_run: false,
     });
     expect(listWorkflowRunsForMessage(99_999)).toEqual([]);
   });

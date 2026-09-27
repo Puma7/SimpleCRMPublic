@@ -146,7 +146,7 @@ type WorkflowMutationParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowExecuteParseResult =
-  | { ok: true; values: { messageId?: number; dryRun?: boolean } }
+  | { ok: true; values: { messageId?: number; dryRun?: boolean; testRun?: boolean } }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowInboundBackfillParseResult =
@@ -595,6 +595,9 @@ async function handleWorkflowExecute(
       triggerName: runTriggerName,
       actorUserId: principal.userId,
       context: runContext,
+      // Plan 047: gespeicherter Testlauf (auch für deaktivierte Workflows);
+      // nur zusammen mit dryRun, ein Live-Lauf ignoriert das Feld.
+      ...(parsed.values.testRun === true ? { testRun: true } : {}),
     });
     return data(result.success ? 200 : 409, {
       ...result,
@@ -2160,9 +2163,9 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     };
   }
 
-  const values: { messageId?: number; dryRun?: boolean } = {};
+  const values: { messageId?: number; dryRun?: boolean; testRun?: boolean } = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['messageId', 'dryRun']);
+  const allowedFields = new Set(['messageId', 'dryRun', 'testRun']);
 
   for (const key of Object.keys(payload)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -2179,6 +2182,11 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     const dryRun = normalizeBodyBoolean(payload.dryRun, 'dryRun');
     if (dryRun.ok) values.dryRun = dryRun.value;
     else errors.push({ field: 'dryRun', message: dryRun.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'testRun')) {
+    const testRun = normalizeBodyBoolean(payload.testRun, 'testRun');
+    if (testRun.ok) values.testRun = testRun.value;
+    else errors.push({ field: 'testRun', message: testRun.message });
   }
 
   if (errors.length > 0) {

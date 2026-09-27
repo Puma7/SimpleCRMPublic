@@ -28,6 +28,7 @@ function run(id: number, overrides: Partial<MessageWorkflowRunSummary> = {}): Me
     last_step: null,
     decision: null,
     continued_from_run_id: null,
+    dry_run: false,
     ...overrides,
   };
 }

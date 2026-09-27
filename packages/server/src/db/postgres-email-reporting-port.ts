@@ -242,7 +242,9 @@ async function selectReportingWorkflowRuns24h(
       `.as('errors'),
     ])
     .where('workspace_id', '=', workspaceId)
-    .where('finished_at', '>=', since);
+    .where('finished_at', '>=', since)
+    // Testläufe (Plan 047) zählen nicht.
+    .where('dry_run', '=', false);
   const scopePredicate = mailScopePredicate(mailScope, {
     accountId: 'report_message.account_id',
     folderId: 'report_message.folder_id',

@@ -108,6 +108,12 @@ export type WorkflowExecutionJobPlan = Readonly<{
    * beansprucht ihn genau einmal; „Jetzt ausfuehren" setzt ihn nie.
    */
   scheduleSlot?: string;
+  /**
+   * Nur mit dryRun: den Probelauf als Testlauf speichern (Lauf und Schritte,
+   * gekennzeichnet), auch für einen deaktivierten Workflow. Nie in der
+   * Versandvorschau.
+   */
+  testRun?: boolean;
   context: JobPayload;
 }>;
 
@@ -121,6 +127,8 @@ export type WorkflowExecutionDryRunResult = Readonly<{
   blockReason?: string | null;
   log?: readonly string[];
   error?: string;
+  /** Gespeicherter Testlauf (Quell-Id wie in der Lauf-Historie). */
+  runId?: number;
 }>;
 
 export type MailSyncJobPort = Readonly<{

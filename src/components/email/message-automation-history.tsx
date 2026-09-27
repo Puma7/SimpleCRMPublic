@@ -88,7 +88,17 @@ export function MessageAutomationHistory({ messageId }: { messageId: number }) {
           <p className="text-[11px] text-muted-foreground">Fortsetzung von Lauf #{parent.id}</p>
         ) : null}
         <p className="flex items-center justify-between gap-2">
-          <span className="truncate font-medium">{run.workflow_name}</span>
+          <span className="truncate font-medium">
+            {run.workflow_name}
+            {run.dry_run ? (
+              <span
+                className="ml-1.5 rounded border px-1 text-[10px] font-normal text-muted-foreground"
+                title="Testlauf – ohne Seiteneffekte, zählt nicht in Statistiken"
+              >
+                Test
+              </span>
+            ) : null}
+          </span>
           <span className={`shrink-0 ${TONE_TEXT[tone]}`}>{statusLabel(run.status)}</span>
         </p>
         {run.last_step ? (

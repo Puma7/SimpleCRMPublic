@@ -15,14 +15,16 @@ export function startWorkflowRun(input: {
   workflowId: number;
   messageId: number | null;
   direction: string;
+  /** Testlauf (ohne Seiteneffekte): gekennzeichnet, nicht in Statistiken, nach 30 Tagen gelöscht. */
+  dryRun?: boolean;
 }): number {
   const started = new Date().toISOString();
   const r = getDb()
     .prepare(
-      `INSERT INTO ${EMAIL_WORKFLOW_RUNS_TABLE} (workflow_id, message_id, direction, status, log_json, started_at, finished_at)
-       VALUES (?, ?, ?, 'running', '[]', ?, NULL)`,
+      `INSERT INTO ${EMAIL_WORKFLOW_RUNS_TABLE} (workflow_id, message_id, direction, status, log_json, started_at, finished_at, dry_run)
+       VALUES (?, ?, ?, 'running', '[]', ?, NULL, ?)`,
     )
-    .run(input.workflowId, input.messageId, input.direction, started);
+    .run(input.workflowId, input.messageId, input.direction, started, input.dryRun === true ? 1 : 0);
   return Number(r.lastInsertRowid);
 }
 
@@ -100,7 +102,11 @@ export function listWorkflowRunSteps(runId: number): WorkflowRunStepListRow[] {
  */
 export function pruneWorkflowRunStepDetails(now: Date = new Date()): number {
   const cutoff = new Date(now.getTime() - WORKFLOW_STEP_DETAIL_RETENTION_DAYS * 24 * 60 * 60_000).toISOString();
-  const result = getDb()
+  const db = getDb();
+  // Testläufe (Plan 047) nach derselben Frist ganz löschen; ihre Schritte
+  // hängen per ON DELETE CASCADE daran.
+  db.prepare(`DELETE FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE dry_run = 1 AND started_at < ?`).run(cutoff);
+  const result = db
     .prepare(
       `UPDATE ${EMAIL_WORKFLOW_RUN_STEPS_TABLE} SET detail_json = NULL
        WHERE detail_json IS NOT NULL AND created_at < ?`,
@@ -120,7 +126,7 @@ export function getLatestWorkflowRunForMessage(messageId: number): {
     .prepare(
       `SELECT id, workflow_id, status, started_at, finished_at
        FROM ${EMAIL_WORKFLOW_RUNS_TABLE}
-       WHERE message_id = ?
+       WHERE message_id = ? AND dry_run = 0
        ORDER BY id DESC
        LIMIT 1`,
     )
@@ -147,7 +153,7 @@ export function listWorkflowRunsForMessage(
   const db = getDb();
   const runs = db
     .prepare(
-      `SELECT r.id, r.workflow_id, w.name AS workflow_name, r.direction, r.status, r.started_at, r.finished_at
+      `SELECT r.id, r.workflow_id, w.name AS workflow_name, r.direction, r.status, r.started_at, r.finished_at, r.dry_run
        FROM ${EMAIL_WORKFLOW_RUNS_TABLE} r
        LEFT JOIN ${EMAIL_WORKFLOWS_TABLE} w ON w.id = r.workflow_id
        WHERE r.message_id = ?
@@ -162,6 +168,7 @@ export function listWorkflowRunsForMessage(
       status: string;
       started_at: string | null;
       finished_at: string | null;
+      dry_run: number | null;
     }>;
   if (runs.length === 0) return [];
   const steps = db
@@ -194,6 +201,7 @@ export function listWorkflowRunsForMessage(
     status: run.status,
     started_at: run.started_at,
     finished_at: run.finished_at,
+    dry_run: run.dry_run === 1,
     ...summarizeRunSteps((stepsByRun.get(run.id) ?? []).map((step) => ({
       node_type: step.node_type,
       status: step.status,
@@ -243,10 +251,12 @@ export function listRecentWorkflowRuns(workflowId: number, limit = 20): {
   status: string;
   started_at: string | null;
   finished_at: string | null;
+  /** 1 = Testlauf. */
+  dry_run: number;
 }[] {
   return getDb()
     .prepare(
-      `SELECT id, workflow_id, message_id, direction, status, started_at, finished_at
+      `SELECT id, workflow_id, message_id, direction, status, started_at, finished_at, dry_run
        FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE workflow_id = ? ORDER BY id DESC LIMIT ?`,
     )
     .all(workflowId, limit) as {
@@ -257,6 +267,7 @@ export function listRecentWorkflowRuns(workflowId: number, limit = 20): {
     status: string;
     started_at: string | null;
     finished_at: string | null;
+    dry_run: number;
   }[];
 }
 

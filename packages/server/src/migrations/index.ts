@@ -59,6 +59,7 @@ import { emailRawRfc822StorageMigration } from './0058_email_raw_rfc822_storage'
 import { attachmentTextExtractorVersionMigration } from './0059_attachment_text_extractor_version';
 import { workflowRunStepDetailRetentionIndexMigration } from './0060_workflow_run_step_detail_retention_index';
 import { aiLearningDigestAcceptedContentMigration } from './0061_ai_learning_digest_accepted_content';
+import { workflowRunDryRunFlagMigration } from './0062_workflow_run_dry_run_flag';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -124,6 +125,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   attachmentTextExtractorVersionMigration,
   workflowRunStepDetailRetentionIndexMigration,
   aiLearningDigestAcceptedContentMigration,
+  workflowRunDryRunFlagMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);
