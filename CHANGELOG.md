@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Server:** `simplecrm maintenance` brach mit `malformed array literal: "[]"` ab, und das Herausnehmen der Anhänge aus Mail-Originalen lief im Betrieb nie durch. Die Datenbankanbindung wandelt jedes JS-Array in JSON (für jsonb-Spalten); echte Postgres-Arrays (`text[]`, `bigint[]`) lehnen das ab. Sie gehen jetzt als Array-Literal an Postgres (`db/pg-array.ts`). Es wurde dabei nichts geschrieben oder gelöscht: Postgres lehnte die Änderung jeweils ab.
+- **Server:** Derselbe Fehler betraf Mail-Zugriffsregeln mit Kategorie- oder Tag-Filter: Speichern, das Löschen einer Kategorie und das Neuberechnen der Sichtbarkeit scheiterten.
+- Die Postgres-Tests laufen jetzt mit denselben Datenbank-Plugins wie der Server; vorher fehlte dort die JSON-Umwandlung, und die Fehler blieben unentdeckt.
+- **Server:** Der periodische Mail-Abruf lief nie: Der Scheduler reihte die Konto-ID als Text ein (`bigint` kommt aus Postgres als String), der Sync-Job verlangt eine Zahl und scheiterte alle 5 Minuten je Konto fünfmal (`accountId must be a positive integer`).
+- **Server:** Weiterleitungen (`workflow.forward_copy`), die der Mailserver endgültig ablehnt (SMTP 5xx für Absender, Empfänger oder Inhalt, z. B. IONOS „Reject due to policy restrictions“), werden nicht mehr fünfmal wiederholt; der Job endet sofort mit einer deutschen Meldung. Die Antwort des Servers steht darin ohne Adressen, IPs und zitierten Text (Inhaltsfilter zitieren Teile der Original-Mail). Das gilt auch für Weiterleitungen über die Ausgangsprüfung. Ein Anmeldefehler (535) wird weiter wiederholt. Nach einer Ablehnung (4xx oder 5xx) gibt die Weiterleitung ihre Doppelversand-Sperre frei; vorher meldete jeder weitere Versuch nur „Zustellstatus unklar“ und die Weiterleitung blieb dauerhaft gesperrt.
+- **Server:** Server-Logs zeigen die Meldungen des Job-Workers lesbar statt `[%s%s] %s: %s`. Ereignis-Benachrichtigungen laufen nacheinander über ihre Verbindung (pg-Warnung „client.query() when the client is already executing a query“). Die Warnung `maxPoolSize (10) smaller than concurrency (50)` verschwindet, wenn `JOB_WORKER_MAIL_ACCOUNT_COUNT` auf die Zahl der Postfächer gesetzt ist (dann 2 gleichzeitige Syncs je Konto statt der Obergrenze 50).
+
 ## [1.1.1] - 2026-09-26
 
 Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt „Aktualisieren“](README.md#aktualisieren-update--upgrade).

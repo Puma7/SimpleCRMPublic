@@ -6,6 +6,8 @@ import {
   type JobQueuePort,
   type QueuedJob,
 } from '../../packages/server/src/jobs';
+import { NonRetryableJobError } from '../../packages/server/src/jobs/errors';
+import { buildTrustedServiceJobPayload } from '../../packages/server/src/jobs/policy';
 import { createPostgresJobQueuePort } from '../../packages/server/src/db/postgres-job-queue-port';
 
 describe('startPostgresJobQueueWorker', () => {
@@ -141,6 +143,45 @@ describe('startPostgresJobQueueWorker', () => {
       locked_by: null,
       last_error: 'mail job authorization denied',
     });
+  });
+});
+
+// Ein Job, den ein weiterer Versuch nicht retten kann (z. B. SMTP 5xx), wird
+// sofort endgueltig beendet statt mit Wartezeit fuenfmal wiederholt.
+describe('non-retryable job errors', () => {
+  test.each([
+    ['NonRetryableJobError', new NonRetryableJobError('SMTP 554'), 'terminal:SMTP 554'],
+    ['ordinary error', new Error('451 try later'), 'retryable-fail'],
+  ])('%s', async (_label, thrown, expected) => {
+    const now = new Date('2026-09-26T20:00:00.000Z');
+    const calls: string[] = [];
+    const job = makeQueuedJob({
+      id: 43,
+      type: 'audit.retention',
+      workspaceId: 'workspace-a',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a' }),
+    });
+    const queue: JobQueuePort = {
+      async enqueue() { throw new Error('not used'); },
+      async claimNext({ workerId }) { return { ...job, lockedBy: workerId, lockedAt: now.toISOString() }; },
+      async complete() { calls.push('complete'); return true; },
+      async fail() { calls.push('retryable-fail'); return null; },
+      async failTerminal(input) {
+        calls.push(`terminal:${input.error instanceof Error ? input.error.message : String(input.error)}`);
+        return { ...input.job, attempts: input.job.maxAttempts, lockedAt: null, lockedBy: null };
+      },
+      async releaseStaleLocks() { return []; },
+    };
+
+    const result = await runJobQueueOnce({
+      queue,
+      workerId: 'worker-a',
+      now,
+      handlers: { 'audit.retention': async () => { throw thrown; } },
+    });
+
+    expect(result.status).toBe('failed');
+    expect(calls).toEqual([expected]);
   });
 });
 

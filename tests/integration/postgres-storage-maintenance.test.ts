@@ -29,6 +29,31 @@ const secrets = {
 const pdf = Buffer.concat(Array.from({ length: 500 }, (_, i) => createHash('sha256').update(`wartung-${i}`).digest()));
 
 function sourceFor(uid: number): Buffer {
+  // Mail 4 hat nur einen winzigen Anhang: nichts lohnt sich herauszunehmen, ihr
+  // Original wird mit leerer Teile-Liste als geprüft markiert.
+  if (uid === 4) {
+    return Buffer.from([
+      'From: Kunde <kunde@example.com>',
+      'To: support@example.test',
+      'Subject: Kurze Notiz',
+      'Message-ID: <maint-4@example.com>',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="grenze"',
+      '',
+      '--grenze',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Siehe Notiz.',
+      '--grenze',
+      'Content-Type: text/plain; name="notiz.txt"',
+      'Content-Disposition: attachment; filename="notiz.txt"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from('Bitte zurückrufen.').toString('base64'),
+      '--grenze--',
+      '',
+    ].join('\r\n'), 'utf8');
+  }
   return Buffer.from([
     'From: Kunde <kunde@example.com>',
     'To: support@example.test',
@@ -88,7 +113,7 @@ describe('storage maintenance checks and cleans up without deleting anything', (
     db = postgres.createApplicationDb();
     attachmentsRoot = mkdtempSync(join(tmpdir(), 'simplecrm-maintenance-'));
     await createPostgresMailSyncJobPort({
-      db, secrets, attachmentsRoot, imapClientFactory: () => fakeImapClient([1, 2, 3]) as never,
+      db, secrets, attachmentsRoot, imapClientFactory: () => fakeImapClient([1, 2, 3, 4]) as never,
     }).sync({ workspaceId: WORKSPACE_ID, accountId: ACCOUNT_ID, protocol: 'imap' });
   });
 
@@ -116,9 +141,21 @@ describe('storage maintenance checks and cleans up without deleting anything', (
     const report = await runStorageMaintenance({ db, attachmentsRoot });
     expect(report.cleanup).toMatchObject({ compressed: 1, partsTakenOut: 3 });
     expect(report.cleanup!.filesLinked).toBeGreaterThanOrEqual(2);
-    expect(report.attachments).toMatchObject({ rows: 3, missing: 0, sizeMismatch: 0, orphanFiles: 0 });
-    expect(report.originals).toMatchObject({ total: 3, legacyBase64: 0, withoutAttachmentCopies: 3, damaged: 0 });
+    expect(report.attachments).toMatchObject({ rows: 4, missing: 0, sizeMismatch: 0, orphanFiles: 0 });
+    expect(report.originals).toMatchObject({ total: 4, legacyBase64: 0, withoutAttachmentCopies: 3, damaged: 0 });
     expect(report.ok).toBe(true);
+    // Die leere Teile-Liste erreicht Postgres als text[] (in Produktion wandelte
+    // das jsonb-Array-Plugin sie in "[]", und die Wartung brach ab).
+    const { rows } = await postgres.admin.query(
+      'SELECT uid, raw_rfc822_codec, raw_rfc822_part_sha256s FROM email_messages WHERE workspace_id = $1 ORDER BY uid',
+      [WORKSPACE_ID],
+    );
+    expect(rows.map((row: { uid: string | number; raw_rfc822_codec: string; raw_rfc822_part_sha256s: string[] }) => [
+      Number(row.uid), row.raw_rfc822_codec, row.raw_rfc822_part_sha256s.length,
+    ])).toEqual([[1, 'br-parts', 1], [2, 'br-parts', 1], [3, 'br-parts', 1], [4, 'br', 0]]);
+    // Ein zweiter Lauf findet nichts mehr zu tun.
+    const again = await runStorageMaintenance({ db, attachmentsRoot });
+    expect(again.cleanup).toMatchObject({ compressed: 0, partsTakenOut: 0 });
     expect(formatStorageMaintenanceReport(report)).toContain('Ergebnis: in Ordnung.');
   });
 

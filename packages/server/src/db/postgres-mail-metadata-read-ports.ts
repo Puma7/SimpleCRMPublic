@@ -7,6 +7,7 @@ import {
 } from '@simplecrm/core';
 import { randomBytes } from 'crypto';
 import { ilikeContainsPattern } from './sql-ilike';
+import { pgArrayLiteral } from './pg-array';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
@@ -1309,7 +1310,7 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
               SELECT 1 FROM mail_acl_binding_constraints AS constraints
               WHERE constraints.workspace_id = ${input.workspaceId}::uuid
                 AND constraints.kind = 'category'
-                AND constraints.value_ids && ${doomedIds}::bigint[]
+                AND constraints.value_ids && ${pgArrayLiteral(doomedIds)}::bigint[]
             ) AS exists
           `.execute(trx);
           if (referenced.rows[0]?.exists) {

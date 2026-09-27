@@ -2621,6 +2621,12 @@ export type EmailComposeSendResult =
      */
     deliveryAmbiguous?: boolean;
     /**
+     * The SMTP server's explicit refusal: reply code and command stage
+     * (MAIL_FROM, RCPT_TO, DATA, DATA_FINAL, AUTH, ...). Lets callers tell a
+     * final refusal from a temporary one without parsing the error text.
+     */
+    smtpRefusal?: { code: number; stage: string };
+    /**
      * Der Ausgang hat den Entwurf endgültig angehalten (synchroner Block der
      * Ausgangs-Workflows): Banner, Posteingang, Planung gelöscht.
      */

@@ -1,3 +1,4 @@
+import { formatWithOptions } from 'node:util';
 import { redactSecrets, type ServerLogLevel, type ServerLogStore } from './server-log-store';
 
 /** pino numeric levels: 40=warn, 50=error, 60=fatal. */
@@ -74,11 +75,19 @@ export function installConsoleLogCapture(
   const originalWarn = target.warn.bind(target);
   const originalError = target.error.bind(target);
 
-  const toMessage = (args: unknown[]): string =>
-    args
-      .map((arg) => (arg instanceof Error ? arg.message : typeof arg === 'string' ? arg : safeStringify(arg)))
+  // Printf-style calls (graphile-worker logs `console.error('[%s%s] %s: %s', ...)`)
+  // are formatted like the console does; storing the raw format string made
+  // every worker line read "[%s%s] %s: %s core  ERROR ...".
+  const toMessage = (args: unknown[]): string => {
+    const values = args.map((arg) => (arg instanceof Error ? arg.message : arg));
+    if (typeof values[0] === 'string' && values[0].includes('%')) {
+      return formatWithOptions({ colors: false, breakLength: Infinity, depth: 4 }, ...values).trim();
+    }
+    return values
+      .map((value) => (typeof value === 'string' ? value : safeStringify(value)))
       .join(' ')
       .trim();
+  };
 
   target.warn = (...args: unknown[]) => {
     originalWarn(...args);

@@ -15,7 +15,8 @@ import {
   InboundMessageTooLargeError,
   MAX_INBOUND_RFC822_BYTES,
 } from '../../packages/core/src/email/inbound-message-size';
-import { SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { SmtpDataRejectedError, SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { isNonRetryableJobError, NonRetryableJobError } from '../../packages/server/src/jobs/errors';
 import { mailSyncJobTypeForProtocol } from '../../packages/server/src/jobs/mail-sync-scheduler';
 
 import {
@@ -12746,6 +12747,69 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // Codex zu #196: Ueber die Ausgangspruefung kam eine 5xx-Ablehnung nur als Text
+  // zurueck; der Job wurde fuenfmal wiederholt und jedes Mal erneut abgelehnt.
+  test('postgres workflow forward-copy via outbound review: a 5xx refusal is final and redacted, a 4xx is retried', async () => {
+    const now = new Date('2026-07-04T11:05:50.000Z');
+    let refusal: { error: string; smtpRefusal: { code: number; stage: string } } = {
+      error: '554-5.7.1 Message from <kunde@example.com> rejected\n554 5.7.1 Reject due to policy restrictions',
+      smtpRefusal: { code: 554, stage: 'DATA_FINAL' },
+    };
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 52, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 520, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 33,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 330,
+        account_id: 7,
+        subject: 'Review refusal',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender: { async send() { return { ok: false as const, ...refusal }; } },
+      createDraft: async () => ({ ok: true as const, draftMessageId: 54323 }),
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 52, messageId: 33, to: 'audit@example.com', runOutboundReview: true };
+    const attempt = () => port.forwardCopy(plan).then(() => null, (error: unknown) => error as Error);
+
+    const final = await attempt();
+    expect(isNonRetryableJobError(final)).toBe(true);
+    expect(final!.message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 554): '
+      + '5.7.1 Message from <[email]> rejected 5.7.1 Reject due to policy restrictions. '
+      + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
+      + 'Es folgt kein weiterer Versuch.',
+    );
+    expect(rows.forwardDedup).toEqual([]);
+
+    refusal = { error: '451 4.7.1 Try again later', smtpRefusal: { code: 451, stage: 'DATA_FINAL' } };
+    const temporary = await attempt();
+    expect(isNonRetryableJobError(temporary)).toBe(false);
+    expect(temporary!.message).toContain('vorübergehend abgelehnt (SMTP 451)');
+    expect(rows.forwardDedup).toEqual([]);
+  });
+
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {
     const now = new Date('2026-07-04T11:04:30.000Z');
     const smtpSends: Array<{ recipients: string[]; rfc822: string }> = [];
@@ -12898,6 +12962,163 @@ describe('server edition foundation', () => {
     smtpMode = 'ok';
     await expect(port.forwardCopy(plan)).rejects.toThrow(/Zustellstatus ist unklar/);
     expect(smtpSends).toHaveLength(0);
+  });
+
+  // IONOS lehnte eine Weiterleitung mit 554 ab. Die Reservierung blieb stehen, und
+  // jeder weitere Versuch meldete nur noch "Zustellstatus unklar"; ein 5xx wurde
+  // trotzdem fuenfmal wiederholt.
+  test('postgres workflow forward-copy: a 5xx rejection ends the job, a 4xx is really retried', async () => {
+    const now = new Date('2026-07-04T11:06:30.000Z');
+    let reply: { text: string; code: number } | null = {
+      text: '554-Transaction failed\n554-Reject due to policy restrictions\n554 For explanation visit https://example.test',
+      code: 554,
+    };
+    const smtpSends: Array<{ recipients: string[] }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 41, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 410, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 30,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 300,
+        account_id: 7,
+        subject: 'Preisliste',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Preisliste',
+        body_text: 'Anbei die Preisliste.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        if (reply) throw new SmtpDataRejectedError(reply.text, reply.code);
+        smtpSends.push(input as { recipients: string[] });
+      },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 41, messageId: 30, to: 'audit@example.com' };
+
+    // 554: final. The job fails without retries and says why, nothing stays reserved.
+    const rejection = await port.forwardCopy(plan).then(() => null, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(NonRetryableJobError);
+    expect(isNonRetryableJobError(rejection)).toBe(true);
+    expect((rejection as Error).message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 554): '
+      + 'Transaction failed Reject due to policy restrictions For explanation visit https://example.test. '
+      + 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail). '
+      + 'Es folgt kein weiterer Versuch.',
+    );
+    expect(rows.forwardDedup).toEqual([]);
+
+    // 451: temporary. The job is retried, and the retry really sends.
+    reply = { text: '451 4.7.1 Try again later', code: 451 };
+    const temporary = await port.forwardCopy(plan).then(() => null, (error: unknown) => error);
+    expect(temporary).toBeInstanceOf(Error);
+    expect(isNonRetryableJobError(temporary)).toBe(false);
+    expect((temporary as Error).message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung vorübergehend abgelehnt (SMTP 451): 4.7.1 Try again later',
+    );
+    expect(rows.forwardDedup).toEqual([]);
+    reply = null;
+    await port.forwardCopy(plan);
+    expect(smtpSends).toHaveLength(1);
+  });
+
+  // Inhaltsfilter zitieren Adressen und Textstellen der Original-Mail in ihrer
+  // Antwort; die Meldung landet im Job-Log und in forward_copy.error.
+  test('postgres workflow forward-copy: refusals are redacted; a refused recipient is final, a failed login is not', async () => {
+    const now = new Date('2026-07-04T11:06:40.000Z');
+    let failure: Error = new SmtpDataRejectedError(
+      '554-5.7.1 Message from <kunde@example.com> rejected\n554 5.7.1 Spam phrase "Sonderangebot nur heute"',
+      554,
+    );
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 42, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 420, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        account_id: 7,
+        subject: 'Angebot',
+        from_json: { value: [{ address: 'kunde@example.com' }] },
+        snippet: 'Angebot',
+        body_text: 'Sonderangebot nur heute.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets: {
+        async readSecret(input: { kind: string }) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+        },
+        async writeSecret() { throw new Error('unexpected'); },
+        async deleteSecret() { return false; },
+        async rotateSecret() { return null; },
+      },
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async () => { throw failure; },
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, workflowId: 42, messageId: 31, to: 'audit@example.com' };
+    const attempt = () => port.forwardCopy(plan).then(() => null, (error: unknown) => error as Error);
+
+    const content = await attempt();
+    expect(isNonRetryableJobError(content)).toBe(true);
+    expect(content!.message).toContain('(SMTP 554): 5.7.1 Message from <[email]> rejected 5.7.1 Spam phrase "[text]".');
+    expect(content!.message).not.toContain('kunde@example.com');
+    expect(content!.message).not.toContain('Sonderangebot');
+
+    failure = new SmtpPreDataSendError('550 5.1.1 <audit@example.com>: Recipient address rejected', { smtpCode: 550, stage: 'RCPT_TO' });
+    const recipient = await attempt();
+    expect(isNonRetryableJobError(recipient)).toBe(true);
+    expect(recipient!.message).toBe(
+      'Der Mailserver smtp.example.com hat die Weiterleitung endgültig abgelehnt (SMTP 550): '
+      + '5.1.1 <[email]>: Recipient address rejected. '
+      + 'Der Empfänger wurde abgelehnt (Adresse unbekannt oder gesperrt). Es folgt kein weiterer Versuch.',
+    );
+
+    // A wrong password may be fixed before the next attempt: keep the retries.
+    failure = new SmtpPreDataSendError('535 5.7.8 Authentication failed', { smtpCode: 535, stage: 'AUTH' });
+    const login = await attempt();
+    expect(isNonRetryableJobError(login)).toBe(false);
+    expect(rows.forwardDedup).toEqual([]);
   });
 
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {
@@ -27795,11 +28016,14 @@ describe('server edition foundation', () => {
       await expect(send()).resolves.toEqual({
         ok: false,
         error: expect.stringContaining('554 5.7.1 rejected by policy'),
+        // Callers (forward copy via outbound review) tell final from temporary by this.
+        smtpRefusal: { code: 554, stage: 'DATA_FINAL' },
       });
       finalReply = '451 4.3.0 try again later\r\n';
       await expect(send()).resolves.toEqual({
         ok: false,
         error: expect.stringContaining('451 4.3.0 try again later'),
+        smtpRefusal: { code: 451, stage: 'DATA_FINAL' },
       });
       // The server stays silent after the terminating dot: accepted or not is unknown.
       finalReply = null;

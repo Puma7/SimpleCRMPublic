@@ -667,6 +667,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...(error instanceof SmtpPreDataSendError || error instanceof SmtpDataRejectedError
               ? {}
               : { deliveryAmbiguous: true }),
+            ...smtpRefusalOf(error),
           };
         }
 
@@ -754,6 +755,14 @@ export function createPostgresEmailComposeSenderPort(
 function combineComposeWarnings(...warnings: Array<string | null | undefined>): string | undefined {
   const unique = [...new Set(warnings.map((warning) => warning?.trim()).filter((warning): warning is string => Boolean(warning)))];
   return unique.length > 0 ? unique.join(' ') : undefined;
+}
+
+function smtpRefusalOf(error: unknown): { smtpRefusal?: { code: number; stage: string } } {
+  if (error instanceof SmtpDataRejectedError) return { smtpRefusal: { code: error.smtpCode, stage: 'DATA_FINAL' } };
+  if (error instanceof SmtpPreDataSendError && error.smtpCode !== undefined && error.stage) {
+    return { smtpRefusal: { code: error.smtpCode, stage: error.stage } };
+  }
+  return {};
 }
 
 function smtpCodeFromError(error: unknown): { smtpCode?: number } {

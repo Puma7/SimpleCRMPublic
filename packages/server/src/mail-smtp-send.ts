@@ -76,9 +76,17 @@ const DATA_END_RESPONSE_DEADLINE_MS = 10 * 60_000;
  * durable send reservation may safely release it and retry.
  */
 export class SmtpPreDataSendError extends Error {
-  constructor(message: string) {
+  /** The server's reply code and command stage, when the server refused a command. */
+  readonly smtpCode?: number;
+  readonly stage?: string;
+
+  constructor(message: string, reply?: Readonly<{ smtpCode: number; stage: string }>) {
     super(message);
     this.name = 'SmtpPreDataSendError';
+    if (reply) {
+      this.smtpCode = reply.smtpCode;
+      this.stage = reply.stage;
+    }
   }
 }
 
@@ -145,6 +153,11 @@ async function sendSmtpMessageAttempt(
     });
     if (stage === 'DATA_FINAL' && response.code >= 400 && response.code < 600) {
       throw new SmtpDataRejectedError(response.text, response.code);
+    }
+    if (stage !== 'DATA_FINAL') {
+      // Before the body: keep the reply code, so callers can tell a final
+      // refusal (e.g. RCPT TO 550) from a temporary one.
+      throw new SmtpPreDataSendError(response.text, { smtpCode: response.code, stage });
     }
     throw new Error(response.text);
   };
@@ -462,7 +475,12 @@ function unfoldHeaderLines(headerSection: string): string[] {
   return out;
 }
 
-function sanitizeSmtpResponse(value: string): string {
+/**
+ * A server reply without addresses, IPs or quoted text: content filters quote
+ * parts of the rejected message back, which must not end up in logs or
+ * workflow variables.
+ */
+export function sanitizeSmtpResponse(value: string): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   const redacted = normalized
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')

@@ -7,10 +7,11 @@ import { PassThrough, Readable } from 'stream';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, OperationNodeTransformer, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import type { MailPermission } from '../../packages/core/src/email/mail-permissions';
 import { createServerApi } from '../../packages/server/src/api/server-api';
+import { createJsonbArrayPlugin } from '../../packages/server/src/db/jsonb-array-plugin';
 import type {
   AuthenticatedPrincipal,
   EmailMessageRecord,
@@ -405,6 +406,8 @@ describe('server mailbox ACL migration', () => {
       dialect: new PostgresDialect({
         pool,
       }),
+      // Same plugins as createPostgresDatabase: tests must see what production sends.
+      plugins: [createJsonbArrayPlugin(OperationNodeTransformer)],
       log(event) {
         if (event.level === 'query') options.onQuery?.(event.query.sql);
       },

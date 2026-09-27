@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 
+import { pgArrayLiteral } from '../db/pg-array';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -121,8 +122,8 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
               JOIN mail_acl_bindings AS binding ON binding.id = constraints.binding_id
               WHERE constraints.workspace_id = ${input.workspaceId}::uuid
                 AND (
-                  (constraints.kind = 'category' AND constraints.value_ids && ${categoryIds}::bigint[])
-                  OR (constraints.kind = 'tag' AND constraints.value_texts && ${tags}::text[])
+                  (constraints.kind = 'category' AND constraints.value_ids && ${pgArrayLiteral(categoryIds)}::bigint[])
+                  OR (constraints.kind = 'tag' AND constraints.value_texts && ${pgArrayLiteral(tags)}::text[])
                   OR (${includeAssignmentModes}::boolean AND constraints.kind = 'assignment')
                 )
             )

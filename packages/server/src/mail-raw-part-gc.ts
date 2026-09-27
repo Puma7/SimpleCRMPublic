@@ -28,6 +28,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
+import { pgArrayLiteral } from './db/pg-array';
 import {
   parseSetAsidePartName,
   rawPartPath,
@@ -84,6 +85,7 @@ async function referencedShas(
   shas: readonly string[],
 ): Promise<Set<string>> {
   if (shas.length === 0) return new Set();
+  const shaList = pgArrayLiteral(shas);
   const result = await withWorkspaceTransaction(
     options.db,
     { workspaceId, role: 'system' },
@@ -92,8 +94,8 @@ async function referencedShas(
       FROM email_messages, unnest(raw_rfc822_part_sha256s) AS part
       WHERE workspace_id = ${workspaceId}
         AND raw_rfc822_part_sha256s IS NOT NULL
-        AND raw_rfc822_part_sha256s && ${[...shas]}::text[]
-        AND part = ANY(${[...shas]}::text[])
+        AND raw_rfc822_part_sha256s && ${shaList}::text[]
+        AND part = ANY(${shaList}::text[])
     `.execute(trx),
     { applySession: options.applyWorkspaceSession },
   );

@@ -27,6 +27,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
+import { pgTextArray } from './db/pg-array';
 import { resolveAttachmentStoragePath } from './db/postgres-mail-read-ports';
 import {
   decodeRunExactly,
@@ -185,7 +186,8 @@ async function dedupOneMessage(
     { workspaceId, role: 'system' },
     async (trx) => trx
       .updateTable('email_messages')
-      .set(patch)
+      // text[]: as a Postgres array literal, never a JS array (see db/pg-array.ts).
+      .set({ ...patch, raw_rfc822_part_sha256s: pgTextArray(patch.raw_rfc822_part_sha256s) })
       .where('workspace_id', '=', workspaceId)
       .where('id', '=', id)
       .where('raw_rfc822_codec', '=', STORED_RAW_CODEC_BROTLI)

@@ -22,6 +22,7 @@ import {
   MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH,
   mergeAuthorityConstraints,
 } from './mail-acl-constraints';
+import { pgBigintArray, pgTextArray } from '../db/pg-array';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -1380,7 +1381,12 @@ async function replaceBindingConstraints(
     });
   }
   if (rows.length > 0) {
-    await trx.insertInto('mail_acl_binding_constraints').values(rows).execute();
+    // bigint[]/text[]: as Postgres array literals, never JS arrays (see db/pg-array.ts).
+    await trx.insertInto('mail_acl_binding_constraints').values(rows.map((row) => ({
+      ...row,
+      value_ids: pgBigintArray(row.value_ids),
+      value_texts: pgTextArray(row.value_texts),
+    }))).execute();
   }
 }
 

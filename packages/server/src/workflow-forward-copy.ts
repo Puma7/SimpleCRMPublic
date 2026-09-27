@@ -25,7 +25,14 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
-import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
+import { NonRetryableJobError } from './jobs/errors';
+import {
+  sanitizeSmtpResponse,
+  sendSmtpMessage,
+  SmtpDataRejectedError,
+  SmtpPreDataSendError,
+  type ServerSmtpSendInput,
+} from './mail-smtp-send';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import { isInboundSiblingAborted } from './workflow-inbound-chain-advance';
 import type { JobPayload } from './jobs/types';
@@ -328,6 +335,7 @@ export function createPostgresWorkflowForwardCopyPort(
             duplicate: reviewResult.duplicate,
             now: now(),
             reviewPending: reviewResult.reviewPending,
+            permanent: reviewResult.permanent === true,
           });
           return;
         }
@@ -419,11 +427,14 @@ export function createPostgresWorkflowForwardCopyPort(
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });
       } catch (error) {
-        if (error instanceof SmtpPreDataSendError) {
-          // Nothing reached the DATA stage, so nothing can have been
-          // delivered — release the reservation so a later retry may send.
-          // Ambiguous failures (after body submission) keep the reservation
-          // and block automatic resend.
+        // Nothing delivered: the DATA stage was never reached, or the server
+        // answered the message with an explicit 4xx/5xx (same rule as
+        // mail-compose-send). Release the reservation so a retry really sends;
+        // before, a rejected forward kept it and every retry only reported
+        // "Zustellstatus unklar". Ambiguous failures (no reply after the body)
+        // keep the reservation and block automatic resend.
+        const rejected = error instanceof SmtpDataRejectedError;
+        if (error instanceof SmtpPreDataSendError || rejected) {
           await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
@@ -431,11 +442,15 @@ export function createPostgresWorkflowForwardCopyPort(
             { applySession: options.applyWorkspaceSession },
           );
         }
+        const refusal = smtpRefusal(error);
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: refusal
+            ? forwardRefusalMessage(smtpHost, refusal)
+            : error instanceof Error ? error.message : String(error),
           duplicate: false,
           now: now(),
+          permanent: refusal?.permanent === true,
         });
         return;
       }
@@ -776,6 +791,8 @@ type ForwardReviewResult = {
   error: string | null;
   reviewPending: boolean;
   duplicate: boolean;
+  /** The SMTP server refused the forward for good: no job retry. */
+  permanent?: boolean;
 };
 
 /** Materialises the forward as a draft and runs it through composeSender.send,
@@ -899,20 +916,85 @@ async function forwardViaOutboundReview(args: {
       { applySession: args.applyWorkspaceSession },
     );
   }
-  return { ok: false, error: sendResult.error, reviewPending: false, duplicate: false };
+  // Same classification and redaction as the direct SMTP path.
+  const refusal = sendResult.smtpRefusal
+    ? classifySmtpRefusal(sendResult.smtpRefusal.code, sendResult.smtpRefusal.stage, sendResult.error)
+    : null;
+  return {
+    ok: false,
+    error: refusal
+      ? forwardRefusalMessage(resolveConfiguredSmtpHost(prepared.account.smtpHost) ?? 'SMTP-Server', refusal)
+      : sendResult.error,
+    reviewPending: false,
+    duplicate: false,
+    permanent: refusal?.permanent === true,
+  };
 }
 
 
 async function failOrEnqueueForwardCopyContinuation(
   options: PostgresWorkflowForwardCopyPortOptions,
   input: WorkflowForwardCopyJobPlan,
-  result: { ok: false; error: string | null; duplicate: boolean; now: Date; reviewPending?: boolean },
+  result: {
+    ok: false;
+    error: string | null;
+    duplicate: boolean;
+    now: Date;
+    reviewPending?: boolean;
+    /** Another attempt cannot succeed: fail the job without retries. */
+    permanent?: boolean;
+  },
 ): Promise<void> {
   if (input.continuation) {
     await enqueueForwardCopyContinuation(options, input, result);
     return;
   }
-  throw new Error(result.error || 'workflow forward-copy failed');
+  const message = result.error || 'workflow forward-copy failed';
+  throw result.permanent ? new NonRetryableJobError(message) : new Error(message);
+}
+
+type SmtpRefusal = Readonly<{ code: number; stage: string; reply: string; permanent: boolean }>;
+
+/**
+ * Stages where a 5xx refuses this message for good (RFC 5321): the sender, a
+ * recipient or the content. A 5xx at CONNECT/EHLO/AUTH is a setup problem an
+ * admin may fix before the next attempt, so it keeps its retries.
+ */
+const FINAL_REFUSAL_STAGES = new Set(['MAIL_FROM', 'RCPT_TO', 'DATA', 'DATA_FINAL']);
+
+/** The server's explicit refusal, if the error is one; the reply text is redacted. */
+function smtpRefusal(error: unknown): SmtpRefusal | null {
+  if (error instanceof SmtpDataRejectedError) return classifySmtpRefusal(error.smtpCode, 'DATA_FINAL', error.message);
+  if (error instanceof SmtpPreDataSendError && error.smtpCode !== undefined && error.stage) {
+    return classifySmtpRefusal(error.smtpCode, error.stage, error.message);
+  }
+  return null;
+}
+
+function classifySmtpRefusal(code: number, stage: string, replyText: string): SmtpRefusal {
+  // Strip the status prefixes of multi-line replies, then redact: content filters
+  // quote addresses and text of the forwarded mail back in their reply, and the
+  // message reaches the job log and forward_copy.error in later workflow steps.
+  const reply = sanitizeSmtpResponse(replyText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\d{3}[ -]/, '').trim())
+    .filter(Boolean)
+    .join(' '));
+  return { code, stage, reply, permanent: code >= 500 && FINAL_REFUSAL_STAGES.has(stage) };
+}
+
+/** German, for the job's last error and forward_copy.error: what the server said and the usual cause. */
+function forwardRefusalMessage(host: string, refusal: SmtpRefusal): string {
+  if (!refusal.permanent) {
+    return `Der Mailserver ${host} hat die Weiterleitung vorübergehend abgelehnt (SMTP ${refusal.code}): ${refusal.reply}`;
+  }
+  const cause = refusal.stage === 'RCPT_TO'
+    ? 'Der Empfänger wurde abgelehnt (Adresse unbekannt oder gesperrt).'
+    : refusal.stage === 'MAIL_FROM'
+      ? 'Der Absender wurde abgelehnt; die Adresse muss zum Postfach gehören.'
+      : 'Häufige Ursache: der Inhalts- oder Spamfilter des Anbieters (Anhänge oder Text der Original-Mail).';
+  return `Der Mailserver ${host} hat die Weiterleitung endgültig abgelehnt (SMTP ${refusal.code}): ${refusal.reply}. `
+    + `${cause} Es folgt kein weiterer Versuch.`;
 }
 
 async function enqueueForwardCopyContinuation(

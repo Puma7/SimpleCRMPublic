@@ -3,7 +3,9 @@ import net from 'net';
 
 import {
   inspectRfc822ForSmtpDiagnostics,
+  sanitizeSmtpResponse,
   sendSmtpMessage,
+  SmtpPreDataSendError,
   type SmtpSendDiagnosticEvent,
 } from '../../packages/server/src/mail-smtp-send';
 
@@ -117,6 +119,47 @@ describe('server SMTP diagnostics', () => {
     expect(serialized).not.toContain('secret body');
     expect(serialized).not.toContain('recipient@example.com');
     expect(serialized).not.toContain('agent@example.com');
+  });
+});
+
+// Eine endgueltige Ablehnung vor dem Inhalt (z. B. RCPT TO 550) trug keinen
+// Code: der Aufrufer konnte sie nicht von einer voruebergehenden unterscheiden
+// und wiederholte die Weiterleitung fuenfmal.
+describe('server SMTP refusals before the message body', () => {
+  test('a refused recipient keeps its reply code and stage', async () => {
+    const server = await startSmtpServer((line, socket) => {
+      if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n');
+      else if (line.startsWith('AUTH PLAIN ')) socket.write('235 2.7.0 Authentication successful\r\n');
+      else if (line === 'MAIL FROM:<agent@example.com>') socket.write('250 sender ok\r\n');
+      else if (line === 'RCPT TO:<nobody@example.com>') socket.write('550 5.1.1 <nobody@example.com>: Recipient address rejected\r\n');
+      else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else socket.write('500 unknown command\r\n');
+    });
+    let caught: unknown;
+    try {
+      await sendSmtpMessage({
+        host: '127.0.0.1',
+        port: server.port,
+        tls: false,
+        user: 'agent@example.com',
+        password: 'super-secret-password',
+        envelopeFrom: 'agent@example.com',
+        recipients: ['nobody@example.com'],
+        rfc822: 'Subject: Test\r\n\r\nbody',
+        timeoutMs: 1000,
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      await server.close();
+    }
+    expect(caught).toBeInstanceOf(SmtpPreDataSendError);
+    expect(caught).toMatchObject({ smtpCode: 550, stage: 'RCPT_TO' });
+  });
+
+  test('replies are redacted before they reach logs or workflow variables', () => {
+    expect(sanitizeSmtpResponse('554 5.7.1 Message from <kunde@example.com> via 192.0.2.4 rejected: "Sonderangebot nur heute"'))
+      .toBe('554 5.7.1 Message from <[email]> via [ip] rejected: "[text]"');
   });
 });
 
