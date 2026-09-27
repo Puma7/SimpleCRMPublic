@@ -119,7 +119,7 @@ update the row here.
 | 031 | CI: one Jest coverage run instead of three | P2 | M | dx | 030 | TODO |
 | 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | DONE |
 | 033 | Lock backup runs against concurrent pruning | P2 | S | bug | — | DONE |
-| 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | TODO |
+| 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | DONE |
 | 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | TODO |
 | 036 | Contract test: renderer HTTP registry vs server routes | P2 | M | tests | — | DONE |
 | 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | TODO |

@@ -16188,6 +16188,91 @@ describe('server edition foundation', () => {
     expect(rows.jobs).toHaveLength(0);
   });
 
+  // Plan 034: Die Vorschau fragt ggf. ein KI-Modell (bis 90 s); dabei darf keine
+  // Transaktion offen sein, sonst hält jeder Versand Verbindungen aus dem Pool fest.
+  describe.each([
+    ['blocks', true],
+    ['allows', false],
+  ] as const)('reviewOutbound.review runs the workflow dry-run with no transaction open (dry-run %s)', (_label, blocked) => {
+    test('dry-run sees no open transaction; result unchanged', async () => {
+      const now = new Date('2026-08-01T09:00:00.000Z');
+      const { db, rows } = makeWorkflowExecutionDb({
+        workflows: [{
+          id: 95,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 950,
+          trigger_name: 'outbound',
+          enabled: true,
+          priority: 1,
+          name: 'Prüfer',
+        }],
+        messages: [{
+          id: 85,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 850,
+          uid: -1,
+          folder_kind: 'draft',
+          outbound_hold: false,
+          outbound_block_reason: null,
+          body_text: 'Anbei das Angebot.',
+          body_html: null,
+        }],
+      });
+      let openTransactions = 0;
+      const baseTransaction = (db as unknown as {
+        transaction: () => { execute: <T>(op: (trx: unknown) => Promise<T>) => Promise<T> };
+      }).transaction;
+      (db as unknown as { transaction: unknown }).transaction = () => ({
+        execute: async <T>(op: (trx: unknown) => Promise<T>) => {
+          openTransactions += 1;
+          try {
+            return await baseTransaction().execute(op);
+          } finally {
+            openTransactions -= 1;
+          }
+        },
+      });
+      const seen: number[] = [];
+      const port = createPostgresComposeOutboundReviewPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+        workflowDryRun: async () => {
+          seen.push(openTransactions);
+          return blocked
+            ? { success: true, dryRun: true as const, blocked: true, blockReason: 'KI blockiert', status: 'blocked' as const }
+            : { success: true, dryRun: true as const, blocked: false, status: 'ok' as const };
+        },
+      });
+
+      const result = await port.review({
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: 'tester',
+        draftMessageId: 85,
+        subject: 'Ihr Angebot',
+        bodyText: 'Anbei das Angebot.',
+        bodyHtml: null,
+        to: 'kunde@example.com',
+        attachmentCount: 0,
+      });
+
+      expect(seen).toEqual([0]);
+      if (blocked) {
+        expect(result).toEqual({ allowed: false, error: 'KI blockiert', held: true });
+        expect(rows.messages.find((m) => m.id === 85)).toEqual(expect.objectContaining({
+          outbound_hold: true,
+          outbound_block_reason: 'KI blockiert',
+        }));
+        expect(rows.runs).toHaveLength(0);
+        expect(rows.jobs).toHaveLength(0);
+      } else {
+        expect(result).toMatchObject({ allowed: false, workflowRunId: expect.any(Number) });
+        expect(rows.runs).toHaveLength(1);
+        expect(rows.jobs).toHaveLength(1);
+      }
+    });
+  });
+
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     expect(buildLockCleanupPlan({

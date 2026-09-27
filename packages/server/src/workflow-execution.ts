@@ -404,7 +404,40 @@ type ServerWorkflowRuntimePorts = Readonly<{
   aiDraft?: WorkflowAiDraftNodeDeps;
   /** KI-Entscheidung in der Versandvorschau (synchron, echter Modellaufruf). */
   aiDecide?: WorkflowAiDecideDeps;
+  /** Nur im Probelauf: KI-Antworten der Versandvorschau (Aufrufe ohne offene Transaktion). */
+  previewAiMemo?: PreviewAiMemo;
 }>;
+
+/** Höchstzahl verschiedener KI-Aufrufe je Versandvorschau (danach fail-closed). */
+const MAX_PREVIEW_AI_CALLS_PER_DRY_RUN = 25;
+
+/**
+ * KI-Antworten der Versandvorschau. Der Probelauf läuft in kurzen
+ * Transaktionen: trifft er auf eine noch unbekannte KI-Frage, bricht der
+ * Durchgang ab (Rollback, der Probelauf schreibt nichts), die Frage wird ohne
+ * offene Transaktion gestellt und der Durchgang mit der gemerkten Antwort
+ * wiederholt. Gleiche Fragen innerhalb einer Vorschau werden nur einmal gestellt.
+ */
+type PreviewAiMemo = {
+  results: Map<string, unknown>;
+  pending: { key: string; run: () => Promise<unknown> } | null;
+};
+
+class PreviewAiPendingSignal extends Error {}
+
+async function callPreviewAi<T>(
+  ports: ServerWorkflowRuntimePorts,
+  kind: string,
+  request: unknown,
+  run: () => Promise<T>,
+): Promise<T> {
+  const memo = ports.previewAiMemo;
+  if (!memo) return run();
+  const key = `${kind}\u0000${JSON.stringify(request)}`;
+  if (memo.results.has(key)) return structuredClone(memo.results.get(key)) as T;
+  memo.pending = { key, run };
+  throw new PreviewAiPendingSignal('preview_ai_pending');
+}
 
 type ServerInboundBranchGate = {
   conditionOk: boolean;
@@ -1120,69 +1153,88 @@ export function createPostgresWorkflowExecutionJobPort(
     },
 
     async dryRun(input) {
-      return withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          const now = options.now?.() ?? new Date();
-          const prepared = await prepareWorkflowRun(trx, input);
-          if (!prepared.ok) {
-            return dryRunFailure(prepared.error, prepared.log, {
-              ...(prepared.workflow ? { workflowId: workflowSourceSqliteId(prepared.workflow) } : {}),
-              ...(prepared.message ? { messageId: Number(prepared.message.id) } : {}),
+      const now = options.now?.() ?? new Date();
+      const memo: PreviewAiMemo = { results: new Map(), pending: null };
+      const ports: ServerWorkflowRuntimePorts = { ...runtimePorts, previewAiMemo: memo };
+      for (;;) {
+        try {
+          return await dryRunPass(now, ports);
+        } catch (error) {
+          if (!(error instanceof PreviewAiPendingSignal) || !memo.pending) throw error;
+        }
+        const pending = memo.pending;
+        memo.pending = null;
+        if (memo.results.size >= MAX_PREVIEW_AI_CALLS_PER_DRY_RUN) {
+          return dryRunFailure('Versandvorschau: zu viele KI-Aufrufe in einem Workflow', ['error:preview_ai_call_limit']);
+        }
+        // Keine Transaktion offen: der Modellaufruf darf dauern.
+        memo.results.set(pending.key, await pending.run());
+      }
+
+      function dryRunPass(now: Date, ports: ServerWorkflowRuntimePorts): Promise<WorkflowExecutionDryRunResult> {
+        return withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx): Promise<WorkflowExecutionDryRunResult> => {
+            const prepared = await prepareWorkflowRun(trx, input);
+            if (!prepared.ok) {
+              return dryRunFailure(prepared.error, prepared.log, {
+                ...(prepared.workflow ? { workflowId: workflowSourceSqliteId(prepared.workflow) } : {}),
+                ...(prepared.message ? { messageId: Number(prepared.message.id) } : {}),
+              });
+            }
+            if (!prepared.workflow.enabled) {
+              return {
+                success: true,
+                dryRun: true,
+                workflowId: workflowSourceSqliteId(prepared.workflow),
+                ...(prepared.message === null ? {} : { messageId: Number(prepared.message.id) }),
+                status: 'ok',
+                blocked: false,
+                blockReason: null,
+                log: ['skip:workflow_disabled'],
+              };
+            }
+
+            const context = await buildWorkflowContext(trx, {
+              workspaceId: input.workspaceId,
+              workflowId: Number(prepared.workflow.id),
+              workflowSourceSqliteId: workflowSourceSqliteId(prepared.workflow),
+              runId: 0,
+              runSourceSqliteId: 0,
+              messageId: prepared.message?.id === undefined
+                ? outboundMessageIdFromContext(prepared.jobContext)
+                : Number(prepared.message.id),
+              trigger: prepared.trigger,
+              direction: prepared.direction,
+              message: prepared.message,
+              actorUserId: input.actorUserId,
+              trustedService: input.trustedService,
+              jobContext: prepared.jobContext,
             });
-          }
-          if (!prepared.workflow.enabled) {
+            const result = await runServerWorkflowGraph(trx, {
+              workspaceId: input.workspaceId,
+              workflow: prepared.workflow,
+              context,
+              startNodeId: prepared.resumeNodeId,
+              now,
+              dryRun: true,
+              ports,
+            });
             return {
               success: true,
               dryRun: true,
               workflowId: workflowSourceSqliteId(prepared.workflow),
               ...(prepared.message === null ? {} : { messageId: Number(prepared.message.id) }),
-              status: 'ok',
-              blocked: false,
-              blockReason: null,
-              log: ['skip:workflow_disabled'],
+              status: result.status,
+              blocked: result.blocked,
+              blockReason: result.blockReason,
+              log: ['dry_run:server', ...result.log],
             };
-          }
-
-          const context = await buildWorkflowContext(trx, {
-            workspaceId: input.workspaceId,
-            workflowId: Number(prepared.workflow.id),
-            workflowSourceSqliteId: workflowSourceSqliteId(prepared.workflow),
-            runId: 0,
-            runSourceSqliteId: 0,
-            messageId: prepared.message?.id === undefined
-              ? outboundMessageIdFromContext(prepared.jobContext)
-              : Number(prepared.message.id),
-            trigger: prepared.trigger,
-            direction: prepared.direction,
-            message: prepared.message,
-            actorUserId: input.actorUserId,
-            trustedService: input.trustedService,
-            jobContext: prepared.jobContext,
-          });
-          const result = await runServerWorkflowGraph(trx, {
-            workspaceId: input.workspaceId,
-            workflow: prepared.workflow,
-            context,
-            startNodeId: prepared.resumeNodeId,
-            now,
-            dryRun: true,
-            ports: runtimePorts,
-          });
-          return {
-            success: true,
-            dryRun: true,
-            workflowId: workflowSourceSqliteId(prepared.workflow),
-            ...(prepared.message === null ? {} : { messageId: Number(prepared.message.id) }),
-            status: result.status,
-            blocked: result.blocked,
-            blockReason: result.blockReason,
-            log: ['dry_run:server', ...result.log],
-          };
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
     },
   };
 }
@@ -2106,7 +2158,8 @@ async function executePreviewAiDecide(
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
   if (!profileId.ok) return aiDecideNodeResult(context, aiDecideErrorOutcome({ message: profileId.message }));
   const scope = { strings: context.strings, variables: context.variables };
-  const outcome = await runServerAiDecision(ports.aiDecide, {
+  const deps = ports.aiDecide;
+  const request = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
     actorUserId: context.actorUserId ?? null,
@@ -2130,7 +2183,8 @@ async function executePreviewAiDecide(
     contextMode: normalizeAiDecideContextMode(config.contextMode),
     threshold: normalizeAiDecideThreshold(config.threshold),
     strings: context.strings,
-  });
+  };
+  const outcome = await callPreviewAi(ports, 'ai.decide', request, () => runServerAiDecision(deps, request));
   return aiDecideNodeResult(context, outcome);
 }
 
@@ -2158,9 +2212,10 @@ async function executePreviewOutboundAiReview(
   const blockKeyword = workflowAiBlockKeyword(config.blockKeyword);
   if (!blockKeyword.ok) return { status: 'error', port: 'error', message: blockKeyword.message };
 
-  const preview = await ports.aiReviewPreview({
+  const runner = ports.aiReviewPreview;
+  const request = {
     workspaceId: context.workspaceId,
-    direction: context.direction === 'inbound' ? 'inbound' : 'outbound',
+    direction: context.direction === 'inbound' ? 'inbound' as const : 'outbound' as const,
     ...(promptId.value === undefined ? {} : { promptId: promptId.value }),
     ...(profileId.value === undefined ? {} : { profileId: profileId.value }),
     blockKeyword: blockKeyword.value,
@@ -2177,7 +2232,8 @@ async function executePreviewOutboundAiReview(
       : { parseMode: 'block_keyword' as const }),
     eventStrings: context.strings,
     eventVariables: context.variables,
-  });
+  };
+  const preview = await callPreviewAi(ports, 'ai.review.preview', request, () => runner(request));
 
   if (!preview.ok) {
     return {
