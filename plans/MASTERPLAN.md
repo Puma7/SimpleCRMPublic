@@ -30,7 +30,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **027** Ein beschädigtes Mail-Original stoppt Deduplizierung und `simplecrm maintenance` nicht mehr · Befund #3 · P1 · S
 - [x] **028** Wissensbasis: offene Codeblöcke schließen, kein Abschnittsverlust · Befund #4 · P1 · S
 - [x] **029** Learnings bekommen festen Anteil am Wissensbudget der KI-Entwürfe · Befund #5 · P1 · S
-- [ ] **030** Coverage-Ratchets neu setzen, Mail-Ratchet in CI, Warnung bei veralteter Baseline · Befund #7 · P1 · S
+- [x] **030** Coverage-Ratchets neu setzen, Mail-Ratchet in CI, Warnung bei veralteter Baseline · Befund #7 · P1 · S
 
 ## Welle 2 – CI und Testabsicherung
 

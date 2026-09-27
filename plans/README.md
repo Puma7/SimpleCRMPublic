@@ -115,7 +115,7 @@ update the row here.
 | 027 | Raw-part dedup, GC and maintenance survive damaged originals | P1 | S | bug | — | DONE |
 | 028 | Close open code fences in knowledge-base sections | P1 | S | bug | — | DONE |
 | 029 | Reserve knowledge budget for Learnings in AI drafts | P1 | S | bug | — | DONE |
-| 030 | Refresh coverage ratchets, gate mail coverage in CI | P1 | S | tests | — | TODO |
+| 030 | Refresh coverage ratchets, gate mail coverage in CI | P1 | S | tests | — | DONE |
 | 031 | CI: one Jest coverage run instead of three | P2 | M | dx | 030 | TODO |
 | 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | TODO |
 | 033 | Lock backup runs against concurrent pruning | P2 | S | bug | — | TODO |
