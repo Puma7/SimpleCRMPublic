@@ -60,12 +60,14 @@ import {
   type SpamListMatch,
   buildWorkflowStepDetail,
   buildWorkflowStepMailSnapshot,
+  createWorkflowRunDetailState,
   decodeWorkflowContinuedFrom,
-  serializeWorkflowStepDetail,
+  serializeWorkflowStepDetailWithinBudget,
   workflowStepPortLabel,
   workflowUnwiredPortNote,
   WORKFLOW_CONTINUED_FROM_VARIABLE,
   type BuildWorkflowStepDetailInput,
+  type WorkflowRunDetailState,
   type WorkflowStepDetail,
 } from '@simplecrm/core';
 import {
@@ -293,10 +295,10 @@ type ServerWorkflowContext = {
   /** Lauf, der den Trigger-Fan-out gestartet hat (Schluessel der Join-Barriere). */
   inboundFanOutRunId?: number;
   /**
-   * Lauf-Historie: die Mail (Kopf + Auszug) steht nur im ersten Schritt eines
+   * Lauf-Historie: Mail nur im ersten Schritt, Budget für alle Details des
    * Laufs. Geteilt über alle Zweige (Klone kopieren die Referenz).
    */
-  stepDetail?: { mailRecorded: boolean };
+  stepDetail?: WorkflowRunDetailState;
 };
 
 type PreparedWorkflowRun =
@@ -7729,7 +7731,7 @@ async function insertRunStep(
       port: input.port,
       duration_ms: input.durationMs,
       message: input.message,
-      detail_json: input.detail ? serializeWorkflowStepDetail(input.detail) : null,
+      detail_json: input.detail ? serializeWorkflowStepDetailWithinBudget(input.detail, context.stepDetail) : null,
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: input.now,
@@ -7755,6 +7757,7 @@ function serverStepDetail(
     mail = buildWorkflowStepMailSnapshot({
       strings: context.strings,
       direction: context.direction,
+      // CRM-, Aufgaben-, Termin- und Zeitplan-Läufe haben keine Nachricht.
       hasMessage: context.messageId !== null,
     });
     continuedFrom = decodeWorkflowContinuedFrom(context.variables[WORKFLOW_CONTINUED_FROM_VARIABLE]);
@@ -7886,7 +7889,7 @@ async function buildWorkflowContext(
     ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
     ...inboundChainFieldsFromRecord(input.jobContext),
-    stepDetail: { mailRecorded: false },
+    stepDetail: createWorkflowRunDetailState(),
   };
 }
 

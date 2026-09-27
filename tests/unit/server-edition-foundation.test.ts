@@ -396,6 +396,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0057_ai_learnings',
   '0058_email_raw_rfc822_storage',
   '0059_attachment_text_extractor_version',
+  '0060_workflow_run_step_detail_retention_index',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -39056,12 +39057,13 @@ describe('server edition foundation', () => {
     expect(stepListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, limit: 50, includeDetail: false, runId: 80 }]);
   });
 
-  test('workflow run step details (mail excerpt, node settings) need workflows.view besides mail access', async () => {
+  test('workflow run step details need workflows.view; CRM/integration values need crm.read', async () => {
     const detail = {
       v: 1,
       input: {
         mail: { subject: 'Gewinn', from: 'spam@example.com' },
         config: { question: 'Ist das Spam?' },
+        variables: { 'spam.score': 3, 'customer.name': 'Müller GmbH', 'jtl.data': '{"umsatz":1}' },
       },
       output: { port: 'nein' },
     };
@@ -39093,7 +39095,22 @@ describe('server edition foundation', () => {
     const denied = await api.handle({ ...request, principal: mailReader });
     expect(denied.status).toBe(403);
 
-    const visible = await api.handle({ ...request, principal: workflowViewer });
+    const redacted = await api.handle({ ...request, principal: workflowViewer });
+    expect(redacted.status).toBe(200);
+    expect((redacted.body as any).data.items[0].detail).toEqual({
+      ...detail,
+      input: {
+        ...detail.input,
+        variables: {
+          'spam.score': 3,
+          'customer.name': '[ausgeblendet – nur mit CRM-Leserecht sichtbar]',
+          'jtl.data': '[ausgeblendet – nur mit CRM-Leserecht sichtbar]',
+        },
+      },
+    });
+
+    const crmReader = { ...mailReader, capabilities: ['mail.content.read', 'workflows.view', 'crm.read', 'tracking.view'] };
+    const visible = await api.handle({ ...request, principal: crmReader });
     expect(visible.status).toBe(200);
     expect((visible.body as any).data.items[0].detail).toEqual(detail);
   });

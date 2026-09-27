@@ -3568,13 +3568,21 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       return [String(log)]
     },
   })],
-  [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => ({
-    method: "GET",
-    path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
-    // Eingang/Ausgang je Schritt für die Lauf-Historie (Server prüft den Mail-Zugriff).
-    query: { limit: DEFAULT_LIST_LIMIT, includeDetail: true },
-    transform: (body) => listItems<WorkflowRunStepRecord>(body).map(mapWorkflowRunStepRecord),
-  })],
+  [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => {
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
+      // Eingang/Ausgang je Schritt für die Lauf-Historie (Server prüft Rechte und schwärzt).
+      query: { limit: DEFAULT_LIST_LIMIT, includeDetail: true },
+    }
+    return {
+      ...request,
+      // Alle Seiten: das nachträglich angehängte Ergebnis einer KI-Entscheidung
+      // steht am Ende eines langen Laufs.
+      transform: async (body, context) =>
+        (await collectPagedListItems<WorkflowRunStepRecord>(body, context, request)).map(mapWorkflowRunStepRecord),
+    }
+  }],
   [IPCChannels.Email.ListKnowledgeBases, ([payload]) => ({
     method: "GET",
     path: "/api/v1/workflow-knowledge-bases",

@@ -26,7 +26,12 @@ import type {
   WorkflowVersionMutationInput,
   WorkflowVersionRecord,
 } from './types';
-import { workflowGraphHasChainStopNode, workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import {
+  redactWorkflowStepDetailForViewer,
+  workflowGraphHasChainStopNode,
+  workflowGraphHasSideEffectNode,
+  type WorkflowStepDetailViewer,
+} from '@simplecrm/core';
 import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import { recordKnowledgeDocumentSaved } from './ai-learnings-routes';
 import { KNOWLEDGE_CONTEXTS, isKnowledgeContext } from '../knowledge-workflow-search';
@@ -699,7 +704,7 @@ async function handleWorkflowRunStepList(
     ...filters.filters,
     ...forcedFilters,
   });
-  return data(200, sanitizeWorkflowRunStepList(result, includeDetail));
+  return data(200, sanitizeWorkflowRunStepList(result, includeDetail, workflowStepDetailViewer(principal)));
 }
 
 async function handleWorkflowRunStepGet(
@@ -718,7 +723,9 @@ async function handleWorkflowRunStepGet(
     id: route.id,
     includeDetail: include,
   });
-  return item ? data(200, sanitizeWorkflowRunStep(item, include)) : error(404, 'workflow_run_step_not_found', 'Workflow run step nicht gefunden');
+  return item
+    ? data(200, sanitizeWorkflowRunStep(item, include, workflowStepDetailViewer(route.principal)))
+    : error(404, 'workflow_run_step_not_found', 'Workflow run step nicht gefunden');
 }
 
 async function handleWorkflowMessageAppliedList(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -1872,11 +1879,34 @@ function sanitizeWorkflowRun(run: WorkflowRunRecord, includeLog: boolean): Workf
   };
 }
 
-function sanitizeWorkflowRunStepList(result: WorkflowRunStepListResult, includeDetail: boolean): WorkflowRunStepListResult {
-  return { items: result.items.map((step) => sanitizeWorkflowRunStep(step, includeDetail)), nextCursor: result.nextCursor };
+/**
+ * Die Schritte verlangen workflows.view und Mail-Leserecht. Variablen in den
+ * Details können zusätzlich CRM-/ERP-/Integrations- oder Tracking-Daten
+ * tragen; deren Werte sieht nur, wer crm.read bzw. tracking.view hat.
+ */
+function workflowStepDetailViewer(principal: AuthenticatedPrincipal): WorkflowStepDetailViewer {
+  return {
+    crmRead: requireCapability(principal, 'crm.read'),
+    trackingView: requireCapability(principal, 'tracking.view'),
+  };
 }
 
-function sanitizeWorkflowRunStep(step: WorkflowRunStepRecord, includeDetail: boolean): WorkflowRunStepRecord {
+function sanitizeWorkflowRunStepList(
+  result: WorkflowRunStepListResult,
+  includeDetail: boolean,
+  viewer: WorkflowStepDetailViewer,
+): WorkflowRunStepListResult {
+  return {
+    items: result.items.map((step) => sanitizeWorkflowRunStep(step, includeDetail, viewer)),
+    nextCursor: result.nextCursor,
+  };
+}
+
+function sanitizeWorkflowRunStep(
+  step: WorkflowRunStepRecord,
+  includeDetail: boolean,
+  viewer: WorkflowStepDetailViewer,
+): WorkflowRunStepRecord {
   return {
     id: step.id,
     sourceSqliteId: step.sourceSqliteId,
@@ -1888,7 +1918,7 @@ function sanitizeWorkflowRunStep(step: WorkflowRunStepRecord, includeDetail: boo
     port: step.port,
     durationMs: step.durationMs,
     message: step.message,
-    ...(includeDetail ? { detail: step.detail } : {}),
+    ...(includeDetail ? { detail: redactWorkflowStepDetailForViewer(step.detail, viewer) } : {}),
     createdAt: step.createdAt,
     updatedAt: step.updatedAt,
   };

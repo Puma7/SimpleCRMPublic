@@ -22,6 +22,7 @@ import {
   buildAiDecideChatPrompts,
   buildWorkflowStepDetail,
   encodeWorkflowContinuedFrom,
+  workflowTemplateUsesProtectedData,
   workflowStepPortLabel,
   workflowUnwiredPortNote,
   WORKFLOW_CONTINUED_FROM_VARIABLE,
@@ -389,6 +390,10 @@ async function recordDecisionStep(
     message: message || null,
     now: step.now,
     detail: buildWorkflowStepDetail({
+      // Setzt die Vorlage CRM-/Integrationsdaten ein, sieht der aufgelöste Text
+      // nur, wer crm.read hat (Schwärzung beim Lesen, siehe run-step-detail).
+      protectedExtra: (['question', 'yesCriteria', 'noCriteria'] as const).filter((key) =>
+        workflowTemplateUsesProtectedData(input[key])),
       inputExtra: {
         question: step.question,
         ...(step.yesCriteria ? { yesCriteria: step.yesCriteria } : {}),

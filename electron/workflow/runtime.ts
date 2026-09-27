@@ -28,7 +28,8 @@ import { outboundHoldReasonOrFallback } from '../../packages/core/src/email/outb
 import {
   buildWorkflowStepDetail,
   buildWorkflowStepMailSnapshot,
-  serializeWorkflowStepDetail,
+  createWorkflowRunDetailState,
+  serializeWorkflowStepDetailWithinBudget,
   workflowStepPortLabel,
   workflowUnwiredPortNote,
   type BuildWorkflowStepDetailInput,
@@ -121,17 +122,19 @@ function desktopStepDetailJson(
   ctx: WorkflowContext,
   parts: Omit<BuildWorkflowStepDetailInput, 'mail' | 'continuedFrom'>,
 ): string {
-  ctx.stepDetail ??= { mailRecorded: false };
+  // Fallback für Kontexte, die nicht über buildCtx entstehen (z. B. Tests).
+  ctx.stepDetail ??= createWorkflowRunDetailState();
   let mail: BuildWorkflowStepDetailInput['mail'] = null;
   if (!ctx.stepDetail.mailRecorded) {
     ctx.stepDetail.mailRecorded = true;
     mail = buildWorkflowStepMailSnapshot({
       strings: ctx.strings as Record<string, unknown>,
       direction: ctx.direction,
-      hasMessage: ctx.messageId !== null,
+      // CRM-, Aufgaben-, Termin- und Zeitplan-Läufe haben keine Nachricht.
+      hasMessage: ctx.messageId !== null || ctx.outbound !== null,
     });
   }
-  return serializeWorkflowStepDetail(buildWorkflowStepDetail({ ...parts, mail }));
+  return serializeWorkflowStepDetailWithinBudget(buildWorkflowStepDetail({ ...parts, mail }), ctx.stepDetail);
 }
 
 /**
@@ -580,7 +583,7 @@ type GraphRunInput = {
 };
 
 function buildCtx(input: GraphRunInput): WorkflowContext {
-  return createWorkflowContext({
+  const ctx = createWorkflowContext({
     trigger: input.trigger,
     direction: input.direction,
     workflowId: input.workflow.id,
@@ -593,6 +596,9 @@ function buildCtx(input: GraphRunInput): WorkflowContext {
     eventVariables: input.eventVariables,
     initialVariables: input.initialVariables,
   });
+  // Vor dem Klonen der Trigger-Zweige: alle Zweige teilen Mail-Merker und Budget.
+  ctx.stepDetail = createWorkflowRunDetailState();
+  return ctx;
 }
 
 export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunResult> {

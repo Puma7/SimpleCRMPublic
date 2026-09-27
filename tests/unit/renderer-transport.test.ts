@@ -7010,6 +7010,37 @@ describe('renderer transport', () => {
     );
   });
 
+  test('workflow run steps collect every page (appended AI decision sits at the end of long runs)', async () => {
+    const step = (id: number) => ({
+      id,
+      sourceSqliteId: null,
+      runSourceSqliteId: -91,
+      runId: 401,
+      nodeId: `n${id}`,
+      nodeType: 'email.tag',
+      status: 'ok',
+      port: null,
+      durationMs: 1,
+      message: null,
+      createdAt: '2026-06-03T11:00:00.000Z',
+      updatedAt: '2026-06-03T11:00:00.000Z',
+    });
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [step(1), step(2)], nextCursor: 2 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [step(3)], nextCursor: null } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const steps = await transport.invoke(IPCChannels.Email.ListWorkflowRunSteps, -91) as Array<{ node_id: string }>;
+
+    expect(steps.map((entry) => entry.node_id)).toEqual(['n1', 'n2', 'n3']);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/workflow-runs/by-source/-91/steps?limit=100&includeDetail=true&cursor=2',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
   test('maps latest message workflow run lookup through paged server route', async () => {
     const fetchImpl = jest
       .fn()

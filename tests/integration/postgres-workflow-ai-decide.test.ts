@@ -389,6 +389,12 @@ describe('ai.decide server job (Embedded Postgres)', () => {
       WHERE workspace_id = $1 AND run_id = $2 AND port = 'default'
     `, [WORKSPACE_ID, steps[0]!.run_id]);
 
+    // Teilindex (Migration 0060): die tägliche Bereinigung liest nur Schritte mit Details.
+    const index = await postgres.admin.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE indexname = 'email_workflow_run_steps_detail_retention_idx'`,
+    );
+    expect(index.rows[0]?.indexdef).toMatch(/\(workspace_id, created_at\) WHERE \(detail_json IS NOT NULL\)/);
+
     const cleared = await pruneWorkflowRunStepDetails({ db }, WORKSPACE_ID);
     expect(cleared).toBeGreaterThanOrEqual(1);
     const after = await runStepsForMessage(8109);

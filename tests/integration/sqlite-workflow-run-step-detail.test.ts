@@ -139,4 +139,25 @@ describe('Desktop: Eingang/Ausgang je Lauf-Schritt', () => {
     expect(after[0]!.detail).toBeNull();
     expect(after[0]!.port).toBe('nein');
   });
+
+  test('mehrere Trigger-Zweige: die Mail steht nur einmal im Lauf', async () => {
+    const fanOut = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'tag-a', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'a', runOnEveryInbound: true } } },
+        { id: 'tag-b', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'b', runOnEveryInbound: true } } },
+      ],
+      edges: [
+        { id: 'edge-a', source: 'trigger-1', target: 'tag-a' },
+        { id: 'edge-b', source: 'trigger-1', target: 'tag-b' },
+      ],
+    };
+    db.prepare(`UPDATE email_workflows SET graph_json = ? WHERE id = ?`).run(JSON.stringify(fanOut), WORKFLOW_ID);
+
+    const steps = await runSpamfilter();
+
+    expect(steps.map((step) => step.node_id)).toEqual(['tag-a', 'tag-b']);
+    expect(steps.filter((step) => step.detail?.input?.mail)).toHaveLength(1);
+  });
 });

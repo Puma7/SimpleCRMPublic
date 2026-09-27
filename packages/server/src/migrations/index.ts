@@ -57,6 +57,7 @@ import { emailWorkflowScheduleStateMigration } from './0056_email_workflow_sched
 import { aiLearningsMigration } from './0057_ai_learnings';
 import { emailRawRfc822StorageMigration } from './0058_email_raw_rfc822_storage';
 import { attachmentTextExtractorVersionMigration } from './0059_attachment_text_extractor_version';
+import { workflowRunStepDetailRetentionIndexMigration } from './0060_workflow_run_step_detail_retention_index';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -120,6 +121,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   aiLearningsMigration,
   emailRawRfc822StorageMigration,
   attachmentTextExtractorVersionMigration,
+  workflowRunStepDetailRetentionIndexMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);
