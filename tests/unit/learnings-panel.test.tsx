@@ -191,6 +191,7 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     expect(within(diff).getByTitle('entfernt')).toHaveTextContent('14');
     expect(within(diff).getByTitle('neu')).toHaveTextContent('30');
     expect(screen.getByTestId('learnings-privacy')).toHaveTextContent('personenbezogene Daten');
+    expect(screen.getByTestId('learnings-privacy')).toHaveTextContent('Kartennummern');
     const history = screen.getByRole('region', { name: 'Verlauf' });
     expect(within(history).getByText('Fehlgeschlagen')).toBeInTheDocument();
     expect(within(history).getByText('Antwort der KI enthält kein gültiges JSON')).toBeInTheDocument();

@@ -117,7 +117,7 @@ update the row here.
 | 029 | Reserve knowledge budget for Learnings in AI drafts | P1 | S | bug | — | DONE |
 | 030 | Refresh coverage ratchets, gate mail coverage in CI | P1 | S | tests | — | DONE |
 | 031 | CI: one Jest coverage run instead of three | P2 | M | dx | 030 | TODO |
-| 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | TODO |
+| 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | DONE |
 | 033 | Lock backup runs against concurrent pruning | P2 | S | bug | — | TODO |
 | 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | TODO |
 | 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | TODO |

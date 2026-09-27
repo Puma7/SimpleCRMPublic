@@ -431,8 +431,9 @@ function LearningsManager() {
           <p className="font-medium text-foreground">Datenschutz</p>
           <p>
             Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt
-            personenbezogene Daten (Namen, E-Mail-Adressen, Telefonnummern, IBAN, Links, Adressen, Bestell-,
-            Kunden- und Rechnungsnummern) durch Platzhalter. Gespeichert wird nur der bereinigte Text; die KI
+            personenbezogene Daten (Namen, E-Mail-Adressen, Telefonnummern, IBAN, Kartennummern, Steuer-,
+            Sozialversicherungs- und Ausweisnummern, IP-Adressen, Links, Adressen, Bestell-, Kunden- und
+            Rechnungsnummern) durch Platzhalter. Gespeichert wird nur der bereinigte Text; die KI
             soll nur allgemeine Regeln formulieren, ihre Ausgabe läuft erneut durch denselben Filter. Einträge
             werden nach der Entscheidung über den Vorschlag gelöscht, spätestens nach 90 Tagen.
           </p>

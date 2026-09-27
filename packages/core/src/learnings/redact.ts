@@ -23,6 +23,8 @@ export const LEARNING_PLACEHOLDERS = {
   address: '[Adresse]',
   number: '[Nummer]',
   name: '[Name]',
+  card: '[Kartennummer]',
+  ip: '[IP-Adresse]',
 } as const;
 
 export type RedactionHints = {
@@ -55,7 +57,7 @@ const NAME_PART_STOPWORDS = new Set([
   'customer', 'noreply', 'no-reply', 'mail', 'email', 'office', 'büro', 'buero', 'shop',
   'sales', 'vertrieb', 'verkauf', 'hello', 'hallo', 'admin', 'newsletter', 'news', 'online',
   'herr', 'herrn', 'frau', 'dr', 'prof', 'mr', 'mrs', 'ms', 'name', 'link', 'nummer',
-  'telefon', 'adresse', 'iban', 'bic',
+  'telefon', 'adresse', 'iban', 'bic', 'kartennummer',
 ]);
 
 /** Einheiten/Währungen: eine Zahl davor ist nie eine Postleitzahl. */
@@ -186,6 +188,73 @@ const HASH_NUMBER_PATTERN = /(^|[\s(])#\s?(\d{4}[A-Z0-9-]*)\b/gi;
 const TICKET_CODE_PATTERN = /\[[A-Z0-9]{1,12}-[A-Z0-9]{1,20}\]/g;
 /** Lange Ziffernfolgen ohne Trenner (Sendungs-/Kontonummern). Preise/Daten haben Trenner. */
 const LONG_DIGITS_PATTERN = /(?<![\d.,])\d{7,}(?![\d.,]\d)/g;
+
+// --- Kartennummern ----------------------------------------------------------
+
+/** 13–19 Ziffern in Gruppen mit genau einem Leerzeichen/Bindestrich; ohne Trenner greift LONG_DIGITS. */
+const CARD_PATTERN = /(?<![\d.,/-])\d{4}(?:[ -]\d{3,6}){2,4}(?!\d|[.,/-]\d)/g;
+
+function passesLuhn(digits: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let n = digits.charCodeAt(i) - 48;
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+// --- IP-Adressen ------------------------------------------------------------
+
+const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)';
+const IPV4_PATTERN = new RegExp(`(?<![\\w.])(?:${IPV4_OCTET}\\.){3}${IPV4_OCTET}(?![\\w]|\\.\\d)`, 'g');
+const HEX = '[0-9A-Fa-f]{1,4}';
+const IPV6_PATTERN = new RegExp(
+  `(?<![\\w:.])(?:(?:${HEX}:){7}${HEX}|(?:${HEX}(?::${HEX}){0,6})?::(?:${HEX}(?::${HEX}){0,6})?)(?![\\w:.])`,
+  'g',
+);
+
+/**
+ * Mit „::“ nur, wenn es nach einer Adresse aussieht: mindestens zwei Gruppen
+ * und eine davon mit drei Stellen oder a–f (nicht „12:30::45“ oder „::1“).
+ */
+function isLikelyIpv6(match: string): boolean {
+  if (!match.includes('::')) return true;
+  const groups = match.split(':').filter(Boolean);
+  return groups.length >= 2 && groups.some((group) => group.length >= 3 || /[a-f]/i.test(group));
+}
+
+/** Steht direkt davor „Version“, „Vers.“ oder „v“? Rückwärts über höchstens 12 Zeichen. */
+function followsVersionWord(whole: string, index: number): boolean {
+  return /(?:version|vers\.|v)\s*$/i.test(whole.slice(Math.max(0, index - 12), index));
+}
+
+// --- Steuer-, Sozialversicherungs-, Ausweisnummern ---------------------------
+
+const ID_KEYWORDS = [
+  'Steuer-?ID', 'Steuer-?Identifikationsnummer', '(?:Steuerliche\\s)?Identifikationsnummer', 'IdNr\\.?',
+  'Steuer-?(?:nummer|-?Nr\\.?)', 'St\\.?-?Nr\\.?',
+  'Sozialversicherungs-?(?:nummer|ausweis)', 'SV-?(?:Nummer|Nr\\.?)', 'SVNR',
+  'Renten(?:versicherungs)?-?(?:nummer|Nr\\.?)', 'RV-?(?:Nummer|Nr\\.?)',
+  'Krankenversicherten-?(?:nummer|Nr\\.?)', 'KVNR',
+  '(?:Personal)?ausweis(?:nummer|-?Nr\\.?)?', 'Reisepass(?:nummer|-?Nr\\.?)?', 'Pass(?:nummer|-?Nr\\.?)',
+  'Führerschein(?:nummer|-?Nr\\.?)?',
+  'Tax\\s?ID', 'Passport(?:\\s?(?:number|no\\.?))?', 'Social\\sSecurity(?:\\s?(?:number|no\\.?))?', 'SSN',
+];
+/**
+ * Wert: Blöcke aus Buchstaben/Ziffern, getrennt durch / . - oder ein Leerzeichen,
+ * nach dem eine Ziffer folgt (oder ein einzelner Buchstabe vor einer Ziffer, SV-Nummer
+ * „65 170839 J 003“). Beschränkte Wiederholungen → linear.
+ */
+const ID_KEYWORD_PATTERN = new RegExp(
+  `(?<![\\p{L}\\p{N}])(${ID_KEYWORDS.join('|')})((?:\\s*[:#]|\\s)\\s*)([A-Z0-9]{1,12}(?:[/.-][A-Z0-9]{1,12}|[ ](?:\\d[A-Z0-9]{0,11}|[A-Z](?=[ ]\\d))){0,6})`,
+  'giu',
+);
 
 // --- Telefon ----------------------------------------------------------------
 
@@ -322,7 +391,9 @@ function collapsePlaceholders(text: string): string {
 
 /**
  * Ersetzt personenbezogene Daten durch Platzhalter ([E-Mail], [Telefon],
- * [IBAN], [BIC], [Link], [Adresse], [Nummer], [Name]).
+ * [IBAN], [BIC], [Link], [Adresse], [Nummer], [Name], [Kartennummer],
+ * [IP-Adresse]). Steuer-, Sozialversicherungs- und Ausweisnummern werden
+ * nach ihrem Stichwort zu [Nummer].
  */
 export function redactPersonalData(text: string, hints: RedactionHints = {}): string {
   let out = String(text ?? '');
@@ -336,6 +407,19 @@ export function redactPersonalData(text: string, hints: RedactionHints = {}): st
   out = replaceWith(out, BIC_KEYWORD_PATTERN, keep, (_m, g) => `${g[0]}${g[1]}${P.bic}`);
   out = replaceWith(out, BIC_BARE_PATTERN, keep, (match) =>
     /\d/.test(match.slice(6)) || match.endsWith('XXX') ? P.bic : null);
+  // Vor Nummern- und Telefonregeln, damit diese keine Teile davon sehen.
+  out = replaceWith(out, IPV6_PATTERN, keep, (match) => (isLikelyIpv6(match) ? P.ip : null));
+  out = out.replace(IPV4_PATTERN, (match: string, offset: number, whole: string) =>
+    keep(match) || followsVersionWord(whole, offset) ? match : P.ip);
+  out = replaceWith(out, CARD_PATTERN, keep, (match) => {
+    const digits = match.replace(/\D/g, '');
+    return digits.length >= 13 && digits.length <= 19 && passesLuhn(digits) ? P.card : null;
+  });
+  out = replaceWith(out, ID_KEYWORD_PATTERN, keep, (_m, g) => {
+    const value = g[2] ?? '';
+    const alnum = value.replace(/[^A-Za-z0-9]/g, '');
+    return countDigits(value) >= 3 && alnum.length >= 6 ? `${g[0]}${g[1]}${P.number}` : null;
+  });
   out = replaceWith(out, TICKET_CODE_PATTERN, keep, () => P.number);
   out = out.replace(NUMBER_KEYWORD_PATTERN, (match, keyword: string, sep: string, value: string, offset: number, whole: string) => {
     if (keep(match)) return match;
@@ -400,4 +484,8 @@ export const LEARNING_REDACTION_PATTERNS_FOR_TESTS: Readonly<Record<string, RegE
   englishStreet: ENGLISH_STREET_PATTERN,
   postalCity: POSTAL_CITY_PATTERN,
   titleName: TITLE_NAME_PATTERN,
+  card: CARD_PATTERN,
+  ipv4: IPV4_PATTERN,
+  ipv6: IPV6_PATTERN,
+  idKeyword: ID_KEYWORD_PATTERN,
 };
