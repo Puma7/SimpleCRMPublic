@@ -146,7 +146,7 @@ type WorkflowMutationParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowExecuteParseResult =
-  | { ok: true; values: { messageId?: number; dryRun?: boolean; testRun?: boolean } }
+  | { ok: true; values: { messageId?: number; dryRun?: boolean; testRun?: boolean; realAi?: boolean } }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowInboundBackfillParseResult =
@@ -598,6 +598,8 @@ async function handleWorkflowExecute(
       // Plan 047: gespeicherter Testlauf (auch für deaktivierte Workflows);
       // nur zusammen mit dryRun, ein Live-Lauf ignoriert das Feld.
       ...(parsed.values.testRun === true ? { testRun: true } : {}),
+      // Phase B: ai.decide im Testlauf wirklich fragen (kostet Tokens).
+      ...(parsed.values.testRun === true && parsed.values.realAi === true ? { realAi: true } : {}),
     });
     return data(result.success ? 200 : 409, {
       ...result,
@@ -2163,9 +2165,9 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     };
   }
 
-  const values: { messageId?: number; dryRun?: boolean; testRun?: boolean } = {};
+  const values: { messageId?: number; dryRun?: boolean; testRun?: boolean; realAi?: boolean } = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['messageId', 'dryRun', 'testRun']);
+  const allowedFields = new Set(['messageId', 'dryRun', 'testRun', 'realAi']);
 
   for (const key of Object.keys(payload)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -2187,6 +2189,11 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     const testRun = normalizeBodyBoolean(payload.testRun, 'testRun');
     if (testRun.ok) values.testRun = testRun.value;
     else errors.push({ field: 'testRun', message: testRun.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'realAi')) {
+    const realAi = normalizeBodyBoolean(payload.realAi, 'realAi');
+    if (realAi.ok) values.realAi = realAi.value;
+    else errors.push({ field: 'realAi', message: realAi.message });
   }
 
   if (errors.length > 0) {

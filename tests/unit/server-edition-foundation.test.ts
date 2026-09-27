@@ -38298,6 +38298,24 @@ describe('server edition foundation', () => {
     expect(testRun.status).toBe(200);
     expect((testRun.body as any).data).toMatchObject({ success: true, dryRun: true, runId: -501, workflowId: -23 });
     expect(dryRunCalls).toEqual([expect.objectContaining({ messageId: 11, testRun: true })]);
+    expect(dryRunCalls[0]).not.toHaveProperty('realAi');
+
+    // Phase B: „KI wirklich fragen“ nur zusammen mit testRun.
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, testRun: true, realAi: true },
+      principal,
+    });
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, realAi: true },
+      principal,
+    });
+    expect(dryRunCalls[1]).toEqual(expect.objectContaining({ testRun: true, realAi: true }));
+    expect(dryRunCalls[2]).not.toHaveProperty('realAi');
+    dryRunCalls.length = 1;
 
     const live = await api.handle({
       method: 'POST',

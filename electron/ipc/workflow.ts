@@ -60,8 +60,8 @@ export function registerWorkflowHandlers(options: {
       IPCChannels.Email.TestWorkflowOnMessage,
       async (
         _event: IpcMainInvokeEvent,
-        payload: { workflowId: number; messageId: number; dryRun?: boolean },
-      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true),
+        payload: { workflowId: number; messageId: number; dryRun?: boolean; realAi?: boolean },
+      ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true, { realAi: payload.realAi === true }),
       { logger, accountAccess: 'ro' },
     ),
   );

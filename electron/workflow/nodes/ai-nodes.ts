@@ -569,10 +569,10 @@ export function registerAiNodes(register: Reg): void {
         }
         return { status: 'ok', port: outcome.answer, message: outcome.summary, variables };
       };
-      // Testlauf: keine KI-Anfrage. Die Versandvorschau (previewOutbound)
-      // entscheidet dagegen echt — eine dort erteilte Freigabe überspringt
-      // die Ausgangsprüfung beim eigentlichen Versand.
-      if (ctx.dryRun && !ctx.previewOutbound) return finish(aiDecideDryRunOutcome());
+      // Testlauf: keine KI-Anfrage, außer mit „KI wirklich fragen“ (Plan 047).
+      // Die Versandvorschau (previewOutbound) entscheidet dagegen echt — eine
+      // dort erteilte Freigabe überspringt die Ausgangsprüfung beim Versand.
+      if (ctx.dryRun && !ctx.previewOutbound && !ctx.testRealAi) return finish(aiDecideDryRunOutcome());
       const question = String(config.question ?? '').trim().slice(0, AI_DECIDE_QUESTION_MAX_CHARS);
       if (!question) return finish(aiDecideErrorOutcome({ message: 'Keine Frage angegeben' }));
       const mode = normalizeAiDecideContextMode(config.contextMode);

@@ -98,6 +98,49 @@ describe('Workflow-Testlauf (Desktop)', () => {
     expect(db.prepare('SELECT count(*) AS n FROM email_workflow_run_steps').get()).toEqual({ n: 0 });
   });
 
+  // Phase B: „KI wirklich fragen“.
+  function insertDecideWorkflow(id: number): void {
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'decide', type: 'registry', data: { nodeType: 'ai.decide', config: { question: 'Ist das eine Rückgabe?', threshold: 80 } } },
+        { id: 'tag-ja', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'rueckgabe' } } },
+      ],
+      edges: [
+        { id: 'edge-1', source: 'trigger-1', target: 'decide' },
+        { id: 'edge-2', source: 'decide', target: 'tag-ja', label: 'ja' },
+      ],
+    };
+    db.prepare(
+      `INSERT INTO email_workflows (id, name, trigger, enabled, priority, definition_json, graph_json)
+       VALUES (?, 'Rückgaben KI', 'inbound', 0, 100, '{"version":1,"rules":[]}', ?)`,
+    ).run(id, JSON.stringify(graph));
+  }
+
+  test('„KI wirklich fragen“: echte Entscheidung im Testlauf, weiterhin ohne Tag', async () => {
+    const { runAiDecideCall } = jest.requireMock('../../electron/email/email-openai') as { runAiDecideCall: jest.Mock };
+    runAiDecideCall.mockClear();
+    runAiDecideCall.mockResolvedValueOnce({ source: 'decisions', probability: 95, modelAnswer: null, reason: '', model: 'typesafe/jev-1.13' });
+    insertDecideWorkflow(72);
+    const result = await testWorkflowOnMessage(72, MESSAGE_ID, true, { realAi: true });
+    expect(result.success).toBe(true);
+    expect(runAiDecideCall).toHaveBeenCalledTimes(1);
+    const steps = listWorkflowRunSteps(result.runId!);
+    expect(steps.find((step) => step.node_id === 'decide')?.port).toBe('ja');
+    expect(steps.map((step) => step.node_id)).toContain('tag-ja');
+    expect(db.prepare('SELECT count(*) AS n FROM email_message_tags WHERE message_id = ?').get(MESSAGE_ID)).toEqual({ n: 0 });
+  });
+
+  test('ohne „KI wirklich fragen“ fragt der Testlauf die KI nicht', async () => {
+    const { runAiDecideCall } = jest.requireMock('../../electron/email/email-openai') as { runAiDecideCall: jest.Mock };
+    runAiDecideCall.mockClear();
+    insertDecideWorkflow(73);
+    const result = await testWorkflowOnMessage(73, MESSAGE_ID, true);
+    expect(runAiDecideCall).not.toHaveBeenCalled();
+    expect(listWorkflowRunSteps(result.runId!).find((step) => step.node_id === 'decide')?.port).toBe('unsicher');
+  });
+
   test('echter Lauf eines deaktivierten Workflows bleibt verweigert', async () => {
     await expect(executeWorkflowNow(WORKFLOW_ID, { messageId: MESSAGE_ID, dryRun: false }))
       .resolves.toEqual({ success: false, error: 'Workflow ist deaktiviert' });

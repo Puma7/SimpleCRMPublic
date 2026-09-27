@@ -206,6 +206,7 @@ export function WorkflowShell() {
   const [testMessageId, setTestMessageId] = useState("")
   const [testRunView, setTestRunView] = useState<{ runId: number; title: string } | null>(null)
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0)
+  const [testRealAi, setTestRealAi] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   /**
    * Baseline for omitting unchanged execution-relevant fields on editor-only
@@ -250,6 +251,11 @@ export function WorkflowShell() {
     return (triggerNode?.data as { kind?: string } | undefined)?.kind
   }, [graphNodes])
   const triggerKindDisplay = workflowTriggerLabel(graphTriggerKind)
+  // „KI wirklich fragen“ nur anbieten, wenn der Graph eine KI-Entscheidung hat.
+  const graphHasAiDecide = useMemo(
+    () => graphNodes.some((n) => (n.data as { nodeType?: unknown } | undefined)?.nodeType === "ai.decide"),
+    [graphNodes],
+  )
   const selectedRow = useMemo(() => rows.find((w) => w.id === selectedId) ?? null, [rows, selectedId])
   // Server: aktiver Zeitplan-Workflow mit leerem Zustand (Bestand vor dem
   // Update, Desktop-Import) loest nie aus, bis er einmal gespeichert wird.
@@ -1094,6 +1100,7 @@ export function WorkflowShell() {
                                 workflowId: selectedId,
                                 messageId: parsedId,
                                 dryRun: true,
+                                ...(graphHasAiDecide && testRealAi ? { realAi: true } : {}),
                               },
                             ) as {
                               success: boolean
@@ -1122,6 +1129,22 @@ export function WorkflowShell() {
                       </Button>
                     )
                   })()}
+                  {graphHasAiDecide ? (
+                    <label className="flex max-w-[230px] items-start gap-1.5 self-center text-[11px] leading-tight">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={testRealAi}
+                        onChange={(e) => setTestRealAi(e.target.checked)}
+                      />
+                      <span>
+                        KI wirklich fragen
+                        <span className="block text-muted-foreground">
+                          Kostet KI-Tokens; es wird trotzdem nichts gesendet oder verändert.
+                        </span>
+                      </span>
+                    </label>
+                  ) : null}
                   {(() => {
                     const row = rows.find((w) => w.id === selectedId)
                     const trig = row?.trigger ?? "inbound"

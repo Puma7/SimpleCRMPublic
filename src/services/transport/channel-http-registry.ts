@@ -3476,6 +3476,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         dryRun,
         // Plan 047: Testlauf speichern (Schritt für Schritt ansehbar), wie am Desktop.
         ...(dryRun ? { testRun: true } : {}),
+        ...(dryRun && input.realAi === true ? { realAi: true } : {}),
       },
       transform: (body) => dataBody<Record<string, unknown>>(body),
     }

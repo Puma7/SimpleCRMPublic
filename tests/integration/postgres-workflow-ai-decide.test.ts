@@ -640,6 +640,75 @@ describe('ai.decide server job (Embedded Postgres)', () => {
     expect(seen.every((n) => n === 0)).toBe(true);
   });
 
+  // Plan 047 Phase B: Testlauf mit „KI wirklich fragen“ – echte Entscheidung,
+  // aber weiterhin ohne Seiteneffekte (einzige Schreibung: KI-Verbrauch).
+  async function testRunSteps(runId: number): Promise<Array<{ node_id: string; port: string | null }>> {
+    const rows = await postgres.admin.query<{ node_id: string; port: string | null }>(
+      `SELECT s.node_id, s.port FROM email_workflow_run_steps s
+         JOIN email_workflow_runs r ON r.id = s.run_id
+        WHERE s.workspace_id = $1 AND r.source_sqlite_id = $2 AND r.dry_run
+        ORDER BY s.id`,
+      [WORKSPACE_ID, runId],
+    );
+    return rows.rows;
+  }
+
+  test('Testlauf mit realAi fragt das Modell einmal und folgt der Antwort, ohne Jobs und Tags', async () => {
+    await seedInbound(8130, 'Gewinnspiel');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.95));
+    const result = await createPostgresWorkflowExecutionJobPort({ db, secrets }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8130,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      testRun: true,
+      realAi: true,
+    });
+    expect(guardedMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ success: true, dryRun: true, runId: expect.any(Number) });
+    expect(result.log).not.toContain('dry_run:ai.decide');
+    expect(await testRunSteps(result.runId!)).toEqual(expect.arrayContaining([
+      { node_id: 'decide', port: 'ja' },
+      expect.objectContaining({ node_id: 'tag-ja' }),
+    ]));
+    expect(await tags(8130)).toEqual([]);
+    expect(await takeJobs('ai.decide')).toEqual([]);
+    expect(await takeJobs('workflow.execute')).toEqual([]);
+    const usage = await postgres.admin.query(`SELECT 1 FROM ai_usage_events WHERE workspace_id = $1`, [WORKSPACE_ID]);
+    expect(usage.rows).toHaveLength(1);
+  });
+
+  test('Testlauf ohne realAi und realAi ohne testRun fragen das Modell nicht', async () => {
+    await seedInbound(8131, 'Gewinnspiel');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.95));
+    const port = createPostgresWorkflowExecutionJobPort({ db, secrets });
+    const plain = await port.dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8131,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      testRun: true,
+    });
+    expect(plain.log).toContain('dry_run:ai.decide');
+    expect(await testRunSteps(plain.runId!)).toEqual(expect.arrayContaining([{ node_id: 'decide', port: 'unsicher' }]));
+    const withoutTestRun = await port.dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8131,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      realAi: true,
+    });
+    expect(withoutTestRun.log).toContain('dry_run:ai.decide');
+    expect(guardedMock).not.toHaveBeenCalled();
+    expect(await takeJobs('ai.decide')).toEqual([]);
+  });
+
   describe('Verbindung testen (POST /api/v1/ai/profiles/:id/test-connection)', () => {
     const audit: Array<Record<string, unknown>> = [];
     let api: ReturnType<typeof createServerApi>;

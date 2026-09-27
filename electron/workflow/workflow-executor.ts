@@ -27,6 +27,8 @@ export async function executeWorkflowForTrigger(input: {
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
   previewOutbound?: boolean;
+  /** Nur mit dryRun: ai.decide fragt das Modell wirklich (Plan 047). */
+  testRealAi?: boolean;
   eventStrings?: Record<string, string>;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -63,6 +65,7 @@ export async function executeWorkflowForTrigger(input: {
         outbound: input.outbound,
         dryRun: input.dryRun,
         previewOutbound: input.previewOutbound,
+        testRealAi: input.testRealAi,
         eventStrings: input.eventStrings,
         eventVariables: input.eventVariables,
         initialVariables: input.initialVariables,
@@ -114,7 +117,7 @@ export async function executeWorkflowForTrigger(input: {
 
 export async function executeWorkflowNow(
   workflowId: number,
-  options: { messageId?: number | null; dryRun?: boolean } = {},
+  options: { messageId?: number | null; dryRun?: boolean; realAi?: boolean } = {},
 ): Promise<{
   success: boolean;
   runId?: number;
@@ -154,6 +157,7 @@ export async function executeWorkflowNow(
     message,
     outbound,
     dryRun,
+    testRealAi: dryRun && options.realAi === true,
   });
 
   return {
@@ -170,8 +174,9 @@ export async function testWorkflowOnMessage(
   workflowId: number,
   messageId: number,
   dryRun = true,
+  options: { realAi?: boolean } = {},
 ): Promise<{ success: boolean; runId?: number; log?: string[]; error?: string }> {
-  const r = await executeWorkflowNow(workflowId, { messageId, dryRun });
+  const r = await executeWorkflowNow(workflowId, { messageId, dryRun, realAi: options.realAi === true });
   if (!r.success) return { success: false, error: r.error };
   return { success: true, runId: r.runId, log: r.log };
 }

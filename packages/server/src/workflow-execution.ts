@@ -284,6 +284,11 @@ type ServerWorkflowContext = {
   trustedService?: boolean;
   manualAdminExecute?: boolean;
   previewOutbound?: boolean;
+  /**
+   * Testlauf mit „KI wirklich fragen“ (Plan 047): ai.decide fragt das Modell
+   * wie die Versandvorschau synchron. Nur im gespeicherten Testlauf gesetzt.
+   */
+  testRealAi?: boolean;
   /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
   inboundWorkflowChain?: InboundWorkflowChainContext;
   skipIfMessageSpamOrReview?: boolean;
@@ -1226,6 +1231,7 @@ export function createPostgresWorkflowExecutionJobPort(
               message: prepared.message,
               actorUserId: input.actorUserId,
               trustedService: input.trustedService,
+              testRealAi: testRun && input.realAi === true,
               jobContext: prepared.jobContext,
             });
             const result = await runServerWorkflowGraph(trx, {
@@ -1974,9 +1980,11 @@ async function walkGraph(
     // gingen verloren, eine Rueckkante startete die Schleife endlos neu. Deshalb
     // vor dem Einreihen abbrechen statt still nur den ersten Eintrag zu bearbeiten.
     // Die Ausgangs-Vorschau fuehrt KI-Pruefungen synchron aus; dort deferieren sie nicht.
-    const previewRunsReviewSynchronously = input.dryRun
-      && input.context.previewOutbound
-      && ['ai.outbound_review', 'ai.review', 'ai_review', 'ai.decide'].includes(nodeRuntimeType(node));
+    const previewRunsReviewSynchronously = input.dryRun && (
+      (input.context.previewOutbound
+        && ['ai.outbound_review', 'ai.review', 'ai_review', 'ai.decide'].includes(nodeRuntimeType(node)))
+      || (input.context.testRealAi === true && nodeRuntimeType(node) === 'ai.decide')
+    );
     const loopBodyDeferral = input.insideLoopBody === true
       && !previewRunsReviewSynchronously
       && workflowNodeDefersRun(input.doc, node, 'server');
@@ -2430,9 +2438,10 @@ async function executeServerNode(
     return { status: 'ok', port: cases.includes(value) ? value : 'default' };
   }
   if (type === 'ai.decide') {
-    if (dryRun && context.previewOutbound) {
+    if (dryRun && (context.previewOutbound || context.testRealAi)) {
       // Versandvorschau: echte Entscheidung, sonst übersprange eine dort
       // erteilte Freigabe die KI-Entscheidung beim eigentlichen Versand.
+      // Testlauf mit „KI wirklich fragen“ (Plan 047): ebenso synchron, ohne Job.
       return await executePreviewAiDecide(ports, context, config);
     }
     if (dryRun) {
@@ -7896,6 +7905,7 @@ async function buildWorkflowContext(
     actorUserId?: string;
     trustedService?: boolean;
     manualAdminExecute?: boolean;
+    testRealAi?: boolean;
     jobContext: Record<string, unknown>;
   },
 ): Promise<ServerWorkflowContext> {
@@ -7983,6 +7993,7 @@ async function buildWorkflowContext(
     ...(input.trustedService ? { trustedService: true } : {}),
     ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
+    ...(input.testRealAi ? { testRealAi: true } : {}),
     ...inboundChainFieldsFromRecord(input.jobContext),
     stepDetail: createWorkflowRunDetailState(),
   };

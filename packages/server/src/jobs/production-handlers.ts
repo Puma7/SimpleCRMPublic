@@ -114,6 +114,11 @@ export type WorkflowExecutionJobPlan = Readonly<{
    * Versandvorschau.
    */
   testRun?: boolean;
+  /**
+   * Nur mit testRun: die KI-Entscheidung (ai.decide) wirklich fragen statt
+   * „unsicher“ (Plan 047 Phase B). Kostet Tokens, bleibt ohne Seiteneffekte.
+   */
+  realAi?: boolean;
   context: JobPayload;
 }>;
 

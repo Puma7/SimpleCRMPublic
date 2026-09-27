@@ -307,7 +307,7 @@ describe('IPC contracts', () => {
     const handler = source.match(/IPCChannels\.Email\.TestWorkflowOnMessage[\s\S]*?\n\s*\),\n\s*\);/)?.[0] ?? '';
     expect(handler).toContain('testWorkflowOnMessage');
     expect(handler).not.toContain('payload.dryRun !== false');
-    expect(handler).toMatch(/testWorkflowOnMessage\(payload\.workflowId,\s*payload\.messageId,\s*true\)/);
+    expect(handler).toMatch(/testWorkflowOnMessage\(payload\.workflowId,\s*payload\.messageId,\s*true(?:,\s*\{[^}]*\})?\)/);
   });
 
   test('FollowUp channels are in AllowedInvokeChannels', () => {

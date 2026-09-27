@@ -1635,6 +1635,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       workflowId: positiveInt,
       messageId: positiveInt,
       dryRun: z.boolean().optional(),
+      /** Testlauf: KI-Entscheidung wirklich fragen (Plan 047 Phase B). */
+      realAi: z.boolean().optional(),
     }),
     // runId: gespeicherter Testlauf (Plan 047), am Server negative Quell-ID.
     result: z.object({ runId: z.number().int().optional() }).passthrough(),

@@ -6511,6 +6511,20 @@ describe('renderer transport', () => {
         body: JSON.stringify({ messageId: 11, dryRun: true, testRun: true }),
       }),
     );
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { success: true, dryRun: true } }));
+    await transport.invoke(IPCChannels.Email.TestWorkflowOnMessage, {
+      workflowId: -23,
+      messageId: 11,
+      dryRun: true,
+      realAi: true,
+    });
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      'https://crm.example.com/api/v1/workflows/by-source/-23/execute',
+      expect.objectContaining({
+        body: JSON.stringify({ messageId: 11, dryRun: true, testRun: true, realAi: true }),
+      }),
+    );
   });
 
   test('maps workflow bundle import and export channels to server workflow routes', async () => {
