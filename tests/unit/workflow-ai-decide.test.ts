@@ -214,16 +214,18 @@ describe('Kontext und Prompts', () => {
     expect(ctx.text).toContain('Betreff: Frage zur Bestellung');
     expect(ctx.text).toContain('Von: kunde@example.com');
     expect(ctx.text).toContain('Anhänge: rechnung.pdf');
-    const email = ctx.state.email as Record<string, string>;
-    expect(email.body).toHaveLength(12_000);
-    expect(email.from).toBe('kunde@example.com');
+    // Decisions API: derselbe Klartext als `state` (Span-01 lehnte ein Objekt mit HTTP 400 ab).
+    expect(ctx.state).toBe(ctx.text);
+    expect(ctx.text).toContain(`Text:\n${'x'.repeat(12_000)}`);
+    expect(ctx.text).not.toContain('x'.repeat(12_001));
   });
 
   test('nur Kopfdaten: kein Volltext', () => {
     const ctx = buildAiDecideMailContext({ direction: 'inbound', mode: 'metadata', strings });
     expect(ctx.text).not.toContain('xxxxxxxx');
     expect(ctx.text).toContain('Volltext wurde aus Datenschutzgründen nicht übermittelt');
-    expect(JSON.stringify(ctx.state)).not.toContain('xxxxxxxx');
+    expect(ctx.state).toBe(ctx.text);
+    expect(ctx.state).not.toContain('xxxxxxxx');
   });
 
   test('ausgehend: der Entwurf ohne Absender', () => {
@@ -234,9 +236,9 @@ describe('Kontext und Prompts', () => {
     });
     expect(ctx.text).toContain('Ausgehender E-Mail-Entwurf');
     expect(ctx.text).not.toContain('Von:');
-    expect(ctx.state).toEqual({
-      email: { direction: 'outbound', subject: 'Angebot', to: 'kunde@example.com', attachments: '', body: 'Anbei das Angebot' },
-    });
+    expect(ctx.state).toBe(
+      'Ausgehender E-Mail-Entwurf (noch nicht versendet)\nBetreff: Angebot\nAn: kunde@example.com\nAnhänge: keine\n\nText:\nAnbei das Angebot',
+    );
   });
 
   test('Chat-Prompt fordert das JSON-Format und nennt Kriterien', () => {
@@ -329,5 +331,19 @@ describe('OpenRouter Decisions API', () => {
       usage: null,
     });
     expect(parseAiDecisionsResponse({ answers: { decision: { noul: -0.5 } } })).toMatchObject({ ok: false });
+  });
+});
+
+describe('Decisions API: Fehlermeldung des Anbieters', () => {
+  const { aiDecisionsErrorDetail } = jest.requireActual('../../packages/core/src/workflow') as typeof import('../../packages/core/src/workflow');
+
+  test('nur die Meldung aus JSON, gekürzt, ohne Steuerzeichen und Key', () => {
+    expect(aiDecisionsErrorDetail(JSON.stringify({ error: { message: 'Invalid\nstate  type', code: 400 } }))).toBe('Invalid state type');
+    expect(aiDecisionsErrorDetail(JSON.stringify({ message: 'bad model' }))).toBe('bad model');
+    expect(aiDecisionsErrorDetail(JSON.stringify({ error: 'quota' }))).toBe('quota');
+    expect(aiDecisionsErrorDetail(JSON.stringify({ error: { message: 'key sk-or-123 invalid' } }), 'sk-or-123')).toBe('key *** invalid');
+    expect(aiDecisionsErrorDetail(JSON.stringify({ error: { message: 'x'.repeat(400) } }))).toHaveLength(301);
+    expect(aiDecisionsErrorDetail('<html>internal page</html>')).toBeNull();
+    expect(aiDecisionsErrorDetail(JSON.stringify({ ok: false }))).toBeNull();
   });
 });

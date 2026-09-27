@@ -259,7 +259,11 @@ describe('ai.decide server job (Embedded Postgres)', () => {
       instructions: 'Ist „Gewinnspiel“ Spam?',
       criteria: { true: 'Werbung', false: 'Nein' },
     });
-    expect(body.state.email).toMatchObject({ direction: 'inbound', subject: 'Gewinnspiel', body: 'Sie haben gewonnen!' });
+    // `state` ist Klartext wie beim Verbindungstest (Span-01 lehnte ein Objekt mit HTTP 400 ab).
+    expect(typeof body.state).toBe('string');
+    expect(body.state).toContain('Betreff: Gewinnspiel');
+    expect(body.state).toContain('Von: absender8101@example.com');
+    expect(body.state).toContain('Text:\nSie haben gewonnen!');
 
     expect(continuations).toHaveLength(1);
     const context = (continuations[0]!.payload as any).context;
