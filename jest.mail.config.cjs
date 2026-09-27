@@ -63,6 +63,8 @@ module.exports = {
     '<rootDir>/tests/unit/compose-reply-done.test.ts',
     '<rootDir>/tests/unit/reply-suggestion-settings.test.ts',
   ],
+  globalSetup: '<rootDir>/tests/setup/jest.mail.global-setup.cjs',
+  globalTeardown: '<rootDir>/tests/setup/jest.mail.global-teardown.cjs',
   setupFiles: ['<rootDir>/tests/setup/jest.mail.electron-mock.ts'],
   setupFilesAfterEnv: ['<rootDir>/tests/setup/jest.setup.ts'],
   transformIgnorePatterns: esmDependencyTransformIgnore,
