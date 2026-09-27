@@ -754,6 +754,7 @@ type WorkflowRunStepRecord = {
   port?: string | null
   durationMs?: number | null
   message?: string | null
+  detail?: unknown
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -3570,7 +3571,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Email.ListWorkflowRunSteps, ([runId]) => ({
     method: "GET",
     path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}/steps`,
-    query: { limit: DEFAULT_LIST_LIMIT },
+    // Eingang/Ausgang je Schritt für die Lauf-Historie (Server prüft den Mail-Zugriff).
+    query: { limit: DEFAULT_LIST_LIMIT, includeDetail: true },
     transform: (body) => listItems<WorkflowRunStepRecord>(body).map(mapWorkflowRunStepRecord),
   })],
   [IPCChannels.Email.ListKnowledgeBases, ([payload]) => ({
@@ -6548,6 +6550,7 @@ function mapWorkflowRunStepRecord(record: WorkflowRunStepRecord) {
     port: record.port ?? null,
     duration_ms: record.durationMs ?? 0,
     message: record.message ?? null,
+    detail: record.detail ?? null,
     created_at: record.createdAt ?? "",
     updated_at: record.updatedAt ?? "",
   }

@@ -16565,6 +16565,8 @@ describe('server edition foundation', () => {
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       // TA-P5: audit.retention räumt danach in eigener Transaktion die Learnings-Rohdaten auf.
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und leert Eingang/Ausgang alter Lauf-Schritte (30 Tage), ebenfalls eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16668,6 +16670,19 @@ describe('server edition foundation', () => {
           ['workspace_id', '=', WORKSPACE_A_ID],
           [expect.any(Function), undefined, undefined],
         ],
+      },
+      // Lauf-Historie: Eingang/Ausgang älter als 30 Tage (hier nichts zu leeren).
+      {
+        kind: 'select',
+        table: 'email_workflow_run_steps',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['detail_json', 'is not', null],
+          ['created_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
       },
     ]);
     expect(archivedBatches).toEqual([{
@@ -39039,6 +39054,48 @@ describe('server edition foundation', () => {
       { workspaceId: WORKSPACE_A_ID, limit: 100, includeLog: false },
     ]);
     expect(stepListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, limit: 50, includeDetail: false, runId: 80 }]);
+  });
+
+  test('workflow run step details (mail excerpt, node settings) need workflows.view besides mail access', async () => {
+    const detail = {
+      v: 1,
+      input: {
+        mail: { subject: 'Gewinn', from: 'spam@example.com' },
+        config: { question: 'Ist das Spam?' },
+      },
+      output: { port: 'nein' },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflowRuns: {
+        async list() {
+          return { items: [{ ...makeWorkflowRunRecord(80), sourceSqliteId: -91 }], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+      },
+      workflowRunSteps: {
+        async list() {
+          return {
+            items: [{ ...makeWorkflowRunStepRecord(81), runSourceSqliteId: -91, runId: 80, detail }],
+            nextCursor: null,
+          };
+        },
+        async get() {
+          return null;
+        },
+      },
+    }));
+    const mailReader = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['mail.content.read'] };
+    const workflowViewer = { ...mailReader, capabilities: ['mail.content.read', 'workflows.view'] };
+    const request = { method: 'GET' as const, path: '/api/v1/workflow-runs/by-source/-91/steps', query: { includeDetail: 'true' } };
+
+    const denied = await api.handle({ ...request, principal: mailReader });
+    expect(denied.status).toBe(403);
+
+    const visible = await api.handle({ ...request, principal: workflowViewer });
+    expect(visible.status).toBe(200);
+    expect((visible.body as any).data.items[0].detail).toEqual(detail);
   });
 
   test('server workflow version mutation routes reject unsafe payloads and invalid references', async () => {

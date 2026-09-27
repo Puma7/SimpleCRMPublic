@@ -5,6 +5,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import {
   humanizeWorkflowPort,
   humanizeWorkflowStepMessage,
+  isDeferredWorkflowStepMessage,
   stepTone,
 } from "@shared/workflow-run-humanize"
 import { TONE_BORDER, TONE_TEXT } from "./run-tone-styles"
@@ -24,6 +25,12 @@ import {
   getCachedWorkflowNodeCatalogEntry,
   useWorkflowNodeCatalog,
 } from "./use-workflow-node-catalog"
+import {
+  WorkflowStepDetailView,
+  WorkflowStepMailCard,
+  firstStepMail,
+  readWorkflowStepDetail,
+} from "./workflow-step-detail"
 
 type StepRow = {
   id: number
@@ -33,6 +40,8 @@ type StepRow = {
   port: string | null
   duration_ms: number
   message: string | null
+  /** Eingang/Ausgang (Server: jsonb-Objekt, Desktop: bereits geparst). */
+  detail?: unknown
 }
 
 type Props = {
@@ -72,13 +81,17 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
     void load()
   }, [load])
 
+  const detailsById = new Map(steps.map((step) => [step.id, readWorkflowStepDetail(step.detail)]))
+  const runMail = firstStepMail([...detailsById.values()])
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-lg">
+      <DialogContent className="max-h-[85vh] max-w-3xl">
         <DialogHeader>
           <DialogTitle>{title ?? `Workflow-Lauf #${runId ?? "—"}`}</DialogTitle>
           <DialogDescription>
-            Schritte, Lauf-Log und Meldungen aus der letzten Ausführung.
+            Schritte, Lauf-Log und Meldungen aus der letzten Ausführung. Ein Schritt lässt sich
+            aufklappen: links der Eingang, rechts der Ausgang.
           </DialogDescription>
         </DialogHeader>
         {loading ? (
@@ -88,7 +101,12 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
         ) : steps.length === 0 && runLog.length === 0 ? (
           <p className="text-sm text-muted-foreground">Keine Schritte protokolliert.</p>
         ) : (
-          <ScrollArea className="max-h-[50vh] pr-3">
+          <ScrollArea className="max-h-[65vh] pr-3">
+            {runMail ? (
+              <div className="mb-3">
+                <WorkflowStepMailCard mail={runMail} />
+              </div>
+            ) : null}
             {runLog.length > 0 ? (
               <div className="mb-3 rounded-md border bg-muted/20 p-3">
                 <p className="mb-1 text-xs font-medium">Lauf-Log</p>
@@ -111,7 +129,10 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
                   const schemaPortLabel = getCachedWorkflowNodeCatalogEntry(s.node_type)?.ports?.find(
                     (p) => p.id === s.port,
                   )?.label
-                  const portLabel = schemaPortLabel ?? humanizeWorkflowPort(s.port)
+                  const portLabel = isDeferredWorkflowStepMessage(s.message)
+                    ? null
+                    : schemaPortLabel ?? humanizeWorkflowPort(s.port)
+                  const detail = detailsById.get(s.id) ?? null
                   return (
                     <li
                       key={s.id}
@@ -140,6 +161,17 @@ export function WorkflowRunDetailDialog({ runId, open, onOpenChange, title }: Pr
                           <span title={s.port ?? undefined}> · Ergebnis: {portLabel}</span>
                         ) : null}
                       </p>
+                      {detail?.output?.note && !(s.message ?? "").includes(detail.output.note) ? (
+                        <p className="mt-0.5 text-amber-700 dark:text-amber-400">{detail.output.note}</p>
+                      ) : null}
+                      <details className="mt-1">
+                        <summary className="cursor-pointer select-none text-[11px] text-muted-foreground">
+                          Eingang und Ausgang
+                        </summary>
+                        <div className="mt-1">
+                          <WorkflowStepDetailView detail={detail} nodeType={s.node_type} showMail={false} />
+                        </div>
+                      </details>
                     </li>
                   )
                 })}

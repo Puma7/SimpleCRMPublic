@@ -18,6 +18,8 @@ export type WorkflowContext = {
   variables: Record<string, string | number | boolean | null>;
   strings: WorkflowStringContext;
   ai: { lastResponse?: string };
+  /** Lauf-Historie: die Mail (Kopf + Auszug) steht nur im ersten Schritt eines Laufs. */
+  stepDetail?: { mailRecorded: boolean };
 };
 
 export type NodeExecuteResult = {

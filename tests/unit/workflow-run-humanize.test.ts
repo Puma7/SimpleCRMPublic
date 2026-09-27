@@ -188,3 +188,22 @@ describe('stepTone', () => {
     expect(stepTone(undefined, undefined)).toBe('ok');
   });
 });
+
+describe('queued background steps', () => {
+  const { humanizeWorkflowStepMessage: humanize, isDeferredWorkflowStepMessage } =
+    jest.requireActual('../../shared/workflow-run-humanize') as typeof import('../../shared/workflow-run-humanize');
+
+  test('ai.decide queue marker explains that the result follows as its own step', () => {
+    expect(humanize('queued_ai_decide:280')).toBe(
+      'KI-Entscheidung läuft im Hintergrund (Job 280) – das Ergebnis folgt als eigener Schritt.',
+    );
+    expect(isDeferredWorkflowStepMessage('queued_ai_decide:280')).toBe(true);
+  });
+
+  test('other queued nodes continue as their own run', () => {
+    expect(humanize('queued_forward_copy:12')).toBe(
+      'Weiterleitung läuft im Hintergrund (Job 12) – die nächsten Schritte erscheinen als eigener Lauf.',
+    );
+    expect(isDeferredWorkflowStepMessage('condition:x:yes')).toBe(false);
+  });
+});

@@ -195,6 +195,13 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
           logger.warn('[ai-learnings] prune', e);
         }
         try {
+          // Lauf-Historie: Eingang/Ausgang der Schritte nach 30 Tagen leeren.
+          const { pruneWorkflowRunStepDetailsIfDue } = await import('../workflow/run-steps.js');
+          pruneWorkflowRunStepDetailsIfDue(logger);
+        } catch (e) {
+          logger.warn('[workflow] run step detail prune', e);
+        }
+        try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
           logger.warn('[workflow] task due scan', e);

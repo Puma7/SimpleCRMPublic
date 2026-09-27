@@ -14,6 +14,7 @@ export * from './interpolate';
 export * from './mssql-readonly';
 export * from './node-catalog';
 export * from './node-chain-stop';
+export * from './run-step-detail';
 export * from './sender-filter';
 export * from './templates';
 export * from './templates-partial-automation';
