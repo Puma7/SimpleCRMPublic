@@ -129,7 +129,7 @@ update the row here.
 | 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | DONE |
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | TODO |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | TODO |
-| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO |
+| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | BLOCKED — waiting for approval of docs/design/desktop-credential-store.md (Phase 0 fertig) |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | TODO |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | TODO |
 | 047 | R2: real workflow test run | P2 | M | direction | — | TODO |

@@ -68,6 +68,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [ ] **045** Desktop-Zeitpläne auf die gemeinsame Cron-Logik, `node-cron` entfernen · Befund #20 · P3 · M
 - [ ] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [ ] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
+  - ⏸ **Wartet auf Pascal:** Phase 0 fertig – Entscheidungsdokument `docs/design/desktop-credential-store.md` (Status DRAFT) freigeben, dann Phase 1.
 
 ## Sonstiges ohne eigenen Plan
 
