@@ -5,6 +5,7 @@ import { createServerApi } from '../../packages/server/src/api/server-api';
 import type { HttpMethod, ServerApiPorts } from '../../packages/server/src/api/types';
 import { PUBLIC_API_ROUTES } from '../../packages/server/src/api/public-routes';
 import { WEBSOCKET_ROUTES } from '../setup/websocket-routes';
+import { throwingPorts } from '../setup/server-api-probe';
 
 const API_DIR = join(__dirname, '..', '..', 'packages', 'server', 'src', 'api');
 
@@ -59,27 +60,6 @@ const PUBLIC_SURFACE: readonly string[] = PUBLIC_API_ROUTES;
  * haette sie damit noch lange nicht geprobt.
  */
 
-/**
- * Jede Port-Eigenschaft existiert (kein `if (!ports.x) return 503`-Kurzschluss
- * verdeckt den Auth-Pfad), und jeder tatsaechliche Datenzugriff wirft erkennbar.
- * Nur so trennt der Test "Handler hat 401 geliefert" von "Handler war ohne
- * Principal schon an den Daten".
- */
-function throwingPorts(trail = ''): unknown {
-  const target = function reached() { /* aufrufbar */ } as unknown as Record<string, unknown>;
-  return new Proxy(target, {
-    get(_t, prop) {
-      if (typeof prop === 'symbol') return undefined;
-      // `then` muss undefined bleiben, sonst haelt await den Proxy fuer ein Promise.
-      if (prop === 'then') return undefined;
-      return throwingPorts(trail ? `${trail}.${String(prop)}` : String(prop));
-    },
-    apply() {
-      throw new Error(`PORT_REACHED:${trail}`);
-    },
-    has() { return true; },
-  });
-}
 
 /**
  * Optionale Gruppen in beide Faelle aufloesen: `(?:\/([^/]+))?` steht fuer
