@@ -13,6 +13,7 @@ import {
 } from '../../packages/core/src/learnings/reply-noise';
 import {
   applyKnowledgeOperations,
+  normalizeKnowledgeSectionContent,
   normalizeKnowledgeSectionTitle,
   parseKnowledgeSections,
   serializeKnowledgeSections,
@@ -136,6 +137,20 @@ describe('Wissensbasis-Abschnitte (TA-P5)', () => {
       .toBe('## Ton\n\nSie-Form.\n');
     const middle = applyKnowledgeOperations('## A\n\na\n\n## B\n\nb\n\n## C\n\nc\n', [{ op: 'update', section: 'B', content: 'neu' }]);
     expect(middle.content).toBe('## A\n\na\n\n## B\n\nneu\n\n## C\n\nc\n');
+  });
+
+  it('Überschriften: gleiche Titel wie bisher, lange Leerzeilen bleiben schnell', () => {
+    expect(parseKnowledgeSections('## Titel ##\n## Titel # x ##  \n##\tA\t#\n## #\n##  \n## \n### x\n##x\n').sections.map((s) => s.title))
+      .toEqual(['Titel', 'Titel # x', 'A', '#', '']);
+    expect(normalizeKnowledgeSectionContent('## Versand ##\nText', 'Versand')).toBe('Text');
+    expect(normalizeKnowledgeSectionContent('####### x\nText')).toBe('####### x\nText');
+    let started = Date.now();
+    const long = parseKnowledgeSections(`## a${' '.repeat(40_000)}b`);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(long.sections[0]!.title).toBe(`a${' '.repeat(40_000)}b`);
+    started = Date.now();
+    normalizeKnowledgeSectionContent(`# a${' '.repeat(40_000)}b`);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 
   it('offener Codeblock im KI-Inhalt verschluckt keine späteren Abschnitte', () => {

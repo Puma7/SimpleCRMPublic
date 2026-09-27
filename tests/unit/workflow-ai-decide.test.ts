@@ -169,6 +169,10 @@ describe('parseAiDecideChatResponse', () => {
     });
   });
 
+  test('Schlüssel und Wert gehören in dieselbe Zeile', () => {
+    expect(parseAiDecideChatResponse('Wahrscheinlichkeit_ja:\n85')).toMatchObject({ ok: false });
+  });
+
   test('Schlüssel-Wert-Zeilen ohne JSON', () => {
     expect(parseAiDecideChatResponse('Antwort: nein\nWahrscheinlichkeit_ja: 5 %\nBegründung: Rechnung eines Lieferanten')).toEqual({
       ok: true,
@@ -187,6 +191,43 @@ describe('parseAiDecideChatResponse', () => {
       '{"antwort":"nein","wahrscheinlichkeit_ja":5} {"antwort":"ja","wahrscheinlichkeit_ja":99}',
     )).toMatchObject({ ok: false, error: expect.stringContaining('mehrdeutig') });
     expect(parseAiDecideChatResponse('wahrscheinlichkeit_ja: 5\nwahrscheinlichkeit_ja: 95')).toMatchObject({ ok: false });
+  });
+
+  test('Anteil mit Dezimalpunkt: 1.0 ist 100 %, ganze 1 ist 1 %', () => {
+    const probability = (raw: string) => parseAiDecideChatResponse(raw);
+    expect(probability('{"wahrscheinlichkeit_ja": 1.0}')).toMatchObject({ ok: true, probability: 100 });
+    expect(probability('{"wahrscheinlichkeit_ja": "1,0"}')).toMatchObject({ ok: true, probability: 100 });
+    expect(probability('wahrscheinlichkeit_ja: 1.00')).toMatchObject({ ok: true, probability: 100 });
+    expect(probability('{"wahrscheinlichkeit_ja": 1}')).toMatchObject({ ok: true, probability: 1 });
+    expect(probability('wahrscheinlichkeit_ja: 1')).toMatchObject({ ok: true, probability: 1 });
+    expect(probability('{"wahrscheinlichkeit_ja": "1 %"}')).toMatchObject({ ok: true, probability: 1 });
+    expect(probability('{"wahrscheinlichkeit_ja": 0.0}')).toMatchObject({ ok: true, probability: 0 });
+    expect(probability('{"wahrscheinlichkeit_ja": 0}')).toMatchObject({ ok: true, probability: 0 });
+    expect(probability('{"wahrscheinlichkeit_ja": 0.99}')).toMatchObject({ ok: true, probability: 99 });
+    expect(probability('{"wahrscheinlichkeit_ja": 100}')).toMatchObject({ ok: true, probability: 100 });
+    expect(probability('{"nein": 1.0}')).toMatchObject({ ok: true, probability: 0 });
+    expect(probability('{"wahrscheinlichkeit_ja": 1e0}')).toMatchObject({ ok: false });
+    // Widerspruch zwischen Antwort und Wahrscheinlichkeit bleibt „unsicher“.
+    expect(evaluateAiDecideOutcome({ probability: 100, threshold: 80, source: 'chat', model: 'm', modelAnswer: 'nein' }).answer)
+      .toBe('unsicher');
+  });
+
+  test('Zeilenformat bleibt schnell (kein Backtracking über Leerzeilen)', () => {
+    const inputs = [
+      'a\n' + (' '.repeat(40) + '\n').repeat(40) + 'x',
+      'Antwort\n' + (' '.repeat(16) + '\n').repeat(80) + 'x',
+      // Volle Länge (8 000 Zeichen): lief vorher minutenlang.
+      'a\n' + (' '.repeat(40) + '\n').repeat(200) + 'x',
+      'Antwort\n' + (' '.repeat(16) + '\n').repeat(470) + 'x',
+      'a' + ' '.repeat(7_990) + 'b',
+      '*'.repeat(3_990) + ':' + ' '.repeat(3_990) + 'x',
+      '-\n'.repeat(4_000),
+    ];
+    for (const raw of inputs) {
+      const started = Date.now();
+      expect(parseAiDecideChatResponse(raw).ok).toBe(false);
+      expect(Date.now() - started).toBeLessThan(200);
+    }
   });
 
   test('entartete Ausgabe bleibt schnell', () => {

@@ -33,7 +33,26 @@ export type AppliedKnowledgeOperation = KnowledgeOperation & {
   result: 'added' | 'updated' | 'appended' | 'deleted' | 'skipped';
 };
 
-const HEADING_PATTERN = /^##(?!#)[ \t]+(.+?)[ \t#]*$/;
+/**
+ * Titel einer Markdown-Überschrift mit genau min–max Rauten, sonst null.
+ * Linear statt eines Regex mit faulem Titel-Muster (quadratisch bei langen Leerzeilen, CodeQL).
+ */
+function markdownHeadingTitle(line: string, minHashes: number, maxHashes: number): string | null {
+  let hashes = 0;
+  while (hashes < line.length && line[hashes] === '#') hashes += 1;
+  if (hashes < minHashes || hashes > maxHashes) return null;
+  let start = hashes;
+  while (start < line.length && (line[start] === ' ' || line[start] === '\t')) start += 1;
+  if (start === hashes) return null;
+  // `.` im alten Muster traf keine Zeilentrenner.
+  if (line.includes('\u2028') || line.includes('\u2029')) return null;
+  let end = line.length;
+  while (end > start && (line[end - 1] === ' ' || line[end - 1] === '\t' || line[end - 1] === '#')) end -= 1;
+  if (end > start) return line.slice(start, end);
+  // Das alte Titel-Muster verlangte mindestens ein Zeichen:
+  if (start < line.length) return line[start]!; // „## #“ → „#“
+  return start - hashes >= 2 ? line[start - 1]! : null; // „##  “ → „ “, „## “ → keine Überschrift
+}
 const FENCE_PATTERN = /^[ \t]*(```|~~~)/;
 
 /** Schließt einen am Textende noch offenen Codeblock (``` oder ~~~). */
@@ -75,11 +94,11 @@ function findSectionStarts(lines: readonly string[]): { line: number; title: str
         continue;
       }
       if (fence !== null) {
-        if (!(lenient && HEADING_PATTERN.test(line))) continue;
+        if (!(lenient && markdownHeadingTitle(line, 2, 2) !== null)) continue;
         fence = null;
       }
-      const heading = HEADING_PATTERN.exec(line);
-      if (heading) starts.push({ line: i, title: heading[1]!.trim() });
+      const heading = markdownHeadingTitle(line, 2, 2);
+      if (heading !== null) starts.push({ line: i, title: heading.trim() });
     }
     if (fence === null || lenient) return starts;
     lenientOpeners.add(opener);
@@ -150,8 +169,8 @@ export function normalizeKnowledgeSectionContent(content: string, title?: string
   let lines = String(content ?? '').replace(/\r\n?/g, '\n').split('\n');
   const firstIdx = lines.findIndex((line) => line.trim());
   if (firstIdx >= 0) {
-    const first = /^#{1,6}[ \t]+(.+?)[ \t#]*$/.exec(lines[firstIdx]!);
-    if (first && (title === undefined || normalizeKnowledgeSectionTitle(first[1]!) === normalizeKnowledgeSectionTitle(title))) {
+    const first = markdownHeadingTitle(lines[firstIdx]!, 1, 6);
+    if (first !== null && (title === undefined || normalizeKnowledgeSectionTitle(first) === normalizeKnowledgeSectionTitle(title))) {
       lines = lines.slice(firstIdx + 1);
     }
   }

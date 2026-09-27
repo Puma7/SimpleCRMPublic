@@ -25,7 +25,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 1 – Sofort-Fixes (klein, hohes Risiko im Betrieb)
 
-- [ ] **024** KI-Entscheidung: Antwort-Parser linear statt Regex; `1`/`1.0` richtig lesen · Befund #1, #6 · P1 · S · *nach 028*
+- [x] **024** KI-Entscheidung: Antwort-Parser linear statt Regex; `1`/`1.0` richtig lesen · Befund #1, #6 · P1 · S · *nach 028*
 - [ ] **025** Freigabe-Marker an das Absenderkonto binden, bei Kontowechsel löschen · Befund #2 · P1 · S
 - [ ] **027** Ein beschädigtes Mail-Original stoppt Deduplizierung und `simplecrm maintenance` nicht mehr · Befund #3 · P1 · S
 - [x] **028** Wissensbasis: offene Codeblöcke schließen, kein Abschnittsverlust · Befund #4 · P1 · S
