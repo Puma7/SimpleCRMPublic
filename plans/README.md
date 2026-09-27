@@ -125,7 +125,7 @@ update the row here.
 | 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | TODO |
 | 038 | Learnings digest: prompt hardening + atomic acceptance | P3 | M | security | 035 | TODO |
 | 039 | Output budgets for DOC/XLS/RTF text extraction | P3 | S | security | — | DONE |
-| 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | TODO |
+| 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | DONE |
 | 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | DONE |
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | TODO |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | TODO |

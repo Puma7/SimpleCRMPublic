@@ -196,7 +196,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           : {}),
       });
       // Wie beim Sync: der Takt selbst scheitert nicht an einem einzelnen
-      // Workflow — der Anspruch ist zurueckgenommen, der naechste Takt
+      // Workflow — der Zeitpunkt bleibt unbeansprucht, der naechste Takt
       // versucht es erneut, solange der Zeitpunkt im Nachholfenster liegt.
       if (result.failed.length > 0) {
         const workflowIds = result.failed.map((entry) => entry.workflowId).join(', ');
