@@ -62,14 +62,19 @@ export type RawPartDedupBatchResult = {
   unchanged: number;
   bytesBefore: number;
   bytesAfter: number;
+  /** Rows that could not be processed (damaged original, unreadable file); skipped. */
+  failures: Array<{ messageId: number; error: string }>;
 };
 
 type Candidate = Readonly<{ id: number | string; workspace_id: string }>;
+
+const MAX_REMEMBERED_FAILURES = 10_000;
 
 export async function runRawPartDedupBatch(
   options: RawPartDedupOptions,
   afterId: number,
   limit = BATCH_SIZE,
+  skipIds?: ReadonlySet<number>,
 ): Promise<RawPartDedupBatchResult> {
   const candidates = (await withWorkspaceTransaction(
     options.db,
@@ -93,11 +98,20 @@ export async function runRawPartDedupBatch(
     unchanged: 0,
     bytesBefore: 0,
     bytesAfter: 0,
+    failures: [],
   };
   for (const candidate of candidates) {
     const id = Number(candidate.id);
     result.lastId = id;
-    const outcome = await dedupOneMessage(options, candidate.workspace_id, id);
+    if (skipIds?.has(id)) continue;
+    let outcome: Awaited<ReturnType<typeof dedupOneMessage>>;
+    try {
+      outcome = await dedupOneMessage(options, candidate.workspace_id, id);
+    } catch (error) {
+      // Ein beschädigtes Original darf die übrigen Mails nicht aufhalten.
+      result.failures.push({ messageId: id, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     if (outcome) {
       result.stripped += 1;
       result.bytesBefore += outcome.bytesBefore;
@@ -203,8 +217,10 @@ async function dedupOneMessage(
 
 /**
  * Periodic run (new mail keeps arriving): each tick works through candidates
- * for at most TICK_BUDGET_MS, then waits TICK_INTERVAL_MS. Errors end the tick
- * and are retried on the next one.
+ * for at most TICK_BUDGET_MS, then waits TICK_INTERVAL_MS. A message that
+ * cannot be processed (damaged original, unreadable file) is logged once and
+ * skipped for the rest of this process; after a restart it is tried again.
+ * Other errors (e.g. the database) end the tick and are retried on the next one.
  */
 export function startRawPartDedupTicker(
   options: RawPartDedupOptions & { intervalMs?: number; firstDelayMs?: number },
@@ -212,6 +228,8 @@ export function startRawPartDedupTicker(
   const intervalMs = options.intervalMs ?? TICK_INTERVAL_MS;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Nicht bearbeitbare Mails (je Prozess, gedeckelt): nicht bei jedem Takt neu lesen.
+  const failedIds = new Set<number>();
 
   const tick = async () => {
     if (stopped) return;
@@ -219,9 +237,14 @@ export function startRawPartDedupTicker(
     let lastId = 0;
     try {
       while (!stopped && Date.now() < deadline) {
-        const batch = await runRawPartDedupBatch(options, lastId);
+        const batch = await runRawPartDedupBatch(options, lastId, undefined, failedIds);
         if (batch.seen === 0) break;
         lastId = batch.lastId;
+        for (const failure of batch.failures) {
+          if (failedIds.has(failure.messageId)) continue;
+          if (failedIds.size < MAX_REMEMBERED_FAILURES) failedIds.add(failure.messageId);
+          console.warn(`[mail] attachment part dedup skipped message ${failure.messageId} (stored original unreadable, see simplecrm maintenance): ${failure.error}`);
+        }
         if (batch.stripped > 0) {
           const kb = (bytes: number) => Math.round(bytes / 1024);
           console.warn(`[mail] attachment parts taken out of ${batch.stripped} originals: ${kb(batch.bytesBefore)} KB -> ${kb(batch.bytesAfter)} KB`);

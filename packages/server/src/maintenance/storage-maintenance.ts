@@ -74,6 +74,9 @@ export type StorageMaintenanceReport = {
     partsTakenOut: number;
     filesLinked: number;
     bytesFreed: number;
+    /** Mails/files that could not be processed (skipped, see examples). */
+    failed: number;
+    examples: string[];
   } | null;
   /** Parts of originals no message names any more (checkOnly: what would happen). */
   unreferencedParts: RawPartGcResult;
@@ -242,24 +245,52 @@ async function checkOriginals(
 }
 
 async function runCleanup(options: StorageMaintenanceOptions): Promise<NonNullable<StorageMaintenanceReport['cleanup']>> {
-  const cleanup = { compressed: 0, partsTakenOut: 0, filesLinked: 0, bytesFreed: 0 };
-  for (let afterId = 0; ;) {
-    const batch = await runRawCompressionBackfillBatch(options, afterId);
-    if (batch.seen === 0) break;
-    afterId = batch.lastId;
-    cleanup.compressed += batch.converted;
-    cleanup.bytesFreed += Math.max(0, batch.bytesBefore - batch.bytesAfter);
+  const cleanup = { compressed: 0, partsTakenOut: 0, filesLinked: 0, bytesFreed: 0, failed: 0, examples: [] as string[] };
+  const example = (text: string) => {
+    if (cleanup.examples.length < MAX_EXAMPLES) cleanup.examples.push(text);
+  };
+  const recordFailures = (failures: readonly { messageId: number; error: string }[]) => {
+    cleanup.failed += failures.length;
+    for (const failure of failures) example(`message ${failure.messageId}: ${failure.error}`);
+  };
+  const stopped = (step: string, error: unknown) => {
+    cleanup.failed += 1;
+    example(`${step} stopped: ${error instanceof Error ? error.message : String(error)}`);
+  };
+  // Jeder Schritt für sich: ein Fehler hält die übrigen Schritte nicht auf.
+  try {
+    for (let afterId = 0; ;) {
+      const batch = await runRawCompressionBackfillBatch(options, afterId);
+      if (batch.seen === 0) break;
+      afterId = batch.lastId;
+      cleanup.compressed += batch.converted;
+      cleanup.bytesFreed += Math.max(0, batch.bytesBefore - batch.bytesAfter);
+      recordFailures(batch.failures);
+    }
+  } catch (error) {
+    stopped('compress originals', error);
   }
-  for (let afterId = 0; ;) {
-    const batch = await runRawPartDedupBatch(options, afterId);
-    if (batch.seen === 0) break;
-    afterId = batch.lastId;
-    cleanup.partsTakenOut += batch.stripped;
-    cleanup.bytesFreed += Math.max(0, batch.bytesBefore - batch.bytesAfter);
+  try {
+    for (let afterId = 0; ;) {
+      const batch = await runRawPartDedupBatch(options, afterId);
+      if (batch.seen === 0) break;
+      afterId = batch.lastId;
+      cleanup.partsTakenOut += batch.stripped;
+      cleanup.bytesFreed += Math.max(0, batch.bytesBefore - batch.bytesAfter);
+      recordFailures(batch.failures);
+    }
+  } catch (error) {
+    stopped('take parts out', error);
   }
-  const linked = await runAttachmentDedup(options, Number.POSITIVE_INFINITY);
-  cleanup.filesLinked += linked.linked;
-  cleanup.bytesFreed += linked.bytesFreed;
+  try {
+    const linked = await runAttachmentDedup(options, Number.POSITIVE_INFINITY);
+    cleanup.filesLinked += linked.linked;
+    cleanup.bytesFreed += linked.bytesFreed;
+    cleanup.failed += linked.failed;
+    for (const failure of linked.failures) example(failure);
+  } catch (error) {
+    stopped('link identical attachments', error);
+  }
   return cleanup;
 }
 
@@ -268,12 +299,19 @@ export async function runStorageMaintenance(options: StorageMaintenanceOptions):
     attachments: { rows: 0, missing: 0, sizeMismatch: 0, hashMismatch: 0, hashed: 0, orphanFiles: 0, examples: [] },
     originals: { total: 0, legacyBase64: 0, compressed: 0, withoutAttachmentCopies: 0, checked: 0, damaged: 0, examples: [] },
     cleanup: null,
-    unreferencedParts: { setAside: 0, restored: 0, removed: 0, bytesFreed: 0, waiting: 0, unknownWorkspaces: 0 },
+    unreferencedParts: {
+      setAside: 0, restored: 0, removed: 0, bytesFreed: 0, waiting: 0, unknownWorkspaces: 0, failed: 0, failures: [],
+    },
     ok: true,
   };
   // Cleanup first, so the checks see the final state.
   if (!options.checkOnly) report.cleanup = await runCleanup(options);
-  report.unreferencedParts = await runRawPartGc({ ...options, checkOnly: options.checkOnly === true });
+  try {
+    report.unreferencedParts = await runRawPartGc({ ...options, checkOnly: options.checkOnly === true });
+  } catch (error) {
+    report.unreferencedParts.failed += 1;
+    report.unreferencedParts.failures.push(`unreferenced parts stopped: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (report.cleanup) report.cleanup.bytesFreed += report.unreferencedParts.bytesFreed;
   const known = await checkAttachments(options, report.attachments);
   await countOrphanFiles(options, known, report.attachments);
@@ -281,7 +319,9 @@ export async function runStorageMaintenance(options: StorageMaintenanceOptions):
   report.ok = report.attachments.missing === 0
     && report.attachments.sizeMismatch === 0
     && report.attachments.hashMismatch === 0
-    && report.originals.damaged === 0;
+    && report.originals.damaged === 0
+    && (report.cleanup?.failed ?? 0) === 0
+    && report.unreferencedParts.failed === 0;
   return report;
 }
 
@@ -296,6 +336,7 @@ export function formatStorageMaintenanceReport(report: StorageMaintenanceReport)
       `  Anhänge aus Originalen genommen:    ${report.cleanup.partsTakenOut}`,
       `  Gleiche Anhänge verknüpft:          ${report.cleanup.filesLinked}`,
       `  Frei geworden (ca.):                ${mb(report.cleanup.bytesFreed)} MB`,
+      `  Nicht bearbeitet (Fehler):          ${report.cleanup.failed}`,
     );
   }
   const a = report.attachments;
@@ -331,8 +372,9 @@ export function formatStorageMaintenanceReport(report: StorageMaintenanceReport)
     ...partLines,
     `  Beiseite, Frist läuft noch:         ${u.waiting}`,
     ...(u.unknownWorkspaces > 0 ? [`  Ordner ohne Workspace (unberührt):  ${u.unknownWorkspaces}`] : []),
+    ...(u.failed > 0 ? [`  Nicht entfernbar (Fehler):          ${u.failed}`] : []),
   );
-  const examples = [...a.examples, ...o.examples];
+  const examples = [...a.examples, ...o.examples, ...(report.cleanup?.examples ?? []), ...u.failures];
   if (examples.length > 0) lines.push('Beispiele:', ...examples.map((example) => `  - ${example}`));
   lines.push(report.ok ? 'Ergebnis: in Ordnung.' : 'Ergebnis: PROBLEME gefunden (siehe oben). Anhänge und Originale wurden nicht gelöscht.');
   return `${lines.join('\n')}\n`;

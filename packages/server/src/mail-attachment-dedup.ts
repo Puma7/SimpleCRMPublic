@@ -49,6 +49,9 @@ export type AttachmentDedupResult = {
   linked: number;
   bytesFreed: number;
   skipped: number;
+  /** Groups that could not be processed (e.g. an unreadable file); skipped. */
+  failed: number;
+  failures: string[];
 };
 
 type Group = Readonly<{ workspace_id: string; content_sha256: string }>;
@@ -177,19 +180,30 @@ export async function runAttachmentDedup(
   budgetMs = TICK_BUDGET_MS,
 ): Promise<AttachmentDedupResult> {
   const deadline = Date.now() + budgetMs;
-  const total: AttachmentDedupResult = { groups: 0, linked: 0, bytesFreed: 0, skipped: 0 };
+  const total: AttachmentDedupResult = { groups: 0, linked: 0, bytesFreed: 0, skipped: 0, failed: 0, failures: [] };
   let after: Group | null = null;
   while (Date.now() < deadline) {
     const groups = await listGroups(options, after, GROUP_BATCH);
     if (groups.length === 0) break;
     for (const group of groups) {
       if (Date.now() >= deadline) break;
-      const outcome = await dedupAttachmentGroup(options, group);
+      // Cursor zuerst weiter: eine nicht lesbare Datei hält die übrigen Gruppen nicht auf.
+      after = group;
+      let outcome: Awaited<ReturnType<typeof dedupAttachmentGroup>>;
+      try {
+        outcome = await dedupAttachmentGroup(options, group);
+      } catch (error) {
+        total.failed += 1;
+        if (total.failures.length < 10) {
+          const message = error instanceof Error ? error.message : String(error);
+          total.failures.push(`workspace ${group.workspace_id} sha256 ${group.content_sha256}: ${message}`);
+        }
+        continue;
+      }
       total.groups += 1;
       total.linked += outcome.linked;
       total.bytesFreed += outcome.bytesFreed;
       total.skipped += outcome.skipped;
-      after = group;
     }
     if (groups.length < GROUP_BATCH) break;
   }
@@ -212,6 +226,9 @@ export function startAttachmentDedupTicker(
       }
       if (result.skipped > 0) {
         console.warn(`[mail] attachment dedup skipped ${result.skipped} files whose content does not match their recorded sha256 (see simplecrm maintenance)`);
+      }
+      if (result.failed > 0) {
+        console.warn(`[mail] attachment dedup could not process ${result.failed} groups (see simplecrm maintenance): ${result.failures.join('; ')}`);
       }
     } catch (error) {
       console.warn(`[mail] attachment dedup stopped (retry next tick): ${error instanceof Error ? error.message : String(error)}`);

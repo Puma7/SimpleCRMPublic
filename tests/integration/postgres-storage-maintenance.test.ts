@@ -184,4 +184,23 @@ describe('storage maintenance checks and cleans up without deleting anything', (
     expect(text).toContain('Anhänge und Originale wurden nicht gelöscht');
     expect(report.unreferencedParts).toMatchObject({ setAside: 0, removed: 0 });
   });
+  test('a damaged original during cleanup is reported, not fatal; later mail is still processed', async () => {
+    await postgres.admin.query(`UPDATE email_messages SET raw_rfc822_z = '\\x00010203'::bytea, raw_rfc822_codec = 'br',
+      raw_rfc822_part_sha256s = NULL, has_attachments = true WHERE workspace_id = $1 AND uid = 1`, [WORKSPACE_ID]);
+    await postgres.admin.query(`UPDATE email_messages SET raw_rfc822_part_sha256s = NULL, has_attachments = true
+      WHERE workspace_id = $1 AND uid = 4`, [WORKSPACE_ID]);
+    const damagedId = (await postgres.admin.query(`SELECT id FROM email_messages WHERE workspace_id = $1 AND uid = 1`, [WORKSPACE_ID])).rows[0].id;
+
+    const report = await runStorageMaintenance({ db, attachmentsRoot });
+
+    expect(report.cleanup!.failed).toBeGreaterThanOrEqual(1);
+    expect(report.cleanup!.examples.join('\n')).toContain(`message ${damagedId}`);
+    const { rows } = await postgres.admin.query(
+      'SELECT raw_rfc822_part_sha256s FROM email_messages WHERE workspace_id = $1 AND uid = 4',
+      [WORKSPACE_ID],
+    );
+    expect(rows[0].raw_rfc822_part_sha256s).toEqual([]);
+    expect(report.ok).toBe(false);
+    expect(formatStorageMaintenanceReport(report)).toContain('Nicht bearbeitet (Fehler):');
+  });
 });
