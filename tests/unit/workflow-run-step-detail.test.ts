@@ -12,6 +12,7 @@ import {
   sanitizeWorkflowStepRecord,
   serializeWorkflowStepDetail,
   serializeWorkflowStepDetailWithinBudget,
+  workflowTemplatePlaceholderKeys,
   workflowTemplateUsesProtectedData,
   workflowUnwiredPortNote,
 } from '../../packages/core/src/workflow';
@@ -192,5 +193,16 @@ describe('workflow run step detail', () => {
     expect(maskWorkflowUrlSecrets('Kein Link: token=abc')).toBe('Kein Link: token=abc');
     expect(sanitizeWorkflowStepRecord({ url: 'https://discord.com/api/webhooks/123456/abcdefghijklmnopqrstuvwxyz0123456789' }))
       .toEqual({ url: 'https://discord.com/api/webhooks/123456/***' });
+  });
+
+  test('placeholder scan matches the interpolation semantics and stays linear', () => {
+    expect(workflowTemplatePlaceholderKeys('Hallo {{ customer.name }}, {{subject}} {{kein}}} {{{{x}} {{a}b}} {{}}'))
+      .toEqual(['customer.name', 'subject', 'kein', 'x']);
+    expect(workflowTemplatePlaceholderKeys('{{Mein Wert}}')).toEqual(['Mein Wert']);
+    // CodeQL: früher polynomiell bei vielen „{{{{!“ – jetzt ein linearer Durchlauf.
+    const started = Date.now();
+    expect(workflowTemplateUsesProtectedData(`{{${'{{{{!'.repeat(200_000)}`)).toBe(false);
+    expect(workflowTemplateUsesProtectedData('}}'.repeat(200_000))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

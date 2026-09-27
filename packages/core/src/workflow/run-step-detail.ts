@@ -466,6 +466,8 @@ const MAIL_SAFE_VARIABLE_NAMESPACES: ReadonlySet<string> = new Set([
 
 /** Mail-Felder der Workflow-Strings (Platzhalter ohne Punkt). */
 const MAIL_STRING_KEYS: ReadonlySet<string> = new Set([
+  // {{text}} = combined_text (Mail-Text)
+  'text',
   'subject',
   'from_address',
   'to_address',
@@ -506,11 +508,43 @@ function hiddenVariableValue(key: string, viewer: WorkflowStepDetailViewer): str
   return viewer.crmRead ? null : HIDDEN_CRM;
 }
 
+/**
+ * Schlüssel der {{Platzhalter}} eines Textes, mit derselben Semantik wie
+ * interpolateWorkflowPlaceholders (Schlüssel = alles ohne geschweifte
+ * Klammern, getrimmt). Linearer Scan statt regulärem Ausdruck: Vorlagen
+ * stammen aus Workflow-Konfigurationen, ein Muster wie `{{{{…` darf den
+ * Job nicht aufhalten.
+ */
+export function workflowTemplatePlaceholderKeys(template: string | null | undefined): string[] {
+  const text = String(template ?? '');
+  const keys: string[] = [];
+  let pos = 0;
+  while (pos < text.length) {
+    const close = text.indexOf('}}', pos);
+    if (close < 0) break;
+    // Rückwärts bis zur nächsten Klammer, höchstens bis `pos`: jedes Zeichen
+    // wird so insgesamt nur konstant oft angesehen.
+    let open = -1;
+    for (let index = close - 1; index >= pos; index -= 1) {
+      const char = text[index];
+      if (char === '}') break;
+      if (char === '{') {
+        if (index - 1 >= pos && text[index - 1] === '{') open = index + 1;
+        break;
+      }
+    }
+    if (open >= 0) {
+      const key = text.slice(open, close).trim();
+      if (key) keys.push(key);
+    }
+    pos = close + 2;
+  }
+  return keys;
+}
+
 /** Verweist ein Text mit {{Platzhaltern}} auf Daten, die nicht aus der Mail stammen? */
 export function workflowTemplateUsesProtectedData(template: string | null | undefined): boolean {
-  const text = String(template ?? '');
-  for (const match of text.matchAll(/\{\{\s*([^}\s]+)\s*\}\}/g)) {
-    const key = match[1] ?? '';
+  for (const key of workflowTemplatePlaceholderKeys(template)) {
     if (!key.includes('.')) {
       if (!MAIL_STRING_KEYS.has(key)) return true;
       continue;
