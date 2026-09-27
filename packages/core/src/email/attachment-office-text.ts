@@ -13,7 +13,14 @@
  * the server and desktop workers), so this module stays platform-neutral.
  * Budgets: at most ZIP_MAX_ENTRIES entries and ZIP_MAX_INFLATED_BYTES in
  * total; compound files (xls, doc) follow sector chains with loop detection.
+ * Compound files and RTF stop producing text at OFFICE_TEXT_MAX_CHARS, so a
+ * small crafted file cannot expand into hundreds of megabytes of text.
  */
+
+import { ATTACHMENT_TEXT_MAX_CHARS } from './attachment-text';
+
+/** Readers stop producing text here; the caller's cap (after whitespace collapse) is half of it. */
+export const OFFICE_TEXT_MAX_CHARS = 2 * ATTACHMENT_TEXT_MAX_CHARS;
 
 export const ZIP_MAX_ENTRIES = 4_096;
 export const ZIP_MAX_INFLATED_BYTES = 64 * 1024 * 1024;
@@ -40,9 +47,11 @@ const utf8 = new TextDecoder('utf-8');
 const utf16le = new TextDecoder('utf-16le');
 
 function latin1(bytes: Uint8Array): string {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 1) out += String.fromCharCode(bytes[i]!);
-  return out;
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000) as unknown as number[]));
+  }
+  return chunks.join('');
 }
 
 let cp1252Decoder: TextDecoder | null | undefined;
@@ -57,18 +66,26 @@ function decodeCp1252(bytes: Uint8Array): string {
   return cp1252Decoder ? cp1252Decoder.decode(bytes) : latin1(bytes);
 }
 
-function decodeCodepage(bytes: Uint8Array, codepage: number): string {
-  if (codepage === 65001) return utf8.decode(bytes);
-  if (codepage === 1252 || !codepage) return decodeCp1252(bytes);
-  try {
-    return new TextDecoder(`windows-${codepage}`).decode(bytes);
-  } catch {
+/**
+ * Decoder for one RTF document; same fallback order as before: utf-8 for
+ * 65001, cp1252 for 1252/0, otherwise windows-<cp>, cp<cp>, then cp1252
+ * (latin1 if even that is missing). `stream` keeps a split character.
+ */
+function codepageDecoder(codepage: number): (bytes: Uint8Array, stream: boolean) => string {
+  const make = (label: string): TextDecoder | null => {
     try {
-      return new TextDecoder(`cp${codepage}`).decode(bytes);
+      return new TextDecoder(label);
     } catch {
-      return decodeCp1252(bytes);
+      return null;
     }
-  }
+  };
+  const decoder = codepage === 65001
+    ? new TextDecoder('utf-8')
+    : codepage === 1252 || !codepage
+      ? make('windows-1252')
+      : make(`windows-${codepage}`) ?? make(`cp${codepage}`) ?? make('windows-1252');
+  if (!decoder) return (bytes) => latin1(bytes);
+  return (bytes, stream) => decoder.decode(bytes, { stream });
 }
 
 const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
@@ -103,20 +120,28 @@ function numberText(value: number): string {
   return String(value);
 }
 
-/** Collects values once each, in first-seen order. */
+/** Collects values once each, in first-seen order, up to OFFICE_TEXT_MAX_CHARS. */
 class DistinctValues {
   private readonly seen = new Set<string>();
   private readonly values: string[] = [];
+  private chars = 0;
+
+  get full(): boolean {
+    return this.chars >= OFFICE_TEXT_MAX_CHARS;
+  }
 
   add(value: string | null | undefined): void {
+    if (this.full) return;
     const trimmed = (value ?? '').trim();
     if (!trimmed || this.seen.has(trimmed)) return;
     this.seen.add(trimmed);
     this.values.push(trimmed);
+    this.chars += trimmed.length + 1;
   }
 
   text(): string {
-    return this.values.join('\n');
+    // The last value may cross the budget; the text never does.
+    return this.values.join('\n').slice(0, OFFICE_TEXT_MAX_CHARS);
   }
 }
 
@@ -772,29 +797,34 @@ export function extractXlsText(data: Uint8Array): string {
   const workbook = cfb.stream('Workbook') ?? cfb.stream('Book');
   if (!workbook) throw new OfficeTextError('xls without workbook stream');
   const dv = view(workbook);
-  const records: Array<{ type: number; payload: Uint8Array }> = [];
-  for (let pos = 0; pos + 4 <= workbook.length;) {
-    const type = dv.getUint16(pos, true);
+  // Records are read in one pass, without keeping them: a stream of empty
+  // records would otherwise cost far more memory than the file itself.
+  const record = (pos: number): { type: number; payload: Uint8Array; next: number } | null => {
+    if (pos + 4 > workbook.length) return null;
     const length = dv.getUint16(pos + 2, true);
-    if (pos + 4 + length > workbook.length) break;
-    records.push({ type, payload: workbook.subarray(pos + 4, pos + 4 + length) });
-    pos += 4 + length;
-  }
+    if (pos + 4 + length > workbook.length) return null;
+    return { type: dv.getUint16(pos, true), payload: workbook.subarray(pos + 4, pos + 4 + length), next: pos + 4 + length };
+  };
   const shared: string[] = [];
   const values = new DistinctValues();
-  for (let i = 0; i < records.length; i += 1) {
-    const { type, payload } = records[i]!;
+  for (let current = record(0); current; current = record(current.next)) {
+    const { type, payload } = current;
     const p = view(payload);
     switch (type) {
       case 0x002f: // FILEPASS: the rest is encrypted, reading on would index noise
         throw new OfficeTextError('xls is encrypted');
-      case 0x00fc: { // SST (+ CONTINUE)
+      case 0x00fc: { // SST (+ CONTINUE, visited again by the main loop and ignored there)
         const segments = [payload];
-        for (let j = i + 1; j < records.length && records[j]!.type === 0x003c; j += 1) segments.push(records[j]!.payload);
+        for (let cont = record(current.next); cont && cont.type === 0x003c; cont = record(cont.next)) segments.push(cont.payload);
         const reader = new BiffSegments(segments, 0);
         reader.u32();
         const unique = reader.u32();
-        for (let n = 0; n < unique; n += 1) shared.push(reader.string());
+        let sharedChars = 0;
+        for (let n = 0; n < unique && sharedChars < OFFICE_TEXT_MAX_CHARS; n += 1) {
+          const value = reader.string();
+          shared.push(value);
+          sharedChars += value.length;
+        }
         break;
       }
       case 0x00fd: // LABELSST
@@ -826,6 +856,7 @@ export function extractXlsText(data: Uint8Array): string {
       default:
         break;
     }
+    if (values.full) break;
   }
   return values.text();
 }
@@ -874,15 +905,20 @@ export function extractDocText(data: Uint8Array): string {
     const fcRaw = pv.getUint32(pcd + 2, true);
     const compressed = (fcRaw & 0x40000000) !== 0;
     const fc = fcRaw & 0x3fffffff;
-    const count = Math.max(0, cpEnd - cpStart);
+    if (cpEnd < cpStart) throw new OfficeTextError('doc piece table out of order');
+    const count = cpEnd - cpStart;
+    // Range checks with the full piece; decoded only up to the budget
+    // (overlapping pieces could otherwise repeat the same bytes endlessly).
+    const take = Math.min(count, OFFICE_TEXT_MAX_CHARS - text.length);
     if (compressed) {
       const start = fc / 2;
       if (start + count > word.length) throw new OfficeTextError('doc piece out of range');
-      text += decodeCp1252(word.subarray(start, start + count));
+      text += decodeCp1252(word.subarray(start, start + take));
     } else {
       if (fc + count * 2 > word.length) throw new OfficeTextError('doc piece out of range');
-      text += utf16le.decode(word.subarray(fc, fc + count * 2));
+      text += utf16le.decode(word.subarray(fc, fc + take * 2));
     }
+    if (text.length >= OFFICE_TEXT_MAX_CHARS) break;
   }
   return cleanWordText(text);
 }
@@ -940,15 +976,32 @@ export function extractRtfText(data: Uint8Array): string {
   if (cpMatch) codepage = Number(cpMatch[1]);
 
   const out: string[] = [];
-  const pendingBytes: number[] = [];
-  const flushBytes = () => {
-    if (pendingBytes.length === 0) return;
-    out.push(decodeCodepage(Uint8Array.from(pendingBytes), codepage));
-    pendingBytes.length = 0;
+  let outChars = 0;
+  const push = (text: string) => {
+    out.push(text);
+    outChars += text.length;
+  };
+  // Bytes of the current text run, decoded in bounded chunks. A size-triggered
+  // flush streams (a character split across chunks stays intact); every other
+  // flush is final, so text before and after a control word is never merged.
+  const decode = codepageDecoder(codepage);
+  const pending = new Uint8Array(0x10000);
+  let pendingLength = 0;
+  let decoderHoldsBytes = false;
+  const flushBytes = (final: boolean) => {
+    if (pendingLength === 0 && !(final && decoderHoldsBytes)) return;
+    const text = decode(pending.subarray(0, pendingLength), !final);
+    pendingLength = 0;
+    decoderHoldsBytes = !final;
+    if (text) push(text);
+  };
+  const pushByte = (byte: number) => {
+    if (pendingLength === pending.length) flushBytes(false);
+    pending[pendingLength++] = byte;
   };
   const emit = (text: string) => {
-    flushBytes();
-    out.push(text);
+    flushBytes(true);
+    push(text);
   };
 
   type Group = { skip: boolean; uc: number };
@@ -957,7 +1010,7 @@ export function extractRtfText(data: Uint8Array): string {
   let skipChars = 0;
   let i = 0;
   const length = source.length;
-  while (i < length) {
+  while (i < length && outChars < OFFICE_TEXT_MAX_CHARS) {
     const char = source[i]!;
     if (char === '{') {
       if (stack.length >= RTF_MAX_DEPTH) throw new OfficeTextError('rtf nested too deeply');
@@ -986,7 +1039,7 @@ export function extractRtfText(data: Uint8Array): string {
           skipChars -= 1;
           continue;
         }
-        if (!group.skip && Number.isFinite(byte)) pendingBytes.push(byte);
+        if (!group.skip && Number.isFinite(byte)) pushByte(byte);
         continue;
       }
       if (next === '*') {
@@ -1068,14 +1121,14 @@ export function extractRtfText(data: Uint8Array): string {
       // Plain text runs: take everything up to the next control character at once.
       let end = i + 1;
       while (end < length && source[end] !== '\\' && source[end] !== '{' && source[end] !== '}' && source[end] !== '\r' && source[end] !== '\n') end += 1;
-      for (let k = i; k < end; k += 1) pendingBytes.push(source.charCodeAt(k));
+      for (let k = i; k < end && outChars + pendingLength < OFFICE_TEXT_MAX_CHARS; k += 1) pushByte(source.charCodeAt(k));
       i = end;
       continue;
     }
     i += 1;
   }
-  flushBytes();
-  return out.join('');
+  flushBytes(true);
+  return out.join('').slice(0, OFFICE_TEXT_MAX_CHARS);
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import {
 import {
   extractOfficeText,
   extractRtfText,
+  OFFICE_TEXT_MAX_CHARS,
   spreadsheetNumber,
   type OfficeTextKind,
 } from '../../packages/core/src/email/attachment-office-text';
@@ -26,6 +27,94 @@ const inflate = (data: Uint8Array, max: number) => inflateRawSync(data, { maxOut
 const extract = (kind: OfficeTextKind, data: Uint8Array) => extractOfficeText(kind, data, inflate);
 
 const EAN = '4006381333931';
+
+/** Minimal compound file (CFB v3, 512-byte sectors); every stream >= 4096 bytes, so no mini stream. */
+function compoundFile(streams: Array<{ name: string; data: Buffer }>): Buffer {
+  const S = 512;
+  const counts = streams.map((s) => Math.ceil(s.data.length / S));
+  const payload = 1 + counts.reduce((a, b) => a + b, 0);
+  let fatSectors = 1;
+  while (fatSectors * 128 < fatSectors + payload) fatSectors += 1;
+  const fat = new Array<number>(fatSectors * 128).fill(0xffffffff);
+  for (let i = 0; i < fatSectors; i += 1) fat[i] = 0xfffffffd;
+  fat[fatSectors] = 0xfffffffe; // directory
+  let next = fatSectors + 1;
+  const starts = counts.map((count) => {
+    const start = next;
+    for (let i = 0; i < count; i += 1) fat[next + i] = i === count - 1 ? 0xfffffffe : next + i + 1;
+    next += count;
+    return start;
+  });
+  const header = Buffer.alloc(S);
+  Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).copy(header);
+  header.writeUInt16LE(0x3e, 0x18);
+  header.writeUInt16LE(3, 0x1a);
+  header.writeUInt16LE(0xfffe, 0x1c);
+  header.writeUInt16LE(9, 0x1e);
+  header.writeUInt16LE(6, 0x20);
+  header.writeUInt32LE(fatSectors, 0x2c);
+  header.writeUInt32LE(fatSectors, 0x30);
+  header.writeUInt32LE(4096, 0x38);
+  header.writeUInt32LE(0xfffffffe, 0x3c);
+  header.writeUInt32LE(0xfffffffe, 0x44);
+  for (let i = 0; i < 109; i += 1) header.writeUInt32LE(i < fatSectors ? i : 0xffffffff, 0x4c + i * 4);
+  const fatBuf = Buffer.alloc(fatSectors * S);
+  fat.forEach((value, i) => fatBuf.writeUInt32LE(value >>> 0, i * 4));
+  const dir = Buffer.alloc(S);
+  const entry = (index: number, name: string, type: number, start: number, size: number) => {
+    const n = Buffer.from(`${name}\0`, 'utf16le');
+    n.copy(dir, index * 128);
+    dir.writeUInt16LE(n.length, index * 128 + 0x40);
+    dir[index * 128 + 0x42] = type;
+    dir.writeUInt32LE(start >>> 0, index * 128 + 0x74);
+    dir.writeUInt32LE(size, index * 128 + 0x78);
+  };
+  entry(0, 'Root Entry', 5, 0xfffffffe, 0);
+  streams.forEach((s, i) => entry(i + 1, s.name, 2, starts[i]!, s.data.length));
+  const bodies = streams.map((s, i) => {
+    const b = Buffer.alloc(counts[i]! * S);
+    s.data.copy(b);
+    return b;
+  });
+  return Buffer.concat([header, fatBuf, dir, ...bodies]);
+}
+
+/** Word 97 file whose piece table has the given CPs; every piece points at the same run of 'A'. */
+function wordDoc(cps: number[]): Buffer {
+  const word = Buffer.alloc(4096);
+  word.writeUInt16LE(0xa5ec, 0);
+  word.writeUInt16LE(0x0200, 0x0a); // 1Table
+  word.writeUInt16LE(14, 32);
+  word.writeUInt16LE(22, 62);
+  word.writeUInt16LE(93, 152);
+  word.fill(0x41, 1024, 4096);
+  const pieces = cps.length - 1;
+  const lcb = 12 * pieces + 4;
+  const table = Buffer.alloc(Math.max(4096, 5 + lcb));
+  table[0] = 0x02;
+  table.writeUInt32LE(lcb, 1);
+  cps.forEach((cp, i) => table.writeUInt32LE(cp, 5 + i * 4));
+  for (let i = 0; i < pieces; i += 1) table.writeUInt32LE((0x40000000 | 2048) >>> 0, 5 + (pieces + 1) * 4 + i * 8 + 2);
+  word.writeUInt32LE(0, 418);
+  word.writeUInt32LE(5 + lcb, 422); // fcClx, lcbClx
+  return compoundFile([{ name: 'WordDocument', data: word }, { name: '1Table', data: table }]);
+}
+
+/** Excel 97 workbook stream aus LABEL-Datensätzen mit je eigenem Inhalt. */
+function xlsLabels(count: number): Buffer {
+  const records: Buffer[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const text = Buffer.from(`${10_000_000 + i}${'x'.repeat(192)}`, 'latin1');
+    const payload = Buffer.alloc(6 + 2 + 1 + text.length);
+    payload.writeUInt16LE(text.length, 6);
+    text.copy(payload, 9);
+    const header = Buffer.alloc(4);
+    header.writeUInt16LE(0x0204, 0);
+    header.writeUInt16LE(payload.length, 2);
+    records.push(header, payload);
+  }
+  return compoundFile([{ name: 'Workbook', data: Buffer.concat(records) }]);
+}
 
 describe('office attachment text', () => {
   test.each([
@@ -203,6 +292,39 @@ describe('damaged or crafted office files fail safely', () => {
     expect(typeof extract('ods', odsFile)).toBe('string');
     expect(typeof extract('odt', odsFile)).toBe('string');
     expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
+  // Plan 039: DOC, XLS und RTF hören bei der doppelten Textobergrenze auf.
+  test('doc: overlapping pieces stop at the output budget', () => {
+    const file = wordDoc(Array.from({ length: 5001 }, (_, i) => i * 3072));
+    const started = Date.now();
+    expect(extract('doc', file).length).toBeLessThanOrEqual(OFFICE_TEXT_MAX_CHARS);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test('doc: a piece table out of order is refused', () => {
+    expect(() => extract('doc', wordDoc([0, 3072, 100]))).toThrow('doc piece table out of order');
+  });
+
+  test('xls: distinct values stop at the output budget', () => {
+    expect(extract('xls', xlsLabels(6_000)).length).toBeLessThanOrEqual(OFFICE_TEXT_MAX_CHARS);
+  });
+
+  test('rtf: plain text stops at the output budget', () => {
+    const started = Date.now();
+    expect(extractRtfText(Buffer.from(`{\\rtf1 ${'x'.repeat(3_000_000)}}`, 'latin1')).length)
+      .toBeLessThanOrEqual(OFFICE_TEXT_MAX_CHARS);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  test('rtf: a multi-byte character across the flush boundary stays intact', () => {
+    const text = extractRtfText(Buffer.concat([
+      Buffer.from('{\\rtf1\\ansicpg65001 '),
+      Buffer.from(`${'a'.repeat(65_535)}ä`, 'utf8'),
+      Buffer.from('}'),
+    ]));
+    expect(text.endsWith('aä')).toBe(true);
+    expect(text).toHaveLength(65_536);
   });
 
   test('rtf nested beyond any real document is refused', () => {
