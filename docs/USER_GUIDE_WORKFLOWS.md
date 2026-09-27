@@ -417,6 +417,7 @@ Das Ergebnis ist ein Vorschlag unter **Einstellungen → Learnings**; die Wissen
 
 Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie**:
 
+- **Im Lesefenster:** Details → **Automatik** zeigt alle Läufe dieser einen Mail (über alle Workflows) mit Status, Ausgang und KI-Entscheidung; eine Fortsetzung steht eingerückt unter ihrem Ursprungslauf. Ein Klick öffnet die Schritte. Sichtbar für alle, die Workflows ansehen dürfen.
 - **Linke Spalte:** die letzten Läufe („Lauf #123“) mit Status und Zeitpunkt.
 - **Rechte Spalte:** nach Klick auf einen Lauf oben die **Mail** des Laufs (Betreff und Absender; aufklappen zeigt Empfänger, Anhänge und die ersten 2.000 Zeichen Text), darunter die einzelnen **Schritte** — welcher Baustein lief, mit welchem Ergebnis, über welchen **Ausgang** es weiterging und wie lange es dauerte.
 - **Klick auf einen Schritt:** öffnet **Eingang** und **Ausgang** nebeneinander (ähnlich n8n). Eingang: die Einstellungen des Bausteins, die Variablen vor dem Schritt und bei der KI-Entscheidung die Frage mit eingesetzten Platzhaltern, Kriterien, Schwelle und Modell. Ausgang: der gewählte Ausgang, das Ergebnis (z. B. Ja-Wahrscheinlichkeit) und die gesetzten Variablen. Passwörter, Tokens und API-Keys in den Einstellungen sind geschwärzt.
@@ -431,8 +432,11 @@ Beispiele: Ein Gate-Schritt mit Ergebnis „Blockiert“ nennt den Grund — etw
 
 ## Häufige Fragen
 
+**Was ist mit dieser Mail passiert?**
+Öffnen Sie die Mail → **Details** → **Automatik**. Dort stehen alle Workflow-Läufe dieser Mail mit Ergebnis, gewähltem Ausgang und KI-Entscheidung (Antwort, Ja-Wahrscheinlichkeit, Begründung). Ein Klick auf einen Lauf zeigt jeden Schritt mit Eingang und Ausgang. Auf dem Server kommt das Ergebnis einer KI-Entscheidung einige Sekunden später — **Aktualisieren** lädt neu.
+
 **Warum wurde auf eine Mail nicht automatisch geantwortet?**
-Schauen Sie in die Lauf-Historie: Der Gate-Schritt nennt den Grund (`auto_reply:blocked:…`):
+Öffnen Sie die Mail → Details → **Automatik** (oder die Lauf-Historie des Workflows): Der Gate-Schritt nennt den Grund (`auto_reply:blocked:…`):
 
 | Grund im Protokoll | Bedeutung | Abhilfe |
 |--------------------|-----------|---------|

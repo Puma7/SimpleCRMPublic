@@ -459,6 +459,29 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       })
       .nullable(),
   });
+  set(IPCChannels.Email.ListWorkflowRunsForMessage, {
+    payload: z.object({ messageId: positiveInt }),
+    result: z.array(
+      z.object({
+        // Server: Id aus sourceSqliteId (bei Worker-Läufen negativ).
+        id: z.number().int(),
+        server_id: z.number().int(),
+        workflow_id: z.number().int().nullable(),
+        workflow_name: z.string(),
+        direction: z.string(),
+        status: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+        last_step: z
+          .object({ node_type: z.string(), status: z.string(), port: z.string().nullable() })
+          .nullable(),
+        decision: z
+          .object({ answer: z.string().nullable(), probability: z.number().nullable(), summary: z.string().nullable() })
+          .nullable(),
+        continued_from_run_id: z.number().int().nullable(),
+      }),
+    ),
+  });
   set(IPCChannels.Email.GetMailDiagnostics, {
     payload: voidPayload,
     result: z.object({}).passthrough(),

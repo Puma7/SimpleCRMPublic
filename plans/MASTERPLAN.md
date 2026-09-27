@@ -56,7 +56,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 5 – Neue Funktionen (Richtung)
 
-- [ ] **046** R1 „Was ist mit dieser Mail passiert?“ – alle Automatik-Läufe im Lesefenster · P2 · S–M
+- [x] **046** R1 „Was ist mit dieser Mail passiert?“ – alle Automatik-Läufe im Lesefenster · P2 · S–M
 - [ ] **047** R2 Echter Testlauf: Mail auswählen, auch deaktiviert, optional echte KI · P2 · M
 - [ ] **049** R4 Automatik-Cockpit: Anteil Mensch/KI, Warteschlangen, KI-Kosten · P2 · M
 - [ ] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*

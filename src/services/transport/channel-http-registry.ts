@@ -10,6 +10,11 @@ import {
   interpolateSignatureTemplate,
 } from "@shared/signature-template"
 import { escapeHtmlText } from "@shared/compose-body"
+import {
+  MESSAGE_WORKFLOW_RUNS_LIMIT,
+  summarizeRunSteps,
+  type MessageWorkflowRunSummary,
+} from "@shared/workflow-run-message-history"
 import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
@@ -3548,6 +3553,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
+  [IPCChannels.Email.ListWorkflowRunsForMessage, ([payload]) => {
+    const input = objectPayload(payload, "workflow runs for message payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/workflow-runs`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+    }
+    return {
+      ...request,
+      transform: (body, context) => listWorkflowRunsForMessageTransform(body, context, request),
+    }
+  }],
   [IPCChannels.Email.GetWorkflowRunLog, ([runId]) => ({
     method: "GET",
     path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(runId, "workflow run id")}`,
@@ -6533,6 +6551,64 @@ async function collectLatestWorkflowRunFromFirstPage(
     cursor = page.nextCursor
   }
   return latest
+}
+
+/**
+ * Details → Automatik: neueste Läufe der Mail mit Zusammenfassung. Je Lauf die
+ * Schritte (wie ListWorkflowRunSteps) und je Workflow einmal der Name, parallel.
+ */
+async function listWorkflowRunsForMessageTransform(
+  body: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+): Promise<MessageWorkflowRunSummary[]> {
+  const records = (await collectPagedListItems<WorkflowRunRecord>(body, context, request, 500))
+    .sort((a, b) => b.id - a.id)
+    .slice(0, MESSAGE_WORKFLOW_RUNS_LIMIT)
+  const workflowIds = [...new Set(records
+    .map((record) => record.workflowSourceSqliteId ?? record.workflowId)
+    .filter((id): id is number => typeof id === "number" && id !== 0))]
+  const names = new Map<number, string>()
+  const loadNames = Promise.all(workflowIds.map(async (id) => {
+    try {
+      const workflow = dataBody<WorkflowRecord | null>(await context.fetchJson({
+        method: "GET",
+        path: `/api/v1/workflows/by-source/${id}`,
+      }))
+      if (workflow?.name) names.set(id, workflow.name)
+    } catch {
+      // Kein Name (gelöscht, keine Rechte): „Workflow #<id>“.
+    }
+  }))
+  const summaries = Promise.all(records.map(async (record) => {
+    const stepsRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(record.sourceSqliteId ?? record.id, "workflow run id")}/steps`,
+      query: { limit: DEFAULT_LIST_LIMIT, includeDetail: true },
+    }
+    const steps = (await collectPagedListItems<WorkflowRunStepRecord>(
+      await context.fetchJson(stepsRequest),
+      context,
+      stepsRequest,
+    )).map(mapWorkflowRunStepRecord)
+    return { record, summary: summarizeRunSteps(steps) }
+  }))
+  const [, perRun] = await Promise.all([loadNames, summaries])
+  return perRun.map(({ record, summary }) => {
+    const mapped = mapWorkflowRunRecord(record)
+    const workflowId = mapped.workflow_id
+    return {
+      id: mapped.id,
+      server_id: record.id,
+      workflow_id: workflowId,
+      workflow_name: (workflowId !== null ? names.get(workflowId) : undefined) ?? `Workflow #${workflowId ?? record.id}`,
+      direction: mapped.direction,
+      status: mapped.status,
+      started_at: mapped.started_at,
+      finished_at: mapped.finished_at,
+      ...summary,
+    }
+  })
 }
 
 function latestWorkflowRunByServerId(

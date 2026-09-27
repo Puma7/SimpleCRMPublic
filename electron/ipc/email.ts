@@ -1345,6 +1345,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListWorkflowRunsForMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const { listWorkflowRunsForMessage } = await import('../workflow/run-steps.js');
+        return listWorkflowRunsForMessage(payload.messageId);
+      },
+      { logger, accountAccess: 'ro' },
+    ),
+  );
+
+  disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMailDiagnostics, async () => {
       const { collectMailDiagnostics } = await import('../email/email-diagnostics.js');
       return collectMailDiagnostics();

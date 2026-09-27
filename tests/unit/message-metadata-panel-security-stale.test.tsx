@@ -58,6 +58,7 @@ const mailB = message(2, 'phish@example.net');
 
 const noop = () => undefined;
 let selectMessage: (message: EmailMessage) => void = noop;
+let canViewAutomation = false;
 
 function Harness() {
   const [selectedMessage, setSelectedMessage] = useState<EmailMessage>(mailA);
@@ -78,6 +79,7 @@ function Harness() {
       reloadNotes={noop}
       reloadTags={noop}
       refreshCurrentMessage={noop}
+      canViewAutomation={canViewAutomation}
     />
   );
 }
@@ -97,6 +99,7 @@ describe('MessageMetadataPanel: Sicherheitsanzeige ohne Werte der vorigen Nachri
 
   beforeEach(() => {
     selectMessage = noop;
+    canViewAutomation = false;
     securityByMessage = new Map();
     conversationByMessage = new Map();
     mockInvoke.mockReset();
@@ -177,5 +180,33 @@ describe('MessageMetadataPanel: Sicherheitsanzeige ohne Werte der vorigen Nachri
 
     expect(screen.queryByText('Verlauf A')).not.toBeInTheDocument();
     expect(screen.getByText('Verlauf B')).toBeInTheDocument();
+  });
+});
+
+// Plan 046: „Automatik“ nur mit Leserecht auf Workflows.
+describe('MessageMetadataPanel: Abschnitt Automatik', () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation(() => Promise.resolve([]));
+  });
+
+  test('ohne canViewAutomation kein Abschnitt Automatik', async () => {
+    canViewAutomation = false;
+    render(<Harness />);
+    await act(async () => {});
+    expect(screen.queryByText('Automatik')).not.toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith('email:list-workflow-runs-for-message', expect.anything());
+  });
+
+  test('mit canViewAutomation erscheint der Abschnitt, Läufe erst beim Aufklappen', async () => {
+    canViewAutomation = true;
+    render(<Harness />);
+    await act(async () => {});
+    expect(screen.getByText('Automatik')).toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalledWith('email:list-workflow-runs-for-message', expect.anything());
+    await act(async () => {
+      fireEvent.click(screen.getByText('Automatik'));
+    });
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('email:list-workflow-runs-for-message', { messageId: mailA.id }));
   });
 });

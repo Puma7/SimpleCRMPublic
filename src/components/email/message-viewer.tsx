@@ -1827,6 +1827,7 @@ export function MessageViewer(props: Props) {
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
               onOpenMessage={onOpenMessage}
+              canViewAutomation={canViewWorkflows}
             />
           ) : null}
         </div>

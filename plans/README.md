@@ -131,7 +131,7 @@ update the row here.
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | TODO |
 | 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | BLOCKED — waiting for approval of docs/design/desktop-credential-store.md (Phase 0 fertig) |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | TODO |
-| 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | TODO |
+| 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | DONE |
 | 047 | R2: real workflow test run | P2 | M | direction | — | TODO |
 | 048 | R3: section-level knowledge retrieval + sources | P2 | M–L | direction | 028, 029 | TODO |
 | 049 | R4: automation cockpit | P2 | M | direction | — | TODO |

@@ -1,5 +1,10 @@
 import { getDb } from '../sqlite-service';
-import { EMAIL_WORKFLOW_RUNS_TABLE, EMAIL_WORKFLOW_RUN_STEPS_TABLE } from '../database-schema';
+import { EMAIL_WORKFLOWS_TABLE, EMAIL_WORKFLOW_RUNS_TABLE, EMAIL_WORKFLOW_RUN_STEPS_TABLE } from '../database-schema';
+import {
+  MESSAGE_WORKFLOW_RUNS_LIMIT,
+  summarizeRunSteps,
+  type MessageWorkflowRunSummary,
+} from '../../shared/workflow-run-message-history';
 import {
   parseWorkflowStepDetail,
   WORKFLOW_STEP_DETAIL_RETENTION_DAYS,
@@ -129,6 +134,74 @@ export function getLatestWorkflowRunForMessage(messageId: number): {
       }
     | undefined;
   return row ?? null;
+}
+
+/**
+ * Alle Automatik-Läufe einer Mail (neueste zuerst) mit Zusammenfassung für das
+ * Lesefenster. Zwei Abfragen (Läufe, dann ihre Schritte), kein N+1.
+ */
+export function listWorkflowRunsForMessage(
+  messageId: number,
+  limit = MESSAGE_WORKFLOW_RUNS_LIMIT,
+): MessageWorkflowRunSummary[] {
+  const db = getDb();
+  const runs = db
+    .prepare(
+      `SELECT r.id, r.workflow_id, w.name AS workflow_name, r.direction, r.status, r.started_at, r.finished_at
+       FROM ${EMAIL_WORKFLOW_RUNS_TABLE} r
+       LEFT JOIN ${EMAIL_WORKFLOWS_TABLE} w ON w.id = r.workflow_id
+       WHERE r.message_id = ?
+       ORDER BY r.id DESC
+       LIMIT ?`,
+    )
+    .all(messageId, limit) as Array<{
+      id: number;
+      workflow_id: number | null;
+      workflow_name: string | null;
+      direction: string;
+      status: string;
+      started_at: string | null;
+      finished_at: string | null;
+    }>;
+  if (runs.length === 0) return [];
+  const steps = db
+    .prepare(
+      `SELECT run_id, node_type, status, port, message, detail_json
+       FROM ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}
+       WHERE run_id IN (${runs.map(() => '?').join(', ')})
+       ORDER BY id ASC`,
+    )
+    .all(...runs.map((run) => run.id)) as Array<{
+      run_id: number;
+      node_type: string;
+      status: string;
+      port: string | null;
+      message: string | null;
+      detail_json: string | null;
+    }>;
+  const stepsByRun = new Map<number, typeof steps>();
+  for (const step of steps) {
+    const list = stepsByRun.get(step.run_id) ?? [];
+    list.push(step);
+    stepsByRun.set(step.run_id, list);
+  }
+  return runs.map((run) => ({
+    id: run.id,
+    server_id: run.id,
+    workflow_id: run.workflow_id,
+    workflow_name: run.workflow_name?.trim() || `Workflow #${run.workflow_id ?? run.id}`,
+    direction: run.direction,
+    status: run.status,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    ...summarizeRunSteps((stepsByRun.get(run.id) ?? []).map((step) => ({
+      node_type: step.node_type,
+      status: step.status,
+      port: step.port,
+      message: step.message,
+      detail: step.detail_json,
+    }))),
+  }));
 }
 
 function parseWorkflowRunLog(value: unknown): string[] {

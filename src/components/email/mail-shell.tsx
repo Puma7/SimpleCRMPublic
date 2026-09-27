@@ -55,7 +55,7 @@ function MailShellInner() {
     bumpAccountsRevision,
     bumpMailMetricsRevision,
   } = useMailWorkspace()
-  const { hasMailPermissionForAccount } = useAuth()
+  const { hasMailPermissionForAccount, canViewWorkflows } = useAuth()
 
   useEffect(() => {
     setMetadataPanelOpen(true)
@@ -431,6 +431,7 @@ function MailShellInner() {
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
               onOpenMessage={openMessage}
+              canViewAutomation={canViewWorkflows}
             />
           ) : (
             <div className="flex h-full w-full min-w-0 flex-col items-center justify-center border-l bg-muted/10 p-4 text-center text-xs text-muted-foreground">

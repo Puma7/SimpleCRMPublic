@@ -7105,6 +7105,52 @@ describe('renderer transport', () => {
     );
   });
 
+  // Plan 046: Details → Automatik – alle Läufe einer Mail mit Zusammenfassung.
+  test('maps workflow runs for message with steps, workflow names and continuations', async () => {
+    const runs = [
+      { id: 401, sourceSqliteId: -91, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', startedAt: '2026-06-03T11:00:00.000Z', finishedAt: '2026-06-03T11:00:02.000Z' },
+      { id: 402, sourceSqliteId: -92, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', startedAt: '2026-06-03T11:01:00.000Z', finishedAt: null },
+    ];
+    const stepRecord = (runSource: number, extra: Record<string, unknown>) => ({
+      id: 1, sourceSqliteId: 1, runSourceSqliteId: runSource, nodeId: 'n', status: 'ok', durationMs: 1,
+      createdAt: '2026-06-03T11:00:00.000Z', updatedAt: '2026-06-03T11:00:00.000Z', message: null, port: null, ...extra,
+    });
+    const fetchImpl = jest.fn(async (url: string) => {
+      if (url.endsWith('/api/v1/email/messages/55/workflow-runs?limit=100')) {
+        return jsonResponse({ data: { items: runs, nextCursor: null } });
+      }
+      if (url.includes('/api/v1/workflow-runs/by-source/-91/steps')) {
+        return jsonResponse({ data: { items: [stepRecord(-91, {
+          nodeType: 'ai.decide', port: 'yes', message: null,
+          detail: { v: 1, output: { port: 'yes', result: { answer: 'yes', probability: 88, summary: 'Rückgabe' } } },
+        })], nextCursor: null } });
+      }
+      if (url.includes('/api/v1/workflow-runs/by-source/-92/steps')) {
+        return jsonResponse({ data: { items: [stepRecord(-92, {
+          nodeType: 'email.tag', port: 'default', detail: { v: 1, continuedFrom: { runId: 401, nodeId: 'd', port: 'yes' } },
+        })], nextCursor: null } });
+      }
+      if (url.endsWith('/api/v1/workflows/by-source/-23')) return jsonResponse({ data: { id: 23, sourceSqliteId: -23, name: 'Rückgaben' } });
+      throw new Error(`unexpected ${url}`);
+    });
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const result = await transport.invoke(IPCChannels.Email.ListWorkflowRunsForMessage, { messageId: 55 });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: -92, server_id: 402, workflow_id: -23, workflow_name: 'Rückgaben', continued_from_run_id: 401,
+        last_step: { node_type: 'email.tag', status: 'ok', port: 'default' }, decision: null,
+      }),
+      expect.objectContaining({
+        id: -91, server_id: 401, workflow_name: 'Rückgaben', continued_from_run_id: null,
+        decision: { answer: 'yes', probability: 88, summary: 'Rückgabe' },
+      }),
+    ]);
+    // Liste, zwei Schritt-Listen, ein Workflow-Name.
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
   test('maps PGP keyring channels to server HTTP compatibility routes', async () => {
     const fetchImpl = jest
       .fn()
