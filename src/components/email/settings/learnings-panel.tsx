@@ -7,6 +7,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { isKnowledgeContext, KNOWLEDGE_CONTEXT_LABELS } from "@shared/knowledge-context"
 import {
   learningCandidateKindLabel,
+  removedKnowledgeSectionTitles,
   type AiLearningCandidateDto,
   type AiLearningDecisionResultDto,
   type AiLearningDigestDetailDto,
@@ -293,8 +294,21 @@ function LearningsManager() {
     }
   }
 
+  // Ganze Abschnitte, die der Vorschlag entfernt: Anweisungen in Kunden-Mails
+  // können eine KI zu Löschungen verleiten, deshalb Warnung und Rückfrage.
+  const removedSections = useMemo(
+    () => (pending ? removedKnowledgeSectionTitles(pending.currentContent ?? pending.baseContent, draft) : []),
+    [pending, draft],
+  )
+
   const accept = async () => {
     if (!pending) return
+    if (removedSections.length > 0) {
+      const ok = window.confirm(
+        `${removedSections.length} Abschnitt(e) werden aus der Wissensbasis entfernt: ${removedSections.join(", ")}. Trotzdem übernehmen?`,
+      )
+      if (!ok) return
+    }
     setDeciding(true)
     try {
       let result = await invokeRenderer(
@@ -583,6 +597,17 @@ function LearningsManager() {
               <AlertDescription>
                 Die Änderungsansicht vergleicht mit dem aktuellen Stand. Beim Übernehmen werden Änderungen, die
                 nach dem Vorschlag gemacht wurden, überschrieben — bitte prüfen oder im Bearbeiten-Modus ergänzen.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {removedSections.length > 0 ? (
+            <Alert variant="destructive" data-testid="learnings-removed-sections">
+              <AlertTitle>
+                Der Vorschlag entfernt {removedSections.length === 1 ? "einen Abschnitt" : `${removedSections.length} Abschnitte`}
+              </AlertTitle>
+              <AlertDescription>
+                {removedSections.map((title) => `„${title}“`).join(", ")}. Bitte prüfen: Anweisungen in Kunden-Mails können
+                eine KI zu Löschungen verleiten.
               </AlertDescription>
             </Alert>
           ) : null}

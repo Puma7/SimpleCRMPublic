@@ -16,6 +16,7 @@ import {
   normalizeKnowledgeSectionContent,
   normalizeKnowledgeSectionTitle,
   parseKnowledgeSections,
+  removedKnowledgeSectionTitles,
   serializeKnowledgeSections,
 } from '../../packages/core/src/learnings/knowledge-sections';
 import { diffText, summarizeTextDiff, type TextDiffSegment } from '../../packages/core/src/learnings/text-diff';
@@ -89,6 +90,18 @@ describe('stripReplyNoise (TA-P5)', () => {
 });
 
 describe('Wissensbasis-Abschnitte (TA-P5)', () => {
+  // Plan 038: entfernte Abschnitte werden in der Freigabe hervorgehoben.
+  test('removedKnowledgeSectionTitles: entfernt, umbenannt, nur anders geschrieben, nichts', () => {
+    const before = '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n\n## Kontakt\n\nHotline.\n';
+    expect(removedKnowledgeSectionTitles(before, '# Firma\n\n## Versand\n\n2 Tage.\n\n## Kontakt\n\nHotline.\n'))
+      .toEqual(['Rückgabe']);
+    expect(removedKnowledgeSectionTitles(before, '## Rücksendung\n\n14 Tage.\n\n## Versand\n\nx\n\n## Kontakt\n\ny\n'))
+      .toEqual(['Rückgabe']);
+    expect(removedKnowledgeSectionTitles(before, '## rückgabe:\n\n30 Tage.\n\n##   VERSAND\n\nx\n\n## Kontakt\n\ny\n'))
+      .toEqual([]);
+    expect(removedKnowledgeSectionTitles(before, before)).toEqual([]);
+  });
+
   const doc = '# Firma\n\nEinleitung.\n\n## Versand\n\nVersand in 2 Tagen.\n\n## Rückgabe\n\n30 Tage.\n\n```md\n## kein Abschnitt\n```\n';
 
   it('zerlegt verlustfrei und respektiert Codeblöcke', () => {

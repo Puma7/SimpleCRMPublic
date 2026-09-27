@@ -237,6 +237,28 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     confirm.mockRestore();
   });
 
+  // Plan 038: ganze Abschnitte zu entfernen wird hervorgehoben und nachgefragt.
+  test('warnt, wenn der Vorschlag Abschnitte entfernt; Übernehmen fragt nach', async () => {
+    mockBackend({
+      detail: {
+        baseContent: '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n',
+        currentContent: '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n',
+        proposedContent: '# Firma\n\n## Rückgabe\n\n30 Tage.\n',
+      },
+    });
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<LearningsPanel />);
+    const alert = await screen.findByTestId('learnings-removed-sections');
+    expect(alert).toHaveTextContent('Der Vorschlag entfernt einen Abschnitt');
+    expect(alert).toHaveTextContent('„Versand“');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Übernehmen' }));
+    });
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Versand'));
+    expect(mockInvoke.mock.calls.filter(([channel]) => channel === IPCChannels.Email.AcceptLearningDigest)).toEqual([]);
+    confirm.mockRestore();
+  });
+
   test('warnt vorab, wenn die Wissensbasis seit dem Vorschlag geändert wurde; Verwerfen', async () => {
     mockBackend({ detail: { currentContent: '# Firma\n\n## Rückgabe\n\n21 Tage.\n', knowledgeBaseChanged: true } });
     const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);

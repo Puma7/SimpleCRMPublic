@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server:** Weiterleitungen (`workflow.forward_copy`), die der Mailserver endgültig ablehnt (SMTP 5xx für Absender, Empfänger oder Inhalt, z. B. IONOS „Reject due to policy restrictions“), werden nicht mehr fünfmal wiederholt; der Job endet sofort mit einer deutschen Meldung. Die Antwort des Servers steht darin ohne Adressen, IPs und zitierten Text (Inhaltsfilter zitieren Teile der Original-Mail). Das gilt auch für Weiterleitungen über die Ausgangsprüfung. Ein Anmeldefehler (535) wird weiter wiederholt. Nach einer Ablehnung (4xx oder 5xx) gibt die Weiterleitung ihre Doppelversand-Sperre frei; vorher meldete jeder weitere Versuch nur „Zustellstatus unklar“ und die Weiterleitung blieb dauerhaft gesperrt.
 - **Server:** Server-Logs zeigen die Meldungen des Job-Workers lesbar statt `[%s%s] %s: %s`. Ereignis-Benachrichtigungen laufen nacheinander über ihre Verbindung (pg-Warnung „client.query() when the client is already executing a query“). Die Warnung `maxPoolSize (10) smaller than concurrency (50)` verschwindet, wenn `JOB_WORKER_MAIL_ACCOUNT_COUNT` auf die Zahl der Postfächer gesetzt ist (dann 2 gleichzeitige Syncs je Konto statt der Obergrenze 50).
 
+### Changed
+- **Beide Editionen:** Die Learnings-Auswertung kennzeichnet Kunden-Mails und Notizen für die KI als Daten, nicht als Anweisungen. Entfernt ein Vorschlag ganze Abschnitte der Wissensbasis, zeigt die Freigabe eine Warnung und fragt vor dem Übernehmen nach.
+
 ## [1.1.1] - 2026-09-26
 
 Sichere Updates für alle Editionen. Die Anleitung steht im [README, Abschnitt „Aktualisieren“](README.md#aktualisieren-update--upgrade).

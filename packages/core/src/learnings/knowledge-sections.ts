@@ -136,6 +136,20 @@ export function parseKnowledgeSections(markdown: string): KnowledgeSectionDocume
   return { preamble, sections };
 }
 
+/** Titel der `##`-Abschnitte, die in `after` fehlen (Vergleich über normalizeKnowledgeSectionTitle). */
+export function removedKnowledgeSectionTitles(before: string, after: string): string[] {
+  const remaining = new Set(parseKnowledgeSections(after).sections.map((section) => normalizeKnowledgeSectionTitle(section.title)));
+  const removed: string[] = [];
+  const seen = new Set<string>();
+  for (const section of parseKnowledgeSections(before).sections) {
+    const key = normalizeKnowledgeSectionTitle(section.title);
+    if (remaining.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    removed.push(section.title);
+  }
+  return removed;
+}
+
 function renderSection(section: KnowledgeSection): string {
   const body = closeUnterminatedKnowledgeFence(section.content.trim());
   return body ? `## ${section.title.trim()}\n\n${body}\n` : `## ${section.title.trim()}\n`;
