@@ -177,6 +177,71 @@ describe('Server: Kennzeichnung „gesendet von“', () => {
     expect(await sentBy(8107)).toMatchObject({ sent_by_kind: 'ai_approved', sent_by_label: 'Anna Beispiel' });
   });
 
+  describe('Plan 041: Signatur- und Zitat-Zone nach dem ersten Speichern', () => {
+    // Die Ansicht „Gesendet (KI)“ weiter unten prüft die genaue Liste.
+    afterAll(async () => {
+      await postgres.admin.query(`DELETE FROM email_messages WHERE workspace_id = $1 AND id IN (8120, 8121)`, [WORKSPACE_ID]);
+    });
+
+    const zonedHtml = (signature: string, quote: string) =>
+      `<!-- simplecrm-body --><p>Antwort</p><!-- simplecrm-signature -->${signature}<!-- simplecrm-quote -->${quote}`;
+
+    async function saveBody(draftId: number, bodyText: string, bodyHtml: string): Promise<void> {
+      const saved = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft!({
+        workspaceId: WORKSPACE_ID,
+        messageId: draftId,
+        values: {
+          subject: 'Re: Frage',
+          bodyText,
+          bodyHtml,
+          toJson: { value: [{ address: 'kunde@example.com' }] },
+          ccJson: null,
+          bccJson: null,
+          draftAttachmentPaths: [],
+        },
+      });
+      expect(saved.ok).toBe(true);
+    }
+
+    /** KI-Entwurf, dann das Speichern beim Öffnen des Fensters (Zonen eingesetzt, zählt nicht). */
+    async function aiDraftSavedOnce(draftId: number): Promise<void> {
+      await seedDraft(draftId);
+      await markOrigin(draftId, 'ai');
+      await saveBody(
+        draftId,
+        'Antwort Viele Grüße Anna Beispiel Ihre Frage',
+        zonedHtml('<p>Viele Grüße</p><p>Anna Beispiel</p>', '<blockquote><p>Ihre Frage</p></blockquote>'),
+      );
+      const flag = await postgres.admin.query(`SELECT draft_origin_edited FROM email_messages WHERE id = $1`, [draftId]);
+      expect(flag.rows[0]).toEqual({ draft_origin_edited: false });
+    }
+
+    test('P.S. unter der Signatur ⇒ human', async () => {
+      await aiDraftSavedOnce(8120);
+      await saveBody(
+        8120,
+        'Antwort Viele Grüße Anna Beispiel P.S. Rabatt 20 % Ihre Frage',
+        zonedHtml('<p>Viele Grüße</p><p>Anna Beispiel</p><p>P.S. Rabatt 20 %</p>', '<blockquote><p>Ihre Frage</p></blockquote>'),
+      );
+      await send(8120, { actorUserId: USER_ID });
+      expect(await sentBy(8120)).toMatchObject({ sent_by_kind: 'human' });
+    });
+
+    test('erneutes Speichern mit nur anderer Formatierung in den Zonen ⇒ ai_approved', async () => {
+      await aiDraftSavedOnce(8121);
+      await saveBody(
+        8121,
+        'Antwort  Viele Grüße Anna Beispiel\n\nIhre Frage',
+        zonedHtml(
+          '<p class="ql-align-left">Viele Grüße</p><p><br></p><p>Anna Beispiel</p>',
+          '<blockquote>\n  <p>Ihre Frage</p>\n</blockquote>',
+        ),
+      );
+      await send(8121, { actorUserId: USER_ID });
+      expect(await sentBy(8121)).toMatchObject({ sent_by_kind: 'ai_approved' });
+    });
+  });
+
   test('Review B7: nur das HTML eines KI-Entwurfs geändert ⇒ human statt „KI · freigegeben“', async () => {
     await postgres.admin.query(`
       INSERT INTO email_messages (

@@ -155,9 +155,15 @@ export type DraftContentSnapshot = {
  * Entwurfsfenster speichert beim Öffnen und vor dem Senden immer alle Felder
  * — nur ein echter Unterschied zählt. Verglichen werden Betreff, Text
  * (Leerraum, HTML-Umformatierung des Editors und der Hinweis „Versand
- * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto. Trägt das
- * HTML die Zonen-Marker des Entwurfsfensters, zählen nur Anrede und Text:
- * Signatur- und Zitat-Zone setzt das Fenster selbst ein.
+ * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto.
+ *
+ * Signatur- und Zitat-Zone setzt das Fenster beim ersten Speichern selbst ein
+ * (vorheriger Stand ohne Zonen-Marker): dieser Übergang zählt nicht. Tragen
+ * beide Stände die Marker, zählen Änderungen an Signatur und Zitat (auch ein
+ * P.S. unter der Signatur) wie jede andere Bearbeitung. Bekannte Lücke: eine
+ * Änderung in Signatur oder Zitat vor dem allerersten Speichern des Fensters
+ * bleibt unerkannt — das Fenster speichert beim Öffnen, sie bräuchte einen
+ * Speicherweg ohne dieses erste Speichern.
  */
 export function draftContentChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
   return normalizedDraftMeta(before) !== normalizedDraftMeta(after) || draftBodyChanged(before, after);
@@ -179,7 +185,11 @@ type DraftBodyForms = {
   text: string | null;
   /** Text und Link-/Bildziele des HTML-Teils (nur Anrede und Text); null = kein HTML. */
   html: { text: string; links: string[] } | null;
+  /** Signatur- und Zitat-Zone (Text und Ziele); null = HTML ohne Zonen-Marker. */
+  zones: { signature: DraftZoneForm; quote: DraftZoneForm } | null;
 };
+
+type DraftZoneForm = { text: string; links: string[] };
 
 /**
  * Review B7: Text- und HTML-Fassung zählen beide. Der Brieftext (HTML-Text,
@@ -192,7 +202,9 @@ function draftBodyChanged(before: DraftContentSnapshot, after: DraftContentSnaps
   const b = draftBodyForms(after);
   if ((a.html?.text ?? a.text ?? '') !== (b.html?.text ?? b.text ?? '')) return true;
   if (a.text !== null && b.text !== null && a.text !== b.text) return true;
-  return JSON.stringify(a.html?.links ?? []) !== JSON.stringify(b.html?.links ?? []);
+  if (JSON.stringify(a.html?.links ?? []) !== JSON.stringify(b.html?.links ?? [])) return true;
+  // Plan 041: Zonen nur vergleichen, wenn beide Stände sie tragen (das Einsetzen zählt nicht).
+  return a.zones !== null && b.zones !== null && JSON.stringify(a.zones) !== JSON.stringify(b.zones);
 }
 
 function draftBodyForms(snapshot: DraftContentSnapshot): DraftBodyForms {
@@ -218,7 +230,18 @@ function draftBodyForms(snapshot: DraftContentSnapshot): DraftBodyForms {
       if (at >= 0) text = collapseWhitespace(`${text.slice(0, at)} ${text.slice(at + zoneText.length)}`);
     }
   }
-  return { text: text || null, html: htmlForm };
+  const hasZoneMarkers = html.includes(LEARNING_COMPOSE_SIGNATURE_MARKER) || html.includes(LEARNING_COMPOSE_QUOTE_MARKER);
+  return {
+    text: text || null,
+    html: htmlForm,
+    zones: zones && hasZoneMarkers
+      ? { signature: draftZoneForm(zones.signatureHtml), quote: draftZoneForm(zones.quoteHtml) }
+      : null,
+  };
+}
+
+function draftZoneForm(zoneHtml: string): DraftZoneForm {
+  return { text: normalizedBodyText(plainTextFromHtml(zoneHtml)), links: htmlLinkTargets(zoneHtml) };
 }
 
 function normalizedBodyText(value: string): string {

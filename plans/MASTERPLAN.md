@@ -51,7 +51,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [ ] **038** Learnings-Auswertung: Prompt-Schutz, atomare Freigabe, KI-Originalvorschlag bleibt erhalten · P3 · M · *nach 035*
 - [ ] **039** Office-Leser (DOC/XLS/RTF) mit Ausgabebudget · P3 · S
 - [ ] **040** Zeitplan-Takt: erst einreihen, dann beanspruchen (kein verlorener Lauf) · P3 · S
-- [ ] **041** Kennzeichnung „KI · freigegeben“: Änderungen in Signatur/Zitat zählen · P3 · M
+- [x] **041** Kennzeichnung „KI · freigegeben“: Änderungen in Signatur/Zitat zählen · P3 · M
 
 ## Welle 5 – Neue Funktionen (Richtung)
 

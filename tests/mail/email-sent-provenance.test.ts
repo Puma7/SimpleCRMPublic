@@ -148,6 +148,88 @@ describe('Desktop: Kennzeichnung „gesendet von“', () => {
     expect(sentColumns(78)).toMatchObject({ sent_by_kind: 'human' });
   });
 
+  describe('Plan 041: Signatur- und Zitat-Zone nach dem ersten Speichern', () => {
+    const AUTHORED_HTML = '<!-- simplecrm-body --><p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p>';
+    const SIGNATURE_HTML = '<p>Viele Grüße</p><p>Erika Beispiel</p>';
+    const QUOTE_HTML = '<blockquote><p>Wann kommt meine Bestellung?</p></blockquote>';
+
+    function zonedHtml(signature: string, quote: string): string {
+      return `${AUTHORED_HTML}<!-- simplecrm-signature -->${signature}<!-- simplecrm-quote -->${quote}`;
+    }
+
+    function zonedText(signature: string, quote: string): string {
+      return ['Guten Tag,', 'Ihre Bestellung kommt morgen.', signature, quote].join('\n\n');
+    }
+
+    /** KI-Entwurf ohne Zonen, dann das Speichern beim Öffnen des Fensters (Zonen eingesetzt). */
+    function aiDraftSavedOnce(id: number): void {
+      insertDraft(id);
+      db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = ?`).run(
+        'Guten Tag,\n\nIhre Bestellung kommt morgen.',
+        '<p>Guten Tag,</p><p>Ihre Bestellung kommt morgen.</p>',
+        id,
+      );
+      markDraftOrigin(id, 'ai', 7);
+      saveDraft(id, zonedText('Viele Grüße Erika Beispiel', 'Wann kommt meine Bestellung?'), zonedHtml(SIGNATURE_HTML, QUOTE_HTML));
+      expect(db.prepare('SELECT draft_origin_edited FROM email_messages WHERE id = ?').get(id))
+        .toEqual({ draft_origin_edited: 0 });
+    }
+
+    /** Wie IPC UpdateComposeDraft: vorher lesen, speichern, vergleichen. */
+    function saveDraft(id: number, bodyText: string, bodyHtml: string): void {
+      const before = readDraftOriginContent(id);
+      db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = ?`).run(bodyText, bodyHtml, id);
+      markDraftOriginEditedIfChanged(id, before);
+    }
+
+    test('P.S. unter der Signatur ⇒ human', () => {
+      aiDraftSavedOnce(81);
+      saveDraft(
+        81,
+        zonedText('Viele Grüße Erika Beispiel P.S. Rabatt 20 %', 'Wann kommt meine Bestellung?'),
+        zonedHtml(`${SIGNATURE_HTML}<p>P.S. Rabatt 20 %</p>`, QUOTE_HTML),
+      );
+      recordSentProvenance(81, { kind: 'human', userId: 'u1' });
+      expect(sentColumns(81)).toMatchObject({ sent_by_kind: 'human' });
+    });
+
+    test('geänderte Signatur ⇒ human', () => {
+      aiDraftSavedOnce(82);
+      saveDraft(
+        82,
+        zonedText('Viele Grüße Max Muster', 'Wann kommt meine Bestellung?'),
+        zonedHtml('<p>Viele Grüße</p><p>Max Muster</p>', QUOTE_HTML),
+      );
+      recordSentProvenance(82, { kind: 'human', userId: 'u1' });
+      expect(sentColumns(82)).toMatchObject({ sent_by_kind: 'human' });
+    });
+
+    test('Text im Zitat geändert ⇒ human', () => {
+      aiDraftSavedOnce(83);
+      saveDraft(
+        83,
+        zonedText('Viele Grüße Erika Beispiel', 'Wann kommt meine Bestellung? Bitte heute noch.'),
+        zonedHtml(SIGNATURE_HTML, '<blockquote><p>Wann kommt meine Bestellung? Bitte heute noch.</p></blockquote>'),
+      );
+      recordSentProvenance(83, { kind: 'human', userId: 'u1' });
+      expect(sentColumns(83)).toMatchObject({ sent_by_kind: 'human' });
+    });
+
+    test('erneutes Speichern mit nur anderer Formatierung in den Zonen ⇒ ai_approved', () => {
+      aiDraftSavedOnce(84);
+      saveDraft(
+        84,
+        zonedText('Viele Grüße  Erika Beispiel', 'Wann kommt meine Bestellung?'),
+        zonedHtml(
+          '<p class="ql-align-left">Viele Grüße</p><p><br></p><p class="ql-align-left">Erika Beispiel</p>',
+          '<blockquote>\n  <p>Wann kommt meine Bestellung?</p>\n</blockquote>',
+        ),
+      );
+      recordSentProvenance(84, { kind: 'human', userId: 'u1' });
+      expect(sentColumns(84)).toMatchObject({ sent_by_kind: 'ai_approved' });
+    });
+  });
+
   test('Review B7: nur das HTML geändert ⇒ bearbeitet ⇒ human statt „KI · freigegeben“', () => {
     insertDraft(79);
     db.prepare(`UPDATE email_messages SET body_text = ?, body_html = ? WHERE id = 79`).run(

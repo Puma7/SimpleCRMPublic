@@ -184,10 +184,21 @@ describe('draftContentChanged: echte Änderung eines KI-Entwurfs (TA-P3)', () =>
       )).toBe(true);
     });
 
-    test('Grenze: nur die Signatur zu ändern gilt nicht als Bearbeitung des KI-Texts', () => {
+    // Plan 041: Tragen beide Stände die Zonen, zählt auch eine Änderung an
+    // Signatur oder Zitat (vorher blieb die Mail „KI · freigegeben“).
+    test('Signatur oder Zitat geändert, nachdem das Fenster die Zonen eingesetzt hat ⇒ Änderung', () => {
       expect(draftContentChanged(
         saved(aiBodyHtml, { signature }),
         saved(aiBodyHtml, { signature: '<p>Erika Beispiel<br/>Teamleitung Support</p>' }),
+      )).toBe(true);
+      expect(draftContentChanged(
+        saved(aiBodyHtml, { signature, quote }),
+        saved(aiBodyHtml, { signature, quote: '<p>Am 25.09. schrieb Kunde: Wann kommt meine Bestellung? Bitte heute.</p>' }),
+      )).toBe(true);
+      // Nur andere Formatierung in den Zonen: keine Änderung.
+      expect(draftContentChanged(
+        saved(aiBodyHtml, { signature, quote }),
+        saved(aiBodyHtml, { signature: '<p class="ql-align-left">Erika Beispiel<br>Support</p>', quote }),
       )).toBe(false);
     });
   });

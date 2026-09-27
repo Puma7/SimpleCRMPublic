@@ -126,7 +126,7 @@ update the row here.
 | 038 | Learnings digest: prompt hardening + atomic acceptance | P3 | M | security | 035 | TODO |
 | 039 | Output budgets for DOC/XLS/RTF text extraction | P3 | S | security | — | TODO |
 | 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | TODO |
-| 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | TODO |
+| 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | DONE |
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | TODO |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | TODO |
 | 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO |
