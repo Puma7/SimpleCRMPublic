@@ -48,7 +48,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 4 – Kleinere Härtungen (Befund #16)
 
-- [ ] **038** Learnings-Auswertung: Prompt-Schutz, atomare Freigabe, KI-Originalvorschlag bleibt erhalten · P3 · S · *nach 035*
+- [ ] **038** Learnings-Auswertung: Prompt-Schutz, atomare Freigabe, KI-Originalvorschlag bleibt erhalten · P3 · M · *nach 035*
 - [ ] **039** Office-Leser (DOC/XLS/RTF) mit Ausgabebudget · P3 · S
 - [ ] **040** Zeitplan-Takt: erst einreihen, dann beanspruchen (kein verlorener Lauf) · P3 · S
 - [ ] **041** Kennzeichnung „KI · freigegeben“: Änderungen in Signatur/Zitat zählen · P3 · M
