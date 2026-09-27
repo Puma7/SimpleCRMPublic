@@ -38,6 +38,8 @@ function formatKnowledgeChunksForPrompt(
 
 export type WorkflowKnowledgeChunkMatch = {
   id: number;
+  /** Wissensbasis des Treffers (für ein faires Zeichenbudget je Wissensbasis). */
+  knowledgeBaseId: number;
   title: string | null;
   content: string;
 };
@@ -59,6 +61,7 @@ async function keywordSearchChunks(
     .execute();
   const chunks = rows.map((row) => ({
     id: Number(row.id),
+    knowledgeBaseId,
     title: row.title === null || row.title === undefined ? null : String(row.title),
     content: String(row.content ?? ''),
   }));

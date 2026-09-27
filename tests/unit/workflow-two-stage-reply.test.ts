@@ -85,6 +85,7 @@ import {
 } from '../../electron/workflow/auto-reply-guard';
 import { parseDraftReviewResponse } from '../../electron/workflow/draft-review-parse';
 import { registerAiNodes } from '../../electron/workflow/nodes/ai-nodes';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../../electron/workflow/knowledge-base';
 import { registerEmailNodes } from '../../electron/workflow/nodes/email-nodes';
 
 function collect(registerNodes: (register: (def: RegisteredWorkflowNode) => void) => void) {
@@ -233,6 +234,25 @@ describe('ai.draft_reply (Agent 1)', () => {
     (runChatCompletion as jest.Mock).mockResolvedValue(
       'Ihre Bestellung 1234 ist unterwegs und kommt morgen an.',
     );
+  });
+
+  test('große Firmen- und Eingangs-Wissensbasis schneiden die Learnings nicht ab', async () => {
+    (searchKnowledgeForWorkflow as jest.Mock).mockResolvedValueOnce([
+      { id: 1, knowledge_base_id: 1, title: 'Dokument', content: 'G'.repeat(10_000) },
+      { id: 2, knowledge_base_id: 2, title: 'Dokument', content: 'I'.repeat(5_000) },
+      { id: 3, knowledge_base_id: 3, title: 'Dokument', content: 'LEARNING-MARKER Retoure 30 Tage' },
+    ]);
+    const r = await node.execute(ctx(), {}, 'd');
+    expect(r.status).toBe('ok');
+    expect(String((runChatCompletion as jest.Mock).mock.calls[0]![1])).toContain('LEARNING-MARKER Retoure 30 Tage');
+  });
+
+  test('explizite Wissensbasis ergänzt die Kontext-Wissensbasen inkl. Learnings (wie Server)', async () => {
+    await node.execute(ctx(), { knowledgeBaseId: 9 }, 'd');
+    expect(searchKnowledgeForWorkflow).toHaveBeenCalledWith(
+      baseMessage.account_id, 'inbound', 'Frage zu Bestellung 1234\nWo bleibt meine Bestellung?', 5, 9,
+    );
+    expect(searchKnowledgeChunks).not.toHaveBeenCalled();
   });
 
   test('legt adressierten Antwort-Entwurf mit Anrede, Signatur und Thread-Bezug an', async () => {

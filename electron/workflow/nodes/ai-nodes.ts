@@ -80,7 +80,12 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
-import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint, replaceTags } from '@simplecrm/core';
+import {
+  joinKnowledgeWithinBudget,
+  messageIsSpamOrReviewForInboundWorkflow,
+  outboundDraftFingerprint,
+  replaceTags,
+} from '@simplecrm/core';
 import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
@@ -125,16 +130,24 @@ function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | nu
   return null;
 }
 
-/** Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung. */
+/**
+ * Wissensbasis für KI-Knoten. ai.agent: explizit gewählte KB allein.
+ * ai.draft_reply (wie Server): die gewählte KB ergänzt die Kontext-Wissensbasen
+ * der Richtung — die Learnings eingeschlossen — statt sie zu ersetzen.
+ */
 async function resolveKnowledgeChunks(
   ctx: WorkflowContext,
   config: Record<string, unknown>,
+  opts: { explicitSupplementsContext?: boolean } = {},
 ): Promise<Awaited<ReturnType<typeof searchKnowledgeChunks>>> {
   const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
+  const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
   if (kbId != null && kbId > 0) {
+    if (opts.explicitSupplementsContext) {
+      return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5, kbId);
+    }
     return searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5);
   }
-  const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
   return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
 }
 
@@ -794,8 +807,11 @@ export function registerAiNodes(register: Reg): void {
         return { status: 'ok', message: 'dry-run draft_reply', variables };
       }
 
-      const chunks = await resolveKnowledgeChunks(ctx, config);
-      const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
+      const chunks = await resolveKnowledgeChunks(ctx, config, { explicitSupplementsContext: true });
+      const kbText = joinKnowledgeWithinBudget(
+        chunks.map((c) => ({ group: c.knowledge_base_id ?? `chunk:${c.id}`, text: c.content })),
+        { maxChars: DRAFT_REPLY_KNOWLEDGE_MAX, separator: '\n---\n' },
+      );
 
       let cannedBlock = '';
       if (config.includeCanned === true) {

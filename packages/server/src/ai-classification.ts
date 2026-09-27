@@ -2,6 +2,7 @@ import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
   interpolateWorkflowPlaceholders,
+  joinKnowledgeWithinBudget,
   messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
@@ -214,7 +215,9 @@ export type PostgresAiClassificationPortOptions = Readonly<{
 type EmailMessageRow = Selectable<EmailMessagesTable>;
 type AiProfileRow = Selectable<EmailAiProfilesTable>;
 type AiPromptRow = Selectable<EmailAiPromptsTable>;
-type WorkflowKnowledgeChunkRow = Pick<Selectable<WorkflowKnowledgeChunksTable>, 'id' | 'title' | 'content'>;
+type WorkflowKnowledgeChunkRow = Pick<Selectable<WorkflowKnowledgeChunksTable>, 'id' | 'title' | 'content'> & {
+  knowledgeBaseId?: number;
+};
 
 const classificationMessageColumns = [
   'id',
@@ -1533,18 +1536,21 @@ function fullMessageText(message: ClassificationMessageRow): string {
   ].join('\n');
 }
 
-function buildAgentUserPrompt(
+export function buildAgentUserPrompt(
   strings: Record<string, string>,
   chunks: readonly WorkflowKnowledgeChunkRow[],
   variables: JobPayload,
 ): string {
-  const knowledge = chunks
-    .map((chunk) => [
-      chunk.title ? `Titel: ${chunk.title}` : '',
-      String(chunk.content ?? ''),
-    ].filter(Boolean).join('\n'))
-    .join('\n---\n')
-    .slice(0, AGENT_KNOWLEDGE_MAX);
+  const knowledge = joinKnowledgeWithinBudget(
+    chunks.map((chunk) => ({
+      group: chunk.knowledgeBaseId ?? 0,
+      text: [
+        chunk.title ? `Titel: ${chunk.title}` : '',
+        String(chunk.content ?? ''),
+      ].filter(Boolean).join('\n'),
+    })),
+    { maxChars: AGENT_KNOWLEDGE_MAX, separator: '\n---\n' },
+  );
   return interpolateWorkflowTemplate([
     'Nachricht:',
     '{{combined_text}}',

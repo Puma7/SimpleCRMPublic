@@ -280,9 +280,9 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain('DRAFT_REPLY_BODY_MAX = 12_000');
     expect(draftNodes).toContain('DRAFT_REPLY_KNOWLEDGE_MAX = 12_000');
     expect(draftNodes).toContain('.slice(0, DRAFT_REPLY_BODY_MAX)');
-    expect(draftNodes).toContain('.slice(0, DRAFT_REPLY_KNOWLEDGE_MAX)');
+    expect(draftNodes).toContain('maxChars: DRAFT_REPLY_KNOWLEDGE_MAX');
     expect(desktopAi).toContain('DRAFT_REPLY_BODY_MAX = 12_000');
-    expect(desktopAi).toContain('.slice(0, DRAFT_REPLY_KNOWLEDGE_MAX)');
+    expect(desktopAi).toContain('maxChars: DRAFT_REPLY_KNOWLEDGE_MAX');
   });
 
   test('codex round-10: graphile RLS session, deferred join, approve attachment ACL, recipient precheck', () => {

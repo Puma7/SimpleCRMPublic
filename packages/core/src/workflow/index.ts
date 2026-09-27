@@ -11,6 +11,7 @@ export * from './graph-walk-utils';
 export * from './draft-review-parse';
 export * from './inbound-spam-guard';
 export * from './interpolate';
+export * from './knowledge-budget';
 export * from './mssql-readonly';
 export * from './node-catalog';
 export * from './node-chain-stop';
