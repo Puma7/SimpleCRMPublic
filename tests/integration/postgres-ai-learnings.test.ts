@@ -409,6 +409,55 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     expect(await listAiLearningCandidates({ db }, WS_A)).toEqual([]);
   });
 
+  // Plan 038: erst sperren, dann vergleichen; KI-Vorschlag und übernommene Fassung getrennt.
+  test('Übernehmen überschreibt kein gleichzeitiges Speichern; Vorschlag bleibt erhalten', async () => {
+    await seedCandidates(2);
+    await saveAiLearningsSettings({ db }, WS_A, { targetKnowledgeBaseId: KB_ID });
+    const created = await runAiLearningsDigest({
+      db,
+      chat: async () => JSON.stringify({ summary: 's', operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] }),
+    }, { workspaceId: WS_A, period: 'week', minCandidates: 1, trigger: 'manual', actorUserId: USER_A });
+    expect(created).toMatchObject({ status: 'created', knowledgeBaseId: KB_ID });
+    const digestId = Number(created.digestId);
+    const proposal = (await getAiLearningDigest({ db }, WS_A, digestId))!.proposedContent;
+
+    // Ein anderes Speichern hält die Wissensbasis gesperrt und ändert sie.
+    await postgres.admin.query('BEGIN');
+    let pendingAccept: Promise<unknown> | null = null;
+    try {
+      await postgres.admin.query('SELECT id FROM workflow_knowledge_bases WHERE id = $1 FOR UPDATE', [KB_ID]);
+      await postgres.admin.query(
+        `UPDATE workflow_knowledge_chunks SET content = content || $3 WHERE workspace_id = $1 AND knowledge_base_id = $2`,
+        [WS_A, KB_ID, '\n\n## Versand\n\n2 Tage.'],
+      );
+      pendingAccept = acceptAiLearningDigest({ db }, {
+        workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: '# Firma\n\nbearbeitet\n',
+      });
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const waiting = await postgres.admin.query<{ n: number }>('SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted');
+        if (waiting.rows[0]!.n >= 1) break;
+        if (Date.now() > deadline) throw new Error('accept did not wait for the knowledge base lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      await postgres.admin.query('COMMIT');
+    }
+    await expect(pendingAccept).resolves.toMatchObject({ ok: false, code: 'knowledge_base_changed' });
+    const chunks = await postgres.admin.query<{ content: string }>(
+      'SELECT content FROM workflow_knowledge_chunks WHERE workspace_id = $1 AND knowledge_base_id = $2', [WS_A, KB_ID],
+    );
+    expect(chunks.rows.map((row) => row.content).join('\n')).toContain('## Versand');
+
+    const submitted = '# Firma\n\n## Ton\n\nSie-Form (bearbeitet).\n';
+    await expect(acceptAiLearningDigest({ db }, {
+      workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: submitted, confirmOverwrite: true,
+    })).resolves.toMatchObject({ ok: true });
+    const stored = await postgres.admin.query('SELECT status, proposed_content, accepted_content FROM ai_learning_digests WHERE id = $1', [digestId]);
+    expect(stored.rows[0]).toEqual({ status: 'accepted', proposed_content: proposal, accepted_content: submitted });
+    expect(await getAiLearningDigest({ db }, WS_A, digestId)).toMatchObject({ proposedContent: proposal, acceptedContent: submitted });
+  });
+
   test('Verwerfen und Aufräumen', async () => {
     await seedCandidates(2);
     const created = await runAiLearningsDigest({

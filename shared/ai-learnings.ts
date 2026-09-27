@@ -67,7 +67,10 @@ export type AiLearningDigestDto = {
 
 export type AiLearningDigestDetailDto = AiLearningDigestDto & {
   baseContent: string;
+  /** KI-Vorschlag (bleibt auch nach dem Übernehmen erhalten). */
   proposedContent: string;
+  /** Übernommene Fassung (vom Admin ggf. bearbeitet); null bis zur Übernahme bzw. bei älteren Vorschlägen. */
+  acceptedContent: string | null;
   currentContent: string | null;
   knowledgeBaseChanged: boolean;
 };

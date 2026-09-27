@@ -766,6 +766,7 @@ export const createAiLearningDigestsTable = `
     candidate_count INTEGER NOT NULL DEFAULT 0,
     base_content TEXT NOT NULL DEFAULT '',
     proposed_content TEXT NOT NULL DEFAULT '',
+    accepted_content TEXT,
     summary TEXT NOT NULL DEFAULT '',
     operations_json TEXT NOT NULL DEFAULT '[]',
     error TEXT,

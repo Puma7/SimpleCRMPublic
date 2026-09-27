@@ -106,6 +106,23 @@ describe('sqlite fresh install integration', () => {
     }
   });
 
+  // Plan 038: übernommene Fassung getrennt vom KI-Vorschlag.
+  test('ai_learning_digests.accepted_content existiert (auch nach Upgrade)', () => {
+    expect(columnExists('ai_learning_digests', 'accepted_content')).toBe(true);
+    db.exec('ALTER TABLE ai_learning_digests DROP COLUMN accepted_content');
+    expect(columnExists('ai_learning_digests', 'accepted_content')).toBe(false);
+    db.close();
+    process.env.SIMPLECRM_MAIL_TEST_USERDATA = tmpDir;
+    try {
+      initializeDatabase();
+      const cols = (getDb().prepare('PRAGMA table_info(ai_learning_digests)').all() as { name: string }[]).map((c) => c.name);
+      expect(cols).toContain('accepted_content');
+    } finally {
+      closeDatabase();
+      delete process.env.SIMPLECRM_MAIL_TEST_USERDATA;
+    }
+  });
+
   test('email_messages has the sent-by provenance columns (TA-P3)', () => {
     for (const column of [
       'draft_origin_kind',

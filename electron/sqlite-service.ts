@@ -1173,6 +1173,12 @@ function runMigrations() {
         // TA-P5 Learnings: Tabellen und der KI-Schnappschuss am Entwurf (Server seit 0018).
         ensureMigrationTable(AI_LEARNING_DIGESTS_TABLE, createAiLearningDigestsTable, [...AI_LEARNINGS_INDEXES]);
         ensureMigrationTable(AI_LEARNING_CANDIDATES_TABLE, createAiLearningCandidatesTable, [...AI_LEARNINGS_INDEXES]);
+        // Übernommene Fassung getrennt vom KI-Vorschlag (Server seit 0061).
+        const digestCols = conn.prepare(`PRAGMA table_info(${AI_LEARNING_DIGESTS_TABLE})`).all() as { name: string }[];
+        if (!digestCols.some((c) => c.name === 'accepted_content')) {
+            console.log('Adding accepted_content to ai_learning_digests...');
+            conn.exec(`ALTER TABLE ${AI_LEARNING_DIGESTS_TABLE} ADD COLUMN accepted_content TEXT`);
+        }
         if (msgTableExists) {
             const snapshotCols = conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[];
             if (!snapshotCols.some((c) => c.name === 'ai_suggestion_snapshot')) {

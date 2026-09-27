@@ -721,7 +721,10 @@ export async function listAiLearningDigests(
 
 export type AiLearningDigestDetail = AiLearningDigestRecord & {
   baseContent: string;
+  /** KI-Vorschlag (bleibt auch nach dem Übernehmen erhalten). */
   proposedContent: string;
+  /** Übernommene Fassung; null bis zur Übernahme bzw. bei älteren Vorschlägen. */
+  acceptedContent: string | null;
   /** Aktueller Stand der Wissensbasis (null = gelöscht). */
   currentContent: string | null;
   knowledgeBaseChanged: boolean;
@@ -737,7 +740,7 @@ export async function getAiLearningDigest(
     { workspaceId, role: 'system' },
     async (trx) => {
       const row = await digestQuery(trx, workspaceId)
-        .select(['d.base_content', 'd.proposed_content'])
+        .select(['d.base_content', 'd.proposed_content', 'd.accepted_content'])
         .where('d.id', '=', id)
         .executeTakeFirst();
       if (!row) return null;
@@ -747,6 +750,7 @@ export async function getAiLearningDigest(
         ...mapDigestRow(row as DigestSummaryRow),
         baseContent,
         proposedContent: String(row.proposed_content ?? ''),
+        acceptedContent: row.accepted_content ?? null,
         currentContent: current?.content ?? null,
         knowledgeBaseChanged: current ? current.content !== baseContent : true,
       };
@@ -789,6 +793,15 @@ export async function acceptAiLearningDigest(
         .executeTakeFirst();
       if (!digest) return { ok: false as const, code: 'not_found' as const };
       if (digest.status !== 'pending') return { ok: false as const, code: 'not_pending' as const };
+      // Erst sperren, dann vergleichen: sonst überschreibt ein paralleles Speichern unbemerkt.
+      const lockedKnowledgeBase = await trx
+        .selectFrom('workflow_knowledge_bases')
+        .select('id')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', Number(digest.knowledge_base_id))
+        .forUpdate()
+        .executeTakeFirst();
+      if (!lockedKnowledgeBase) return { ok: false as const, code: 'knowledge_base_missing' as const };
       const current = await loadWorkflowKnowledgeDocument(trx, input.workspaceId, Number(digest.knowledge_base_id));
       if (!current) return { ok: false as const, code: 'knowledge_base_missing' as const };
       if (current.content !== digest.base_content && input.confirmOverwrite !== true) {
@@ -804,7 +817,7 @@ export async function acceptAiLearningDigest(
       if (!document) return { ok: false as const, code: 'knowledge_base_missing' as const };
       await trx
         .updateTable('ai_learning_digests')
-        .set({ status: 'accepted', decided_by_user_id: input.actorUserId, decided_at: now, proposed_content: content })
+        .set({ status: 'accepted', decided_by_user_id: input.actorUserId, decided_at: now, accepted_content: content })
         .where('workspace_id', '=', input.workspaceId)
         .where('id', '=', input.id)
         .execute();

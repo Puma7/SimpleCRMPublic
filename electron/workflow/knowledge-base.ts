@@ -146,8 +146,11 @@ export function saveKnowledgeBaseDocument(knowledgeBaseId: number, content: stri
   if (!kb) throw new Error('Wissensbasis nicht gefunden');
   const normalized = content.trimEnd() + (content.endsWith('\n') ? '' : '\n');
   const filePath = knowledgeMarkdownPath(knowledgeBaseId);
-  fs.writeFileSync(filePath, normalized, 'utf8');
+  // Erst der Suchindex (SQLite, rollt bei einem Fehler zurück — auch als Teil
+  // einer umgebenden Transaktion), dann die Datei: scheitert der Index, bleibt
+  // die Datei unverändert.
   syncChunksFromDocument(knowledgeBaseId, normalized, kb.name);
+  fs.writeFileSync(filePath, normalized, 'utf8');
 }
 
 function syncChunksFromDocument(

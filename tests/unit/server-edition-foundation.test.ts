@@ -398,6 +398,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0058_email_raw_rfc822_storage',
   '0059_attachment_text_extractor_version',
   '0060_workflow_run_step_detail_retention_index',
+  '0061_ai_learning_digest_accepted_content',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

@@ -409,6 +409,38 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(chunks().map((row) => row.content)).toEqual(['# Firma\n\n## Rückgabe\n\n30 Tage.']);
   });
 
+  // Plan 038: Übernehmen ist eine Einheit; der KI-Vorschlag bleibt erhalten.
+  test('Übernehmen: scheitert das Speichern, bleibt alles wie vorher; danach getrennt gespeichert', async () => {
+    const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');
+    saveAiLearningsSettings({ targetKnowledgeBaseId: kb });
+    seedCandidates(2);
+    mockRunChatCompletion.mockResolvedValueOnce(JSON.stringify({ operations: [{ op: 'update', section: 'Rückgabe', content: '30 Tage.' }] }));
+    const created = await runAiLearningsDigest({ trigger: 'manual', period: 'week', minCandidates: 1 });
+    expect(created).toMatchObject({ status: 'created', digestId: expect.any(Number) });
+    const id = Number(created.digestId);
+    const proposal = '# Firma\n\n## Rückgabe\n\n30 Tage.\n';
+    const edited = '# Firma\n\n## Rückgabe\n\n30 Tage, kostenlos.\n';
+    const row = () => db.prepare('SELECT status, proposed_content, accepted_content FROM ai_learning_digests WHERE id = ?').get(id);
+    const documentBefore = getKnowledgeBaseDocument(kb)?.content;
+
+    db.exec(`CREATE TRIGGER kb_chunk_insert_fails BEFORE INSERT ON workflow_knowledge_chunks
+      BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+    try {
+      await expect(acceptAiLearningDigest({ id, content: edited, actorUserId: USER })).rejects.toThrow('disk I/O error');
+    } finally {
+      db.exec('DROP TRIGGER kb_chunk_insert_fails');
+    }
+    expect(row()).toEqual({ status: 'pending', proposed_content: proposal, accepted_content: null });
+    expect(db.prepare('SELECT count(*) AS n FROM ai_learning_candidates WHERE digest_id = ?').get(id)).toEqual({ n: 2 });
+    expect(getKnowledgeBaseDocument(kb)?.content).toBe(documentBefore);
+
+    await expect(acceptAiLearningDigest({ id, content: edited, actorUserId: USER })).resolves.toMatchObject({ success: true });
+    expect(row()).toEqual({ status: 'accepted', proposed_content: proposal, accepted_content: edited });
+    expect(getKnowledgeBaseDocument(kb)?.content.trimEnd()).toBe(edited.trimEnd());
+    expect((await getAiLearningDigest(id))?.acceptedContent).toBe(edited);
+  });
+
   test('Übernehmen mit Konfliktwarnung, Verwerfen, Fehlerfälle', async () => {
     const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
     saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');

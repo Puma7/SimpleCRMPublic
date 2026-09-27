@@ -143,6 +143,8 @@ export type AiLearningDigestsTable = {
   candidate_count: number;
   base_content: string;
   proposed_content: string;
+  /** Übernommene Fassung (Admin ggf. bearbeitet); NULL bis zur Übernahme (Migration 0061). */
+  accepted_content: Generated<string | null>;
   summary: string;
   operations_json: JsonColumn;
   error: string | null;
