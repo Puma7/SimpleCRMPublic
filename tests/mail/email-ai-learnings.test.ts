@@ -427,7 +427,11 @@ describe('Learnings (Desktop, TA-P5)', () => {
     db.exec(`CREATE TRIGGER kb_chunk_insert_fails BEFORE INSERT ON workflow_knowledge_chunks
       BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
     try {
-      await expect(acceptAiLearningDigest({ id, content: edited, actorUserId: USER })).rejects.toThrow('disk I/O error');
+      // Ergebnis statt nur „did not throw“: unter hoher Last schlug diese Prüfung
+      // selten fehl, ohne dass der Rückgabewert sichtbar war (nicht reproduzierbar).
+      const outcome = await acceptAiLearningDigest({ id, content: edited, actorUserId: USER })
+        .then((value) => ({ resolved: value }), (error: unknown) => ({ rejected: String(error) }));
+      expect(outcome).toEqual({ rejected: expect.stringContaining('disk I/O error') });
     } finally {
       db.exec('DROP TRIGGER kb_chunk_insert_fails');
     }
