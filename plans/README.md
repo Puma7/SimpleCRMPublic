@@ -120,7 +120,7 @@ update the row here.
 | 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | DONE |
 | 033 | Lock backup runs against concurrent pruning | P2 | S | bug | — | DONE |
 | 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | DONE |
-| 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | TODO |
+| 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | DONE |
 | 036 | Contract test: renderer HTTP registry vs server routes | P2 | M | tests | — | DONE |
 | 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | TODO |
 | 038 | Learnings digest: prompt hardening + atomic acceptance | P3 | M | security | 035 | TODO |

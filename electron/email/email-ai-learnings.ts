@@ -20,6 +20,7 @@ import {
   isLearningsCollectEnabledValue,
   learningNamesFromAddressJson,
   learningsCandidateFilterStart,
+  learningsKnowledgeBaseTooLargeError,
   learningsPeriodStart,
   learningsRetentionCutoff,
   LEARNING_CANDIDATE_KINDS,
@@ -726,6 +727,9 @@ export async function runAiLearningsDigest(request: AiLearningsDigestRequest): P
       | { name: string }
       | undefined;
     const baseContent = document?.content ?? '';
+    // Vor dem (bezahlten) KI-Aufruf ablehnen (Plan 035).
+    const tooLarge = learningsKnowledgeBaseTooLargeError(baseContent.length);
+    if (tooLarge) return { status: 'failed', digestId: null, candidateCount: preflight.candidates.length, error: tooLarge };
     const settings = getAiLearningsSettings();
     const profileId = request.profileId ?? settings.profileId ?? null;
     const chat = request.chat ?? (async (system: string, user: string, profile: number | null) => {

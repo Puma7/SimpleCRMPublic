@@ -21,7 +21,9 @@ import {
   LEARNINGS_DEFAULT_KB_NAME,
   LEARNINGS_DIGEST_MAX_CANDIDATES,
   LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH,
+  LEARNINGS_MAX_ERROR,
   LEARNINGS_SETTING_KEYS,
+  learningsKnowledgeBaseTooLargeError,
   normalizeLearningsDigestPeriod,
   normalizeLearningsMinCandidates,
   prepareNoteLearningCandidate,
@@ -973,8 +975,49 @@ async function loadOpenCandidates(
 export type AiLearningsDigestPreflight =
   | { status: 'skipped_pending'; knowledgeBaseId: number; digestId: number; candidateCount: number }
   | { status: 'skipped_no_candidates'; knowledgeBaseId: number | null; candidateCount: number }
-  | { status: 'failed'; error: string; knowledgeBaseId: number | null; candidateCount: number }
+  | {
+    status: 'failed';
+    /** Gesetzt, wenn die Ziel-Wissensbasis für eine Auswertung zu groß ist (Plan 035). */
+    code?: 'knowledge_base_too_large';
+    error: string;
+    knowledgeBaseId: number | null;
+    candidateCount: number;
+  }
   | { status: 'ready'; knowledgeBaseId: number | null; candidateCount: number };
+
+/** Fehlgeschlagener Vorschlag ohne Inhalt (eigene Transaktion), für den Verlauf. */
+async function recordFailedDigest(
+  deps: AiLearningsDigestDeps,
+  plan: AiLearningsDigestPlan,
+  input: { knowledgeBaseId: number; candidateCount: number; from?: Date | null; now: Date; error: string },
+): Promise<number> {
+  return withWorkspaceTransaction(deps.db, { workspaceId: plan.workspaceId, role: 'system' }, async (trx) => {
+    const row = await trx
+      .insertInto('ai_learning_digests')
+      .values({
+        workspace_id: plan.workspaceId,
+        knowledge_base_id: input.knowledgeBaseId,
+        status: 'failed',
+        trigger: plan.trigger,
+        requested_by_user_id: plan.actorUserId ?? null,
+        workflow_id: null,
+        period_from: input.from ?? null,
+        period_to: input.now,
+        candidate_count: input.candidateCount,
+        base_content: '',
+        proposed_content: '',
+        summary: '',
+        operations_json: JSON.stringify([]),
+        error: input.error.slice(0, LEARNINGS_MAX_ERROR),
+        created_at: input.now,
+        decided_by_user_id: null,
+        decided_at: null,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    return Number(row.id);
+  }, { applySession: deps.applyWorkspaceSession });
+}
 
 /** Vorabprüfung (ohne KI): offener Vorschlag? genug Kandidaten? Genutzt von Knoten und Job. */
 export async function preflightAiLearningsDigest(
@@ -1010,6 +1053,22 @@ export async function preflightAiLearningsDigest(
   );
   if (candidates.length < plan.minCandidates) {
     return { status: 'skipped_no_candidates', knowledgeBaseId, candidateCount: candidates.length };
+  }
+  // Vor dem KI-Aufruf: base_content darf höchstens 100 000 Zeichen haben (CHECK);
+  // eine größere Wissensbasis scheiterte sonst erst nach dem bezahlten Aufruf.
+  // null = die kleine Standard-Wissensbasis wird erst angelegt.
+  if (knowledgeBaseId !== null) {
+    const document = await loadWorkflowKnowledgeDocument(trx, plan.workspaceId, knowledgeBaseId);
+    const tooLarge = learningsKnowledgeBaseTooLargeError(document?.content.length ?? 0);
+    if (tooLarge) {
+      return {
+        status: 'failed',
+        code: 'knowledge_base_too_large',
+        error: tooLarge,
+        knowledgeBaseId,
+        candidateCount: candidates.length,
+      };
+    }
   }
   return { status: 'ready', knowledgeBaseId, candidateCount: candidates.length };
 }
@@ -1064,6 +1123,23 @@ export async function runAiLearningsDigest(
     }, session);
     if (prepared.kind === 'skip') {
       const preflight = prepared.preflight;
+      if (preflight.status === 'failed' && preflight.code === 'knowledge_base_too_large' && preflight.knowledgeBaseId !== null) {
+        // Route und Knoten prüfen vorher; hier landet ein Lauf, dessen
+        // Wissensbasis inzwischen gewachsen ist. Im Verlauf sichtbar machen.
+        const digestId = await recordFailedDigest(deps, plan, {
+          knowledgeBaseId: preflight.knowledgeBaseId,
+          candidateCount: preflight.candidateCount,
+          now,
+          error: preflight.error,
+        });
+        return {
+          status: 'failed',
+          digestId,
+          candidateCount: preflight.candidateCount,
+          knowledgeBaseId: preflight.knowledgeBaseId,
+          error: preflight.error,
+        };
+      }
       if (preflight.status === 'failed') {
         return { status: 'failed', digestId: null, candidateCount: 0, knowledgeBaseId: null, error: preflight.error };
       }
@@ -1155,7 +1231,29 @@ export async function runAiLearningsDigest(
         // Parallel entstand schon ein offener Vorschlag für diese Wissensbasis.
         return { status: 'skipped_pending', digestId: null, candidateCount: prepared.candidates.length, knowledgeBaseId: prepared.knowledgeBaseId };
       }
-      throw error;
+      // Der KI-Aufruf ist schon bezahlt: als fehlgeschlagenen Vorschlag
+      // festhalten statt den Job wiederholen zu lassen. Scheitert auch das,
+      // bleibt der ursprüngliche Fehler.
+      const message = `Vorschlag konnte nicht gespeichert werden: ${error instanceof Error ? error.message : String(error)}`;
+      let failedId: number;
+      try {
+        failedId = await recordFailedDigest(deps, plan, {
+          knowledgeBaseId: prepared.knowledgeBaseId,
+          candidateCount: prepared.candidates.length,
+          from: prepared.from,
+          now,
+          error: message,
+        });
+      } catch {
+        throw error;
+      }
+      return {
+        status: 'failed',
+        digestId: failedId,
+        candidateCount: prepared.candidates.length,
+        knowledgeBaseId: prepared.knowledgeBaseId,
+        error: message.slice(0, LEARNINGS_MAX_ERROR),
+      };
     }
 
     await deps.audit?.record({

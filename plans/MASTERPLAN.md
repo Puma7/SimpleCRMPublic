@@ -45,7 +45,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **032** Learnings-Datenschutzfilter: Kartennummern, Steuer-/SV-/Ausweisnummern, IP-Adressen · Befund #9 · P2 · M
 - [x] **033** Backups: Sperre gegen gleichzeitige Läufe, keine verwaisten Anhang-Objekte · Befund #11 · P2 · S
 - [x] **034** Senden: KI-Entscheidung außerhalb offener DB-Transaktionen · Befund #12 · P2 · M · *nach 024*
-- [ ] **035** Learnings-Auswertung: Größenprüfung vorab, Fehler sichtbar statt 5 Wiederholungen · Befund #13 · P2 · S
+- [x] **035** Learnings-Auswertung: Größenprüfung vorab, Fehler sichtbar statt 5 Wiederholungen · Befund #13 · P2 · S
 
 ## Welle 4 – Kleinere Härtungen (Befund #16)
 

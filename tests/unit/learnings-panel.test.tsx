@@ -273,6 +273,19 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     });
     expect(mockInvoke).toHaveBeenCalledWith(IPCChannels.Email.RunLearningsDigest, { period: 'since_last' });
     expect(mockToast.info).toHaveBeenCalledWith('Im gewählten Zeitraum gibt es keine gesammelten Einträge.');
+
+    // Plan 035: zu große Wissensbasis ⇒ Meldung ohne KI-Aufruf.
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === IPCChannels.Email.RunLearningsDigest) {
+        return { status: 'failed', digestId: null, candidateCount: 0, error: 'Die Wissensbasis ist zu groß …' };
+      }
+      if (channel === IPCChannels.Email.GetLearningsOverview) return overview({ pendingDigestId: null });
+      return [];
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Learnings jetzt auswerten' }));
+    });
+    expect(mockToast.error).toHaveBeenCalledWith('Auswertung fehlgeschlagen: Die Wissensbasis ist zu groß …');
   });
 });
 

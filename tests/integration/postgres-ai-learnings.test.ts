@@ -613,4 +613,79 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
         workspaceId: WS_A, workflowId: 0, direction: 'manual', config: { minCandidates: 10 }, provenance: {}, dryRun: false, now: new Date(),
       }))).resolves.toMatchObject({ variables: { 'learnings.status': 'skipped_no_candidates' } });
   });
+
+  // Plan 035: Die Spalte base_content erlaubt höchstens 100 000 Zeichen; eine
+  // größere Wissensbasis scheiterte erst nach dem (bezahlten) KI-Aufruf beim
+  // Speichern, und der Job wiederholte das bis zu fünfmal.
+  test('Zu große Wissensbasis: kein KI-Aufruf, klare Meldung, Knoten meldet Fehler', async () => {
+    await saveAiLearningsSettings({ db }, WS_A, { targetKnowledgeBaseId: KB_ID });
+    await postgres.admin.query(`
+      INSERT INTO workflow_knowledge_chunks (workspace_id, source_sqlite_id, knowledge_base_source_sqlite_id, knowledge_base_id, title, content)
+      VALUES ($1, 9713, $2, $2, 'Groß', $3)
+    `, [WS_A, KB_ID, 'x'.repeat(100_000)]);
+    try {
+      await seedCandidates(2);
+      const chat = jest.fn(async () => '{"operations":[]}');
+      const result = await runAiLearningsDigest({ db, chat }, {
+        workspaceId: WS_A, period: 'week', minCandidates: 1, trigger: 'manual',
+      });
+      // Direkter Job-Aufruf (Route/Knoten prüfen vorher): als fehlgeschlagener
+      // Vorschlag im Verlauf festgehalten.
+      expect(result).toMatchObject({ status: 'failed', digestId: expect.any(Number), error: expect.stringContaining('zu groß') });
+      expect(chat).not.toHaveBeenCalled();
+      const digests = await postgres.admin.query('SELECT status, base_content FROM ai_learning_digests WHERE workspace_id = $1', [WS_A]);
+      expect(digests.rows).toEqual([{ status: 'failed', base_content: '' }]);
+
+      await expect(withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
+        executeServerLearningsDigestNode(trx, {
+          workspaceId: WS_A,
+          workflowId: 0,
+          direction: 'schedule',
+          config: { period: 'since_last', minCandidates: 1 },
+          provenance: {},
+          dryRun: false,
+          now: new Date(),
+        }))).resolves.toMatchObject({ status: 'error', port: 'error', message: expect.stringContaining('zu groß') });
+      const jobs = await postgres.admin.query(`SELECT 1 FROM job_queue WHERE type = 'learnings.digest'`);
+      expect(jobs.rows).toHaveLength(0);
+      const open = await postgres.admin.query('SELECT count(*)::int AS n FROM ai_learning_candidates WHERE processed_at IS NULL');
+      expect(open.rows[0]).toEqual({ n: 2 });
+    } finally {
+      await postgres.admin.query(`DELETE FROM workflow_knowledge_chunks WHERE workspace_id = $1 AND source_sqlite_id = 9713`, [WS_A]);
+    }
+  });
+
+  test('Speicherfehler nach dem KI-Aufruf wird als fehlgeschlagener Vorschlag festgehalten', async () => {
+    await postgres.admin.query(`
+      CREATE OR REPLACE FUNCTION test_fail_pending_digest() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.status = 'pending' THEN RAISE EXCEPTION 'Testfehler beim Speichern'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_fail_pending_digest BEFORE INSERT ON ai_learning_digests
+        FOR EACH ROW EXECUTE FUNCTION test_fail_pending_digest();
+    `);
+    try {
+      await seedCandidates(3);
+      const chat = jest.fn(async () => JSON.stringify({
+        summary: 'Rückgabefrist ergänzt.',
+        operations: [{ op: 'add', section: 'Rückgabe', content: 'Innerhalb von 30 Tagen.' }],
+      }));
+      const result = await runAiLearningsDigest({ db, chat }, {
+        workspaceId: WS_A, period: 'since_last', minCandidates: 3, trigger: 'manual', actorUserId: USER_A,
+      });
+      expect(result).toMatchObject({
+        status: 'failed',
+        digestId: expect.any(Number),
+        error: expect.stringContaining('Testfehler beim Speichern'),
+      });
+      expect(chat).toHaveBeenCalledTimes(1);
+      const digests = await postgres.admin.query('SELECT status FROM ai_learning_digests WHERE workspace_id = $1', [WS_A]);
+      expect(digests.rows).toEqual([{ status: 'failed' }]);
+      const open = await postgres.admin.query('SELECT count(*)::int AS n FROM ai_learning_candidates WHERE processed_at IS NULL');
+      expect(open.rows[0]).toEqual({ n: 3 });
+    } finally {
+      await postgres.admin.query(`
+        DROP TRIGGER IF EXISTS test_fail_pending_digest ON ai_learning_digests;
+        DROP FUNCTION IF EXISTS test_fail_pending_digest();
+      `);
+    }
+  });
 });

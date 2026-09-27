@@ -4,6 +4,7 @@ import {
   computeLearningsDigestProposal,
   computeLearningTextChangeRatio,
   isLearningsCollectEnabledValue,
+  LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH,
   learningsPeriodStart,
   learningsRetentionCutoff,
   normalizeLearningsDigestPeriod,
@@ -230,6 +231,19 @@ describe('Kandidaten aufbereiten (TA-P5)', () => {
 
 describe('computeLearningsDigestProposal (TA-P5)', () => {
   const base = '# Learnings\n\n## Kontakt\n\nHotline 0800 1234567.\n\n## Rückgabe\n\n14 Tage.\n';
+
+  // Plan 035: eine zu große Wissensbasis kostet keinen KI-Aufruf.
+  it('ruft die KI bei zu großer Wissensbasis gar nicht erst auf', async () => {
+    const chat = jest.fn(async () => '{"operations":[]}');
+    const result = await computeLearningsDigestProposal({
+      knowledgeBaseName: 'Learnings',
+      baseContent: 'x'.repeat(LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH + 1),
+      candidates: [candidate(1)],
+      chat,
+    });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('Die Wissensbasis ist zu groß') });
+    expect(chat).not.toHaveBeenCalled();
+  });
 
   it('wendet bereinigte Operationen an und behält vorhandene Kontaktdaten', async () => {
     const chat = jest.fn(async () => JSON.stringify({

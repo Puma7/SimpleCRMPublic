@@ -305,6 +305,19 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(await getAiLearningDigest(99_999)).toBeNull();
   });
 
+  // Plan 035: eine Wissensbasis über 100 000 Zeichen wird vor dem KI-Aufruf abgelehnt.
+  test('Auswerten: zu große Wissensbasis ⇒ Meldung ohne KI-Aufruf, kein Vorschlag', async () => {
+    const kb = createKnowledgeBase('Groß', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, 'x'.repeat(100_001));
+    expect(saveAiLearningsSettings({ targetKnowledgeBaseId: kb }).success).toBe(true);
+    expect(addAiLearningNote({ text: 'Rückgaben sind 30 Tage kostenlos.', actorUserId: USER })).toMatchObject({ success: true });
+    const result = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1 });
+    expect(result).toMatchObject({ status: 'failed', digestId: null, error: expect.stringMatching(/zu groß/) });
+    expect(mockRunChatCompletion).not.toHaveBeenCalled();
+    expect(listAiLearningDigests()).toEqual([]);
+    expect(getAiLearningsOverview()).toMatchObject({ running: false, counts: { total: 1 } });
+  });
+
   // Codex-Review PR #194: Einträge über der Obergrenze rutschten vor das Ende
   // der letzten Auswertung und wurden mit „seit letzter Auswertung“ nie mehr ausgewertet.
   test('seit letzter Auswertung: Einträge über der Obergrenze kommen beim nächsten Lauf dran', async () => {

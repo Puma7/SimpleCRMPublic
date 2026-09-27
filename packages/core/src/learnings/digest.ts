@@ -59,6 +59,16 @@ export const LEARNINGS_DEFAULT_MIN_CANDIDATES = 3;
 export const LEARNINGS_CANDIDATE_RETENTION_DAYS = 90;
 /** Obergrenze der Wissensbasis (Server-Route PUT …/document). */
 export const LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH = 100_000;
+
+/** Meldung, wenn die Wissensbasis für eine Auswertung zu groß ist (null = passt). */
+export function learningsKnowledgeBaseTooLargeError(
+  length: number,
+  max: number = LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH,
+): string | null {
+  if (length <= max) return null;
+  return `Die Wissensbasis ist zu groß für eine Auswertung (${length} von höchstens ${max} Zeichen). `
+    + 'Bitte kürzen oder in den Learnings-Einstellungen eine andere Ziel-Wissensbasis wählen.';
+}
 export const LEARNINGS_MAX_OPERATIONS = 30;
 export const LEARNINGS_MAX_OPERATION_CONTENT = 6000;
 export const LEARNINGS_MAX_SECTION_TITLE = 200;
@@ -476,6 +486,10 @@ export async function computeLearningsDigestProposal(input: {
   chat: (prompt: { system: string; user: string }) => Promise<string>;
   maxDocumentLength?: number;
 }): Promise<LearningsDigestComputation> {
+  const maxLength = input.maxDocumentLength ?? LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH;
+  // Vor dem (bezahlten) KI-Aufruf: eine zu große Wissensbasis passt auch danach nicht.
+  const tooLarge = learningsKnowledgeBaseTooLargeError(input.baseContent.length, maxLength);
+  if (tooLarge) return { ok: false, error: tooLarge };
   const prompt = buildLearningsDigestPrompt({
     knowledgeBaseName: input.knowledgeBaseName,
     currentDocument: input.baseContent,
@@ -504,7 +518,6 @@ export async function computeLearningsDigestProposal(input: {
   const summary = redactPersonalData(parsed.value.summary);
   const { content, applied, structureError } = applyKnowledgeOperations(input.baseContent, operations);
   if (structureError) return { ok: false, error: truncateError(`Vorschlag verworfen: ${structureError}`) };
-  const maxLength = input.maxDocumentLength ?? LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH;
   if (content.length > maxLength) {
     return {
       ok: false,
