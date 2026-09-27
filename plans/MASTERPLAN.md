@@ -34,7 +34,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 2 – CI und Testabsicherung
 
-- [ ] **031** CI: Jest nur einmal mit Coverage statt dreimal (≈ 11 min schneller) · Befund #8 · P2 · M · *nach 030*
+- [ ] **031** CI: Jest nur einmal mit Coverage statt dreimal (≈ 8–9 min schneller) · Befund #8 · P2 · M · *nach 030*
 - [ ] **036** Vertragstest: Frontend-HTTP-Zuordnung gegen die echten Server-Routen · Befund #14 · P2 · M
 - [ ] **042** AGENTS.md und Handoff: alle CI-Pflichtprüfungen dokumentieren · Befund #17 · P3 · S · *nach 031*
 

@@ -87,10 +87,10 @@ and leaves the file untouched.
   `getAiLearningDigest` at `:728-758` selects `d.base_content, d.proposed_content`.
 - Schema: server `packages/server/src/migrations/0057_ai_learnings.ts:25-44` (no column for the admin's final text;
   `operations_json` holds the applied-operation array the UI types as `operations: unknown` — do not overload it);
-  `packages/server/src/db/schema.ts:~133-152` `AiLearningDigestsTable`; desktop `electron/database-schema.ts:756-778`
+  `packages/server/src/db/schema.ts:133-152` `AiLearningDigestsTable`; desktop `electron/database-schema.ts:756-778`
   `createAiLearningDigestsTable`; upgrade hook in `electron/sqlite-service.ts:1173-1182` (pattern: `PRAGMA table_info` + `ALTER TABLE … ADD COLUMN`, see `ai_suggestion_snapshot` right below it).
   Latest server migration: `0060_workflow_run_step_detail_retention_index`, registered at the end of
-  `packages/server/src/migrations/index.ts`; asserted in `tests/unit/server-edition-foundation.test.ts:399`.
+  `packages/server/src/migrations/index.ts`; listed in `EXPECTED_SERVER_MIGRATION_IDS` (`tests/unit/server-edition-foundation.test.ts:339-400`, last entry at `:399`, asserted at `:1702`).
 - DTO `shared/ai-learnings.ts:67-73` `AiLearningDigestDetailDto = AiLearningDigestDto & { baseContent; proposedContent; currentContent; knowledgeBaseChanged }`.
 - UI `src/components/email/settings/learnings-panel.tsx:540-605` pending proposal section; `:348-352`
   `currentContent` / `draftChanged` / `knowledgeBaseChanged`; the existing destructive `Alert` for a changed KB at `:578-586` is the pattern to copy.
@@ -105,7 +105,7 @@ Prefix every command with `export PATH=/opt/node24/bin:$PATH;` in this environme
 | Build packages | `pnpm run build:packages` | exit 0 |
 | Core tests | `pnpm exec jest tests/unit/ai-learnings-digest.test.ts tests/unit/ai-learnings-text.test.ts` | all pass |
 | Panel test | `pnpm exec jest tests/unit/learnings-panel.test.tsx` | all pass |
-| Migration list | `pnpm exec jest tests/unit/server-edition-foundation.test.ts -t "migration"` | all pass |
+| Migration list | `pnpm exec jest tests/unit/server-edition-foundation.test.ts -t "first migration includes"` | all pass |
 | Postgres test | `pnpm exec jest tests/integration/postgres-ai-learnings.test.ts` (non-root, see below) | all pass |
 | Desktop tests | `pnpm run test:mail -- tests/mail/email-ai-learnings.test.ts tests/mail/sqlite-fresh-install.integration.test.ts` | all pass |
 | Mail coverage | `pnpm run test:mail:coverage` | pass |
