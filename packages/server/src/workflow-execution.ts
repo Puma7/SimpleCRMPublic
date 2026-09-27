@@ -58,6 +58,17 @@ import {
   type SpamEngineSettings,
   type SpamFeatureStatInput,
   type SpamListMatch,
+  buildWorkflowStepDetail,
+  buildWorkflowStepMailSnapshot,
+  createWorkflowRunDetailState,
+  decodeWorkflowContinuedFrom,
+  serializeWorkflowStepDetailWithinBudget,
+  workflowStepPortLabel,
+  workflowUnwiredPortNote,
+  WORKFLOW_CONTINUED_FROM_VARIABLE,
+  type BuildWorkflowStepDetailInput,
+  type WorkflowRunDetailState,
+  type WorkflowStepDetail,
 } from '@simplecrm/core';
 import {
   inboundChainFieldsFromRecord,
@@ -283,6 +294,11 @@ type ServerWorkflowContext = {
   branchKey?: string;
   /** Lauf, der den Trigger-Fan-out gestartet hat (Schluessel der Join-Barriere). */
   inboundFanOutRunId?: number;
+  /**
+   * Lauf-Historie: Mail nur im ersten Schritt, Budget für alle Details des
+   * Laufs. Geteilt über alle Zweige (Klone kopieren die Referenz).
+   */
+  stepDetail?: WorkflowRunDetailState;
 };
 
 type PreparedWorkflowRun =
@@ -1669,6 +1685,11 @@ async function runServerWorkflowGraph(
         message: null,
         durationMs: 0,
         now: input.now,
+        detail: serverStepDetail(input.context, {
+          variablesBefore: input.context.variables,
+          port: 'default',
+          note: 'Der Auslöser ist mit keinem Knoten verbunden – es wurde nichts ausgeführt.',
+        }),
       });
     }
     return { status: 'ok', blocked: false, deferred: false, blockReason: null, log: ['trigger_no_edges'] };
@@ -1779,6 +1800,12 @@ async function walkGraph(
           message: 'übersprungen: keine vorausgehende erfüllte Bedingung (Inbound-Schutz)',
           durationMs: 0,
           now: input.now,
+          detail: serverStepDetail(input.context, {
+            config: nodeConfig(node),
+            variablesBefore: input.context.variables,
+            port: 'blocked',
+            note: 'Nicht ausgeführt: Aktionen auf eingehende Mails laufen nur hinter einer erfüllten Bedingung (z. B. Ausgang „Ja“ einer Bedingung oder KI-Entscheidung).',
+          }),
         });
       }
       break;
@@ -1803,6 +1830,12 @@ async function walkGraph(
                 : 'loop_each_missing',
             durationMs: Math.max(0, Date.now() - started),
             now: input.now,
+            detail: serverStepDetail(input.context, {
+              config: nodeConfig(node),
+              variablesBefore: input.context.variables,
+              port: activeItems.length > 0 ? 'each' : 'done',
+              result: { items: activeItems },
+            }),
           });
         }
 
@@ -1848,6 +1881,7 @@ async function walkGraph(
     }
 
     const started = Date.now();
+    const variablesBefore = { ...input.context.variables };
     // Eine Fortsetzung kennt den Schleifenzustand nicht: die uebrigen Eintraege
     // gingen verloren, eine Rueckkante startete die Schleife endlos neu. Deshalb
     // vor dem Einreihen abbrechen statt still nur den ersten Eintrag zu bearbeiten.
@@ -1882,6 +1916,16 @@ async function walkGraph(
         message: result.message ?? null,
         durationMs,
         now: input.now,
+        detail: serverStepDetail(input.context, {
+          config: nodeConfig(node),
+          variablesBefore,
+          variablesOut: result.variables ?? null,
+          port: result.port ?? null,
+          ...(result.blocked && result.blockReason ? { result: { blockReason: result.blockReason } } : {}),
+          note: result.deferred
+            ? deferredStepNote(node)
+            : unwiredPortNoteForResult(input.doc, node, result),
+        }),
       });
     }
 
@@ -7670,6 +7714,8 @@ async function insertRunStep(
     durationMs: number;
     message: string | null;
     now: Date;
+    /** Eingang/Ausgang für die Lauf-Historie (siehe serverStepDetail). */
+    detail?: WorkflowStepDetail | null;
   },
 ): Promise<void> {
   await trx
@@ -7685,13 +7731,59 @@ async function insertRunStep(
       port: input.port,
       duration_ms: input.durationMs,
       message: input.message,
-      detail_json: null,
+      detail_json: input.detail ? serializeWorkflowStepDetailWithinBudget(input.detail, context.stepDetail) : null,
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: input.now,
       updated_at: input.now,
     })
     .execute();
+}
+
+/**
+ * Eingang/Ausgang eines Schritts für die Lauf-Historie. Der erste Schritt
+ * eines Laufs trägt die Mail (Kopf + Auszug) und, bei einer Fortsetzung, den
+ * Ursprungslauf; danach nur Einstellungen, Variablen und Ergebnis.
+ */
+function serverStepDetail(
+  context: ServerWorkflowContext,
+  parts: Omit<BuildWorkflowStepDetailInput, 'mail' | 'continuedFrom'>,
+): WorkflowStepDetail {
+  let mail: BuildWorkflowStepDetailInput['mail'] = null;
+  let continuedFrom: BuildWorkflowStepDetailInput['continuedFrom'] = null;
+  const state = context.stepDetail;
+  if (state && !state.mailRecorded) {
+    state.mailRecorded = true;
+    mail = buildWorkflowStepMailSnapshot({
+      strings: context.strings,
+      direction: context.direction,
+      // CRM-, Aufgaben-, Termin- und Zeitplan-Läufe haben keine Nachricht.
+      hasMessage: context.messageId !== null,
+    });
+    continuedFrom = decodeWorkflowContinuedFrom(context.variables[WORKFLOW_CONTINUED_FROM_VARIABLE]);
+    // Nur dieser Lauf ist die direkte Fortsetzung; weiterreichen verfälschte spätere Läufe.
+    delete context.variables[WORKFLOW_CONTINUED_FROM_VARIABLE];
+  }
+  return buildWorkflowStepDetail({ ...parts, mail, continuedFrom });
+}
+
+function deferredStepNote(node: WorkflowGraphNode): string {
+  return nodeRuntimeType(node) === 'ai.decide'
+    ? 'Läuft im Hintergrund weiter – das Ergebnis erscheint als eigener Schritt in diesem Lauf.'
+    : 'Läuft im Hintergrund weiter – die folgenden Schritte erscheinen als eigener Lauf (Fortsetzung).';
+}
+
+/** Hinweis, wenn der gewählte Ausgang eines Knotens mit Kanten keinen Folgeknoten hat. */
+function unwiredPortNoteForResult(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  result: NodeResult,
+): string | null {
+  if (result.status !== 'ok' || result.stop || result.blocked) return null;
+  const outs = outgoing(doc.edges, node.id);
+  if (outs.length === 0) return null;
+  if (pickEdge(outs, result.port ?? 'default')) return null;
+  return workflowUnwiredPortNote(workflowStepPortLabel(result.port, nodeRuntimeType(node)));
 }
 
 async function buildWorkflowContext(
@@ -7797,6 +7889,7 @@ async function buildWorkflowContext(
     ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
     ...inboundChainFieldsFromRecord(input.jobContext),
+    stepDetail: createWorkflowRunDetailState(),
   };
 }
 

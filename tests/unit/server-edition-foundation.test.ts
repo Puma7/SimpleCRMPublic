@@ -396,6 +396,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0057_ai_learnings',
   '0058_email_raw_rfc822_storage',
   '0059_attachment_text_extractor_version',
+  '0060_workflow_run_step_detail_retention_index',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -16565,6 +16566,8 @@ describe('server edition foundation', () => {
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       // TA-P5: audit.retention räumt danach in eigener Transaktion die Learnings-Rohdaten auf.
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und leert Eingang/Ausgang alter Lauf-Schritte (30 Tage), ebenfalls eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16668,6 +16671,19 @@ describe('server edition foundation', () => {
           ['workspace_id', '=', WORKSPACE_A_ID],
           [expect.any(Function), undefined, undefined],
         ],
+      },
+      // Lauf-Historie: Eingang/Ausgang älter als 30 Tage (hier nichts zu leeren).
+      {
+        kind: 'select',
+        table: 'email_workflow_run_steps',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['detail_json', 'is not', null],
+          ['created_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
       },
     ]);
     expect(archivedBatches).toEqual([{
@@ -39039,6 +39055,64 @@ describe('server edition foundation', () => {
       { workspaceId: WORKSPACE_A_ID, limit: 100, includeLog: false },
     ]);
     expect(stepListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, limit: 50, includeDetail: false, runId: 80 }]);
+  });
+
+  test('workflow run step details need workflows.view; CRM/integration values need crm.read', async () => {
+    const detail = {
+      v: 1,
+      input: {
+        mail: { subject: 'Gewinn', from: 'spam@example.com' },
+        config: { question: 'Ist das Spam?' },
+        variables: { 'spam.score': 3, 'customer.name': 'Müller GmbH', 'jtl.data': '{"umsatz":1}' },
+      },
+      output: { port: 'nein' },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflowRuns: {
+        async list() {
+          return { items: [{ ...makeWorkflowRunRecord(80), sourceSqliteId: -91 }], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+      },
+      workflowRunSteps: {
+        async list() {
+          return {
+            items: [{ ...makeWorkflowRunStepRecord(81), runSourceSqliteId: -91, runId: 80, detail }],
+            nextCursor: null,
+          };
+        },
+        async get() {
+          return null;
+        },
+      },
+    }));
+    const mailReader = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['mail.content.read'] };
+    const workflowViewer = { ...mailReader, capabilities: ['mail.content.read', 'workflows.view'] };
+    const request = { method: 'GET' as const, path: '/api/v1/workflow-runs/by-source/-91/steps', query: { includeDetail: 'true' } };
+
+    const denied = await api.handle({ ...request, principal: mailReader });
+    expect(denied.status).toBe(403);
+
+    const redacted = await api.handle({ ...request, principal: workflowViewer });
+    expect(redacted.status).toBe(200);
+    expect((redacted.body as any).data.items[0].detail).toEqual({
+      ...detail,
+      input: {
+        ...detail.input,
+        variables: {
+          'spam.score': 3,
+          'customer.name': '[ausgeblendet – nur mit CRM-Leserecht sichtbar]',
+          'jtl.data': '[ausgeblendet – nur mit CRM-Leserecht sichtbar]',
+        },
+      },
+    });
+
+    const crmReader = { ...mailReader, capabilities: ['mail.content.read', 'workflows.view', 'crm.read', 'tracking.view'] };
+    const visible = await api.handle({ ...request, principal: crmReader });
+    expect(visible.status).toBe(200);
+    expect((visible.body as any).data.items[0].detail).toEqual(detail);
   });
 
   test('server workflow version mutation routes reject unsafe payloads and invalid references', async () => {

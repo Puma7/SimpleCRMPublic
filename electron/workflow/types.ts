@@ -1,3 +1,4 @@
+import type { WorkflowRunDetailState } from '../../packages/core/src/workflow/run-step-detail';
 import type { EmailMessageRow } from '../email/email-store';
 import type { OutboundDraftPayload } from '../email/email-workflow-engine';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
@@ -18,6 +19,11 @@ export type WorkflowContext = {
   variables: Record<string, string | number | boolean | null>;
   strings: WorkflowStringContext;
   ai: { lastResponse?: string };
+  /**
+   * Lauf-Historie: Mail nur im ersten Schritt, Budget für alle Details des
+   * Laufs. Vor dem Klonen der Trigger-Zweige angelegt, damit alle Zweige ihn teilen.
+   */
+  stepDetail?: WorkflowRunDetailState;
 };
 
 export type NodeExecuteResult = {

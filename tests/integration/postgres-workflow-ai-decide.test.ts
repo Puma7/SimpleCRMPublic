@@ -17,6 +17,7 @@ import {
   createPostgresAiDecidePort,
 } from '../../packages/server/src/workflow-ai-decide';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { pruneWorkflowRunStepDetails } from '../../packages/server/src/workflow-run-step-append';
 import { inboundSiblingAbortKey } from '../../packages/server/src/workflow-inbound-chain-advance';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
 
@@ -303,6 +304,104 @@ describe('ai.decide server job (Embedded Postgres)', () => {
     await createPostgresWorkflowExecutionJobPort({ db })
       .execute(buildWorkflowExecutionJobPlan(continuations[0]!.payload, WORKSPACE_ID));
     expect(await tags(8103)).toEqual(['ki-fehler']);
+  });
+
+  type StepRow = { run_id: number; node_id: string; status: string; port: string | null; message: string | null; detail_json: any };
+
+  async function runStepsForMessage(messageId: number): Promise<StepRow[]> {
+    const rows = await postgres.admin.query<StepRow>(`
+      SELECT s.run_id::int AS run_id, s.node_id, s.status, s.port, s.message, s.detail_json
+      FROM email_workflow_run_steps s
+      JOIN email_workflow_runs r ON r.workspace_id = s.workspace_id AND r.id = s.run_id
+      WHERE s.workspace_id = $1 AND r.message_id = $2
+      ORDER BY s.id
+    `, [WORKSPACE_ID, messageId]);
+    return [...rows.rows];
+  }
+
+  test('Lauf-Historie: Ergebnis steht im Ursprungslauf, nicht verbundener Ausgang wird erklärt', async () => {
+    await seedInbound(8107, 'Hallo Welt');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.5));
+    expect(await runDecision(INBOUND_WORKFLOW_ID, 8107, 'inbound')).toEqual([]);
+
+    const steps = await runStepsForMessage(8107);
+    expect(steps.map((step) => [step.node_id, step.status, step.port])).toEqual([
+      ['decide', 'ok', 'default'],
+      ['decide', 'ok', 'unsicher'],
+    ]);
+    expect(new Set(steps.map((step) => step.run_id)).size).toBe(1);
+
+    // Erster Schritt des Laufs: Mail (Kopf + Auszug) und Einstellungen als Eingang.
+    expect(steps[0]!.detail_json.input.mail).toMatchObject({
+      direction: 'inbound',
+      subject: 'Hallo Welt',
+      from: 'absender8107@example.com',
+      excerpt: 'Sie haben gewonnen!',
+    });
+    expect(steps[0]!.detail_json.input.config).toMatchObject({ question: 'Ist „{{subject}}“ Spam?', threshold: 80 });
+
+    const result = steps[1]!;
+    expect(result.message).toContain('Unsicher (Ja-Wahrscheinlichkeit 50 %)');
+    expect(result.message).toContain('mit keinem Knoten verbunden');
+    expect(result.detail_json.input.extra).toMatchObject({
+      question: 'Ist „Hallo Welt“ Spam?',
+      yesCriteria: 'Werbung',
+      threshold: 80,
+      model: 'typesafe/jev-1.13',
+    });
+    expect(result.detail_json.output).toMatchObject({
+      port: 'unsicher',
+      result: { answer: 'unsicher', probability: 50 },
+      note: expect.stringContaining('Ausgang „Unsicher“ ist mit keinem Knoten verbunden'),
+    });
+  });
+
+  test('Lauf-Historie: KI-Fehler steht als Fehler im Lauf, die Fortsetzung verweist auf den Ursprungslauf', async () => {
+    await seedInbound(8108, 'Fehlerfall');
+    guardedMock.mockResolvedValue(respond(401, 'unauthorized'));
+    const continuations = await runDecision(INBOUND_WORKFLOW_ID, 8108, 'inbound');
+    const before = await runStepsForMessage(8108);
+    const parentRunId = before[0]!.run_id;
+    expect(before.map((step) => [step.node_id, step.status, step.port])).toEqual([
+      ['decide', 'ok', 'default'],
+      ['decide', 'error', 'error'],
+    ]);
+    expect(before[1]!.message).toContain('Decisions API HTTP 401');
+    expect(before[1]!.detail_json.output.result).toMatchObject({ answer: 'error' });
+
+    await createPostgresWorkflowExecutionJobPort({ db })
+      .execute(buildWorkflowExecutionJobPlan(continuations[0]!.payload, WORKSPACE_ID));
+    const after = await runStepsForMessage(8108);
+    const continued = after.filter((step) => step.run_id !== parentRunId);
+    expect(continued.map((step) => step.node_id)).toEqual(['tag-fehler']);
+    expect(continued[0]!.detail_json.continuedFrom).toEqual({ runId: parentRunId, nodeId: 'decide', port: 'error' });
+    expect(continued[0]!.detail_json.output.variables ?? {}).not.toHaveProperty('__continued_from');
+  });
+
+  test('Lauf-Historie: Details älter als 30 Tage werden geleert, der Schritt bleibt', async () => {
+    await seedInbound(8109, 'Alt');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.5));
+    await runDecision(INBOUND_WORKFLOW_ID, 8109, 'inbound');
+    const steps = await runStepsForMessage(8109);
+    expect(steps.every((step) => step.detail_json !== null)).toBe(true);
+    await postgres.admin.query(`
+      UPDATE email_workflow_run_steps SET created_at = now() - interval '31 days'
+      WHERE workspace_id = $1 AND run_id = $2 AND port = 'default'
+    `, [WORKSPACE_ID, steps[0]!.run_id]);
+
+    // Teilindex (Migration 0060): die tägliche Bereinigung liest nur Schritte mit Details.
+    const index = await postgres.admin.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE indexname = 'email_workflow_run_steps_detail_retention_idx'`,
+    );
+    expect(index.rows[0]?.indexdef).toMatch(/\(workspace_id, created_at\) WHERE \(detail_json IS NOT NULL\)/);
+
+    const cleared = await pruneWorkflowRunStepDetails({ db }, WORKSPACE_ID);
+    expect(cleared).toBeGreaterThanOrEqual(1);
+    const after = await runStepsForMessage(8109);
+    expect(after.map((step) => [step.port, step.detail_json === null])).toEqual([
+      ['default', true],
+      ['unsicher', false],
+    ]);
   });
 
   test('eingehend: Aktion hinter „unsicher“ läuft ohne runOnEveryInbound (Gate offen)', async () => {

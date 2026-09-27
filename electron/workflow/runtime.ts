@@ -25,6 +25,15 @@ import {
   aiDecidePortTripsInboundGate,
 } from '../../packages/core/src/workflow/ai-decide';
 import { outboundHoldReasonOrFallback } from '../../packages/core/src/email/outbound-review-parse';
+import {
+  buildWorkflowStepDetail,
+  buildWorkflowStepMailSnapshot,
+  createWorkflowRunDetailState,
+  serializeWorkflowStepDetailWithinBudget,
+  workflowStepPortLabel,
+  workflowUnwiredPortNote,
+  type BuildWorkflowStepDetailInput,
+} from '../../packages/core/src/workflow/run-step-detail';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -102,6 +111,30 @@ function nodeConfigOf(node: WorkflowGraphNode): Record<string, unknown> {
   return data.config && typeof data.config === 'object' && !Array.isArray(data.config)
     ? (data.config as Record<string, unknown>)
     : data;
+}
+
+/**
+ * Eingang/Ausgang eines Schritts für die Lauf-Historie (Parität zum Server,
+ * packages/server/src/workflow-execution.ts serverStepDetail). Der erste
+ * Schritt eines Laufs trägt die Mail (Kopf + Auszug).
+ */
+function desktopStepDetailJson(
+  ctx: WorkflowContext,
+  parts: Omit<BuildWorkflowStepDetailInput, 'mail' | 'continuedFrom'>,
+): string {
+  // Fallback für Kontexte, die nicht über buildCtx entstehen (z. B. Tests).
+  ctx.stepDetail ??= createWorkflowRunDetailState();
+  let mail: BuildWorkflowStepDetailInput['mail'] = null;
+  if (!ctx.stepDetail.mailRecorded) {
+    ctx.stepDetail.mailRecorded = true;
+    mail = buildWorkflowStepMailSnapshot({
+      strings: ctx.strings as Record<string, unknown>,
+      direction: ctx.direction,
+      // CRM-, Aufgaben-, Termin- und Zeitplan-Läufe haben keine Nachricht.
+      hasMessage: ctx.messageId !== null || ctx.outbound !== null,
+    });
+  }
+  return serializeWorkflowStepDetailWithinBudget(buildWorkflowStepDetail({ ...parts, mail }), ctx.stepDetail);
 }
 
 /**
@@ -275,6 +308,12 @@ async function walkGraph(
         port: null,
         durationMs: 0,
         message: 'skip:no_prior_condition',
+        detailJson: desktopStepDetailJson(ctx, {
+          config: nodeConfigOf(node),
+          variablesBefore: ctx.variables,
+          port: null,
+          note: 'Nicht ausgeführt: Aktionen auf eingehende Mails laufen nur hinter einer erfüllten Bedingung (z. B. Ausgang „Ja“ einer Bedingung oder KI-Entscheidung).',
+        }),
       });
       break;
     }
@@ -347,6 +386,7 @@ async function walkGraph(
     }
 
     const t0 = Date.now();
+    const variablesBefore = { ...ctx.variables };
     let result: NodeExecuteResult;
     // Wie der Server: Eine Fortsetzung kennt den Schleifenzustand nicht, die
     // übrigen Einträge gingen still verloren. Vor dem Einplanen abbrechen.
@@ -381,6 +421,16 @@ async function walkGraph(
       port: result.port ?? null,
       durationMs,
       message: result.message ?? null,
+      detailJson: desktopStepDetailJson(ctx, {
+        config: nodeConfigOf(node),
+        variablesBefore,
+        variablesOut: result.variables ?? null,
+        port: result.port ?? null,
+        ...(result.blocked && result.blockReason ? { result: { blockReason: result.blockReason } } : {}),
+        note: result.deferred
+          ? 'Pausiert – die folgenden Schritte erscheinen als eigener Lauf (Fortsetzung).'
+          : unwiredPortNote(doc, node, regType, result),
+      }),
     });
 
     if (result.variables) {
@@ -455,26 +505,7 @@ async function walkGraph(
     const outs = outgoing(doc.edges, currentId);
     if (outs.length === 0) break;
 
-    let port: string = 'default';
-    if (node.type === 'condition') {
-      port = result.port === 'no' ? 'no' : 'yes';
-    } else if (regType === 'logic.switch') {
-      port = String(result.port ?? 'default');
-    } else if (regType === 'logic.threshold') {
-      port = result.port === 'no' ? 'no' : 'yes';
-    } else if (regType === 'email.sender_filter') {
-      port = String(result.port ?? 'default');
-    } else if (regType === 'email.auto_reply') {
-      port = String(result.port ?? 'blocked');
-    } else if (regType === 'ai.decide') {
-      // Eigener Zweig: der Ausgang „error“ (KI-Fehler) darf nicht wie bei
-      // anderen Knoten auf „no“ umgeschrieben werden — das träfe eine „nein“-Kante.
-      port = String(result.port ?? 'error');
-    } else if (result.port === 'error') {
-      port = 'no';
-    } else if (result.port) {
-      port = result.port;
-    }
+    const port = nextPortForResult(node, regType, result);
 
     if (gate) {
       // Bewusst eine harte (nodeType, port)-Liste statt einer Schema-Ableitung
@@ -504,6 +535,39 @@ async function walkGraph(
   return { log, status: 'ok', blocked: false, blockReason: null };
 }
 
+/** Ausgang, über den der Lauf nach diesem Knoten weitergeht. */
+function nextPortForResult(
+  node: WorkflowGraphNode,
+  regType: string | undefined,
+  result: NodeExecuteResult,
+): string {
+  if (node.type === 'condition') return result.port === 'no' ? 'no' : 'yes';
+  if (regType === 'logic.switch') return String(result.port ?? 'default');
+  if (regType === 'logic.threshold') return result.port === 'no' ? 'no' : 'yes';
+  if (regType === 'email.sender_filter') return String(result.port ?? 'default');
+  if (regType === 'email.auto_reply') return String(result.port ?? 'blocked');
+  // Eigener Zweig: der Ausgang „error“ (KI-Fehler) darf nicht wie bei
+  // anderen Knoten auf „no“ umgeschrieben werden — das träfe eine „nein“-Kante.
+  if (regType === 'ai.decide') return String(result.port ?? 'error');
+  if (result.port === 'error') return 'no';
+  return result.port ? result.port : 'default';
+}
+
+/** Hinweis, wenn der gewählte Ausgang eines Knotens mit Kanten keinen Folgeknoten hat. */
+function unwiredPortNote(
+  doc: WorkflowGraphDocument,
+  node: WorkflowGraphNode,
+  regType: string | undefined,
+  result: NodeExecuteResult,
+): string | null {
+  if (result.status !== 'ok' || result.stop || result.blocked) return null;
+  const outs = outgoing(doc.edges, node.id);
+  if (outs.length === 0) return null;
+  const port = nextPortForResult(node, regType, result);
+  if (pickEdge(outs, port)) return null;
+  return workflowUnwiredPortNote(workflowStepPortLabel(port, regType ?? node.type));
+}
+
 type GraphRunInput = {
   workflow: EmailWorkflowRow;
   trigger: WorkflowTriggerKind;
@@ -519,7 +583,7 @@ type GraphRunInput = {
 };
 
 function buildCtx(input: GraphRunInput): WorkflowContext {
-  return createWorkflowContext({
+  const ctx = createWorkflowContext({
     trigger: input.trigger,
     direction: input.direction,
     workflowId: input.workflow.id,
@@ -532,6 +596,9 @@ function buildCtx(input: GraphRunInput): WorkflowContext {
     eventVariables: input.eventVariables,
     initialVariables: input.initialVariables,
   });
+  // Vor dem Klonen der Trigger-Zweige: alle Zweige teilen Mail-Merker und Budget.
+  ctx.stepDetail = createWorkflowRunDetailState();
+  return ctx;
 }
 
 export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunResult> {

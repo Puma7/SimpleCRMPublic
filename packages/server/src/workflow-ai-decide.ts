@@ -20,6 +20,12 @@ import {
   aiDecidePortTripsInboundGate,
   aiDecideVariables,
   buildAiDecideChatPrompts,
+  buildWorkflowStepDetail,
+  encodeWorkflowContinuedFrom,
+  workflowTemplateUsesProtectedData,
+  workflowStepPortLabel,
+  workflowUnwiredPortNote,
+  WORKFLOW_CONTINUED_FROM_VARIABLE,
   buildAiDecideMailContext,
   evaluateAiDecideOutcome,
   interpolateWorkflowPlaceholders,
@@ -46,6 +52,7 @@ import {
   runWorkflowTrackedChatCompletion,
   type WorkflowAiChatDeps,
 } from './workflow-ai-chat';
+import { appendDeferredWorkflowRunStep } from './workflow-run-step-append';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
   isInboundSiblingAborted,
@@ -56,6 +63,9 @@ import {
   runTerminalInboundChild,
 } from './workflow-inbound-terminal-child';
 
+const CHAIN_STOPPED_MESSAGE =
+  'Übersprungen: Ein vorheriger Workflow hat die weitere Verarbeitung dieser Mail gestoppt (z. B. Spam erkannt).';
+
 /** Profil, Secret und Nutzungserfassung; KI-Aufrufe laufen immer über guardedAiPost. */
 export type WorkflowAiDecideDeps = WorkflowAiChatDeps;
 
@@ -63,6 +73,8 @@ export type AiDecideJobPlan = Readonly<{
   workspaceId: string;
   messageId?: number;
   runId?: number;
+  /** Knoten im Graph; mit runId schreibt der Job sein Ergebnis in den Ursprungslauf. */
+  nodeId?: string;
   actorUserId?: string;
   /** Richtung des Elternlaufs; `outbound` hält den Versand außer bei „ja“ an. */
   direction?: string;
@@ -317,6 +329,96 @@ async function endDecideBranch(
   }, now);
 }
 
+/**
+ * Ergebnis der Entscheidung als eigener Schritt im Ursprungslauf: Frage,
+ * Kriterien, Schwelle und Modell als Eingang; Antwort, Wahrscheinlichkeit
+ * und — falls der Ausgang nicht verbunden ist — der Hinweis, dass der Lauf
+ * hier endet.
+ */
+type DecisionStepRecord = {
+  question: string;
+  yesCriteria: string;
+  noCriteria: string;
+  outcome: AiDecideOutcome | null;
+  note: string | null;
+  skippedMessage?: string;
+  durationMs: number;
+  now: Date;
+};
+
+/**
+ * Nach dem Abschluss des Jobs in eigener Transaktion: die Lauf-Historie darf
+ * die Entscheidung nie zurückrollen (sonst liefe der Job samt KI-Kosten erneut).
+ */
+async function recordDecisionStepSafe(
+  deps: WorkflowAiDecideDeps,
+  input: AiDecideJobPlan,
+  step: DecisionStepRecord | null,
+): Promise<void> {
+  if (!step || input.runId === undefined || !input.nodeId) return;
+  try {
+    await withWorkspaceTransaction(
+      deps.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      (trx) => recordDecisionStep(trx, input, step),
+      { applySession: deps.applyWorkspaceSession },
+    );
+  } catch (error) {
+    console.warn(`[workflow] KI-Entscheidung: Lauf-Historie nicht geschrieben (Lauf ${input.runId}): ${errorMessage(error)}`);
+  }
+}
+
+async function recordDecisionStep(
+  trx: WorkspaceTransaction,
+  input: AiDecideJobPlan,
+  step: DecisionStepRecord,
+): Promise<void> {
+  if (input.runId === undefined || !input.nodeId) return;
+  const outcome = step.outcome;
+  const port = outcome ? outcome.answer : null;
+  const status = step.skippedMessage ? 'skipped' : outcome?.answer === 'error' ? 'error' : 'ok';
+  const message = step.skippedMessage
+    ?? [outcome?.summary, step.note].filter((part): part is string => Boolean(part)).join(' – ');
+  await appendDeferredWorkflowRunStep(trx, {
+    workspaceId: input.workspaceId,
+    runId: input.runId,
+    nodeId: input.nodeId,
+    nodeType: 'ai.decide',
+    status,
+    port,
+    durationMs: step.durationMs,
+    message: message || null,
+    now: step.now,
+    detail: buildWorkflowStepDetail({
+      // Setzt die Vorlage CRM-/Integrationsdaten ein, sieht der aufgelöste Text
+      // nur, wer crm.read hat (Schwärzung beim Lesen, siehe run-step-detail).
+      protectedExtra: (['question', 'yesCriteria', 'noCriteria'] as const).filter((key) =>
+        workflowTemplateUsesProtectedData(input[key])),
+      inputExtra: {
+        question: step.question,
+        ...(step.yesCriteria ? { yesCriteria: step.yesCriteria } : {}),
+        ...(step.noCriteria ? { noCriteria: step.noCriteria } : {}),
+        threshold: input.threshold,
+        contextMode: input.contextMode,
+        ...(outcome?.model ? { model: outcome.model } : {}),
+      },
+      port,
+      ...(outcome
+        ? {
+          result: {
+            answer: outcome.answer,
+            probability: outcome.probability,
+            confidence: outcome.confidence,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
+            summary: outcome.summary,
+          },
+        }
+        : {}),
+      note: step.skippedMessage ?? step.note,
+    }),
+  });
+}
+
 export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecideJobPort {
   const now = () => deps.now?.() ?? new Date();
   const system = (workspaceId: string) => ({ workspaceId, role: 'system' as const });
@@ -335,24 +437,42 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
           },
           { applySession: deps.applyWorkspaceSession },
         );
-        if (aborted) return;
+        if (aborted) {
+          await recordDecisionStepSafe(deps, input, {
+            question: input.question,
+            yesCriteria: input.yesCriteria ?? '',
+            noCriteria: input.noCriteria ?? '',
+            outcome: null,
+            note: null,
+            skippedMessage: CHAIN_STOPPED_MESSAGE,
+            durationMs: 0,
+            now: now(),
+          });
+          return;
+        }
 
         const strings = jobStrings(input.eventStrings);
         const variables = jobVariables(input.eventVariables);
         const scope = { strings, variables };
+        const question = interpolateAiDecideField(input.question, scope, AI_DECIDE_QUESTION_MAX_CHARS);
+        const yesCriteria = interpolateAiDecideField(input.yesCriteria, scope, AI_DECIDE_CRITERIA_MAX_CHARS);
+        const noCriteria = interpolateAiDecideField(input.noCriteria, scope, AI_DECIDE_CRITERIA_MAX_CHARS);
+        const started = Date.now();
         const outcome = await runServerAiDecision(deps, {
           workspaceId: input.workspaceId,
           messageId: input.messageId ?? null,
           actorUserId: input.actorUserId ?? null,
           ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
           direction: input.direction ?? 'inbound',
-          question: interpolateAiDecideField(input.question, scope, AI_DECIDE_QUESTION_MAX_CHARS),
-          yesCriteria: interpolateAiDecideField(input.yesCriteria, scope, AI_DECIDE_CRITERIA_MAX_CHARS),
-          noCriteria: interpolateAiDecideField(input.noCriteria, scope, AI_DECIDE_CRITERIA_MAX_CHARS),
+          question,
+          yesCriteria,
+          noCriteria,
           contextMode: input.contextMode,
           threshold: input.threshold,
           strings,
         });
+        const decisionStep = { question, yesCriteria, noCriteria, durationMs: Date.now() - started };
+        let historyStep: DecisionStepRecord | null = null;
 
         await withWorkspaceTransaction(
           deps.db,
@@ -362,6 +482,13 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
             // Transaktion, die Kette kann inzwischen gestoppt worden sein.
             if (await inboundDecideChainAborted(trx, input)) {
               await endDecideBranch(trx, input, false, now());
+              historyStep = {
+                ...decisionStep,
+                outcome,
+                note: null,
+                skippedMessage: CHAIN_STOPPED_MESSAGE,
+                now: now(),
+              };
               return;
             }
             // Ausgang: alles außer „ja“ hält den Versand an (wie ai.outbound_review);
@@ -385,13 +512,34 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
               // Ausgang ohne Kante (nein/unsicher/error fail-closed, „ja“ ohne
               // jede Folgekante): der Zweig endet hier.
               await endDecideBranch(trx, input, applied, now());
+              historyStep = {
+                ...decisionStep,
+                outcome,
+                note: workflowUnwiredPortNote(workflowStepPortLabel(port, 'ai.decide')),
+                now: now(),
+              };
               return;
             }
+            historyStep = {
+              ...decisionStep,
+              outcome,
+              note: `Weiter über Ausgang „${workflowStepPortLabel(port, 'ai.decide')}“ – die folgenden Schritte stehen im nächsten Lauf (Fortsetzung).`,
+              now: now(),
+            };
             await enqueueContinuation(trx, {
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: { ...continuation, resumeNodeId },
               variables: {
+                ...(input.runId !== undefined
+                  ? {
+                    [WORKFLOW_CONTINUED_FROM_VARIABLE]: encodeWorkflowContinuedFrom({
+                      runId: input.runId,
+                      ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+                      port,
+                    }),
+                  }
+                  : {}),
                 ...aiDecideVariables(outcome),
                 // Inbound-Gate: jeder der vier Ausgänge ist ein bewusst
                 // verdrahteter Zweig (wie ein switch-Fall) und öffnet die
@@ -405,6 +553,7 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
           },
           { applySession: deps.applyWorkspaceSession },
         );
+        await recordDecisionStepSafe(deps, input, historyStep);
       });
     },
   };

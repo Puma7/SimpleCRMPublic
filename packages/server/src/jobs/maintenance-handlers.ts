@@ -12,6 +12,7 @@ import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
 import { runWorkflowScheduleTick } from './workflow-schedule-tick';
 import { pruneAiLearningCandidates } from '../ai-learnings';
+import { pruneWorkflowRunStepDetails } from '../workflow-run-step-append';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -340,6 +341,16 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
         ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
       }, plan.workspaceId).catch((error: unknown) => {
         console.warn(`[ai-learnings] Aufräumen fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      // Lauf-Historie: Eingang/Ausgang der Schritte nach 30 Tagen leeren
+      // (die Schritte bleiben). Wie oben nur protokolliert.
+      await pruneWorkflowRunStepDetails({
+        db: options.db,
+        now,
+        ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+      }, plan.workspaceId).catch((error: unknown) => {
+        console.warn(`[workflow] Aufräumen der Lauf-Details fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
       });
     },
   };

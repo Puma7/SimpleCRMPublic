@@ -1,5 +1,10 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_WORKFLOW_RUNS_TABLE, EMAIL_WORKFLOW_RUN_STEPS_TABLE } from '../database-schema';
+import {
+  parseWorkflowStepDetail,
+  WORKFLOW_STEP_DETAIL_RETENTION_DAYS,
+  type WorkflowStepDetail,
+} from '../../packages/core/src/workflow/run-step-detail';
 
 export function startWorkflowRun(input: {
   workflowId: number;
@@ -56,7 +61,7 @@ export function insertWorkflowRunStep(input: {
     );
 }
 
-export function listWorkflowRunSteps(runId: number): {
+export type WorkflowRunStepListRow = {
   id: number;
   run_id: number;
   node_id: string;
@@ -65,24 +70,38 @@ export function listWorkflowRunSteps(runId: number): {
   port: string | null;
   duration_ms: number;
   message: string | null;
+  /** Eingang/Ausgang für die Lauf-Historie (null bei alten oder bereinigten Schritten). */
+  detail: WorkflowStepDetail | null;
   created_at: string;
-}[] {
-  return getDb()
+};
+
+export function listWorkflowRunSteps(runId: number): WorkflowRunStepListRow[] {
+  const rows = getDb()
     .prepare(
-      `SELECT id, run_id, node_id, node_type, status, port, duration_ms, message, created_at
+      `SELECT id, run_id, node_id, node_type, status, port, duration_ms, message, detail_json, created_at
        FROM ${EMAIL_WORKFLOW_RUN_STEPS_TABLE} WHERE run_id = ? ORDER BY id ASC`,
     )
-    .all(runId) as {
-    id: number;
-    run_id: number;
-    node_id: string;
-    node_type: string;
-    status: string;
-    port: string | null;
-    duration_ms: number;
-    message: string | null;
-    created_at: string;
-  }[];
+    .all(runId) as (Omit<WorkflowRunStepListRow, 'detail'> & { detail_json: string | null })[];
+  return rows.map(({ detail_json: detailJson, ...row }) => ({
+    ...row,
+    detail: parseWorkflowStepDetail(detailJson),
+  }));
+}
+
+/**
+ * Leert Eingang/Ausgang älterer Schritte (Aufbewahrung, Standard 30 Tage);
+ * die Schrittzeile selbst bleibt für die Lauf-Übersicht. Gibt die Zahl der
+ * geleerten Schritte zurück.
+ */
+export function pruneWorkflowRunStepDetails(now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - WORKFLOW_STEP_DETAIL_RETENTION_DAYS * 24 * 60 * 60_000).toISOString();
+  const result = getDb()
+    .prepare(
+      `UPDATE ${EMAIL_WORKFLOW_RUN_STEPS_TABLE} SET detail_json = NULL
+       WHERE detail_json IS NOT NULL AND created_at < ?`,
+    )
+    .run(cutoff);
+  return Number(result.changes ?? 0);
 }
 
 export function getLatestWorkflowRunForMessage(messageId: number): {
@@ -166,4 +185,22 @@ export function listRecentWorkflowRuns(workflowId: number, limit = 20): {
     started_at: string | null;
     finished_at: string | null;
   }[];
+}
+
+const STEP_DETAIL_PRUNE_INTERVAL_MS = 24 * 60 * 60_000;
+let lastStepDetailPruneAt = 0;
+
+/** Höchstens einmal am Tag aus dem globalen Cron: alte Schritt-Details leeren. */
+export function pruneWorkflowRunStepDetailsIfDue(
+  logger: Pick<typeof console, 'warn' | 'debug'>,
+  now: number = Date.now(),
+): void {
+  if (now - lastStepDetailPruneAt < STEP_DETAIL_PRUNE_INTERVAL_MS) return;
+  lastStepDetailPruneAt = now;
+  try {
+    const cleared = pruneWorkflowRunStepDetails(new Date(now));
+    if (cleared > 0) logger.debug(`[workflow] Eingang/Ausgang von ${cleared} alten Lauf-Schritten geleert`);
+  } catch (error) {
+    logger.warn('[workflow] Aufräumen der Lauf-Details fehlgeschlagen', error);
+  }
 }

@@ -529,6 +529,10 @@ export function buildAiDecideJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     ...optionalPositiveInteger(payload, 'messageId'),
     ...optionalPositiveInteger(payload, 'runId'),
+    // Nur für die Lauf-Historie: nie den Job an einer ungewöhnlichen Knoten-ID scheitern lassen.
+    ...(typeof payload.nodeId === 'string' && payload.nodeId.trim()
+      ? { nodeId: payload.nodeId.trim().slice(0, 200) }
+      : {}),
     ...optionalString(payload, 'actorUserId'),
     ...optionalString(payload, 'direction', 40),
     question: requiredStringValue(payload, 'question', MAX_AI_DECIDE_QUESTION_LENGTH),

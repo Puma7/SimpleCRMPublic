@@ -93,8 +93,43 @@ type PrefixRule = {
   humanize: (detail: string, raw: string) => string;
 };
 
+const DEFERRED_NODE_LABELS: Record<string, string> = {
+  ai_decide: 'KI-Entscheidung',
+  ai_classify: 'KI-Klassifizierung',
+  ai_review: 'KI-Prüfung',
+  ai_review_draft: 'KI-Prüfung des Entwurfs',
+  ai_draft_reply: 'KI-Antwortentwurf',
+  ai_reply_suggestion: 'KI-Antwortvorschlag',
+  ai_transform_text: 'KI-Textbearbeitung',
+  ai_pick_canned: 'KI-Textbaustein',
+  ai_agent: 'KI-Agent',
+  forward_copy: 'Weiterleitung',
+  http_request: 'HTTP-Anfrage',
+  subflow: 'Unter-Workflow',
+  sync: 'Synchronisierung',
+  dmarc_ingest: 'DMARC-Import',
+  learnings_digest: 'Learnings-Auswertung',
+};
+
+/** `queued_ai_decide:280` → Schritt läuft als Hintergrund-Job weiter. */
+function formatQueuedStep(raw: string): string {
+  const match = /^queued_([a-z_]+?)(?::(\d+))?$/.exec(raw);
+  if (!match) return raw;
+  const label = DEFERRED_NODE_LABELS[match[1]!] ?? match[1]!;
+  const job = match[2] ? ` (Job ${match[2]})` : '';
+  return match[1] === 'ai_decide'
+    ? `${label} läuft im Hintergrund${job} – das Ergebnis folgt als eigener Schritt.`
+    : `${label} läuft im Hintergrund${job} – die nächsten Schritte erscheinen als eigener Lauf.`;
+}
+
+/** Schritt, der nur einen Hintergrund-Job eingereiht hat (sein Ausgang „Standard“ ist bedeutungslos). */
+export function isDeferredWorkflowStepMessage(message: string | null | undefined): boolean {
+  return /^queued_[a-z_]+/.test((message ?? '').trim());
+}
+
 /** Reihenfolge zählt: speziellere Präfixe (loop:limit:) vor allgemeinen (loop:). */
 const PREFIX_MESSAGES: PrefixRule[] = [
+  { prefix: 'queued_', humanize: (_detail, raw) => formatQueuedStep(raw) },
   {
     prefix: 'auto_reply:blocked:',
     humanize: (detail) => `Auto-Antwort übersprungen (Grund: ${detail}).`,
