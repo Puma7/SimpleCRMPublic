@@ -411,7 +411,9 @@ all pass (the new test included; `workflow-ai-nodes.test.ts:230-236` unchanged a
 
 Stop and report back (do not improvise) if:
 
-- The Step 2 / Step 4 tests pass **before** the fix (the cut no longer happens; re-scope).
+- The Step 2 / Step 4 / Step 5 tests pass **before** the fix (already fixed; re-scope).
+- Step 5 makes any `ai.agent` test fail, or the fix seems to need changes in
+  `electron/workflow/knowledge-base.ts` (its `explicitKbId` support is missing or differs).
 - `tests/integration/postgres-ai-learnings.test.ts` or `tests/mail/email-ai-learnings.test.ts`
   fails because of the new `knowledgeBaseId` field (e.g. a `toEqual` on match objects).
 - Importing `buildAgentUserPrompt` from `ai-classification.ts` in a unit test
@@ -425,8 +427,10 @@ Stop and report back (do not improvise) if:
   `joinKnowledgeWithinBudget` there (group = KB id) so Learnings keep their share.
 - Reviewers: confirm output is unchanged when the total fits (first branch of the
   helper) and that original chunk order is preserved.
-- Found while planning, not fixed here: Desktop `resolveKnowledgeChunks`
-  (`electron/workflow/nodes/ai-nodes.ts:129-139`) ignores Learnings when a node
-  has an explicit `knowledgeBaseId`, unlike the server draft path
-  (`workflow-ai-draft-nodes.ts:129-138` passes `knowledgeBaseId` as `explicitKbId`).
-  Desktop `ai.agent` and both reply-suggestion paths have no knowledge cap at all.
+- Step 5 aligns only `ai.draft_reply`. `ai.agent` with an explicit KB stays
+  single-KB in both editions (server `selectAgentKnowledgeChunks`); if that
+  should also include Learnings, change both editions together in a separate plan.
+- Server draft uses the fixed direction `'inbound'`, Desktop uses `ctx.direction`
+  (pre-existing difference, unchanged here).
+- Not fixed here: Desktop `ai.agent` and both reply-suggestion paths have no
+  knowledge cap at all.

@@ -109,7 +109,7 @@ update the row here.
 
 | Plan | Title | Priority | Effort | Category | Depends on | Status |
 |------|-------|----------|--------|----------|------------|--------|
-| 024 | KI-Entscheidung: linear chat parser + fraction probabilities | P1 | S | security | — | TODO |
+| 024 | KI-Entscheidung: linear chat parser + fraction probabilities | P1 | S | security | 028 | TODO |
 | 025 | Bind the outbound approval marker to the sender account | P1 | S | security | — | TODO |
 | 026 | Tighten held-content normalization for the review skip | P2 | M | security | 025 | TODO |
 | 027 | Raw-part dedup, GC and maintenance survive damaged originals | P1 | S | bug | — | TODO |
@@ -128,7 +128,7 @@ update the row here.
 | 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | TODO |
 | 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | TODO |
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | TODO |
-| 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 040, 047 | TODO |
+| 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | TODO |
 | 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | TODO |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | TODO |
@@ -142,9 +142,10 @@ update the row here.
 - **026 after 025**, **038 after 035**: same files.
 - **031 after 030**: the single coverage run must reproduce correct, fresh ratchets; **042 after 031** documents the final CI.
 - **034 after 024**: same ai.decide path.
+- **024 after 028**: both edit `packages/core/src/learnings/knowledge-sections.ts` (024 replaces the heading regex).
 - **048 after 028 + 029**: reuses the section parser and keeps the Learnings budget guarantee.
 - **050 after 046 + 049**: uses the per-mail run view and cockpit data.
-- **043 last** among the plans touching `packages/server/src/workflow-execution.ts` (024 indirectly, 034, 040, 047): it is a pure move.
+- **043 last** among the plans touching `packages/server/src/workflow-execution.ts` (024 indirectly, 034, 047; 040 does not edit it): it is a pure move.
 
 ### Considered and rejected (Runde 2)
 

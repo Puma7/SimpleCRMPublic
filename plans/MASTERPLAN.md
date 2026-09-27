@@ -25,7 +25,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 1 – Sofort-Fixes (klein, hohes Risiko im Betrieb)
 
-- [ ] **024** KI-Entscheidung: Antwort-Parser linear statt Regex; `1`/`1.0` richtig lesen · Befund #1, #6 · P1 · S
+- [ ] **024** KI-Entscheidung: Antwort-Parser linear statt Regex; `1`/`1.0` richtig lesen · Befund #1, #6 · P1 · S · *nach 028*
 - [ ] **025** Freigabe-Marker an das Absenderkonto binden, bei Kontowechsel löschen · Befund #2 · P1 · S
 - [ ] **027** Ein beschädigtes Mail-Original stoppt Deduplizierung und `simplecrm maintenance` nicht mehr · Befund #3 · P1 · S
 - [ ] **028** Wissensbasis: offene Codeblöcke schließen, kein Abschnittsverlust · Befund #4 · P1 · S
@@ -65,7 +65,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 - [ ] **037** Mail-Liste virtualisieren (ersetzt Plan 008) · Befund #15 · P3 · M
 - [ ] **045** Desktop-Zeitpläne auf die gemeinsame Cron-Logik, `node-cron` entfernen · Befund #20 · P3 · M
-- [ ] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 040, 047*
+- [ ] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [ ] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
 
 ## Sonstiges ohne eigenen Plan
@@ -81,8 +81,9 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 | 026 | 025 | gleicher Code der Ausgangsprüfung |
 | 031 | 030 | CI-Umbau setzt korrekte Ratchets voraus |
 | 042 | 031 | Doku beschreibt den Endstand der CI |
+| 024 | 028 | beide ändern `knowledge-sections.ts` (Überschriften-Muster) |
 | 034 | 024 | gleicher KI-Entscheidungs-Pfad |
 | 038 | 035 | gleiche Dateien der Learnings-Auswertung |
 | 048 | 028, 029 | baut auf Abschnitts-Parser und Budget auf |
 | 050 | 046, 049 | nutzt Laufansicht und Cockpit-Daten |
-| 043 | 030, 024, 034, 040, 047 | Verschiebung erst, wenn die anderen Änderungen an der Datei drin sind |
+| 043 | 030, 024, 034, 047 | Verschiebung erst, wenn die anderen Änderungen an der Datei drin sind |
