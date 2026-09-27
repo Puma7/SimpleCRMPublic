@@ -7,6 +7,7 @@ import { PassThrough } from 'stream';
 import { ReadableStream } from 'stream/web';
 
 import type { Kysely } from 'kysely';
+import { encodeOutboundApprovalMarker, outboundApprovalFingerprint } from '../../packages/core/src/email/outbound-approval-marker';
 import {
   loadEmailEvidenceSummaryForTracking,
   type EmailTrackingService,
@@ -14873,13 +14874,23 @@ describe('server edition foundation', () => {
         folder_kind: 'draft',
         outbound_hold: true,
         outbound_block_reason: 'pending',
+        account_id: 5,
         body_text: 'ok',
         body_html: null,
       }],
       syncInfo: [{
         workspace_id: WORKSPACE_A_ID,
         key: 'outbound_review_approved:81',
-        value: now.toISOString(),
+        value: encodeOutboundApprovalMarker(now, outboundApprovalFingerprint({
+          subject: 'After approval',
+          bodyText: 'ok',
+          bodyHtml: null,
+          to: 'kunde@example.com',
+          cc: null,
+          bcc: null,
+          attachmentPaths: null,
+          accountId: 5,
+        })),
       }],
     });
     const port = createPostgresComposeOutboundReviewPort({
@@ -15008,7 +15019,7 @@ describe('server edition foundation', () => {
         body_html: null,
       }],
       // Marker hash is intentionally a value that won't match the current
-      // input (a real one would be 32 hex chars from outboundDraftFingerprint).
+      // input (a real one would be 32 hex chars from outboundApprovalFingerprint).
       syncInfo: [{
         workspace_id: WORKSPACE_A_ID,
         key: 'outbound_review_approved:83',
@@ -15038,6 +15049,116 @@ describe('server edition foundation', () => {
     // The invalidated marker is cleared so the next review chain starts fresh
     // and the new approval (with new hash) will not collide with the old one.
     expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:83')).toBeUndefined();
+  });
+
+  test('reviewOutbound.review denies bypass when the draft moved to another sender account', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 94,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 940,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 84,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 840,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        account_id: 6,
+        body_text: 'ok',
+        body_html: null,
+      }],
+      // Freigabe galt Konto 5; der Entwurf steht inzwischen auf Konto 6.
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:84',
+        value: encodeOutboundApprovalMarker(now, outboundApprovalFingerprint({
+          subject: 'After approval',
+          bodyText: 'ok',
+          bodyHtml: null,
+          to: 'kunde@example.com',
+          cc: null,
+          bcc: null,
+          attachmentPaths: null,
+          accountId: 5,
+        })),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 84,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).not.toEqual({ allowed: true });
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:84')).toBeUndefined();
+  });
+
+  test('reviewOutbound.review denies bypass for an approval marker without fingerprint', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 95,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 950,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 85,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 850,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        account_id: 5,
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:85',
+        value: now.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 85,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).not.toEqual({ allowed: true });
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:85')).toBeUndefined();
   });
 
   test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {

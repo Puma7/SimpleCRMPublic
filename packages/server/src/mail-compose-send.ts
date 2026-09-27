@@ -15,7 +15,7 @@ import {
   extractTicketFromSubject,
   generateOutboundMessageId,
   generateTicketCode,
-  outboundDraftFingerprint,
+  outboundApprovalFingerprint,
   parseOutboundApprovalMarker,
   replaceTags,
   resolveConfiguredSmtpHost,
@@ -893,13 +893,14 @@ export function createPostgresComposeOutboundReviewPort(options: {
 
           // Approval-Bypass: if email.release_outbound (autoSend=true) recently
           // approved this draft for the EXACT content present now, skip the
-          // review entirely. The marker stores a content fingerprint
-          // (subject+body+to/cc/bcc+attachments). On read we recompute the
-          // fingerprint from the current send-input and compare:
+          // review entirely. The marker stores a fingerprint of the content
+          // (subject+body+to/cc/bcc+attachments) AND the sender account
+          // (outboundApprovalFingerprint). On read we recompute it from the
+          // current send-input and the draft row's account and compare:
           //  - hash matches + < 24h: bypass review (covers SMTP retries).
-          //  - hash differs: user edited the draft between approval and send;
-          //    deny bypass so the change goes through review again.
-          //  - no hash (older marker): backward compat — accept fresh markers.
+          //  - hash differs: the draft was edited or moved to another sender
+          //    account after the approval; deny bypass so it is reviewed again.
+          //  - no hash (legacy marker): invalid, reviewed again.
           // The marker is otherwise NOT consumed on read so SMTP retries inside
           // scheduled-send can all bypass; markDraftAsSent clears it on success.
           const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
@@ -913,7 +914,13 @@ export function createPostgresComposeOutboundReviewPort(options: {
             const parsed = parseOutboundApprovalMarker(approval.value);
             const fresh = parsed.approvedAt !== null
               && now.getTime() - parsed.approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
-            const currentFingerprint = outboundDraftFingerprint({
+            const draftAccount = await trx
+              .selectFrom('email_messages')
+              .select('account_id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.draftMessageId)
+              .executeTakeFirst();
+            const currentFingerprint = outboundApprovalFingerprint({
               subject: input.subject,
               bodyText: input.bodyText,
               bodyHtml: input.bodyHtml,
@@ -921,8 +928,9 @@ export function createPostgresComposeOutboundReviewPort(options: {
               cc: input.cc ?? null,
               bcc: input.bcc ?? null,
               attachmentPaths: input.attachmentPaths ?? null,
+              accountId: draftAccount?.account_id ?? null,
             });
-            const contentMatches = parsed.fingerprint === null || parsed.fingerprint === currentFingerprint;
+            const contentMatches = parsed.fingerprint !== null && parsed.fingerprint === currentFingerprint;
             if (fresh && contentMatches) {
               await trx
                 .updateTable('email_messages')

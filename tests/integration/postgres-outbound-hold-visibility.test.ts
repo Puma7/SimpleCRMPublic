@@ -356,6 +356,58 @@ describe('Server: angehaltene Entwürfe im Posteingang', () => {
     expect(await syncInfoValue('outbound_review_skipped:5204')).toBeNull();
   });
 
+  test('„Ohne Ausgangsprüfung senden“: Versand scheitert, Kontowechsel ⇒ erneute Prüfung', async () => {
+    await postgres.admin.query(`DELETE FROM job_queue`);
+    await postgres.admin.query(`
+      INSERT INTO email_accounts (
+        id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username,
+        smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth
+      ) VALUES (502, $1, 502, 'Vertrieb', 'vertrieb@example.test', 'imap.example.test', 'vertrieb',
+        'smtp.example.test', 587, true, 'vertrieb', false)
+      ON CONFLICT DO NOTHING
+    `, [WORKSPACE_ID]);
+    await seedHoldWorkflow('Preisangabe fehlt');
+    await seedWorkflowScheduledDraft(5206);
+    await runScheduledTick(composeSender({ smtpSend: jest.fn() }));
+    for (const payload of await takeWorkflowJobs()) {
+      await createPostgresWorkflowExecutionJobPort({ db }).execute(
+        buildWorkflowExecutionJobPlan(payload, WORKSPACE_ID),
+      );
+    }
+    expect((await draftRow(5206)).outbound_block_reason).toBe('Preisangabe fehlt');
+
+    const skip = createPostgresOutboundReviewSkipPort({ db });
+    const prepared = await skip.prepare({ workspaceId: WORKSPACE_ID, actorUserId: 'user-1', messageId: 5206 });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const failing = jest.fn(async () => { throw new Error('SMTP down'); });
+    const failed = await composeSender({ smtpSend: failing }).send({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: 'user-1',
+      values: prepared.values,
+    });
+    expect(failed.ok).toBe(false);
+
+    const moved = await createPostgresEmailMessageReadPort({ db }).updateComposeDraft({
+      workspaceId: WORKSPACE_ID,
+      messageId: 5206,
+      values: { accountId: 502 },
+    });
+    expect(moved.ok).toBe(true);
+    expect(await syncInfoValue('outbound_review_approved:5206')).toBeNull();
+    expect(await syncInfoValue('outbound_review_skipped:5206')).toBeNull();
+
+    const smtpSend = jest.fn(async () => undefined);
+    const again = await composeSender({ smtpSend }).send({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: 'user-1',
+      values: { ...prepared.values, accountId: 502 },
+    });
+    expect(again.ok).toBe(false);
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect((await takeWorkflowJobs()).length).toBeGreaterThanOrEqual(1);
+  });
+
   test('„Ohne Ausgangsprüfung senden“ nur für angehaltene lokale Entwürfe', async () => {
     await seedDraft(5205, { hold: false, reason: null });
     const skip = createPostgresOutboundReviewSkipPort({ db });

@@ -19,7 +19,7 @@ jest.mock('../../electron/email/email-ticket', () => ({
   extractKnownTicketFromSubject: jest.fn(() => null),
 }));
 
-import { encodeOutboundApprovalMarker, outboundDraftFingerprint } from '../../packages/core/src/email/outbound-approval-marker';
+import { encodeOutboundApprovalMarker, outboundApprovalFingerprint } from '../../packages/core/src/email/outbound-approval-marker';
 import { getSyncInfo, setSyncInfo } from '../../electron/sqlite-service';
 import {
   getEmailMessageById,
@@ -57,6 +57,7 @@ const fingerprintInput = {
   cc: null,
   bcc: null,
   attachmentPaths: ['angebot.pdf'],
+  accountId: 1,
 };
 
 describe('outbound approval marker lifecycle', () => {
@@ -77,25 +78,34 @@ describe('outbound approval marker lifecycle', () => {
     expect(setSyncInfoMock).not.toHaveBeenCalled();
   });
 
-  test('accepts a fresh matching marker and a fresh legacy marker', () => {
-    const fingerprint = outboundDraftFingerprint(fingerprintInput);
+  test('accepts a fresh matching marker, rejects and clears a legacy marker without fingerprint', () => {
+    const fingerprint = outboundApprovalFingerprint(fingerprintInput);
     getSyncInfoMock
       .mockReturnValueOnce(encodeOutboundApprovalMarker(new Date(), fingerprint))
       .mockReturnValueOnce(new Date().toISOString());
 
     expect(tryOutboundApprovalBypass(17, fingerprintInput)).toBe(true);
-    expect(tryOutboundApprovalBypass(18, fingerprintInput)).toBe(true);
-    expect(setSyncInfoMock).not.toHaveBeenCalled();
+    expect(tryOutboundApprovalBypass(18, fingerprintInput)).toBe(false);
+    expect(setSyncInfoMock).toHaveBeenCalledTimes(1);
+    expect(setSyncInfoMock).toHaveBeenCalledWith(outboundReviewApprovedKey(18), '');
+  });
+
+  test('a marker for another sender account does not bypass the review', () => {
+    getSyncInfoMock.mockReturnValueOnce(
+      encodeOutboundApprovalMarker(new Date(), outboundApprovalFingerprint({ ...fingerprintInput, accountId: 1 })),
+    );
+    expect(tryOutboundApprovalBypass(22, { ...fingerprintInput, accountId: 2 })).toBe(false);
+    expect(setSyncInfoMock).toHaveBeenCalledWith(outboundReviewApprovedKey(22), '');
   });
 
   test('clears stale, malformed and content-mismatched markers', () => {
     const stale = encodeOutboundApprovalMarker(
       new Date(Date.now() - 25 * 60 * 60 * 1000),
-      outboundDraftFingerprint(fingerprintInput),
+      outboundApprovalFingerprint(fingerprintInput),
     );
     const changed = encodeOutboundApprovalMarker(
       new Date(),
-      outboundDraftFingerprint({ ...fingerprintInput, bodyText: 'Anderer Inhalt' }),
+      outboundApprovalFingerprint({ ...fingerprintInput, bodyText: 'Anderer Inhalt' }),
     );
     getSyncInfoMock
       .mockReturnValueOnce(stale)
@@ -114,7 +124,7 @@ describe('outbound approval marker lifecycle', () => {
     stampOutboundApprovalMarker(22, fingerprintInput);
     expect(setSyncInfoMock).toHaveBeenCalledWith(
       outboundReviewApprovedKey(22),
-      encodeOutboundApprovalMarker(new Date(), outboundDraftFingerprint(fingerprintInput)),
+      encodeOutboundApprovalMarker(new Date(), outboundApprovalFingerprint(fingerprintInput)),
     );
 
     clearOutboundApprovalMarker(22);

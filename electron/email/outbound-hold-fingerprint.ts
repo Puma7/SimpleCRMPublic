@@ -8,7 +8,7 @@
 import { EMAIL_MESSAGES_TABLE, SYNC_INFO_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { outboundHoldFingerprint } from '../../packages/core/src/email/outbound-approval-marker';
-import { outboundHoldFingerprintKey } from '../../packages/core/src/email/outbound-review-skip';
+import { outboundHoldFingerprintKey, outboundReviewSkippedKey } from '../../packages/core/src/email/outbound-review-skip';
 
 type DraftContentRow = {
   account_id: number | null;
@@ -64,4 +64,20 @@ export function clearOutboundHoldFingerprints(...draftIds: number[]): void {
   if (draftIds.length === 0) return;
   const del = getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`);
   for (const id of draftIds) del.run(outboundHoldFingerprintKey(id));
+}
+
+export const OUTBOUND_REVIEW_APPROVED_PREFIX = 'outbound_review_approved:';
+
+export function outboundReviewApprovedKey(draftId: number): string {
+  return `${OUTBOUND_REVIEW_APPROVED_PREFIX}${draftId}`;
+}
+
+/** Kontowechsel: Freigabe und „ohne Prüfung“ galten dem bisherigen Absender. */
+export function clearOutboundReviewApprovalMarkers(...draftIds: number[]): void {
+  if (draftIds.length === 0) return;
+  const del = getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`);
+  for (const id of draftIds) {
+    del.run(outboundReviewApprovedKey(id));
+    del.run(outboundReviewSkippedKey(id));
+  }
 }

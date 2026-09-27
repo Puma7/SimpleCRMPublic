@@ -32,6 +32,7 @@ function draftFingerprintFields(
     cc: recipientFieldFromJson(draftRow.cc_json) || null,
     bcc: recipientFieldFromJson(draftRow.bcc_json) || null,
     attachmentPaths: parseDraftAttachmentPathsJson(draftRow.draft_attachment_paths_json),
+    accountId: draftRow.account_id,
   };
 }
 

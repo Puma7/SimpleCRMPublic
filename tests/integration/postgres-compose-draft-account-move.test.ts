@@ -131,6 +131,38 @@ describe('server compose draft: move to another account', () => {
     expect(leftovers.rows).toEqual([]);
   });
 
+  test('Kontowechsel verwirft Freigabe und „ohne Prüfung“; Speichern im selben Konto behält sie', async () => {
+    const messages = createPostgresEmailMessageReadPort({ db, attachmentsRoot });
+    const { draftId } = await createFilledDraft(messages);
+    const keys = [`outbound_review_approved:${draftId}`, `outbound_review_skipped:${draftId}`];
+    for (const key of keys) {
+      await postgres.admin.query(
+        `INSERT INTO sync_info (workspace_id, key, value) VALUES ($1, $2, '2026-09-27T10:00:00.000Z|abc')`,
+        [WORKSPACE_ID, key],
+      );
+    }
+    const markers = async () => (await postgres.admin.query<{ key: string }>(
+      `SELECT key FROM sync_info WHERE workspace_id = $1 AND key = ANY($2::text[]) ORDER BY key`,
+      [WORKSPACE_ID, keys],
+    )).rows.map((row) => row.key);
+
+    const same = await messages.updateComposeDraft({
+      workspaceId: WORKSPACE_ID,
+      messageId: draftId,
+      values: { accountId: SERVICE_ACCOUNT_ID, subject: 'Angebot Mai' },
+    });
+    expect(same.ok).toBe(true);
+    expect(await markers()).toEqual([...keys].sort());
+
+    const moved = await messages.updateComposeDraft({
+      workspaceId: WORKSPACE_ID,
+      messageId: draftId,
+      values: { accountId: SALES_ACCOUNT_ID },
+    });
+    expect(moved.ok).toBe(true);
+    expect(await markers()).toEqual([]);
+  });
+
   test('rejects an unknown target account and leaves the draft untouched', async () => {
     const messages = createPostgresEmailMessageReadPort({ db, attachmentsRoot });
     const { draftId } = await createFilledDraft(messages);

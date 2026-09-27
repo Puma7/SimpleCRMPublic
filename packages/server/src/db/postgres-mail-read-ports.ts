@@ -33,6 +33,7 @@ import {
   type SpamListMatch,
   type SpamScoreBreakdown,
   type SenderFilterResult,
+  outboundReviewSkippedKey,
 } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
@@ -103,7 +104,7 @@ import {
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
-import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import { outboundReviewApprovedKey, persistManualOutboundApproval } from '../mail-outbound-approval-store';
 import {
   loadStoredRawForCheck,
   loadStoredRawOrNull,
@@ -1454,6 +1455,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             ? composeDraftUpdate.returning(kyselySql<boolean>`(${draftContentPredicate})`.as('content_readable'))
             : composeDraftUpdate
           ).executeTakeFirstOrThrow();
+          if (accountMove !== undefined) {
+            // Kontowechsel: Freigabe und „ohne Prüfung“ galten dem bisherigen Absender.
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', 'in', [outboundReviewApprovedKey(input.messageId), outboundReviewSkippedKey(input.messageId)])
+              .execute();
+          }
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },

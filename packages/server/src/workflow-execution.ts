@@ -33,7 +33,7 @@ import {
   listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
   normalizeEmailAddress,
-  outboundDraftFingerprint,
+  outboundApprovalFingerprint,
   outboundHoldReasonOrFallback,
   outgoing,
   parseGraphDocument,
@@ -6235,7 +6235,7 @@ async function releaseWorkflowOutboundHold(
     };
   }
 
-  const fingerprint = outboundDraftFingerprint({
+  const fingerprint = outboundApprovalFingerprint({
     subject: finalSubject,
     bodyText: cleanedBodyText,
     bodyHtml: cleanedBodyHtml,
@@ -6243,6 +6243,7 @@ async function releaseWorkflowOutboundHold(
     cc: addressesFromStoredRecipientJson(draftRow?.cc_json),
     bcc: addressesFromStoredRecipientJson(draftRow?.bcc_json),
     attachmentPaths: draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+    accountId: draftRow?.account_id ?? null,
   });
   const key = outboundReviewApprovedKey(context.messageId);
   const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
@@ -6437,7 +6438,7 @@ async function sendWorkflowDraft(
       .where('id', '=', draftId)
       .execute();
 
-    const fingerprint = outboundDraftFingerprint({
+    const fingerprint = outboundApprovalFingerprint({
       subject: finalSubject,
       bodyText: cleaned.plain,
       bodyHtml: cleaned.html,
@@ -6445,6 +6446,7 @@ async function sendWorkflowDraft(
       cc: addressesFromStoredRecipientJson(draftRow.cc_json),
       bcc: addressesFromStoredRecipientJson(draftRow.bcc_json),
       attachmentPaths: draftAttachmentPathsFromJson(draftRow.draft_attachment_paths_json),
+      accountId: draftRow.account_id,
     });
     const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
     await trx

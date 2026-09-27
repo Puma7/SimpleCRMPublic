@@ -34,7 +34,7 @@ import {
 } from '../../shared/signature-template';
 import { escapeHtmlText } from '../../shared/compose-body';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
-import { clearOutboundHoldFingerprints } from './outbound-hold-fingerprint';
+import { clearOutboundHoldFingerprints, clearOutboundReviewApprovalMarkers } from './outbound-hold-fingerprint';
 
 export type EmailAccountRow = {
   id: number;
@@ -2197,4 +2197,5 @@ export function updateComposeDraft(
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
     .run(...vals);
+  if (accountMoved) clearOutboundReviewApprovalMarkers(messageId);
 }

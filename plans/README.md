@@ -110,7 +110,7 @@ update the row here.
 | Plan | Title | Priority | Effort | Category | Depends on | Status |
 |------|-------|----------|--------|----------|------------|--------|
 | 024 | KI-Entscheidung: linear chat parser + fraction probabilities | P1 | S | security | 028 | DONE |
-| 025 | Bind the outbound approval marker to the sender account | P1 | S | security | — | TODO |
+| 025 | Bind the outbound approval marker to the sender account | P1 | S | security | — | DONE |
 | 026 | Tighten held-content normalization for the review skip | P2 | M | security | 025 | TODO |
 | 027 | Raw-part dedup, GC and maintenance survive damaged originals | P1 | S | bug | — | TODO |
 | 028 | Close open code fences in knowledge-base sections | P1 | S | bug | — | DONE |
