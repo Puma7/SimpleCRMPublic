@@ -71,8 +71,8 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Mail module tests
-        run: pnpm run test:mail
+      - name: Mail module tests (coverage ratchet)
+        run: pnpm run test:mail:coverage:check
 
       - name: Server module coverage (ratchet)
         run: |
@@ -81,6 +81,18 @@ jobs:
 
       - name: Email UI coverage ratchet
         run: pnpm run test:ui:coverage:check
+
+      - name: Upload coverage summaries
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-summaries-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/mail/coverage-summary.json
+            coverage/server/coverage-summary.json
+            coverage/ui/coverage-summary.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Typecheck
         run: pnpm run typecheck
