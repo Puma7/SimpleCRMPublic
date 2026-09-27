@@ -137,6 +137,40 @@ describe('Wissensbasis-Abschnitte (TA-P5)', () => {
     const middle = applyKnowledgeOperations('## A\n\na\n\n## B\n\nb\n\n## C\n\nc\n', [{ op: 'update', section: 'B', content: 'neu' }]);
     expect(middle.content).toBe('## A\n\na\n\n## B\n\nneu\n\n## C\n\nc\n');
   });
+
+  it('offener Codeblock im KI-Inhalt verschluckt keine späteren Abschnitte', () => {
+    const base = '# KB\n\n## A\n\nalt A\n\n## B\n\nInhalt B\n\n## C\n\nInhalt C\n';
+    const first = applyKnowledgeOperations(base, [{ op: 'update', section: 'A', content: 'Neu:\n```\ncode ohne Ende' }]);
+    const parsed = parseKnowledgeSections(first.content);
+    expect(parsed.sections.map((s) => s.title)).toEqual(['A', 'B', 'C']);
+    expect(parsed.sections[0]!.content.endsWith('code ohne Ende\n```')).toBe(true);
+    const second = applyKnowledgeOperations(first.content, [{ op: 'update', section: 'A', content: 'ganz neu' }]);
+    expect(second.content).toContain('## B\n\nInhalt B');
+    expect(second.content).toContain('## C\n\nInhalt C');
+
+    const tilde = applyKnowledgeOperations(base, [
+      { op: 'add', section: 'D', content: '~~~\nx' },
+      { op: 'add', section: 'E', content: 'e' },
+    ]);
+    expect(parseKnowledgeSections(tilde.content).sections.map((s) => s.title)).toEqual(['A', 'B', 'C', 'D', 'E']);
+  });
+
+  it('liest ein bereits beschädigtes Dokument (offener Codeblock bis Dateiende) abschnittsweise', () => {
+    const broken = '## A\n\n```\ncode\n\n## B\n\nb\n\n## C\n\nc\n';
+    const parsed = parseKnowledgeSections(broken);
+    expect(parsed.sections.map((s) => s.title)).toEqual(['A', 'B', 'C']);
+    expect(serializeKnowledgeSections(parsed)).toBe(broken);
+    expect(applyKnowledgeOperations(broken, [{ op: 'update', section: 'A', content: 'repariert' }]).content)
+      .toBe('## A\n\nrepariert\n\n## B\n\nb\n\n## C\n\nc\n');
+  });
+
+  it('korrekt geschlossene Codeblöcke bleiben unverändert', () => {
+    expect(parseKnowledgeSections('## A\n\n```md\n## kein Abschnitt\n```\n\n## B\n\nb\n').sections.map((s) => s.title))
+      .toEqual(['A', 'B']);
+    const open = parseKnowledgeSections('## A\n\n```\ncode ohne Ende\n');
+    expect(open.sections.map((s) => s.title)).toEqual(['A']);
+    expect(open.sections[0]!.content).toBe('```\ncode ohne Ende');
+  });
 });
 
 describe('diffText (TA-P5)', () => {

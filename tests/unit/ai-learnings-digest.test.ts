@@ -19,6 +19,7 @@ import {
   prepareSentLearningCandidate,
 } from '../../packages/core/src/learnings/candidates';
 import { computeTextChangeRatio } from '../../packages/server/src/ai-feedback';
+import { parseKnowledgeSections } from '../../packages/core/src/learnings/knowledge-sections';
 
 function candidate(id: number, overrides: Partial<LearningCandidateForDigest> = {}): LearningCandidateForDigest {
   return {
@@ -252,6 +253,21 @@ describe('computeLearningsDigestProposal (TA-P5)', () => {
       '# Learnings\n\n## Kontakt\n\nHotline 0800 1234567, Mo–Fr.\n\n## Rückgabe\n\n30 Tage, Etikett im Kundenkonto. Rückfragen an [Telefon].\n',
     );
     expect(result.applied.map((a) => a.result)).toEqual(['updated', 'updated']);
+  });
+
+  it('ein offener Codeblock im Vorschlag verschluckt keine folgenden Abschnitte', async () => {
+    const result = await computeLearningsDigestProposal({
+      knowledgeBaseName: 'Learnings',
+      baseContent: base,
+      candidates: [candidate(1)],
+      chat: async () => JSON.stringify({
+        summary: 'Kontakt ergänzt.',
+        operations: [{ op: 'update', section: 'Kontakt', content: 'Hotline\n```\nnicht geschlossen' }],
+      }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(parseKnowledgeSections(result.proposedContent).sections.map((s) => s.title)).toEqual(['Kontakt', 'Rückgabe']);
   });
 
   it('meldet KI- und Parse-Fehler sowie zu lange Ergebnisse', async () => {

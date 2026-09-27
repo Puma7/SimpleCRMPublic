@@ -502,7 +502,8 @@ export async function computeLearningsDigestProposal(input: {
     ...(operation.reason === undefined ? {} : { reason: redactPersonalData(operation.reason) }),
   }));
   const summary = redactPersonalData(parsed.value.summary);
-  const { content, applied } = applyKnowledgeOperations(input.baseContent, operations);
+  const { content, applied, structureError } = applyKnowledgeOperations(input.baseContent, operations);
+  if (structureError) return { ok: false, error: truncateError(`Vorschlag verworfen: ${structureError}`) };
   const maxLength = input.maxDocumentLength ?? LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH;
   if (content.length > maxLength) {
     return {

@@ -28,7 +28,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [ ] **024** KI-Entscheidung: Antwort-Parser linear statt Regex; `1`/`1.0` richtig lesen · Befund #1, #6 · P1 · S · *nach 028*
 - [ ] **025** Freigabe-Marker an das Absenderkonto binden, bei Kontowechsel löschen · Befund #2 · P1 · S
 - [ ] **027** Ein beschädigtes Mail-Original stoppt Deduplizierung und `simplecrm maintenance` nicht mehr · Befund #3 · P1 · S
-- [ ] **028** Wissensbasis: offene Codeblöcke schließen, kein Abschnittsverlust · Befund #4 · P1 · S
+- [x] **028** Wissensbasis: offene Codeblöcke schließen, kein Abschnittsverlust · Befund #4 · P1 · S
 - [ ] **029** Learnings bekommen festen Anteil am Wissensbudget der KI-Entwürfe · Befund #5 · P1 · S
 - [ ] **030** Coverage-Ratchets neu setzen, Mail-Ratchet in CI, Warnung bei veralteter Baseline · Befund #7 · P1 · S
 

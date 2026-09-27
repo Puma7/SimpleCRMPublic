@@ -36,6 +36,56 @@ export type AppliedKnowledgeOperation = KnowledgeOperation & {
 const HEADING_PATTERN = /^##(?!#)[ \t]+(.+?)[ \t#]*$/;
 const FENCE_PATTERN = /^[ \t]*(```|~~~)/;
 
+/** Schließt einen am Textende noch offenen Codeblock (``` oder ~~~). */
+export function closeUnterminatedKnowledgeFence(text: string): string {
+  let fence: string | null = null;
+  for (const line of text.split('\n')) {
+    const match = FENCE_PATTERN.exec(line);
+    if (!match) continue;
+    if (fence === null) fence = match[1]!;
+    else if (fence === match[1]) fence = null;
+  }
+  return fence === null ? text : `${text.replace(/\n*$/, '')}\n${fence}`;
+}
+
+/**
+ * Abschnittsanfänge. Ein Codeblock, der bis zum Dokumentende offen bleibt
+ * (kaputter KI-Inhalt), endet ersatzweise an der nächsten `## `-Überschrift —
+ * sonst verschwänden alle folgenden Abschnitte. Dokumente mit geschlossenen
+ * Codeblöcken werden unverändert gelesen.
+ */
+function findSectionStarts(lines: readonly string[]): { line: number; title: string }[] {
+  const lenientOpeners = new Set<number>();
+  for (;;) {
+    const starts: { line: number; title: string }[] = [];
+    let fence: string | null = null;
+    let opener = -1;
+    let lenient = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]!;
+      const fenceMatch = FENCE_PATTERN.exec(line);
+      if (fenceMatch) {
+        if (fence === null) {
+          fence = fenceMatch[1]!;
+          opener = i;
+          lenient = lenientOpeners.has(i);
+        } else if (fence === fenceMatch[1]) {
+          fence = null;
+        }
+        continue;
+      }
+      if (fence !== null) {
+        if (!(lenient && HEADING_PATTERN.test(line))) continue;
+        fence = null;
+      }
+      const heading = HEADING_PATTERN.exec(line);
+      if (heading) starts.push({ line: i, title: heading[1]!.trim() });
+    }
+    if (fence === null || lenient) return starts;
+    lenientOpeners.add(opener);
+  }
+}
+
 /** Vergleichsschlüssel für Abschnittstitel (Groß-/Kleinschreibung, Leerzeichen). */
 export function normalizeKnowledgeSectionTitle(title: string): string {
   return String(title ?? '')
@@ -50,20 +100,7 @@ export function normalizeKnowledgeSectionTitle(title: string): string {
 export function parseKnowledgeSections(markdown: string): KnowledgeSectionDocument {
   const text = String(markdown ?? '').replace(/\r\n?/g, '\n');
   const lines = text.split('\n');
-  const starts: { line: number; title: string }[] = [];
-  let fence: string | null = null;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i]!;
-    const fenceMatch = FENCE_PATTERN.exec(line);
-    if (fenceMatch) {
-      if (fence === null) fence = fenceMatch[1]!;
-      else if (fence === fenceMatch[1]) fence = null;
-      continue;
-    }
-    if (fence !== null) continue;
-    const heading = HEADING_PATTERN.exec(line);
-    if (heading) starts.push({ line: i, title: heading[1]!.trim() });
-  }
+  const starts = findSectionStarts(lines);
   if (starts.length === 0) return { preamble: text, sections: [] };
 
   // Jeder Teil trägt den Zeilenumbruch hinter sich: preamble + raw₁ + raw₂ …
@@ -81,7 +118,7 @@ export function parseKnowledgeSections(markdown: string): KnowledgeSectionDocume
 }
 
 function renderSection(section: KnowledgeSection): string {
-  const body = section.content.trim();
+  const body = closeUnterminatedKnowledgeFence(section.content.trim());
   return body ? `## ${section.title.trim()}\n\n${body}\n` : `## ${section.title.trim()}\n`;
 }
 
@@ -129,7 +166,7 @@ export function normalizeKnowledgeSectionContent(content: string, title?: string
     if (fence !== null) return line;
     return line.replace(/^#{1,2}(?=[ \t])/, '###');
   });
-  return lines.join('\n').trim();
+  return closeUnterminatedKnowledgeFence(lines.join('\n').trim());
 }
 
 /**
@@ -141,7 +178,7 @@ export function normalizeKnowledgeSectionContent(content: string, title?: string
 export function applyKnowledgeOperations(
   markdown: string,
   operations: readonly KnowledgeOperation[],
-): { content: string; applied: AppliedKnowledgeOperation[] } {
+): { content: string; applied: AppliedKnowledgeOperation[]; structureError?: string } {
   const doc = parseKnowledgeSections(markdown);
   const applied: AppliedKnowledgeOperation[] = [];
   const indexOf = (title: string) => {
@@ -202,5 +239,14 @@ export function applyKnowledgeOperations(
     applied.push({ ...operation, result: 'appended' });
   }
 
-  return { content: serializeKnowledgeSections(doc), applied };
+  const content = serializeKnowledgeSections(doc);
+  // Schutz gegen verschluckte oder erfundene Überschriften: das Ergebnis muss
+  // genau die Abschnitte enthalten, die nach den Operationen erwartet werden.
+  const comparable = (title: string) => normalizeKnowledgeSectionTitle(title).replace(/[ \t#]+$/, '');
+  const expected = doc.sections.map((section) => comparable(section.title));
+  const actual = parseKnowledgeSections(content).sections.map((section) => comparable(section.title));
+  const structureError = expected.length === actual.length && expected.every((title, index) => title === actual[index])
+    ? undefined
+    : `Abschnitte stimmen nach dem Anwenden nicht (erwartet ${expected.length}, gefunden ${actual.length}).`;
+  return { content, applied, ...(structureError ? { structureError } : {}) };
 }
