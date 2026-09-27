@@ -225,17 +225,47 @@ function normalizedBodyText(value: string): string {
   return collapseWhitespace(decodeHtmlEntities(value));
 }
 
-const LINK_TARGET = /\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+// Alle Attribute, die eine Adresse laden oder verlinken (Links, Bilder,
+// Hintergründe, Formularziele, Medien). Eine Änderung daran ist eine Änderung.
+const LINK_TARGET = /\b(?:href|src|srcset|background|action|formaction|poster|data|cite)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const SRCSET_ATTRIBUTE = /^srcset/i;
 
-/** Link- und Bildziele (href/src) eines HTML-Teils, sortiert (auch für die Ausgangs-Sperre). */
+/** Link- und Bildziele eines HTML-Teils, sortiert (auch für die Ausgangs-Sperre). */
 export function htmlLinkTargets(html: string): string[] {
   const targets: string[] = [];
   LINK_TARGET.lastIndex = 0;
   for (let match = LINK_TARGET.exec(html); match; match = LINK_TARGET.exec(html)) {
     const value = collapseWhitespace(decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? ''));
-    if (value) targets.push(value);
+    if (!value) continue;
+    if (SRCSET_ATTRIBUTE.test(match[0].replace(/^\W+/, ''))) {
+      // srcset: „url 1x, url 2x“ – je Kandidat nur die Adresse.
+      for (const candidate of value.split(',')) {
+        const url = candidate.trim().split(' ')[0];
+        if (url) targets.push(url);
+      }
+      continue;
+    }
+    targets.push(value);
   }
+  targets.push(...cssUrlTargets(html));
   return targets.sort();
+}
+
+/** Adressen aus CSS `url(...)` in style-Attributen und <style>-Blöcken (linear). */
+function cssUrlTargets(html: string): string[] {
+  const lower = html.toLowerCase();
+  const targets: string[] = [];
+  let cursor = 0;
+  for (;;) {
+    const start = lower.indexOf('url(', cursor);
+    if (start < 0) break;
+    const end = lower.indexOf(')', start + 4);
+    if (end < 0) break;
+    const raw = decodeHtmlEntities(html.slice(start + 4, end)).trim().replace(/^["']|["']$/g, '').trim();
+    if (raw) targets.push(`url(${raw})`);
+    cursor = end + 1;
+  }
+  return targets;
 }
 
 /**
