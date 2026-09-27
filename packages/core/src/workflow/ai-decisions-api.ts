@@ -188,3 +188,34 @@ export function parseAiDecisionsResponse(body: unknown): AiDecisionsParsedRespon
   }
   return { ok: true, probability, costMicroUsd, usage };
 }
+
+const ERROR_DETAIL_MAX_CHARS = 300;
+
+/**
+ * Lesbarer Grund aus einer Fehlerantwort der Decisions API (z. B. HTTP 400):
+ * nur das Feld `error.message` bzw. `message`/`detail` eines JSON-Körpers,
+ * gekürzt und ohne Steuerzeichen. HTML-Seiten und anderer Text werden nie
+ * weitergegeben. Der API-Key wird geschwärzt, falls der Anbieter ihn spiegelt.
+ */
+export function aiDecisionsErrorDetail(body: string, apiKey?: string | null): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return null;
+  }
+  const obj = record(parsed);
+  if (!obj) return null;
+  const error = obj.error;
+  const candidates = [
+    record(error)?.message,
+    typeof error === 'string' ? error : undefined,
+    obj.message,
+    obj.detail,
+  ];
+  const message = candidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  if (!message) return null;
+  let clean = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (apiKey) clean = clean.split(apiKey).join('***');
+  return clean.length > ERROR_DETAIL_MAX_CHARS ? `${clean.slice(0, ERROR_DETAIL_MAX_CHARS)}…` : clean;
+}

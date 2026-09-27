@@ -229,6 +229,12 @@ describe('callAiDecision — OpenRouter Decisions API', () => {
       .rejects.toThrow('Decisions API HTTP 401');
     await expect(callAiDecision({ ...decisionReq, fetchImpl: fakeFetch('secret error page', captured, 500), allowUnguardedFetch: true }))
       .rejects.not.toThrow(/secret/);
+    // JSON-Fehler des Anbieters: nur dessen Meldung, gekürzt, Key geschwärzt.
+    await expect(callAiDecision({
+      ...decisionReq,
+      fetchImpl: fakeFetch({ error: { message: 'state: expected string, received object (key or-secret)', code: 400 } }, captured, 400),
+      allowUnguardedFetch: true,
+    })).rejects.toThrow('Decisions API HTTP 400: state: expected string, received object (key ***)');
     const result = await callAiDecision({
       ...decisionReq,
       fetchImpl: fakeFetch({ answers: { decision: { noul: 'n/a' } }, usage: { cost: 0.001 } }, captured),

@@ -8,6 +8,7 @@ import {
   AI_DECISIONS_PROFILE_IN_CHAT_NODE_ERROR,
   AI_DECISIONS_TIMEOUT_MS,
   aiDecisionsEndpointUrl,
+  aiDecisionsErrorDetail,
   buildAiDecisionsRequestBody,
   isAiDecisionsProvider,
   parseAiDecisionsResponse,
@@ -299,8 +300,11 @@ export async function callAiDecision(req: AiDecisionRequest): Promise<AiDecision
 
   const body = await response.text();
   if (!response.ok) {
-    // Wie callAiChat: keine Antwortinhalte an den Aufrufer.
-    throw new Error(`Decisions API HTTP ${response.status}`);
+    // Keine rohen Antwortinhalte an den Aufrufer (wie callAiChat): nur die
+    // Fehlermeldung aus einem JSON-Körper, gekürzt und ohne Key. Ohne sie war
+    // ein „HTTP 400“ in der Lauf-Historie nicht zu deuten.
+    const detail = aiDecisionsErrorDetail(body, req.apiKey);
+    throw new Error(`Decisions API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
   }
   const parsed = parseAiDecisionsResponse(body);
   const usage = parsed.usage

@@ -204,11 +204,15 @@ describe('email-openai', () => {
 
     test('Entscheidungsmodell: Fehlerfälle werfen mit Modell (für ai.decide.model)', async () => {
       runtimeMock.mockResolvedValue(decisionsRuntime);
-      fetchMock.mockResolvedValueOnce(new Response('rate limited', { status: 429 }));
+      fetchMock.mockResolvedValueOnce(new Response('<html>rate limited</html>', { status: 429 }));
       await expect(runAiDecideCall({ question: 'q', contextText: '', state: {} })).rejects.toMatchObject({
-        message: 'Decisions-Anfrage fehlgeschlagen: 429 rate limited',
+        message: 'Decisions-Anfrage fehlgeschlagen: HTTP 429',
         aiModel: 'typesafe/jev-1.13',
       });
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: 'Invalid state', code: 400 } }), { status: 400 }));
+      await expect(runAiDecideCall({ question: 'q', contextText: '', state: {} })).rejects.toThrow(
+        'Decisions-Anfrage fehlgeschlagen: HTTP 400: Invalid state',
+      );
       fetchMock.mockResolvedValueOnce(jsonResponse({ answers: { decision: { noul: 'n/a' } } }));
       await expect(runAiDecideCall({ question: 'q', contextText: '', state: {} })).rejects.toThrow(
         /keine verwertbare Ja-Wahrscheinlichkeit/,

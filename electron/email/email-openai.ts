@@ -5,6 +5,7 @@ import {
   AI_DECISIONS_PROFILE_IN_CHAT_NODE_ERROR,
   AI_DECISIONS_TIMEOUT_MS,
   aiDecisionsEndpointUrl,
+  aiDecisionsErrorDetail,
   buildAiDecisionsRequestBody,
   isAiDecisionsProvider,
   parseAiDecisionsResponse,
@@ -129,7 +130,9 @@ async function decisionWithRuntime(
     });
     if (!res.ok) {
       const t = await readBoundedResponseText(res, MAX_AI_ERROR_TEXT_BYTES);
-      throw new Error(`Decisions-Anfrage fehlgeschlagen: ${res.status} ${t.slice(0, 200)}`);
+      // Nur die Fehlermeldung aus einem JSON-Körper (wie der Server), nie HTML-Seiten.
+      const detail = aiDecisionsErrorDetail(t, apiKey);
+      throw new Error(`Decisions-Anfrage fehlgeschlagen: HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
     }
     const parsed = parseAiDecisionsResponse(await readBoundedResponseJson(res, MAX_AI_RESPONSE_BYTES));
     if (!parsed.ok) throw new Error(parsed.error);

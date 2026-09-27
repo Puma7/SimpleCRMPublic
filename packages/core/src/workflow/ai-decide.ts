@@ -218,8 +218,12 @@ export type AiDecideMailStrings = Readonly<Partial<Record<
 export type AiDecideMailContext = {
   /** Klartext für Chat-Modelle. */
   text: string;
-  /** Zustand (`state`) für die Decisions API. */
-  state: Record<string, unknown>;
+  /**
+   * Zustand (`state`) für die Decisions API: derselbe Klartext. Mit einem
+   * verschachtelten Objekt ({ email: { … } }) antwortete Span-01 auf
+   * OpenRouter mit HTTP 400, der Verbindungstest mit Text-`state` nicht.
+   */
+  state: string;
 };
 
 function mailBody(strings: AiDecideMailStrings): string {
@@ -248,7 +252,6 @@ export function buildAiDecideMailContext(input: {
   const to = String(s.to_address ?? '');
   const cc = String(s.cc_address ?? '');
   const attachments = String(s.attachment_names ?? '').trim();
-  const direction = outbound ? 'outbound' : 'inbound';
   const heading = outbound ? 'Ausgehender E-Mail-Entwurf (noch nicht versendet)' : 'E-Mail';
 
   if (input.mode === 'metadata') {
@@ -262,22 +265,8 @@ export function buildAiDecideMailContext(input: {
       attachment_names: attachments,
       attachment_types: String(s.attachment_types ?? ''),
     });
-    return {
-      text: `${heading}\n${text}`,
-      state: {
-        email: {
-          direction,
-          subject,
-          ...(outbound ? {} : { from }),
-          to,
-          ...(cc ? { cc } : {}),
-          snippet: String(s.snippet ?? ''),
-          has_attachments: String(s.has_attachments ?? '') === 'true' || Boolean(attachments),
-          attachments,
-          note: 'Full body text withheld for privacy (metadata only).',
-        },
-      },
-    };
+    const metadataText = `${heading}\n${text}`;
+    return { text: metadataText, state: metadataText };
   }
 
   const body = mailBody(s).slice(0, AI_DECIDE_BODY_MAX_CHARS);
@@ -292,20 +281,8 @@ export function buildAiDecideMailContext(input: {
     'Text:',
     body || '(leer)',
   ];
-  return {
-    text: lines.join('\n'),
-    state: {
-      email: {
-        direction,
-        subject,
-        ...(outbound ? {} : { from }),
-        to,
-        ...(cc ? { cc } : {}),
-        attachments,
-        body,
-      },
-    },
-  };
+  const fullText = lines.join('\n');
+  return { text: fullText, state: fullText };
 }
 
 /** System- und Nutzer-Prompt für Chat-Modelle. */

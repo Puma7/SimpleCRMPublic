@@ -161,7 +161,9 @@ describe('ai.decide Desktop-Knoten', () => {
     const call = decideMock.mock.calls[0]![0];
     expect(call).toMatchObject({ profileId: 4, question: 'Ist das Spam?', yesCriteria: 'Werbung', noCriteria: '' });
     expect(call.contextText).toContain('Wo bleibt meine Bestellung 1234?');
-    expect(call.state.email).toMatchObject({ subject: 'Frage zur Bestellung', from: 'kunde@firma.de' });
+    expect(call.state).toBe(call.contextText);
+    expect(call.state).toContain('Betreff: Frage zur Bestellung');
+    expect(call.state).toContain('Von: kunde@firma.de');
   });
 
   test('Mindest-Sicherheit aus dem Knoten gilt', async () => {

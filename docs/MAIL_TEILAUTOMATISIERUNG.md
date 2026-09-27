@@ -36,7 +36,7 @@ Learnings → sammeln (bearbeitete KI-Entwürfe, menschliche Antworten, Notizen)
 ### 3.1 Entscheidungsmodelle (Jev, Span-01)
 
 - Jev (`typesafe/jev-1.13`) und Span-01 (`respan/span-01`) laufen über die **OpenRouter Decisions API** (`POST https://openrouter.ai/api/alpha/decisions`), nicht über Chat Completions.
-- Anfrage: `{ model, state, questions: { decision: { type: "noul", instructions, criteria: { true, false } } } }`.
+- Anfrage: `{ model, state, questions: { decision: { type: "noul", instructions, criteria: { true, false } } } }`. `state` ist die Mail als Klartext (derselbe Text wie für Chat-Modelle); mit einem verschachtelten Objekt antwortete Span-01 mit HTTP 400. Lehnt die API ab, übernimmt die Meldung das Feld `error.message` der Antwort (gekürzt, Key geschwärzt).
 - Antwort: `{ answers: { decision: { type: "noul", noul: 0.96 } }, usage: { input_tokens, output_tokens, cost } }`. Es gibt nur eine Wahrscheinlichkeit für „Ja“, keine Begründung.
 - Span-01 liefert laut Anbieter je Verhalten die Wahrscheinlichkeiten „vorhanden / nicht vorhanden / nicht erkennbar“. Das genaue Format auf OpenRouter war aus der Entwicklungsumgebung nicht abrufbar. Die Auswertung akzeptiert deshalb mehrere Antwortformen (`noul`, `probability`, `p_present`), jeweils als Anteil 0–1; ein Wert über 1 (etwa Prozent) ist nicht eindeutig lesbar und führt zum Ausgang „KI-Fehler“. Ob Span-01 funktioniert, zeigt der neue Knopf **„Verbindung testen“** im KI-Profil.
 - Neuer Profil-Typ **„OpenRouter Entscheidungsmodell (Decisions API)“**. Solche Profile funktionieren nur im Baustein „KI-Entscheidung“; alle anderen KI-Bausteine melden das klar.
