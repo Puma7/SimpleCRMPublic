@@ -48,9 +48,11 @@ read what is new (`docker/backup-attachments.sh`):
   left alone.
 - `restore-drill.sh` reads every content of the list and checks its hash;
   `doctor.sh` checks that they exist (`backup_attachments=ok|missing`).
-- Retention removes a content from the store only when no remaining list (and
-  no list being written) names it and it is older than one day. Without any
-  list nothing is removed. Protected rollback sets keep their contents.
+- Retention removes a content from the store only when no remaining list
+  names it and it is older than one day. A run writes its list only after
+  copying, so a content it reuses gets a fresh modification time and is
+  protected by the one-day rule until its list names it. Without any list
+  nothing is removed. Protected rollback sets keep their contents.
 
 The first backup after the upgrade copies all attachments into the store once;
 older `.tar` sets are removed by retention as usual.
@@ -460,6 +462,15 @@ Relevant environment values:
 - `BACKUP_RETENTION_DAILY`: default `7`.
 - `BACKUP_RETENTION_WEEKLY`: default `4`.
 - `BACKUP_RETENTION_MONTHLY`: default `12`.
+- `BACKUP_LOCK_WAIT_SECONDS`: default `3600`.
+- `BACKUP_LOCK_STALE_SECONDS`: default `43200`.
+
+Only one backup runs at a time. The scheduler, `simplecrm update` and
+`simplecrm backup` share the backups volume and take the lock
+`.backup.lock` in it. Another run waits up to `BACKUP_LOCK_WAIT_SECONDS` and
+then exits with code 75 without touching anything. A lock older than
+`BACKUP_LOCK_STALE_SECONDS`, or one left by a finished process in the same
+container, is taken over.
 
 Retention keeps the latest backup generations by UTC stamp: 7 daily + 4 weekly + 12 monthly. Each retained `db-*.dump` keeps its matching attachment archive, audit archive, and checksum manifest. Companion files without a matching database dump are removed as orphans.
 

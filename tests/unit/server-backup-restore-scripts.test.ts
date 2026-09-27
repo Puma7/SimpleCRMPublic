@@ -153,6 +153,77 @@ wait "$pid"
     expect(result.status).not.toBe(0);
     expect(result.files).toEqual([]);
   });
+
+  // Plan 033: nur ein Lauf gleichzeitig (Zeitplan, Update, `simplecrm backup`).
+  const completeDump = String.raw`
+stub pg_dump <<'STUB'
+#!/bin/sh
+printf 'PGDMP-complete'
+STUB
+mkdir -p "$ATTACHMENTS_DIR"
+printf 'attachment' > "$ATTACHMENTS_DIR/file.bin"
+`;
+  const completeSet = ['attachments-STAMP.list', 'attachments-store', 'backup-STAMP.meta', 'backup-STAMP.sha256', 'db-STAMP.dump'];
+
+  test('waits for a running backup and gives up without touching it', () => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const result = runBackup(completeDump + String.raw`
+mkdir "$BACKUP_DIR/.backup.lock"
+printf 'other-host 1 %s\n' "$(date +%s)" > "$BACKUP_DIR/.backup.lock/owner"
+export BACKUP_LOCK_WAIT_SECONDS=0
+`);
+
+    expect(result).toEqual({ status: 75, files: ['.backup.lock'] });
+  });
+
+  test('takes over a stale lock', () => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const result = runBackup(completeDump + String.raw`
+mkdir "$BACKUP_DIR/.backup.lock"
+printf 'other-host 1 1000000000\n' > "$BACKUP_DIR/.backup.lock/owner"
+`);
+
+    expect(result).toEqual({ status: 0, files: completeSet });
+  });
+
+  test('takes over the lock of a finished run on the same host', () => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const result = runBackup(completeDump + String.raw`
+mkdir "$BACKUP_DIR/.backup.lock"
+sh -c 'exit 0' &
+dead=$!
+wait "$dead"
+printf '%s %s %s\n' "$(uname -n)" "$dead" "$(date +%s)" > "$BACKUP_DIR/.backup.lock/owner"
+`);
+
+    expect(result).toEqual({ status: 0, files: completeSet });
+  });
+
+  test('holds the lock while it dumps', () => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const result = runBackup(String.raw`
+stub pg_dump <<'STUB'
+#!/bin/sh
+[ -f "$BACKUP_DIR/.backup.lock/owner" ] || exit 9
+printf 'PGDMP-complete'
+STUB
+`);
+
+    expect(result.status).toBe(0);
+    expect(result.files).not.toContain('.backup.lock');
+  });
 });
 
 // restore.sh gegen Stubs: psql meldet die Erweiterungen der Zieldatenbank und

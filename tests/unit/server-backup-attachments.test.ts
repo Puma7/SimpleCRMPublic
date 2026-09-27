@@ -115,6 +115,38 @@ run 'verify_attachment_list "$1/backups/attachments-2026-09-01T00-00-00Z.list"' 
     expect(out).toMatch(/attachment backup object missing[\s\S]*missing=refused/);
   });
 
+  // Plan 033: Die Aufräumung eines parallelen Laufs entfernte Objekte, die dieser
+  // Lauf wiederverwendet, bevor seine Liste sie nennt – der Satz war unvollständig.
+  test('a prune from a concurrent run keeps the objects this run reuses', () => {
+    if (skip()) return;
+    const out = runScenario(String.raw`
+run 'write_attachment_list "$1/att" "$1/backups" "$1/backups/attachments-2026-09-01T00-00-00Z.list"'
+find "$tmp/backups/attachments-store" -type f -exec touch -t 202001010000 {} +
+# Ein anderer Satz, der bleibt (ohne jede Liste raeumt prune nichts auf); alt, also nicht "die vorige Liste".
+printf '%s\t1\t1\t./anderer/satz.bin\n' "$(printf 'f%.0s' $(seq 1 64))" > "$tmp/backups/attachments-2026-08-01T00-00-00Z.list"
+touch -t 202001010000 "$tmp/backups/attachments-2026-08-01T00-00-00Z.list"
+printf 'Neue Rechnung' > "$tmp/att/ws/mail-sync/2/rechnung.pdf"
+repo="$(pwd)"
+if [ -L "$tmp/bin/cp" ]; then real_cp="$(command -v busybox) cp"; rm -f "$tmp/bin/cp"; else real_cp="$(command -v cp)"; fi
+cat > "$tmp/bin/cp" <<STUB
+#!/bin/sh
+# Ein paralleler Lauf: seine Aufbewahrung entfernt den alten Satz und raeumt den Speicher auf.
+if [ ! -f "$tmp/pruned" ]; then
+  : > "$tmp/pruned"
+  rm -f "$tmp/backups/attachments-2026-09-01T00-00-00Z.list"
+  "$SH" -c '. "$repo/docker/backup-attachments.sh"; prune_attachment_store "\$1"' sh "$tmp/backups"
+fi
+exec $real_cp "\$@"
+STUB
+chmod +x "$tmp/bin/cp"
+run 'write_attachment_list "$1/att" "$1/backups" "$1/backups/attachments-2026-09-02T00-00-00Z.list.partial"'
+[ -f "$tmp/pruned" ] && echo pruned=yes
+run 'verify_attachment_list "$1/backups/attachments-2026-09-02T00-00-00Z.list.partial"' 2>&1 && echo concurrent=complete || echo concurrent=incomplete
+`, useBusybox);
+    expect(out).toContain('pruned=yes');
+    expect(out).toContain('concurrent=complete');
+  });
+
   test('pruning removes only contents no list names and that are older than a day', () => {
     if (skip()) return;
     const out = runScenario(String.raw`
