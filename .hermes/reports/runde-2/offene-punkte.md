@@ -33,3 +33,26 @@
   UI-Coverage-Lauf fehl (291 ms / 207 ms), während mehrere Jest-Läufe parallel
   liefen. Allein gemessen: 9–18 ms je 200-KB-Eingabe. Kein Rückschritt aus
   Plan 032; die Schranke ist bei paralleler Last knapp.
+
+## Abhängigkeiten ändern: Host `codeload.github.com` gesperrt (Pläne 037 und 045)
+
+- `pnpm add -w @tanstack/react-virtual@^3.14.13` (Plan 037) und
+  `pnpm remove -w node-cron` (Plan 045) scheitern mit
+  `ERR_PNPM_FETCH_403 GET https://codeload.github.com/WiseLibs/better-sqlite3/tar.gz/b5701cb5…`.
+  pnpm lädt bei jeder Änderung der Abhängigkeiten das Git-Tarball von
+  `better-sqlite3` (`github:WiseLibs/better-sqlite3#v12.11.2`); die
+  Netzwerk-Richtlinie dieser Umgebung lässt den Host nicht zu. Nichts wurde
+  verändert (Lockfile und `node_modules` unverändert).
+- **Plan 037** hält laut STOP-Bedingung an. Der fertige Code liegt als Patch
+  bei `.hermes/reports/runde-2/037-nachrichtenliste.patch` (Basis `1c10240d`):
+  `message-row.tsx` (gemerkte Zeile, JSX wörtlich übernommen),
+  `message-list.tsx` (stabile Rückrufe, `useVirtualizer`, `scrollToIndex`),
+  neuer Test `tests/unit/message-list-virtualization.test.tsx`, Codex-Wächter
+  auf `message-row.tsx`. **Ungetestet**, weil die Bibliothek fehlt. Fortsetzen:
+  Host freigeben, `pnpm add -w @tanstack/react-virtual@^3.14.13`,
+  `git apply --3way .hermes/reports/runde-2/037-nachrichtenliste.patch`,
+  CHANGELOG-Zeile aus Plan 037 Schritt 6, dann Tests und Gates.
+- **Plan 045**: Umstellung vollständig (Code, Tests, Doku, CHANGELOG, Paritätstest
+  entfernt, `vite.config.ts` bereinigt). Offen ist nur, die jetzt ungenutzte
+  Abhängigkeit aus `package.json`/`pnpm-lock.yaml` zu entfernen:
+  `pnpm remove -w node-cron`, sobald der Host erreichbar ist.

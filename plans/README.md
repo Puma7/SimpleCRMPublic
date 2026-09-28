@@ -122,7 +122,7 @@ update the row here.
 | 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | DONE |
 | 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | DONE |
 | 036 | Contract test: renderer HTTP registry vs server routes | P2 | M | tests | — | DONE |
-| 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | TODO |
+| 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | BLOCKED — `pnpm add` am Proxy abgelehnt (codeload.github.com, better-sqlite3-Tarball); Code als Patch in .hermes/reports/runde-2/037-nachrichtenliste.patch (ungetestet) |
 | 038 | Learnings digest: prompt hardening + atomic acceptance | P3 | M | security | 035 | DONE |
 | 039 | Output budgets for DOC/XLS/RTF text extraction | P3 | S | security | — | DONE |
 | 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | DONE |
