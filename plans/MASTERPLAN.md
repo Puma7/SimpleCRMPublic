@@ -61,12 +61,15 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **049** R4 Automatik-Cockpit: Anteil Mensch/KI, Warteschlangen, KI-Kosten · P2 · M
 - [x] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*
 - [ ] **050** R5 Treffsicherheit der KI-Entscheidungen, Schwellen-Vorschlag · P3 · L · *nach 046, 049*
+  - ⏸ **Wartet auf Pascal:** Phase 0 fertig – Entscheidungsdokument `docs/design/ai-decision-accuracy.md` (Status DRAFT), Fragen Q1–Q7 beantworten, dann Phase 1.
 
 ## Welle 6 – Umbauten und Abhängigkeiten
 
 - [ ] **037** Mail-Liste virtualisieren (ersetzt Plan 008) · Befund #15 · P3 · M
+  - ⏸ **Blockiert:** `pnpm add` am gesperrten Host `codeload.github.com`; Code als Patch `.hermes/reports/runde-2/037-nachrichtenliste.patch` (ungetestet).
 - [ ] **045** Desktop-Zeitpläne auf die gemeinsame Cron-Logik, `node-cron` entfernen · Befund #20 · P3 · M
-- [ ] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
+  - ✅ Umstellung fertig (Gates grün); offen nur `pnpm remove -w node-cron`, sobald `codeload.github.com` erreichbar ist.
+- [x] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [ ] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
   - ⏸ **Wartet auf Pascal:** Phase 0 fertig – Entscheidungsdokument `docs/design/desktop-credential-store.md` (Status DRAFT) freigeben, dann Phase 1.
 
