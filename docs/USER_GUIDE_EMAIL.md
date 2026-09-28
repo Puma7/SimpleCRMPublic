@@ -27,7 +27,7 @@ In der E-Mail-Unterleiste können Sie **Klassisch** / **Beta** wählen (wird ges
 ## Postfach nutzen
 
 - **Synchronisieren:** Konten werden regelmäßig abgeglichen; Sie können auch manuell aktualisieren.
-- **Ansichten:** Posteingang, Gesendet, **Gesendet (KI)**, Entwürfe, Archiv, Spam, Papierkorb (Zähler in der Sidebar).
+- **Ansichten:** Posteingang, Gesendet, **Gesendet (KI)**, Entwürfe, **Wartet auf Freigabe**, **Versand blockiert**, Archiv, Spam, Papierkorb (Zähler in der Sidebar).
 - **Kategorien** links filtern die Liste (nur sinnvoll in der Inbox-Ansicht).
 - **Suche** durchsucht Betreff, Kurztext und Inhalt (schneller mit der eingebauten Volltextsuche, wo verfügbar).
 - **Nachricht:** Kunde verknüpfen, interne Notizen, Tags, **Zuweisung** an Teammitglieder, Anhänge **öffnen** oder **speichern**.
@@ -66,6 +66,26 @@ Beim Überfahren eines Kennzeichens mit der Maus erscheint der Name (Person, Wor
 - **Gesendet (KI)** direkt unter **Gesendet** zeigt nur Mails mit **KI**, **KI · freigegeben** oder **Automatik** — praktisch zum Nachsehen, was die Automatik verschickt hat. **Gesendet** zeigt weiterhin alles. Die Suche in dieser Ansicht bleibt auf sie beschränkt; Mails lassen sich nicht dorthin verschieben.
 - Schon **vor** dieser Funktion gesendete oder nur per IMAP abgeglichene Mails tragen keine Kennzeichnung.
 - Mit aktivem Abgleich des Gesendet-Ordners legt der Abgleich für eine von SimpleCRM gesendete Mail **keine zweite Zeile** an, sondern übernimmt die vorhandene — die Kennzeichnung bleibt erhalten.
+
+### Warteschlangen: „Wartet auf Freigabe“ und „Versand blockiert“
+
+Direkt unter **Entwürfe** stehen zwei Ansichten für die Teilautomatisierung:
+
+- **Wartet auf Freigabe:** KI-Entwürfe, die ein Mensch freigeben soll (dieselben, die im Posteingang mit „Freigabe“ markiert sind). Entwürfe mit geplantem Versand erscheinen dort nicht.
+- **Versand blockiert:** Entwürfe, die die Ausgangsprüfung angehalten hat („Entwurf — Ausgang blockiert“).
+
+Beide zeigen dieselben Mails wie im Posteingang, nur gesammelt; sie haben (wie „Gesendet (KI)“) keinen Zähler, und Mails lassen sich nicht dorthin verschieben. Die Suche in diesen Ansichten bleibt auf sie beschränkt.
+
+### Auswertung → Automatisierung
+
+Die Seite **Auswertung** zeigt in der Karte **Automatisierung**, wie viel die Teilautomatisierung leistet:
+
+- **Je Woche** (acht Wochen, Montag bis Sonntag, UTC): gesendete Mails nach Herkunft (Mensch, KI automatisch, KI freigegeben, Automatik, Relay) und der **Anteil automatisch** = (KI automatisch + KI freigegeben + Automatik) / (dieselben + Mensch). Relay und Mails ohne Kennzeichnung zählen für den Anteil nicht.
+- **Wartet auf Freigabe** und **Versand blockiert:** dieselben Zahlen wie die beiden Ansichten.
+- **KI-Entscheidungen (30 Tage)** je Workflow: wie oft Ja, Nein, Unsicher oder KI-Fehler. Testläufe zählen nicht.
+- **KI-Kosten (30 Tage):** nur in der Server-Edition und nur mit Zugriff auf alle Postfächer; sonst ein Hinweis.
+
+Der Konto-Filter oben gilt auch für diese Karte. Die Tabelle „Workflow-Läufe (24h)“ zeigt jetzt Workflow-Namen statt Nummern.
 
 ## Workflows (Kurz)
 

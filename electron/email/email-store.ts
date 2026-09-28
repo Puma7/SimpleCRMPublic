@@ -34,6 +34,7 @@ import {
 } from '../../shared/signature-template';
 import { escapeHtmlText } from '../../shared/compose-body';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
+import { APPROVAL_PENDING_VIEW_SQL, OUTBOUND_BLOCKED_VIEW_SQL } from './automation-view-sql';
 import { clearOutboundHoldFingerprints, clearOutboundReviewApprovalMarkers } from './outbound-hold-fingerprint';
 
 export type EmailAccountRow = {
@@ -647,6 +648,10 @@ export type AccountMailView =
   | 'sent'
   /** TA-P3: „Gesendet (KI)“ — gesendete Mails automatischer Herkunft. */
   | 'sent_ai'
+  /** Plan 049: „Wartet auf Freigabe“ – KI-Entwürfe, die auf einen Menschen warten. */
+  | 'approval_pending'
+  /** Plan 049: „Versand blockiert“ – vom Ausgang angehaltene Entwürfe. */
+  | 'outbound_blocked'
   | 'archived'
   | 'drafts'
   | 'scheduled_send'
@@ -763,6 +768,10 @@ export function listMessagesForAccountView(
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'sent_ai') {
     sql += ` AND ${SENT_AI_VIEW_SQL}`;
+  } else if (view === 'approval_pending') {
+    sql += ` AND ${APPROVAL_PENDING_VIEW_SQL}`;
+  } else if (view === 'outbound_blocked') {
+    sql += ` AND ${OUTBOUND_BLOCKED_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -851,6 +860,10 @@ export function listMessagesForAllAccountsView(
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'sent_ai') {
     sql += ` AND ${SENT_AI_VIEW_SQL}`;
+  } else if (view === 'approval_pending') {
+    sql += ` AND ${APPROVAL_PENDING_VIEW_SQL}`;
+  } else if (view === 'outbound_blocked') {
+    sql += ` AND ${OUTBOUND_BLOCKED_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -2092,6 +2105,8 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
       break;
     case 'sent':
     case 'sent_ai':
+    case 'approval_pending':
+    case 'outbound_blocked':
     case 'drafts':
     case 'all':
       throw new Error('Dieser Ordner unterstützt kein Verschieben per Drag & Drop');

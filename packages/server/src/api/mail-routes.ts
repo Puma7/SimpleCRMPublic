@@ -3682,10 +3682,53 @@ function sanitizeEmailReportingSnapshot(snapshot: EmailReportingSnapshot): Email
       archived: safeCount(row.archived),
     })),
     workflowRuns24h: snapshot.workflowRuns24h.map((row) => ({
-      workflowId: safeCount(row.workflowId),
+      // Server-Workflows haben negative Quell-Ids; nicht auf 0 klemmen.
+      workflowId: safeSignedId(row.workflowId),
+      workflowName: safeReportingName(row.workflowName),
       count: safeCount(row.count),
       errors: safeCount(row.errors),
     })),
+    automation: sanitizeAutomationCockpit(snapshot.automation),
+  };
+}
+
+function safeSignedId(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : 0;
+}
+
+function safeReportingName(value: unknown): string | null {
+  return typeof value === 'string' ? value.slice(0, 200) : null;
+}
+
+/** Plan 049: höchstens 12 Wochen (die neuesten) und 30 Workflows, nur Zählwerte. */
+function sanitizeAutomationCockpit(value: EmailReportingSnapshot['automation'] | undefined): EmailReportingSnapshot['automation'] {
+  const weeks = Array.isArray(value?.sentByKindWeekly) ? value.sentByKindWeekly.slice(-12) : [];
+  const decisions = Array.isArray(value?.aiDecideByWorkflow30d) ? value.aiDecideByWorkflow30d.slice(0, 30) : [];
+  const cost = value?.aiCost30d;
+  return {
+    sentByKindWeekly: weeks.map((week) => ({
+      weekStart: typeof week.weekStart === 'string' ? week.weekStart.slice(0, 10) : '',
+      human: safeCount(week.human),
+      aiAuto: safeCount(week.aiAuto),
+      aiApproved: safeCount(week.aiApproved),
+      workflow: safeCount(week.workflow),
+      relay: safeCount(week.relay),
+      unknown: safeCount(week.unknown),
+    })),
+    pendingApproval: safeCount(value?.pendingApproval),
+    outboundBlocked: safeCount(value?.outboundBlocked),
+    aiDecideByWorkflow30d: decisions.map((row) => ({
+      workflowId: safeSignedId(row.workflowId),
+      workflowName: safeReportingName(row.workflowName),
+      ja: safeCount(row.ja),
+      nein: safeCount(row.nein),
+      unsicher: safeCount(row.unsicher),
+      error: safeCount(row.error),
+      total: safeCount(row.total),
+    })),
+    aiCost30d: cost && typeof cost === 'object'
+      ? { costMicroUsd: safeCount(cost.costMicroUsd), events: safeCount(cost.events) }
+      : null,
   };
 }
 
@@ -5637,7 +5680,7 @@ function textIdFromPath(value: string | undefined, maxLength: number): string | 
 
 function parseOptionalMessageView(value: string | undefined) {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'approval_pending', 'outbound_blocked', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

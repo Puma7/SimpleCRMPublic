@@ -37,6 +37,9 @@ const accountMailViewSchema = z.enum([
   'inbox',
   'sent',
   'sent_ai',
+  // Plan 049: Warteschlangen der Teilautomatisierung (nur Anzeige, kein Ablageziel).
+  'approval_pending',
+  'outbound_blocked',
   'archived',
   'drafts',
   'scheduled_send',

@@ -3686,6 +3686,13 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
       .where('is_spam', '=', false)
       .where('sent_by_kind', 'in', [...SENT_AI_VIEW_KINDS]);
   }
+  // Plan 049: Warteschlangen der Teilautomatisierung (wie im Posteingang).
+  if (view === 'approval_pending') {
+    return query.where(kyselySql<boolean>`(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND scheduled_send_at IS NULL)`);
+  }
+  if (view === 'outbound_blocked') {
+    return query.where(kyselySql<boolean>`(uid < 0 AND folder_kind = 'draft' AND outbound_hold = true)`);
+  }
   if (view === 'archived') {
     return query
       .where(nonDraftMail)

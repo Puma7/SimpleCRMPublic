@@ -1149,6 +1149,9 @@ function runMigrations() {
         ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
         ]);
+        // Automatik-Cockpit (Plan 049): KI-Entscheidungen der letzten 30 Tage.
+        // Bedingungslos: ensureMigrationTable legt Indizes nur für neue Tabellen an.
+        conn.exec(`CREATE INDEX IF NOT EXISTS idx_wf_run_steps_type_created ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(node_type, created_at);`);
         ensureMigrationTable(WORKFLOW_KNOWLEDGE_BASES_TABLE, createWorkflowKnowledgeBasesTable, []);
         ensureMigrationTable(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE, createWorkflowKnowledgeChunksTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_kb_chunks_kb ON ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}(knowledge_base_id);`,

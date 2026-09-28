@@ -19,6 +19,8 @@ const ALLOWED_VIEWS: AccountMailView[] = [
   'inbox',
   'sent',
   'sent_ai',
+  'approval_pending',
+  'outbound_blocked',
   'archived',
   'drafts',
   'scheduled_send',

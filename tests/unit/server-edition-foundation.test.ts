@@ -400,6 +400,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0060_workflow_run_step_detail_retention_index',
   '0061_ai_learning_digest_accepted_content',
   '0062_workflow_run_dry_run_flag',
+  '0063_workflow_run_step_ai_decide_index',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

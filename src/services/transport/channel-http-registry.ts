@@ -543,9 +543,17 @@ type EmailReportingRecord = {
   }>
   workflowRuns24h?: Array<{
     workflowId?: number | null
+    workflowName?: string | null
     count?: number | null
     errors?: number | null
   }>
+  automation?: {
+    sentByKindWeekly?: Array<Record<string, unknown>> | null
+    pendingApproval?: number | null
+    outboundBlocked?: number | null
+    aiDecideByWorkflow30d?: Array<Record<string, unknown>> | null
+    aiCost30d?: { costMicroUsd?: number | null; events?: number | null } | null
+  } | null
 }
 
 type DmarcStatsRecord = {
@@ -6046,11 +6054,50 @@ function mapEmailReportingSnapshot(record: EmailReportingRecord) {
       : [],
     workflowRuns24h: Array.isArray(record.workflowRuns24h)
       ? record.workflowRuns24h.map((row) => ({
-        workflow_id: countValue(row.workflowId),
+        // Server-Workflows haben negative Quell-Ids (by-source).
+        workflow_id: signedIdValue(row.workflowId),
+        workflow_name: typeof row.workflowName === "string" ? row.workflowName : null,
         count: countValue(row.count),
         errors: countValue(row.errors),
       }))
       : [],
+    automation: mapAutomationCockpit(record.automation),
+  }
+}
+
+function signedIdValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0
+}
+
+/** Plan 049: Automatik-Cockpit; fehlt es (älterer Server), ein leerer Schnappschuss. */
+function mapAutomationCockpit(value: EmailReportingRecord["automation"]) {
+  const weeks = Array.isArray(value?.sentByKindWeekly) ? value.sentByKindWeekly : []
+  const decisions = Array.isArray(value?.aiDecideByWorkflow30d) ? value.aiDecideByWorkflow30d : []
+  const cost = value?.aiCost30d
+  return {
+    sentByKindWeekly: weeks.map((week) => ({
+      weekStart: typeof week.weekStart === "string" ? week.weekStart : "",
+      human: countValue(week.human),
+      aiAuto: countValue(week.aiAuto),
+      aiApproved: countValue(week.aiApproved),
+      workflow: countValue(week.workflow),
+      relay: countValue(week.relay),
+      unknown: countValue(week.unknown),
+    })),
+    pendingApproval: countValue(value?.pendingApproval),
+    outboundBlocked: countValue(value?.outboundBlocked),
+    aiDecideByWorkflow30d: decisions.map((row) => ({
+      workflowId: signedIdValue(row.workflowId),
+      workflowName: typeof row.workflowName === "string" ? row.workflowName : null,
+      ja: countValue(row.ja),
+      nein: countValue(row.nein),
+      unsicher: countValue(row.unsicher),
+      error: countValue(row.error),
+      total: countValue(row.total),
+    })),
+    aiCost30d: cost && typeof cost === "object"
+      ? { costMicroUsd: countValue(cost.costMicroUsd), events: countValue(cost.events) }
+      : null,
   }
 }
 
@@ -7061,18 +7108,20 @@ function optionalPositiveQueryId(value: unknown, label: string): number | undefi
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "approval_pending" | "outbound_blocked" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "approval_pending" | "outbound_blocked" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
     || value === "sent_ai"
+    || value === "approval_pending"
+    || value === "outbound_blocked"
     || value === "archived"
     || value === "drafts"
     || value === "scheduled_send"

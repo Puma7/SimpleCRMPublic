@@ -3953,7 +3953,18 @@ describe('renderer transport', () => {
           withAttachments: 6,
         },
         perAccount: [{ accountId: 7, messages: 12, unread: 3, archived: 2 }],
-        workflowRuns24h: [{ workflowId: 9, count: 5, errors: 1 }],
+        workflowRuns24h: [{ workflowId: 9, workflowName: 'Spamfilter', count: 5, errors: 1 }],
+        automation: {
+          sentByKindWeekly: [
+            { weekStart: '2026-09-21', human: 4, aiAuto: 2, aiApproved: 1, workflow: 'x', relay: null, unknown: 0 },
+          ],
+          pendingApproval: 2,
+          outboundBlocked: 1,
+          aiDecideByWorkflow30d: [
+            { workflowId: -9, workflowName: 'Spamfilter', ja: 3, nein: 1, unsicher: 0, error: 0, total: 4 },
+          ],
+          aiCost30d: { costMicroUsd: 4200, events: 4 },
+        },
       },
     }));
     const transport = createHttpRendererTransport({
@@ -3979,7 +3990,27 @@ describe('renderer transport', () => {
           withAttachments: 6,
         },
         perAccount: [{ accountId: 7, messages: 12, unread: 3, archived: 2 }],
-        workflowRuns24h: [{ workflow_id: 9, count: 5, errors: 1 }],
+        workflowRuns24h: [{ workflow_id: 9, workflow_name: 'Spamfilter', count: 5, errors: 1 }],
+        automation: {
+          sentByKindWeekly: [
+            { weekStart: '2026-09-21', human: 4, aiAuto: 2, aiApproved: 1, workflow: 0, relay: 0, unknown: 0 },
+          ],
+          pendingApproval: 2,
+          outboundBlocked: 1,
+          aiDecideByWorkflow30d: [
+            { workflowId: -9, workflowName: 'Spamfilter', ja: 3, nein: 1, unsicher: 0, error: 0, total: 4 },
+          ],
+          aiCost30d: { costMicroUsd: 4200, events: 4 },
+        },
+      },
+    });
+
+    // Ältere Server ohne Cockpit: leerer Schnappschuss statt Absturz.
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { accounts: [], perAccount: [], workflowRuns24h: [{ workflowId: -3, count: 1, errors: 0 }] } }));
+    await expect(transport.invoke(IPCChannels.Email.EmailReporting, null)).resolves.toMatchObject({
+      data: {
+        workflowRuns24h: [{ workflow_id: -3, workflow_name: null, count: 1, errors: 0 }],
+        automation: { sentByKindWeekly: [], pendingApproval: 0, outboundBlocked: 0, aiDecideByWorkflow30d: [], aiCost30d: null },
       },
     });
 

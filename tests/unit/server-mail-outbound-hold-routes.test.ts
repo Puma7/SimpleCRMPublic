@@ -164,6 +164,22 @@ describe('Server-Mailrouten: „gesendet von“ und Ansicht sent_ai (TA-P3)', ()
     expect(response.status).toBe(400);
     expect(list).not.toHaveBeenCalled();
   });
+
+  // Plan 049: Warteschlangen „Wartet auf Freigabe“ und „Versand blockiert“.
+  test.each(['approval_pending', 'outbound_blocked'])('view=%s erreicht Nachrichten- und Thread-Port', async (view) => {
+    const list = jest.fn(async () => ({ items: [], nextCursor: null }));
+    const threads = jest.fn(async () => ({ items: [], nextCursor: null }));
+    const api = createServerApi(makePorts({
+      emailMessages: { list } as unknown as ServerApiPorts['emailMessages'],
+      emailThreads: { list: threads } as unknown as ServerApiPorts['emailThreads'],
+    }));
+    const messages = await api.handle({ method: 'GET', path: '/api/v1/email/messages', query: { view }, principal });
+    expect(messages.status).toBe(200);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ view }));
+    const threadList = await api.handle({ method: 'GET', path: '/api/v1/email/threads', query: { view }, principal });
+    expect(threadList.status).toBe(200);
+    expect(threads).toHaveBeenCalledWith(expect.objectContaining({ view }));
+  });
 });
 
 describe('POST /api/v1/email/messages/:id/send-skip-outbound-review (TA-P2)', () => {

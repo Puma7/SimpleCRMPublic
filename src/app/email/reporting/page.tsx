@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { BarChart3, Loader2 } from "lucide-react"
 import { invokeRenderer } from "@/services/transport"
+import { automatedShare, type AutomationCockpitSnapshot } from "../../../../packages/core/src/email/automation-cockpit"
 
 type AccountRow = { id: number; display_name: string; email_address: string; protocol?: string }
 
@@ -22,7 +23,131 @@ type Snapshot = {
     withAttachments: number
   }
   perAccount: { accountId: number; messages: number; unread: number; archived: number }[]
-  workflowRuns24h: { workflow_id: number; count: number; errors: number }[]
+  workflowRuns24h: { workflow_id: number; workflow_name?: string | null; count: number; errors: number }[]
+  /** Plan 049: Automatik-Cockpit (fehlt bei älteren Servern). */
+  automation?: AutomationCockpitSnapshot
+}
+
+/** Wie in Einstellungen → Diagnose. */
+function formatUsd(microUsd: number): string {
+  const usd = microUsd / 1_000_000
+  if (usd === 0) return "$0.00"
+  if (usd < 0.01) return `$${usd.toFixed(4)}`
+  return `$${usd.toFixed(2)}`
+}
+
+function formatWeekStart(isoDay: string): string {
+  const [year, month, day] = isoDay.split("-")
+  return year && month && day ? `${day}.${month}.${year}` : isoDay
+}
+
+function formatShare(value: number | null): string {
+  return value === null ? "–" : `${Math.round(value * 100)} %`
+}
+
+function workflowLabel(id: number, name: string | null | undefined): string {
+  return name?.trim() || `Workflow #${id}`
+}
+
+function AutomationCard({ automation }: { automation: AutomationCockpitSnapshot }) {
+  return (
+    <Card data-testid="automation-cockpit">
+      <CardHeader>
+        <CardTitle className="text-base">Automatisierung</CardTitle>
+        <CardDescription>
+          Wer hat gesendet (je Woche), was wartet, wie hat die KI-Entscheidung geantwortet.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <p className="text-sm text-muted-foreground">Wartet auf Freigabe</p>
+            <p className="text-2xl font-semibold">{automation.pendingApproval}</p>
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground">Versand blockiert</p>
+            <p className="text-2xl font-semibold">{automation.outboundBlocked}</p>
+          </div>
+          <div>
+            <p className="text-sm text-muted-foreground">KI-Kosten (30 Tage)</p>
+            {automation.aiCost30d ? (
+              <p className="text-2xl font-semibold">
+                {formatUsd(automation.aiCost30d.costMicroUsd)}
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {automation.aiCost30d.events} Aufrufe
+                </span>
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Nur in der Server-Edition bzw. mit Vollzugriff verfügbar.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="py-2 pr-2">Woche ab</th>
+                <th className="py-2 pr-2">Mensch</th>
+                <th className="py-2 pr-2">KI automatisch</th>
+                <th className="py-2 pr-2">KI freigegeben</th>
+                <th className="py-2 pr-2">Automatik</th>
+                <th className="py-2 pr-2">Relay</th>
+                <th className="py-2">Anteil automatisch</th>
+              </tr>
+            </thead>
+            <tbody>
+              {automation.sentByKindWeekly.map((week) => (
+                <tr key={week.weekStart} className="border-b border-border/60">
+                  <td className="py-2 pr-2">{formatWeekStart(week.weekStart)}</td>
+                  <td className="py-2 pr-2">{week.human}</td>
+                  <td className="py-2 pr-2">{week.aiAuto}</td>
+                  <td className="py-2 pr-2">{week.aiApproved}</td>
+                  <td className="py-2 pr-2">{week.workflow}</td>
+                  <td className="py-2 pr-2">{week.relay}</td>
+                  <td className="py-2">{formatShare(automatedShare(week))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <p className="mb-1 text-sm font-medium">KI-Entscheidungen (30 Tage)</p>
+          {automation.aiDecideByWorkflow30d.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Keine KI-Entscheidungen in den letzten 30 Tagen.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="py-2 pr-2">Workflow</th>
+                  <th className="py-2 pr-2">Ja</th>
+                  <th className="py-2 pr-2">Nein</th>
+                  <th className="py-2 pr-2">Unsicher</th>
+                  <th className="py-2 pr-2">KI-Fehler</th>
+                  <th className="py-2">Summe</th>
+                </tr>
+              </thead>
+              <tbody>
+                {automation.aiDecideByWorkflow30d.map((row) => (
+                  <tr key={row.workflowId} className="border-b border-border/60">
+                    <td className="py-2 pr-2">{workflowLabel(row.workflowId, row.workflowName)}</td>
+                    <td className="py-2 pr-2">{row.ja}</td>
+                    <td className="py-2 pr-2">{row.nein}</td>
+                    <td className="py-2 pr-2">{row.unsicher}</td>
+                    <td className="py-2 pr-2">{row.error}</td>
+                    <td className="py-2">{row.total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 export default function EmailReportingPage() {
@@ -173,6 +298,8 @@ export default function EmailReportingPage() {
               </CardContent>
             </Card>
 
+            {data.automation ? <AutomationCard automation={data.automation} /> : null}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Workflow-Läufe (24h)</CardTitle>
@@ -187,7 +314,7 @@ export default function EmailReportingPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">
-                        <th className="py-2 pr-2">Workflow-ID</th>
+                        <th className="py-2 pr-2">Workflow</th>
                         <th className="py-2 pr-2">Läufe</th>
                         <th className="py-2">Fehler</th>
                       </tr>
@@ -195,7 +322,7 @@ export default function EmailReportingPage() {
                     <tbody>
                       {data.workflowRuns24h.map((w) => (
                         <tr key={w.workflow_id} className="border-b border-border/60">
-                          <td className="py-2 pr-2 font-mono">{w.workflow_id}</td>
+                          <td className="py-2 pr-2">{workflowLabel(w.workflow_id, w.workflow_name)}</td>
                           <td className="py-2 pr-2">{w.count}</td>
                           <td className="py-2">{w.errors}</td>
                         </tr>

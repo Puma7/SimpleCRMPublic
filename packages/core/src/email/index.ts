@@ -3,6 +3,7 @@ export * from './attachment-safety';
 export * from './attachment-text';
 export * from './attachment-office-text';
 export * from './authentication-results';
+export * from './automation-cockpit';
 export * from './automation-headers';
 export * from './imap-sync-cursor';
 export * from './inbound-message-size';

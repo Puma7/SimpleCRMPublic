@@ -7,6 +7,10 @@ export type MailView =
   | "sent"
   /** Gesendet (KI): gesendete Mails automatischer Herkunft (TA-P3). */
   | "sent_ai"
+  /** Plan 049: KI-Entwürfe, die auf Freigabe warten (Warteschlange, kein Ablageziel). */
+  | "approval_pending"
+  /** Plan 049: vom Ausgang angehaltene Entwürfe (Warteschlange, kein Ablageziel). */
+  | "outbound_blocked"
   | "archived"
   | "drafts"
   | "scheduled_send"

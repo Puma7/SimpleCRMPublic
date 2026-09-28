@@ -2,6 +2,7 @@ import { randomBytes } from 'crypto';
 import { MAX_EMAIL_CATEGORY_DEPTH } from '../../shared/email-constants';
 import { normalizeEmailAddress } from '../../shared/email-address-normalize';
 import { SNOOZE_FILTER_SQL } from './email-message-features';
+import { APPROVAL_PENDING_VIEW_SQL, OUTBOUND_BLOCKED_VIEW_SQL } from './automation-view-sql';
 import { doneFilterSql, type MessageDoneFilter } from '../../shared/email-done-filter';
 import type { MessageSearchScope } from '../../shared/email-search-scope';
 import {
@@ -1283,6 +1284,10 @@ function viewFilterClause(view: import('./email-store.js').AccountMailView): str
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0`;
     case 'sent_ai':
       return `m.soft_deleted = 0 AND m.folder_kind = 'sent' AND m.is_spam = 0 AND m.sent_by_kind IN ('ai_auto', 'ai_approved', 'workflow')`;
+    case 'approval_pending':
+      return `m.soft_deleted = 0 AND ${APPROVAL_PENDING_VIEW_SQL}`;
+    case 'outbound_blocked':
+      return `m.soft_deleted = 0 AND ${OUTBOUND_BLOCKED_VIEW_SQL}`;
     case 'drafts':
       return `m.soft_deleted = 0 AND m.folder_kind = 'draft' AND (m.scheduled_send_at IS NULL OR m.scheduled_send_at = '')`;
     case 'scheduled_send':
