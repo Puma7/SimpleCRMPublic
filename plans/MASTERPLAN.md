@@ -61,7 +61,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **049** R4 Automatik-Cockpit: Anteil Mensch/KI, Warteschlangen, KI-Kosten · P2 · M
 - [x] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*
 - [ ] **050** R5 Treffsicherheit der KI-Entscheidungen, Schwellen-Vorschlag · P3 · L · *nach 046, 049*
-  - ⏸ **Wartet auf Pascal:** Phase 0 fertig – Entscheidungsdokument `docs/design/ai-decision-accuracy.md` (Status DRAFT), Fragen Q1–Q7 beantworten, dann Phase 1.
+  - ✅ Phase 0 freigegeben (Pascal 28.09., Q1–Q7 wie vorgeschlagen); Phasen 1–3 folgen.
 
 ## Welle 6 – Umbauten und Abhängigkeiten
 
@@ -71,7 +71,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
   - ✅ Umstellung fertig (Gates grün); offen nur `pnpm remove -w node-cron`, sobald `codeload.github.com` erreichbar ist.
 - [x] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [ ] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
-  - ⏸ **Wartet auf Pascal:** Phase 0 fertig – Entscheidungsdokument `docs/design/desktop-credential-store.md` (Status DRAFT) freigeben, dann Phase 1.
+  - ✅ Phase 0 freigegeben (Pascal 28.09.); Phase 1 läuft, Windows/macOS-Spike durch Pascal ausstehend.
 
 ## Sonstiges ohne eigenen Plan
 

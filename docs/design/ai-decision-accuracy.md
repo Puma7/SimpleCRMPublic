@@ -3,7 +3,7 @@
 Entscheidungsdokument zu Plan 050 (Phase 0). Es ändert keinen Code. Phase 1
 (Entscheidungen speichern) beginnt erst, wenn unten `Status: APPROVED` steht.
 
-Status: **DRAFT – wartet auf Pascal**
+Status: **APPROVED** (Pascal, 28.09.2026) – alle Vorschläge zu Q1–Q7 angenommen, siehe „Antworten“ unten.
 
 ## Problem
 
@@ -221,13 +221,23 @@ keine Änderung an Export oder Löschung nötig.
 
 ## Checkliste der Entscheidungen
 
-- [ ] 1. Ereignis = produktive Auflösung mit Lauf- und Knoten-Id, ohne Testlauf und Vorschau, ohne Text
-- [ ] 2. Einstellung „Rückmeldung“ (`feedbackSignal`), Standard `none`, Vorlagen setzen sie
-- [ ] 3. Nur menschliche Korrekturen, neuestes offenes Ereignis, 30-Tage-Fenster, Tabelle oben
-- [ ] 4. Kennzahlen je Knoten, Vorschlag ab 30 gelabelten Ereignissen, Fehlerquote 5 %
-- [ ] 5. Aufbewahrung 365 Tage, `message_id` `ON DELETE SET NULL`
-- [ ] 6. Phase 4 nur beschrieben
-- [ ] 7. Antworten auf Q1–Q7 hier eingetragen
+- [x] 1. Ereignis = produktive Auflösung mit Lauf- und Knoten-Id, ohne Testlauf und Vorschau, ohne Text
+- [x] 2. Einstellung „Rückmeldung“ (`feedbackSignal`), Standard `none`, Vorlagen setzen sie
+- [x] 3. Nur menschliche Korrekturen, neuestes offenes Ereignis, 30-Tage-Fenster, Tabelle oben
+- [x] 4. Kennzahlen je Knoten, Vorschlag ab 30 gelabelten Ereignissen, Fehlerquote 5 %
+- [x] 5. Aufbewahrung 365 Tage, `message_id` `ON DELETE SET NULL`
+- [x] 6. Phase 4 nur beschrieben
+- [x] 7. Antworten auf Q1–Q7 hier eingetragen
+
+## Antworten (Pascal, 28.09.2026)
+
+- **Q1:** Keine Korrektur innerhalb von 30 Tagen = bestätigt.
+- **Q2:** Ausdrückliche Einstellung „Rückmeldung“ (`feedbackSignal`) je Knoten; die Vorlagen setzen sie.
+- **Q3:** Entscheidungen der Versandvorschau vorerst **nicht** mitzählen.
+- **Q4:** Aufbewahrung 365 Tage.
+- **Q5:** Fehlerquote für den Vorschlag fest 5 %.
+- **Q6:** Von Menschen geklärte „Unsicher“-Fälle fließen als Stichproben ein (kein Widerspruch).
+- **Q7:** Phase 4 (`decision_override`) vorerst nicht; nur Zahlen.
 
 ## Empfehlung
 

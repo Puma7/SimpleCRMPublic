@@ -147,14 +147,14 @@ Chiffrat. Logs enthalten nie Geheimnisse (auch nicht beim Umzug).
 
 ## Checkliste der Entscheidungen
 
-- [ ] 1. Speicherort: **(b) eigene Datei `credentials.sqlite`**, außerhalb von Backup/Restore
-- [ ] 2. Nur asynchrone API, `shouldReEncrypt` beachten
-- [ ] 3. Kein sicherer Speicher (Linux: Chiffrat ohne `v11`) → nicht speichern, Warnung
-- [ ] 4. Umzug je Eintrag beim ersten Lesen, mit Gegenprobe
-- [ ] 5. keytar-Einträge erst in Version N+1 löschen
-- [ ] 6. `keytar` in Version N+2 entfernen (CI-Pakete vorher prüfen)
-- [ ] 7. Zurücksetzen leert neuen Speicher und keytar
-- [ ] 8. Kein Klartext in IPC/API/Backup/Logs
+- [x] 1. Speicherort: **(b) eigene Datei `credentials.sqlite`**, außerhalb von Backup/Restore
+- [x] 2. Nur asynchrone API, `shouldReEncrypt` beachten
+- [x] 3. Kein sicherer Speicher (Linux: Chiffrat ohne `v11`) → nicht speichern, Warnung
+- [x] 4. Umzug je Eintrag beim ersten Lesen, mit Gegenprobe
+- [x] 5. keytar-Einträge erst in Version N+1 löschen
+- [x] 6. `keytar` in Version N+2 entfernen (CI-Pakete vorher prüfen)
+- [x] 7. Zurücksetzen leert neuen Speicher und keytar
+- [x] 8. Kein Klartext in IPC/API/Backup/Logs
 
 ## Anhang: Spike-Skript
 
@@ -177,4 +177,11 @@ app.whenReady().then(async () => {
 });
 ```
 
-Status: DRAFT — wartet auf Freigabe
+Status: APPROVED (Pascal, 28.09.2026)
+
+Antworten auf die offenen Punkte:
+
+- Alle 8 Empfehlungen freigegeben (Speicherort: eigene Datei `credentials.sqlite`).
+- Linux ohne sicheren Speicher: neue Geheimnisse **nicht speichern**, Warnung anzeigen (kein Klartext-Modus).
+- Windows/macOS: Pascal führt das Spike-Skript aus und meldet das Ergebnis. Phase 1 beginnt schon vorher
+  (Bau und Tests unter Linux); vor dem Release wird auf die Windows/macOS-Ergebnisse angepasst.

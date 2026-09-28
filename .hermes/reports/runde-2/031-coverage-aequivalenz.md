@@ -53,3 +53,7 @@ Ersparnis in CI wie im Plan geschätzt (≈ 8–9 min), lokal ≥ 6,5 min.
    Ratchet mit derselben Zählweise wie in CI vergleicht.
 2. Ablehnen: CI bleibt bei drei Läufen; Plan 031 wird REJECTED, Plan 042 dokumentiert
    den heutigen Stand.
+
+## Entscheidung (Pascal, 28.09.2026)
+
+**Angenommen:** Teil 2 anwenden, UI-Branch-Baseline auf den kombinierten Messwert setzen.

@@ -116,7 +116,7 @@ update the row here.
 | 028 | Close open code fences in knowledge-base sections | P1 | S | bug | — | DONE |
 | 029 | Reserve knowledge budget for Learnings in AI drafts | P1 | S | bug | — | DONE |
 | 030 | Refresh coverage ratchets, gate mail coverage in CI | P1 | S | tests | — | DONE |
-| 031 | CI: one Jest coverage run instead of three | P2 | M | dx | 030 | BLOCKED (STOP Schritt 4: UI-Branches 69,54 → 70,22 durch 39 nie geladene Dateien, abgedeckt identisch; Entscheidung Pascal, siehe .hermes/reports/runde-2/031-coverage-aequivalenz.md) |
+| 031 | CI: one Jest coverage run instead of three | P2 | M | dx | 030 | TODO (Pascal 28.09.: Gleichwertigkeit angenommen, Teil 2 anwenden) |
 | 032 | Close gaps in the Learnings privacy filter | P2 | M | security | — | DONE |
 | 033 | Lock backup runs against concurrent pruning | P2 | S | bug | — | DONE |
 | 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | DONE |
@@ -127,15 +127,15 @@ update the row here.
 | 039 | Output budgets for DOC/XLS/RTF text extraction | P3 | S | security | — | DONE |
 | 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | DONE |
 | 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | DONE |
-| 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | BLOCKED — wartet auf 031 (Entscheidung Pascal) |
+| 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | TODO (nach 031) |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | DONE |
-| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | BLOCKED — waiting for approval of docs/design/desktop-credential-store.md (Phase 0 fertig) |
+| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO — Phase 0 APPROVED (Pascal 28.09.); Windows/macOS-Spike durch Pascal ausstehend |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | DONE bis auf `pnpm remove -w node-cron` (am Proxy blockiert: codeload.github.com; Abhängigkeit ungenutzt, siehe .hermes/reports/runde-2/offene-punkte.md) |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | DONE |
 | 047 | R2: real workflow test run | P2 | M | direction | — | DONE |
 | 048 | R3: section-level knowledge retrieval + sources | P2 | M–L | direction | 028, 029 | DONE |
 | 049 | R4: automation cockpit | P2 | M | direction | — | DONE |
-| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | BLOCKED — waiting for approval of docs/design/ai-decision-accuracy.md (Phase 0 fertig, Fragen Q1–Q7) |
+| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | TODO — Phase 0 APPROVED (Pascal 28.09., Q1–Q7 wie vorgeschlagen) |
 
 ### Dependency notes (Runde 2)
 
