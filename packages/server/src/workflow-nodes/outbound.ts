@@ -31,6 +31,7 @@ import { dryRunSideEffectResult } from './dry-run';
 import {
   extractWorkflowEmailAddress,
   firstWorkflowRecipientAddress,
+  hasSimpleEmailShape,
   inboundFanOutRunId,
   positiveIntegerVariable,
   serverWorkerSourceRow,
@@ -849,7 +850,7 @@ async function reserveServerAutoReplySlot(
 }
 
 function isAutoReplyRecipient(value: string): boolean {
-  return value.length <= 320 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
+  return value.length <= 320 && hasSimpleEmailShape(value);
 }
 
 /** Knoten dieser Kategorie nach dem Dry-Run-Schutz. */

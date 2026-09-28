@@ -9,6 +9,7 @@ import type { WorkspaceTransaction } from '../db/workspace-context';
 import { type MssqlSettingsPort, validateReadOnlyMssqlQuery } from '../mssql-settings';
 import {
   extractWorkflowEmailAddress,
+  hasSimpleEmailShape,
   optionalPositiveIntegerConfig,
   positiveIntegerVariable,
 } from './shared';
@@ -146,7 +147,8 @@ async function executeWorkflowMssqlQuery(
   };
 }
 
-const JTL_CONTEXT_EMAIL_RE = /^[^\s@'";\\]+@[^\s@'";\\]+\.[^\s@'";\\]+$/;
+/** Absender für die JTL-Abfrage: einfache Adresse ohne Anführungszeichen, `;` oder `\`. */
+const isJtlContextEmail = (value: string) => hasSimpleEmailShape(value, '\'";\\');
 
 const JTL_CONTEXT_ORDER_NO_RE = /^[A-Za-z0-9._\-/]{1,64}$/;
 
@@ -204,7 +206,7 @@ function bindJtlContextPlaceholders(
 ): { ok: true; query: string } | { ok: false; reason: string } {
   let query = template;
   if (query.includes('{{email}}')) {
-    if (!email || !JTL_CONTEXT_EMAIL_RE.test(email)) {
+    if (!email || !isJtlContextEmail(email)) {
       return { ok: false, reason: 'Keine gueltige Absender-E-Mail fuer {{email}}' };
     }
     query = query.replace(/\{\{email\}\}/g, sqlStringLiteral(email));

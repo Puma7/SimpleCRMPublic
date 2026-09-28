@@ -225,8 +225,38 @@ export function stampBranchKey(payload: Record<string, unknown>, context: Server
 export function extractWorkflowEmailAddress(value: unknown): string {
   const candidate = extractWorkflowEmailAddressCandidate(value);
   if (!candidate) return '';
-  const match = candidate.match(/<([^>]+)>/);
-  return normalizeEmailAddress(match ? match[1] : candidate);
+  const inner = firstAngleBracketContent(candidate);
+  return normalizeEmailAddress(inner ?? candidate);
+}
+
+/**
+ * Wie `/<([^>]+)>/` (erster Treffer, Gruppe 1), aber linear: das Regex liest
+ * bei vielen `<` ohne `>` ab jedem `<` bis zum Textende (quadratisch, CodeQL).
+ */
+export function firstAngleBracketContent(value: string): string | null {
+  let open = value.indexOf('<');
+  while (open >= 0) {
+    const close = value.indexOf('>', open + 1);
+    if (close < 0) return null;
+    if (close > open + 1) return value.slice(open + 1, close);
+    open = value.indexOf('<', open + 1);
+  }
+  return null;
+}
+
+/**
+ * Wie `^[^\s@X]+@[^\s@X]+\.[^\s@X]+$` (X = `forbiddenChars`), aber linear:
+ * im Regex überlappen sich Domain-Teil und `\.` und laufen bei vielen Punkten
+ * ohne passendes Ende polynomial (CodeQL).
+ */
+export function hasSimpleEmailShape(value: string, forbiddenChars = ''): boolean {
+  const at = value.indexOf('@');
+  if (at <= 0 || at !== value.lastIndexOf('@')) return false;
+  for (const char of value) {
+    if (char !== '@' && (forbiddenChars.includes(char) || /\s/.test(char))) return false;
+  }
+  const domain = value.slice(at + 1);
+  return domain.length >= 3 && domain.slice(1, -1).includes('.');
 }
 
 export function extractWorkflowEmailAddressCandidate(value: unknown): string {

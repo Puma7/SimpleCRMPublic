@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import type { WorkspaceTransaction } from '../db/workspace-context';
 import {
   boundedContinuationStrings,
+  hasSimpleEmailShape,
   inboundChainFieldsFromContext,
   inboundFanOutRunId,
   positiveIntegerVariable,
@@ -325,7 +326,7 @@ function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipi
 }
 
 function isSimpleWorkflowEmailAddress(value: string): boolean {
-  return /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
+  return hasSimpleEmailShape(value, '<>');
 }
 
 function workflowHttpMethod(value: unknown): WorkflowHttpMethodConfig {
