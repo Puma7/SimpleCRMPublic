@@ -1,21 +1,24 @@
 /**
  * Cron-Zeitplaene fuer Workflows — rein, ohne Abhaengigkeiten.
  *
- * Der Desktop plant Zeitplan-Workflows mit node-cron im Main-Prozess. Der
- * Server hat keinen solchen Dauer-Prozess je Workflow, sondern einen
- * Minutentakt (jobs/workflow-schedule-tick.ts), der fuer jeden aktiven
- * Zeitplan-Workflow fragt: welcher faellige Zeitpunkt liegt zuletzt vor
- * „jetzt"? Genau diese Frage beantwortet dieses Modul, dazu die Anzeige
- * „naechste Ausfuehrung" im Editor und die Pruefung beim Speichern.
+ * Beide Editionen planen Zeitplan-Workflows mit diesem Modul: der Server
+ * ueber einen Minutentakt (jobs/workflow-schedule-tick.ts), der Desktop
+ * ueber electron/workflow/desktop-schedule-tick.ts im Main-Prozess (Zeitzone
+ * des Rechners). Beide fragen je aktivem Zeitplan-Workflow: welcher faellige
+ * Zeitpunkt liegt zuletzt vor „jetzt"? Genau diese Frage beantwortet dieses
+ * Modul, dazu die Anzeige „naechste Ausfuehrung" im Editor und die Pruefung
+ * beim Speichern.
  *
  * Format: fuenf Felder `Minute Stunde Tag Monat Wochentag` mit `*`, Listen
  * (`1,15`), Bereichen (`1-5`), Schritten (`*\/15`, `0-30/10`, `5/20`) sowie
  * Monats- und Tagesnamen (`JAN`, `MON-FRI`). Wochentag 0 und 7 sind Sonntag.
- * Sekunden (6 Felder), `?`, `L`, `W` und `#` kennt nur der Desktop (node-cron).
+ * Sekunden (6 Felder), `?`, `L`, `W` und `#` gibt es nicht; der Desktop
+ * uebersetzt ein festes Sekundenfeld und `?` aus aelteren Workflows
+ * (shared/cron-validate.ts, normalizeDesktopWorkflowCronExpr).
  *
  * Tag-des-Monats und Wochentag muessen BEIDE passen (`0 6 1 * 1` = nur ein
- * Montag, der auf den Ersten faellt) — wie node-cron 4 auf dem Desktop, damit
- * ein exportierter Workflow in beiden Editionen zu denselben Zeiten laeuft.
+ * Montag, der auf den Ersten faellt) — in beiden Editionen gleich, damit
+ * ein exportierter Workflow ueberall zu denselben Zeiten laeuft.
  * Das klassische Unix-crontab laesst dort eines von beiden genuegen; siehe
  * docs/USER_GUIDE_WORKFLOWS.md.
  *
@@ -234,7 +237,7 @@ const DAYS_IN_MONTH_MAX = [0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as
 
 /**
  * Passen zwei aufeinanderfolgende Kalendertage beide (Tag des Monats UND
- * Wochentag, wie node-cron)? Jeder Tageswechsel — auch 28.2. → 29.2. und
+ * Wochentag)? Jeder Tageswechsel — auch 28.2. → 29.2. und
  * 28.2. → 1.3. — kommt im 400-Jahre-Zyklus mit jedem Wochentag vor; Datum
  * und Wochentag lassen sich deshalb getrennt pruefen.
  */
@@ -365,7 +368,7 @@ function resolveCron(spec: string | ParsedCronExpression): ParsedCronExpression 
   return parsed.cron;
 }
 
-/** Tag UND Wochentag — wie node-cron 4 (TimeMatcher.match), nicht wie Unix-crontab. */
+/** Tag UND Wochentag (beide Editionen), nicht wie Unix-crontab. */
 function cronDayMatches(cron: ParsedCronExpression, dayOfMonth: number, dayOfWeek: number): boolean {
   return cron.daysOfMonth.has(dayOfMonth) && cron.daysOfWeek.has(dayOfWeek);
 }

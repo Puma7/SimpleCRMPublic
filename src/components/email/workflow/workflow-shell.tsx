@@ -558,8 +558,9 @@ export function WorkflowShell() {
       const cronTrim = editCron.trim()
       if (trig === "schedule") {
         // Server: dieselbe Pruefung wie die Route (genau 5 Felder); ein aktiver
-        // Zeitplan braucht dort einen Ausdruck. Desktop (node-cron): 5 oder 6
-        // Felder, ein leerer Ausdruck laesst den Workflow einfach nie laufen.
+        // Zeitplan braucht dort einen Ausdruck. Desktop: dieselbe Logik, ein
+        // festes Sekundenfeld und „?“ werden uebersetzt; ein leerer Ausdruck
+        // laesst den Workflow einfach nie laufen.
         const cronErr = serverClientMode
           ? cronTrim
             ? validateServerWorkflowCronExpr(cronTrim)

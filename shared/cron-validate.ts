@@ -1,20 +1,46 @@
-import { validateCronMinuteField } from './cron-minute-validate';
-import { validateWorkflowScheduleCron } from '../packages/core/src/workflow/cron-schedule';
+import {
+  parseCronExpression,
+  validateWorkflowScheduleCron,
+} from '../packages/core/src/workflow/cron-schedule';
+
+export type DesktopCronNormalizeResult = { ok: true; expr: string } | { ok: false; error: string };
 
 /**
- * Desktop (node-cron): 5 oder 6 Felder, geprueft wird das Minutenfeld.
- * Returns null if cron is valid and respects minimum interval, else German error message.
+ * Plan 045: Die Desktop-Edition nutzt dieselbe Zeitplan-Logik wie der Server
+ * (5 Felder). Früher gespeicherte Desktop-Ausdrücke bleiben gültig, soweit
+ * sie sich verlustfrei übersetzen lassen: ein festes Sekundenfeld (0–59) fällt
+ * weg, ein einzelnes „?“ im Tag oder Wochentag wird zu „*“ (wie bisher).
+ * Alles andere (variable Sekunden, L, W, #) liefert eine deutsche Meldung.
+ */
+export function normalizeDesktopWorkflowCronExpr(expr: string): DesktopCronNormalizeResult {
+  const trimmed = typeof expr === 'string' ? expr.trim() : '';
+  let parts = trimmed ? trimmed.split(/\s+/) : [];
+  if (parts.length === 6) {
+    const seconds = parts[0]!;
+    if (!/^\d{1,2}$/.test(seconds) || Number(seconds) > 59) {
+      return { ok: false, error: 'Sekunden-Feld wird nur als feste Zahl unterstützt (z. B. 0 0 6 * * *)' };
+    }
+    parts = parts.slice(1);
+  }
+  if (parts.length === 5) {
+    if (parts[2] === '?') parts[2] = '*';
+    if (parts[4] === '?') parts[4] = '*';
+  }
+  const normalized = parts.join(' ');
+  const parsed = parseCronExpression(normalized);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  return { ok: true, expr: normalized };
+}
+
+/**
+ * Desktop-Editor: übersetzen (siehe normalizeDesktopWorkflowCronExpr), dann
+ * dieselbe Prüfung wie der Server (Mindestabstand, mindestens ein Termin).
+ * Returns null if cron is valid, else German error message.
  */
 export function validateWorkflowCronExpr(expr: string): string | null {
-  const trimmed = expr.trim();
-  if (!trimmed) return 'Cron-Ausdruck ist leer';
-  const parts = trimmed.split(/\s+/);
-  if (parts.length < 5 || parts.length > 6) {
-    return 'Cron muss 5 oder 6 Felder haben (z. B. */15 * * * *)';
-  }
-  /** 5 fields: minute first; 6 fields (with seconds): minute is index 1. */
-  const minute = parts.length === 6 ? parts[1]! : parts[0]!;
-  return validateCronMinuteField(minute);
+  const normalized = normalizeDesktopWorkflowCronExpr(expr);
+  if (!normalized.ok) return normalized.error;
+  return validateWorkflowScheduleCron(normalized.expr);
 }
 
 /**

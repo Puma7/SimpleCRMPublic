@@ -3,19 +3,6 @@ import { createImapFlowMock } from './helpers/imap-flow-mock';
 const { ImapFlow, client } = createImapFlowMock();
 jest.mock('imapflow', () => ({ ImapFlow }));
 
-const cronTasks: Array<{ fn: () => void | Promise<void>; stop: jest.Mock }> = [];
-jest.mock('node-cron', () => ({
-  __esModule: true,
-  default: {
-    schedule: jest.fn((_expr: string, fn: () => void) => {
-      const task = { fn, stop: jest.fn() };
-      cronTasks.push(task);
-      return task;
-    }),
-    validate: jest.fn(() => true),
-  },
-}));
-
 jest.mock('../../electron/email/email-store', () => ({
   listEmailAccounts: jest.fn(() => [
     { id: 1, protocol: 'imap', imap_host: 'h', imap_port: 993, imap_tls: 1, imap_username: 'u' },
@@ -79,7 +66,6 @@ jest.mock('../../electron/email/email-scheduled-send', () => ({
 const { syncAccountImap } = require('../../electron/email/email-imap-sync') as typeof import('../../electron/email/email-imap-sync');
 const { syncInboxPop3 } = require('../../electron/email/email-pop3-sync') as typeof import('../../electron/email/email-pop3-sync');
 const { resolveImapAuth } = require('../../electron/email/email-imap-auth') as typeof import('../../electron/email/email-imap-auth');
-const cron = (require('node-cron') as typeof import('node-cron')).default;
 const {
   restartEmailWorkflowCrons,
   startEmailBackgroundServices,
@@ -93,7 +79,6 @@ const logger = { warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 describe('email-imap-services', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    cronTasks.length = 0;
     client.idle.mockResolvedValue(undefined);
     stopEmailBackgroundServices();
   });
@@ -101,10 +86,8 @@ describe('email-imap-services', () => {
   test('start and stop background services', async () => {
     await startEmailBackgroundServices(logger);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(cronTasks.length).toBeGreaterThan(0);
     expect(getEmailBackgroundSyncSnapshot()).toMatchObject({ cronScheduled: true, idleImapAccountIds: [1] });
     stopEmailBackgroundServices();
-    expect(cronTasks.every((t) => t.stop.mock.calls.length > 0)).toBe(true);
     expect(client.logout).toHaveBeenCalled();
     expect(getEmailBackgroundSyncSnapshot()).toMatchObject({ cronScheduled: false, idleImapAccountIds: [] });
     expect(isEmailBackgroundSyncBusy()).toBe(false);
@@ -117,14 +100,19 @@ describe('email-imap-services', () => {
   });
 
   test('global cron tick runs sync for imap and pop3 accounts', async () => {
-    await startEmailBackgroundServices(logger);
-    const globalTask = cronTasks[0]!;
-    await globalTask.fn();
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    expect(syncAccountImap).toHaveBeenCalledWith(1);
-    expect(syncInboxPop3).toHaveBeenCalledWith(2);
-    stopEmailBackgroundServices();
+    // In der Vergangenheit starten: die Entprellung je Konto merkt sich den Zeitpunkt
+    // (spätere Tests mit echter Uhr sollen nicht gebremst werden).
+    jest.useFakeTimers({ now: Date.now() - 10 * 60_000 });
+    try {
+      await startEmailBackgroundServices(logger);
+      expect(syncAccountImap).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(syncAccountImap).toHaveBeenCalledWith(1);
+      expect(syncInboxPop3).toHaveBeenCalledWith(2);
+    } finally {
+      stopEmailBackgroundServices();
+      jest.useRealTimers();
+    }
   });
 
   test('idle client triggers debounced sync on exists', async () => {
@@ -183,15 +171,46 @@ describe('email-imap-services', () => {
     stopEmailBackgroundServices();
   });
 
-  test('skips invalid workflow cron expressions', async () => {
+  // Plan 045: ungültige Zeitpläne laufen nicht und werden einmal gemeldet.
+  test('skips invalid workflow cron expressions and warns once', async () => {
     const { listWorkflowsWithCron } = await import('../../electron/email/email-workflow-store');
-    (listWorkflowsWithCron as jest.Mock).mockReturnValueOnce([
-      { id: 1, cron_expr: 'bad cron' },
+    const { runScheduledWorkflowFire } = await import('../../electron/email/email-workflow-engine');
+    (listWorkflowsWithCron as jest.Mock).mockReturnValue([
+      { id: 1, cron_expr: '0 6 L * *' },
       { id: 2, cron_expr: '' },
     ]);
-    (cron.validate as jest.Mock).mockReturnValueOnce(false);
-    await startEmailBackgroundServices(logger);
-    expect(cron.schedule).toHaveBeenCalled();
-    stopEmailBackgroundServices();
+    jest.useFakeTimers();
+    try {
+      await startEmailBackgroundServices(logger);
+      restartEmailWorkflowCrons(logger);
+      await jest.advanceTimersByTimeAsync(3 * 60_000);
+      const warnings = logger.warn.mock.calls.filter((call) => String(call[0]).includes('Zeitplan von Workflow 1'));
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0]![0])).toContain('0 6 L * *');
+      expect(runScheduledWorkflowFire).not.toHaveBeenCalled();
+    } finally {
+      stopEmailBackgroundServices();
+      jest.useRealTimers();
+      (listWorkflowsWithCron as jest.Mock).mockReturnValue([{ id: 9, cron_expr: '*/5 * * * *' }]);
+    }
+  });
+
+  test('scheduled workflow fires at its minute via the shared schedule logic', async () => {
+    const { listWorkflowsWithCron } = await import('../../electron/email/email-workflow-store');
+    const { runScheduledWorkflowFire } = await import('../../electron/email/email-workflow-engine');
+    (listWorkflowsWithCron as jest.Mock).mockReturnValue([{ id: 5, cron_expr: '0 0 */6 * * *' }]);
+    jest.useFakeTimers();
+    try {
+      jest.setSystemTime(new Date(Date.UTC(2028, 4, 10, 11, 58, 30)));
+      await startEmailBackgroundServices(logger);
+      // 6-Felder-Ausdruck (festes Sekundenfeld) läuft wie „0 */6 * * *“ in der Zeitzone des Rechners.
+      await jest.advanceTimersByTimeAsync(6 * 60 * 60_000);
+      expect(runScheduledWorkflowFire).toHaveBeenCalledWith(5);
+      expect((runScheduledWorkflowFire as jest.Mock).mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      stopEmailBackgroundServices();
+      jest.useRealTimers();
+      (listWorkflowsWithCron as jest.Mock).mockReturnValue([{ id: 9, cron_expr: '*/5 * * * *' }]);
+    }
   });
 });

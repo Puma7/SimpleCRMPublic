@@ -1,4 +1,3 @@
-import cron, { type ScheduledTask } from 'node-cron';
 import { ImapFlow } from 'imapflow';
 import { listEmailAccounts } from './email-store';
 import { resolveImapAuth } from './email-imap-auth';
@@ -8,13 +7,16 @@ import { syncInboxPop3 } from './email-pop3-sync';
 import { runScheduledWorkflowFire } from './email-workflow-engine';
 import { listWorkflowsWithCron } from './email-workflow-store';
 import { processDueDelayedJobs } from '../workflow/delayed-jobs';
+import { createDesktopScheduleTicker, type DesktopScheduleTicker } from '../workflow/desktop-schedule-tick';
 import {
   scanDueTasksAndFireWorkflows,
   scanUpcomingCalendarEventsAndFireWorkflows,
 } from '../workflow/workflow-trigger-dispatch';
 
 let idleClients: Map<number, ImapFlow> = new Map();
-let globalCron: ScheduledTask | null = null;
+/** Globaler Takt alle 2 Minuten (Plan 045: setInterval, Zeitpläne siehe desktop-schedule-tick). */
+const GLOBAL_TICK_INTERVAL_MS = 120_000;
+let globalTickInterval: ReturnType<typeof setInterval> | null = null;
 let scheduledSendInterval: ReturnType<typeof setInterval> | null = null;
 let scheduledSendTickInFlight = false;
 
@@ -32,8 +34,8 @@ function runScheduledSendTick(logger: Pick<typeof console, 'warn' | 'debug'>): v
     }
   })();
 }
-const workflowCrons: Map<number, ScheduledTask> = new Map();
-const workflowCronInFlight = new Set<number>();
+/** Plan 045: Zeitplan-Workflows über die gemeinsame Zeitplan-Logik (wie der Server). */
+let workflowScheduleTicker: DesktopScheduleTicker | null = null;
 
 /** Avoid stacking global 2-min cron ticks when a previous tick is still running. */
 let globalCronTickInFlight = false;
@@ -100,7 +102,7 @@ async function startIdleForAccount(
       );
       const timer = setTimeout(() => {
         pendingReconnectTimers.delete(acc.id);
-        if (!globalCron) return;
+        if (!globalTickInterval) return;
         void startIdleForAccount(acc, logger, nextRetry);
       }, delay);
       pendingReconnectTimers.set(acc.id, timer);
@@ -113,7 +115,7 @@ async function startIdleForAccount(
     const delay = Math.min(60_000, 5_000 * Math.pow(2, Math.min(retryCount, 4)));
     const timer = setTimeout(() => {
       pendingReconnectTimers.delete(acc.id);
-      if (!globalCron) return;
+      if (!globalTickInterval) return;
       void startIdleForAccount(acc, logger, retryCount + 1);
     }, delay);
     pendingReconnectTimers.set(acc.id, timer);
@@ -136,7 +138,7 @@ export function getEmailBackgroundSyncSnapshot(): {
   idleImapAccountIds: number[];
 } {
   return {
-    cronScheduled: globalCron != null,
+    cronScheduled: globalTickInterval != null,
     cronTickInFlight: globalCronTickInFlight,
     syncInFlightAccountIds: [...syncInFlight],
     idleImapAccountIds: [...idleClients.keys()],
@@ -175,8 +177,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     logger.warn('[email] startup recovery', e);
   }
 
-  globalCron = cron.schedule(
-    '*/2 * * * *',
+  globalTickInterval = setInterval(
     () => {
       if (globalCronTickInFlight) return;
       globalCronTickInFlight = true;
@@ -235,7 +236,7 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
         globalCronTickInFlight = false;
       });
     },
-    { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
+    GLOBAL_TICK_INTERVAL_MS,
   );
 
   scheduleWorkflowCrons(logger);
@@ -267,15 +268,11 @@ export function stopEmailBackgroundServices(): void {
     clearInterval(scheduledSendInterval);
     scheduledSendInterval = null;
   }
-  if (globalCron) {
-    globalCron.stop();
-    globalCron = null;
+  if (globalTickInterval) {
+    clearInterval(globalTickInterval);
+    globalTickInterval = null;
   }
-  for (const t of workflowCrons.values()) {
-    t.stop();
-  }
-  workflowCrons.clear();
-  workflowCronInFlight.clear();
+  workflowScheduleTicker?.stop();
   for (const id of [...idleClients.keys()]) {
     stopIdleForAccount(id);
   }
@@ -286,34 +283,23 @@ export function stopEmailBackgroundServices(): void {
   pendingReconnectTimers.clear();
 }
 
-/** Reload only per-workflow cron jobs (e.g. after saving workflows in UI). */
-function scheduleWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
-  for (const wf of listWorkflowsWithCron()) {
-    const expr = (wf.cron_expr ?? '').trim();
-    if (!expr || !cron.validate(expr)) continue;
-    const wfId = wf.id;
-    const task = cron.schedule(
-      expr,
-      () => {
-        if (workflowCronInFlight.has(wfId)) return;
-        workflowCronInFlight.add(wfId);
-        void runScheduledWorkflowFire(wfId)
-          .catch((e) => logger.warn(`[email] workflow cron ${wfId}`, e))
-          .finally(() => {
-            workflowCronInFlight.delete(wfId);
-          });
-      },
-      { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' },
-    );
-    workflowCrons.set(wfId, task);
-  }
+function getWorkflowScheduleTicker(logger: Pick<typeof console, 'warn' | 'debug'>): DesktopScheduleTicker {
+  workflowScheduleTicker ??= createDesktopScheduleTicker({
+    listWorkflows: listWorkflowsWithCron,
+    fire: runScheduledWorkflowFire,
+    log: logger,
+  });
+  return workflowScheduleTicker;
 }
 
+/** Zeitpläne der Workflows laden und den Minutentakt starten. */
+function scheduleWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
+  const ticker = getWorkflowScheduleTicker(logger);
+  ticker.reload();
+  ticker.start();
+}
+
+/** Nach dem Speichern von Workflows: Zeitpläne neu laden (unveränderte behalten ihren Stand). */
 export function restartEmailWorkflowCrons(logger: Pick<typeof console, 'warn' | 'debug'>): void {
-  for (const t of workflowCrons.values()) {
-    t.stop();
-  }
-  workflowCrons.clear();
-  workflowCronInFlight.clear();
-  scheduleWorkflowCrons(logger);
+  getWorkflowScheduleTicker(logger).reload();
 }

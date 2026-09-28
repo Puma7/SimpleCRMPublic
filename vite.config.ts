@@ -63,7 +63,6 @@ export default defineConfig({
                   'nodemailer',
                   'node-pop3',
                   'google-auth-library',
-                  'node-cron',
                   'archiver',
                   'safe-regex',
                 ].includes(id),

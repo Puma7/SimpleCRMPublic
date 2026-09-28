@@ -203,7 +203,7 @@ describe('cronMatches', () => {
     expect(cronMatches('0 12 * * 7', utc('2026-09-28T12:00:00Z'), 'UTC')).toBe(false);
   });
 
-  test('day of month AND weekday when both are restricted (like node-cron, unlike crontab)', () => {
+  test('day of month AND weekday when both are restricted (both editions, unlike crontab)', () => {
     // 2026-09-28 ist ein Montag, nicht der Erste; 2026-10-01 ein Donnerstag;
     // 2027-02-01 ist ein Montag UND der Erste.
     expect(cronMatches('0 6 1 * 1', utc('2026-09-28T06:00:00Z'), 'UTC')).toBe(false);

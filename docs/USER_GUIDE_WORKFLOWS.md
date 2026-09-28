@@ -44,7 +44,7 @@ Den Zeitplan tragen Sie unter **„Erweitert (Zeitplan, Test, Backfill)“** im 
 
  Uhrzeiten, die es beim Umstellen auf Sommerzeit nicht gibt (z. B. 02:30), fallen an diesem Tag aus; doppelte Uhrzeiten beim Zurückstellen zählen nur einmal. Der Lauf reiht sich in die Workflow-Warteschlange des Workspaces ein und kann deshalb kurz hinter anderen Workflow-Läufen warten.
 
-**Desktop-Edition:** Zeitplan-Workflows laufen, solange SimpleCRM geöffnet ist, in der Zeitzone des Rechners; es gibt keine Nachholung.
+**Desktop-Edition:** Zeitplan-Workflows laufen, solange SimpleCRM geöffnet ist, in der Zeitzone des Rechners; es gibt keine Nachholung. Die Zeitplan-Logik ist dieselbe wie auf dem Server, auch bei der Zeitumstellung: Eine Uhrzeit, die beim Umstellen auf Sommerzeit ausfällt (z. B. 02:30), läuft an diesem Tag nicht; eine doppelte Uhrzeit im Herbst läuft einmal. Ein festes Sekundenfeld (`0 0 6 * * *`) und `?` aus älteren Workflows werden weiter akzeptiert; `L`, `W`, `#` und ein variables Sekundenfeld nicht mehr – der Editor zeigt dann einen Fehler, und ein solcher gespeicherter Zeitplan läuft nicht (Hinweis im Protokoll).
 
 ## Der Editor in 5 Minuten
 

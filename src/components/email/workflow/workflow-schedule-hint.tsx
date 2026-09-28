@@ -7,8 +7,8 @@ import { nextCronSlotAfter } from "../../../../packages/core/src/workflow/cron-s
 /**
  * Hinweis unter dem Cron-Feld in der Server-Edition: Fehler im Ausdruck
  * (dieselbe Pruefung wie die Server-Route) oder die naechste Ausfuehrung in
- * der Workspace-Zeitzone. Der Desktop plant mit node-cron in der Zeitzone
- * des Rechners und zeigt den Hinweis nicht.
+ * der Workspace-Zeitzone. Der Desktop plant mit derselben Logik in der
+ * Zeitzone des Rechners und zeigt den Hinweis nicht.
  */
 export function WorkflowScheduleHint({
   cronExpr,
