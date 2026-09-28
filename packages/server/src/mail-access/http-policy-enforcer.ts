@@ -670,6 +670,12 @@ export function portsWithMailAccessContext(
         }),
       },
     } : {}),
+    ...(ports.aiDecisionStats ? {
+      // Plan 050: Kennzahlen nur über Mails, die der Aufrufer sehen darf (wie die Lauf-Liste).
+      aiDecisionStats: {
+        get: (input) => ports.aiDecisionStats!.get(scopedInput(input)),
+      },
+    } : {}),
     ...(ports.workflowRuns ? {
       workflowRuns: {
         ...ports.workflowRuns,

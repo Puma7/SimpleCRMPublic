@@ -25,6 +25,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { ExpertJsonEditor } from "./expert-json-editor"
+import { AiDecisionAccuracyPanel } from "./ai-decision-accuracy"
 import {
   Select,
   SelectContent,
@@ -51,12 +52,15 @@ type Props = {
   selectedNodeId: string | null
   selectedEdgeId: string | null
   onClearSelection: () => void
+  /** Gespeicherter Workflow (Kennzahlen der KI-Entscheidung, Plan 050). */
+  workflowId?: number | null
 }
 
 export function NodePropertiesPanel({
   selectedNodeId,
   selectedEdgeId,
   onClearSelection,
+  workflowId = null,
 }: Props) {
   const { catalog, labelByType, descriptionByType } = useWorkflowNodeCatalog()
   const nodes = useWorkflowEditorStore((s) => s.nodes)
@@ -211,6 +215,7 @@ export function NodePropertiesPanel({
               descriptionByType={descriptionByType}
               catalogByType={catalogByType}
               variables={availableVariables}
+              workflowId={workflowId}
             />
           ) : null}
 
@@ -543,6 +548,7 @@ type RegistryFieldProps = FieldProps & {
   descriptionByType: Map<string, string>
   catalogByType: Map<string, WorkflowNodeCatalogEntry>
   variables: WorkflowVariableInfo[]
+  workflowId: number | null
 }
 
 function patchConfig(
@@ -908,6 +914,7 @@ function RegistryFields({
   descriptionByType,
   catalogByType,
   variables,
+  workflowId,
 }: RegistryFieldProps) {
   const d = node.data as {
     nodeType?: string
@@ -971,6 +978,14 @@ function RegistryFields({
       ) : null}
       {schemaDriven ? (
         <SchemaFields entry={entry!} config={config} patch={patch} variables={variables} />
+      ) : null}
+      {d.nodeType === "ai.decide" ? (
+        <AiDecisionAccuracyPanel
+          workflowId={workflowId}
+          nodeId={node.id}
+          config={config}
+          onApplyThreshold={(threshold) => patch({ config: { ...config, threshold } })}
+        />
       ) : null}
       <details className="space-y-1.5">
         <summary className="cursor-pointer text-xs font-medium text-muted-foreground">

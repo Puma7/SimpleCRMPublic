@@ -5690,6 +5690,8 @@ export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   /** TA-P5: Learnings sammeln, auswerten, freigeben. */
   aiLearnings?: import('../ai-learnings').AiLearningsApiPort;
+  /** Plan 050: Treffsicherheit der KI-Entscheidung je Knoten (nur Kennzahlen). */
+  aiDecisionStats?: import('../ai-decision-events').AiDecisionStatsApiPort;
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;

@@ -1340,6 +1340,7 @@ export function WorkflowShell() {
                     )}
                   >
                     <NodePropertiesPanel
+                      workflowId={selectedId}
                       selectedNodeId={selectedNodeId}
                       selectedEdgeId={selectedEdgeId}
                       onClearSelection={() => {

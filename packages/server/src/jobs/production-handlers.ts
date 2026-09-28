@@ -1,3 +1,5 @@
+import { normalizeAiDecisionFeedbackSignal } from '@simplecrm/core';
+
 import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
 import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
@@ -571,6 +573,10 @@ export function buildAiDecideJobPlan(
       : {}),
     ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
       ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
+    // Plan 050: nur für die Treffsicherheit; unbekannte Werte zählen als none.
+    ...(normalizeAiDecisionFeedbackSignal(payload.feedbackSignal) !== 'none'
+      ? { feedbackSignal: normalizeAiDecisionFeedbackSignal(payload.feedbackSignal) }
       : {}),
   };
 }

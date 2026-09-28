@@ -134,6 +134,7 @@ Der Baustein **„KI-Entscheidung“** beantwortet eine Ja/Nein-Frage zur Mail, 
 | **Was darf die KI sehen?** | **Kompletten Text** (Standard: Betreff, Absender, Empfänger, Text bis 12 000 Zeichen, Anhangsnamen) oder **Nur Kopfdaten**. Im Ausgangs-Workflow ist die Mail der Entwurf (Betreff, Empfänger, Text). |
 | **Mindest-Sicherheit** | 50–99 %, Standard 80: „Ja“ ab 80 % Ja-Wahrscheinlichkeit, „Nein“ bis 20 %, dazwischen „Unsicher“. |
 | **KI-Profil** | Ein Entscheidungsmodell (Profil-Typ **„OpenRouter Entscheidungsmodell (Decisions API)“**, z. B. `typesafe/jev-1.13`) oder ein normales Chat-Modell. Chat-Modelle liefern zusätzlich eine kurze Begründung. |
+| **Rückmeldung für die Treffsicherheit** | Worauf sich „Ja“ bezieht, damit Korrekturen gezählt werden: **Keine** (Standard), **Ja = Spam**, **Ja = Mensch nötig** oder **Ja = versandfähig**. Siehe [Treffsicherheit der KI-Entscheidung](#treffsicherheit-der-ki-entscheidung). |
 
 | Ausgang | Bedeutung |
 |---------|-----------|
@@ -427,6 +428,25 @@ Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie*
 - **Berechtigungen (Server):** Die Lauf-Historie sieht, wer Workflows ansehen und den Inhalt der Mail lesen darf. Werte von Variablen mit Kunden-, ERP- oder Integrationsdaten (z. B. `customer.*`, `jtl.*`, `mssql.*`, `http.*`, eigene Variablen) erscheinen nur mit CRM-Leserecht, Tracking-Werte nur mit Tracking-Leserecht; sonst steht dort „ausgeblendet“. Tokens in Links (z. B. Webhook-Adressen) sind immer geschwärzt.
 
 Beispiele: Ein Gate-Schritt mit Ergebnis „Blockiert“ nennt den Grund — etwa dass die KI sich nicht sicher genug war (Kürzel `low_confidence`, siehe Tabelle unten). Bei der Gegenprüfung zeigt der Ausgang **Senden** bzw. **Prüfen**, wie die Prüf-KI entschieden hat.
+
+### Treffsicherheit der KI-Entscheidung
+
+Klicken Sie im Editor auf einen Baustein **„KI-Entscheidung“**: Unter den Einstellungen steht **„Treffsicherheit (90 Tage)“**.
+
+- **Entscheidungen:** wie oft der Baustein in echten Läufen entschieden hat, aufgeteilt in Ja, Nein, Unsicher und KI-Fehler. Testläufe und die Versandvorschau zählen nicht.
+- **Übereinstimmung mit Menschen:** Anteil der Ja/Nein-Antworten, die niemand korrigiert hat. Eine Antwort gilt als bestätigt, wenn sie 30 Tage lang nicht korrigiert wurde; bis dahin ist sie noch offen.
+- **Verteilung:** zehn Balken für die Ja-Wahrscheinlichkeit (0–9 %, 10–19 %, … 90–100 %). Viele Balken in der Mitte bedeuten viele knappe Fälle.
+- **Vorschlag Schwelle:** ab 30 Fällen mit bekannter Antwort die kleinste Mindest-Sicherheit, bei der höchstens 5 % der automatischen Ja/Nein-Antworten falsch gewesen wären. **„Übernehmen“** trägt den Wert nur in die Einstellung ein; gespeichert wird wie immer mit **Speichern**. Die Zahlen ändern das Verhalten des Workflows nie von selbst.
+
+Damit Korrekturen zählen, wählen Sie am Baustein **„Rückmeldung für die Treffsicherheit“** (die drei Vorlagen der Teilautomatisierung setzen sie schon):
+
+| Rückmeldung | Als Korrektur zählt |
+|-------------|---------------------|
+| **Ja = Spam** | Jemand setzt eine Mail von Hand auf „kein Spam“ (nach Ja) oder „Spam“ (nach Nein) – über den Spam-Knopf oder per Ziehen in den Posteingang bzw. Spam-Ordner. Nach **Unsicher** zählt die Entscheidung des Menschen als geklärter Fall. |
+| **Ja = Mensch nötig** | Nach **Nein** beantwortet ein Mensch die Mail selbst. |
+| **Ja = versandfähig** | Nach **Nein** oder **Unsicher** sendet jemand mit **„Ohne Ausgangsprüfung senden“**. |
+
+Workflows und Programmschnittstellen gelten nie als Korrektur. Gespeichert werden nur Nummern und Zahlen (Antwort, Ja-Wahrscheinlichkeit, Schwelle, Modellname) – keine Frage, kein Mailtext, keine Begründung. Die Einträge werden nach 365 Tagen gelöscht.
 
 **Gefahrlos testen:** Unter **„Erweitert (Zeitplan, Test, Backfill)“** wählen Sie bei **Test-Mail** eine der 20 neuesten Mails (Betreff · Absender · Datum; bei Ausgangs- und Entwurfs-Workflows die Entwürfe) oder über **„Andere (Nachrichten-ID) …“** eine Nachrichten-Nummer, und klicken **Testlauf** (enthält der Workflow eine KI-Entscheidung, fragt **„KI wirklich fragen“** das Modell echt, siehe KI-Entscheidung). Der Workflow wird nur simuliert (es wird nichts gesendet, getaggt oder verschoben), das geht auch mit einem noch **deaktivierten** Workflow – so lässt sich ein neuer Workflow vor dem Einschalten ausprobieren. Danach öffnet sich das Ergebnis Schritt für Schritt (mit Eingang und Ausgang je Schritt). Der Testlauf steht außerdem in der Lauf-Historie mit der Marke **„Test“**; Testläufe zählen nicht in Statistiken und Diagnose und werden nach 30 Tagen gelöscht. Dasselbe gilt für **„Dry-Run“** im Menü „Workflow anwenden“ einer Mail. Ausnahme in der Server-Edition: **MSSQL (Read-only)** (`mssql.query`) und **JTL Bestell-Kontext** lesen auch im Test live aus der JTL-Datenbank. Verwenden Sie für die MSSQL-Verbindung deshalb einen Benutzer, der nur lesen darf (`db_datareader`, siehe [SETUP_SERVER.md](SETUP_SERVER.md#jtl-wawi--mssql-connection-optional)).
 

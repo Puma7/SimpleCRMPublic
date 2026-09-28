@@ -38,6 +38,7 @@ const SPAM_DECISION_CONFIG = {
   contextMode: 'full',
   threshold: 80,
   profileId: null,
+  feedbackSignal: 'spam',
 } as const;
 
 /** Frage und Kriterien „Muss ein Mensch diese Anfrage bearbeiten?“ (Vorlage b). */
@@ -57,6 +58,7 @@ const HUMAN_DECISION_CONFIG = {
   contextMode: 'full',
   threshold: 80,
   profileId: null,
+  feedbackSignal: 'human_needed',
 } as const;
 
 /** Frage und Kriterien „versandfähig?“ im Ausgang (Vorlage c). */
@@ -73,6 +75,7 @@ const OUTBOUND_DECISION_CONFIG = {
   contextMode: 'full',
   threshold: 80,
   profileId: null,
+  feedbackSignal: 'send_ok',
 } as const;
 
 /** Wie die Zwei-Stufen-Vorlage „KI-Antwort mit Gegenprüfung (empfohlen)“. */

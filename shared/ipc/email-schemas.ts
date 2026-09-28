@@ -1669,6 +1669,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.GetWorkflowRunLog, { payload: positiveInt, result: z.array(z.string()) });
   set(IPCChannels.Email.ListWorkflowRunSteps, { payload: positiveInt, result: recordArray });
+  set(IPCChannels.Email.GetAiDecisionStats, {
+    payload: z.object({
+      workflowId: positiveInt,
+      nodeId: z.string().trim().min(1).max(200),
+      days: z.number().int().min(1).max(365).optional(),
+    }),
+    result: z.object({
+      total: z.number(),
+      byAnswer: z.record(z.string(), z.number()),
+      histogram: z.array(z.number()),
+      closed: z.number(),
+      agreed: z.number(),
+      overridden: z.number(),
+      agreementRate: z.number().nullable(),
+      labelled: z.number(),
+      minSamples: z.number(),
+      suggestedThreshold: z.number().nullable(),
+    }).passthrough(),
+  });
   set(IPCChannels.Email.ListWorkflowTemplates, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.ImportWorkflowBundle, {
     payload: z.object({ json: nonEmptyString }),

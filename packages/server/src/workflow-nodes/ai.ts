@@ -15,6 +15,7 @@ import {
   aiDecideVariables,
   normalizeAiDecideContextMode,
   normalizeAiDecideThreshold,
+  normalizeAiDecisionFeedbackSignal,
   outgoing,
   pickEdge,
 } from '@simplecrm/core';
@@ -1058,6 +1059,9 @@ async function scheduleAiDecideJob(
   if (noCriteria) payload.noCriteria = noCriteria;
   if (context.messageId !== null) payload.messageId = context.messageId;
   if (profileId.value !== undefined) payload.profileId = profileId.value;
+  // Plan 050: Rückmeldungsart für die Treffsicherheit (Ereignis im Job).
+  const feedbackSignal = normalizeAiDecisionFeedbackSignal(config.feedbackSignal);
+  if (feedbackSignal !== 'none') payload.feedbackSignal = feedbackSignal;
   if (deferAnchor) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = deferAnchor;

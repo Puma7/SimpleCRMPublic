@@ -34,6 +34,7 @@ import {
   type SpamScoreBreakdown,
   type SenderFilterResult,
   outboundReviewSkippedKey,
+  overrideForSpamTransition,
 } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
@@ -113,6 +114,7 @@ import {
   type StoredRawColumns,
 } from '../mail-raw-storage';
 import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
+import { linkAiDecisionOverrideSafe } from '../ai-decision-events';
 import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
@@ -1965,6 +1967,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           messageIds: input.messageIds,
           values,
           ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+          ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
         }),
         { applySession: options.applyWorkspaceSession },
       );
@@ -2246,6 +2249,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             ? spamStatusUpdate.returning(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'))
             : spamStatusUpdate
           ).executeTakeFirstOrThrow();
+
+          if (input.actorUserId) {
+            await linkSpamDecisionOverride(trx, input.workspaceId, current, values.status, now);
+          }
 
           if (values.train !== false) {
             const label = learningLabelForSpamStatusTransition(
@@ -2984,6 +2991,30 @@ async function deleteLocalDraftRows(
   return { ok: true, count: rows.length, deletedIds };
 }
 
+/**
+ * Plan 050: Ein Mensch ändert den Spam-Status → Korrektur am neuesten offenen
+ * Ereignis einer KI-Entscheidung mit Rückmeldung „spam“ (Fehler abgefangen).
+ */
+async function linkSpamDecisionOverride(
+  trx: any,
+  workspaceId: string,
+  current: { id: unknown; spam_status: string | null; is_spam: boolean | null },
+  nextStatus: unknown,
+  now: Date,
+): Promise<void> {
+  const previous = current.spam_status ?? (current.is_spam ? 'spam' : 'clean');
+  const next = typeof nextStatus === 'string' ? nextStatus : null;
+  if (next !== 'clean' && next !== 'spam') return;
+  if (previous === next) return;
+  await linkAiDecisionOverrideSafe(trx, {
+    workspaceId,
+    messageId: Number(current.id),
+    signal: 'spam',
+    resolve: (answer) => overrideForSpamTransition({ answer, previous, next }),
+    now,
+  });
+}
+
 async function bulkSetSpamStatusRows(
   trx: any,
   input: {
@@ -2991,6 +3022,8 @@ async function bulkSetSpamStatusRows(
     accountId?: number;
     messageIds: readonly number[];
     values: EmailMessageSpamStatusMutationInput;
+    /** Gesetzt, wenn ein Mensch den Status ändert (Plan 050: Korrektur der KI-Entscheidung). */
+    actorUserId?: string;
   },
 ): Promise<{ count: number; rspamdLearningRequests: RspamdLearningRequest[] }> {
   const ids = normalizeMessageIdList(input.messageIds);
@@ -3029,6 +3062,9 @@ async function bulkSetSpamStatusRows(
       .executeTakeFirst();
     if (!updated) continue;
     count += 1;
+    if (input.actorUserId) {
+      await linkSpamDecisionOverride(trx, input.workspaceId, current, status, now);
+    }
 
     if (input.values.train !== false) {
       const label = learningLabelForSpamStatusTransition(

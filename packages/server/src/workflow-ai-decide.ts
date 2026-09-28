@@ -34,10 +34,12 @@ import {
   parseAiDecideChatResponse,
   type AiDecideContextMode,
   type AiDecideOutcome,
+  type AiDecisionFeedbackSignal,
 } from '@simplecrm/core';
 
 import { callAiChat, callAiDecision, type AiDecisionResult } from './ai-providers';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
+import { recordAiDecisionEvent } from './ai-decision-events';
 import { enqueueContinuation, type AiClassificationContinuation } from './ai-classification';
 import {
   withWorkspaceTransaction,
@@ -92,6 +94,8 @@ export type AiDecideJobPlan = Readonly<{
   terminalChainPayload?: Record<string, unknown>;
   /** Knoten mit Continuation, dessen gewählter Ausgang keine Kante hat. */
   terminalChainPayloadForUnwiredPort?: Record<string, unknown>;
+  /** Plan 050: worauf sich „Ja“ bezieht (Treffsicherheit); fehlt = none. */
+  feedbackSignal?: AiDecisionFeedbackSignal;
 }>;
 
 export type AiDecideJobPort = Readonly<{
@@ -473,6 +477,8 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
         });
         const decisionStep = { question, yesCriteria, noCriteria, durationMs: Date.now() - started };
         let historyStep: DecisionStepRecord | null = null;
+        // Plan 050: nur eine tatsächlich wirksame Entscheidung zählt (nicht bei Kettenabbruch).
+        let decided = false;
 
         await withWorkspaceTransaction(
           deps.db,
@@ -491,6 +497,7 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
               };
               return;
             }
+            decided = true;
             // Ausgang: alles außer „ja“ hält den Versand an (wie ai.outbound_review);
             // der Ausgang läuft dann nur noch für Zusatzschritte.
             const blockReason = input.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
@@ -554,9 +561,48 @@ export function createPostgresAiDecidePort(deps: WorkflowAiDecideDeps): AiDecide
           { applySession: deps.applyWorkspaceSession },
         );
         await recordDecisionStepSafe(deps, input, historyStep);
+        if (decided) await recordDecisionEventSafe(deps, input, outcome, now());
       });
     },
   };
+}
+
+/**
+ * Plan 050: Entscheidung als Ereignis ohne Text speichern (eigene Transaktion,
+ * nach der Entscheidung). Fehler werden nur protokolliert und ändern nie das
+ * Ergebnis des Knotens.
+ */
+async function recordDecisionEventSafe(
+  deps: WorkflowAiDecideDeps,
+  input: AiDecideJobPlan,
+  outcome: AiDecideOutcome,
+  now: Date,
+): Promise<void> {
+  if (input.runId === undefined || !input.nodeId) return;
+  const runId = input.runId;
+  const nodeId = input.nodeId;
+  try {
+    await withWorkspaceTransaction(
+      deps.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      (trx) => recordAiDecisionEvent(trx, {
+        workspaceId: input.workspaceId,
+        runId,
+        nodeId,
+        messageId: input.messageId ?? null,
+        direction: input.direction ?? 'inbound',
+        answer: outcome.answer,
+        probability: outcome.probability,
+        threshold: input.threshold,
+        model: outcome.model ?? null,
+        feedbackSignal: input.feedbackSignal ?? 'none',
+        now,
+      }),
+      { applySession: deps.applyWorkspaceSession },
+    );
+  } catch (error) {
+    console.warn(`[workflow] KI-Entscheidung: Ereignis nicht gespeichert (Lauf ${runId}): ${errorMessage(error)}`);
+  }
 }
 
 export type AiProfileConnectionTestResult = Awaited<ReturnType<AiProfileConnectionTestApiPort['test']>>;

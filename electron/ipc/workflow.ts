@@ -11,6 +11,7 @@ import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
 import { executeWorkflowNow, testWorkflowOnMessage } from '../workflow/workflow-executor';
 import { listRecentWorkflowRuns, listWorkflowRunSteps, getWorkflowRunLog } from '../workflow/run-steps';
+import { loadAiDecisionStats } from '../workflow/ai-decision-events';
 import { WORKFLOW_TEMPLATES } from '../workflow/templates';
 import { exportWorkflowBundle, parseWorkflowImport } from '../workflow/export-import';
 import {
@@ -117,6 +118,19 @@ export function registerWorkflowHandlers(options: {
       IPCChannels.Email.ListWorkflowRunSteps,
       async (_event: IpcMainInvokeEvent, runId: number) => listWorkflowRunSteps(runId),
       { logger, accountAccess: 'ro' },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.GetAiDecisionStats,
+      async (_event: IpcMainInvokeEvent, payload: { workflowId: number; nodeId: string; days?: number }) =>
+        loadAiDecisionStats({
+          workflowId: payload.workflowId,
+          nodeId: payload.nodeId,
+          ...(payload.days === undefined ? {} : { days: payload.days }),
+        }),
+      { logger },
     ),
   );
 

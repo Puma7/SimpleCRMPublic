@@ -65,6 +65,8 @@ export const EMAIL_SPAM_DECISIONS_TABLE = 'email_spam_decisions';
 /** TA-P5 Learnings (Server-Gegenstück: Migration 0057_ai_learnings). */
 export const AI_LEARNING_CANDIDATES_TABLE = 'ai_learning_candidates';
 export const AI_LEARNING_DIGESTS_TABLE = 'ai_learning_digests';
+/** Plan 050: Treffsicherheit der KI-Entscheidung (Server: Migration 0066). */
+export const AI_DECISION_EVENTS_TABLE = 'ai_decision_events';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -853,6 +855,42 @@ export const AI_LEARNINGS_INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_open ON ${AI_LEARNING_CANDIDATES_TABLE}(processed_at, created_at);`,
   `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_digest ON ${AI_LEARNING_CANDIDATES_TABLE}(digest_id);`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_sent ON ${AI_LEARNING_CANDIDATES_TABLE}(sent_message_id) WHERE sent_message_id IS NOT NULL;`,
+];
+
+/**
+ * Plan 050: je produktiver KI-Entscheidung ein Ereignis ohne Text (Antwort,
+ * Wahrscheinlichkeit, Schwelle, Rückmeldungsart); menschliche Korrekturen setzen
+ * override_kind/truth/override_at. Gelöscht nach 365 Tagen. Auf dem Desktop ist
+ * workflow_source_id die lokale Workflow-Id (wie beim Import auf den Server).
+ */
+export const createAiDecisionEventsTable = `
+  CREATE TABLE IF NOT EXISTS ${AI_DECISION_EVENTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER,
+    workflow_source_id INTEGER NOT NULL,
+    node_id TEXT NOT NULL CHECK (length(node_id) <= 200),
+    run_id INTEGER,
+    message_id INTEGER,
+    direction TEXT NOT NULL CHECK (length(direction) <= 40),
+    answer TEXT NOT NULL CHECK (answer IN ('ja', 'nein', 'unsicher', 'error')),
+    probability INTEGER CHECK (probability IS NULL OR probability BETWEEN 0 AND 100),
+    threshold INTEGER NOT NULL CHECK (threshold BETWEEN 50 AND 99),
+    model TEXT CHECK (model IS NULL OR length(model) <= 200),
+    feedback_signal TEXT NOT NULL DEFAULT 'none'
+      CHECK (feedback_signal IN ('none', 'spam', 'human_needed', 'send_ok')),
+    override_kind TEXT CHECK (override_kind IS NULL OR override_kind IN (
+      'spam_to_clean', 'clean_to_spam', 'review_to_clean', 'review_to_spam', 'human_reply', 'sent_without_review')),
+    truth TEXT CHECK (truth IS NULL OR truth IN ('ja', 'nein')),
+    override_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const AI_DECISION_EVENTS_INDEXES: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_ai_decision_events_node ON ${AI_DECISION_EVENTS_TABLE}(workflow_source_id, node_id, created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_decision_events_open_message ON ${AI_DECISION_EVENTS_TABLE}(message_id, created_at) WHERE message_id IS NOT NULL AND override_at IS NULL;`,
 ];
 
 export const createEmailWorkflowVersionsTable = `

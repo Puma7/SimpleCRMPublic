@@ -2855,7 +2855,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetMessageSpam,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; spam: boolean }) => {
-        setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual' });
+        setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual', aiOverride: true });
         return { success: true as const };
       },
       { logger, accountAccess: 'rw' },
@@ -2872,6 +2872,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSpamStatus(payload.messageId, payload.status, {
           train: payload.train !== false,
           source: 'manual',
+          aiOverride: true,
         });
         return { success: true as const };
       },

@@ -12,6 +12,7 @@ import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
 import { runWorkflowScheduleTick } from './workflow-schedule-tick';
 import { pruneAiLearningCandidates } from '../ai-learnings';
+import { pruneAiDecisionEvents } from '../ai-decision-events';
 import { pruneWorkflowRunStepDetails } from '../workflow-run-step-append';
 import type { JobHandlerRegistry } from './worker';
 
@@ -351,6 +352,15 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
         ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
       }, plan.workspaceId).catch((error: unknown) => {
         console.warn(`[workflow] Aufräumen der Lauf-Details fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      // Plan 050: Ereignisse der KI-Entscheidung nach 365 Tagen löschen. Wie oben nur protokolliert.
+      await pruneAiDecisionEvents({
+        db: options.db,
+        now,
+        ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+      }, plan.workspaceId).catch((error: unknown) => {
+        console.warn(`[ai-decision] Aufräumen fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
       });
     },
   };

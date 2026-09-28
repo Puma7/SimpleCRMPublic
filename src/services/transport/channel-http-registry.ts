@@ -3527,6 +3527,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<WorkflowRunRecord>(body).map(mapWorkflowRunRecord),
   })],
+  [IPCChannels.Email.GetAiDecisionStats, ([payload]) => {
+    const input = objectPayload(payload, "ai decision stats payload")
+    return {
+      method: "GET",
+      path: `/api/v1/workflows/by-source/${nonZeroPathId(input.workflowId, "workflow id")}/ai-decisions`,
+      query: pruneQueryUndefined({
+        nodeId: typeof input.nodeId === "string" ? input.nodeId : undefined,
+        days: input.days === undefined ? undefined : positiveId(input.days, "ai decision stats days"),
+      }),
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
   [IPCChannels.Email.ListWorkflowDelayedJobs, ([payload]) => {
     const input = payload === undefined ? {} : objectPayload(payload, "workflow delayed jobs payload")
     return {

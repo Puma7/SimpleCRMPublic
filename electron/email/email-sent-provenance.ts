@@ -14,6 +14,11 @@ import {
   type SentProvenance,
 } from '../../packages/core/src/email/sent-provenance';
 import { outboundReviewSkippedKey } from '../../packages/core/src/email/outbound-review-skip';
+import {
+  overrideForHumanReply,
+  overrideForReviewSkip,
+} from '../../packages/core/src/workflow/ai-decision-accuracy';
+import { linkAiDecisionOverrideSafe } from '../workflow/ai-decision-events';
 
 /** Wer den Versand auslöst: ein Mensch (Sitzung/Planer) oder ein Workflow ohne Menschen. */
 export type DesktopSentByActor = { kind: 'human'; userId: string } | { kind: 'workflow' };
@@ -187,6 +192,42 @@ function writeSentProvenance(draftId: number, actor: DesktopSentByActor): SentPr
       provenance.outboundReviewSkipped ? 1 : 0,
       draftId,
     );
+  linkSentDecisionOverrides(draftId, provenance);
   getDb().prepare(`DELETE FROM ${SYNC_INFO_TABLE} WHERE key = ?`).run(outboundReviewSkippedKey(draftId));
   return provenance;
+}
+
+/**
+ * Plan 050: Korrekturen der KI-Entscheidung aus dem Versand (Fehler abgefangen).
+ * Ein Mensch beantwortet die Mail selbst → Rückmeldung „human_needed“ an der
+ * Ursprungsmail; „Ohne Ausgangsprüfung senden“ → Rückmeldung „send_ok“ am Entwurf.
+ */
+function linkSentDecisionOverrides(draftId: number, provenance: SentProvenance): void {
+  const replyParentMessageId = provenance.kind === 'human' ? readReplyParentMessageId(draftId) : null;
+  if (replyParentMessageId != null) {
+    linkAiDecisionOverrideSafe({
+      messageId: replyParentMessageId,
+      signal: 'human_needed',
+      resolve: (answer) => overrideForHumanReply({ answer }),
+    });
+  }
+  if (provenance.outboundReviewSkipped) {
+    linkAiDecisionOverrideSafe({
+      messageId: draftId,
+      signal: 'send_ok',
+      resolve: (answer) => overrideForReviewSkip({ answer }),
+    });
+  }
+}
+
+function readReplyParentMessageId(draftId: number): number | null {
+  try {
+    const row = getDb()
+      .prepare(`SELECT reply_parent_message_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`)
+      .get(draftId) as { reply_parent_message_id: number | null } | undefined;
+    return row?.reply_parent_message_id ?? null;
+  } catch (error) {
+    console.warn('[ai-decision] Antwort-Bezug nicht gelesen:', error);
+    return null;
+  }
 }

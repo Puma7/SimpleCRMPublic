@@ -94,6 +94,7 @@ export type ServerDatabase = {
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
   ai_learning_candidates: AiLearningCandidatesTable;
+  ai_decision_events: AiDecisionEventsTable;
   ai_learning_digests: AiLearningDigestsTable;
   return_reasons: ReturnReasonsTable;
   returns: ReturnsTable;
@@ -109,6 +110,27 @@ export type AiReplyFeedbackTable = {
   suggestion_len: number;
   sent_len: number;
   changed_ratio: number;
+  created_at: TimestampColumn;
+};
+
+/** Plan 050: Treffsicherheit der KI-Entscheidung, ohne Text (Migration 0066). */
+export type AiDecisionEventsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  workflow_id: number | null;
+  workflow_source_id: number;
+  node_id: string;
+  run_id: number | null;
+  message_id: number | null;
+  direction: string;
+  answer: 'ja' | 'nein' | 'unsicher' | 'error';
+  probability: number | null;
+  threshold: number;
+  model: string | null;
+  feedback_signal: ColumnType<'none' | 'spam' | 'human_needed' | 'send_ok', 'none' | 'spam' | 'human_needed' | 'send_ok' | undefined, 'none' | 'spam' | 'human_needed' | 'send_ok'>;
+  override_kind: 'spam_to_clean' | 'clean_to_spam' | 'review_to_clean' | 'review_to_spam' | 'human_reply' | 'sent_without_review' | null;
+  truth: 'ja' | 'nein' | null;
+  override_at: TimestampColumn | null;
   created_at: TimestampColumn;
 };
 

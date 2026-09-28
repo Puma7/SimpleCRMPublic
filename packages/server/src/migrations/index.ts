@@ -63,6 +63,7 @@ import { workflowRunDryRunFlagMigration } from './0062_workflow_run_dry_run_flag
 import { workflowRunStepAiDecideIndexMigration } from './0063_workflow_run_step_ai_decide_index';
 import { workflowKnowledgeSectionsMigration } from './0064_workflow_knowledge_sections';
 import { emailMessageAiSourcesMigration } from './0065_email_message_ai_sources';
+import { aiDecisionEventsMigration } from './0066_ai_decision_events';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -132,6 +133,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   workflowRunStepAiDecideIndexMigration,
   workflowKnowledgeSectionsMigration,
   emailMessageAiSourcesMigration,
+  aiDecisionEventsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

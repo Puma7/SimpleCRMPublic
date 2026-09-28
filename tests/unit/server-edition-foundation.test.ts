@@ -411,6 +411,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0063_workflow_run_step_ai_decide_index',
   '0064_workflow_knowledge_sections',
   '0065_email_message_ai_sources',
+  '0066_ai_decision_events',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -16801,6 +16802,8 @@ describe('server edition foundation', () => {
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       // … und löscht alte Testläufe (Plan 047), ebenfalls eigene Transaktion.
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und Ereignisse der KI-Entscheidung älter als 365 Tage (Plan 050), eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16927,6 +16930,18 @@ describe('server edition foundation', () => {
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['dry_run', '=', true],
           ['started_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
+      },
+      // Ereignisse der KI-Entscheidung älter als 365 Tage (Plan 050; hier keine).
+      {
+        kind: 'select',
+        table: 'ai_decision_events',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['created_at', '<', new Date('2025-06-03T12:00:00.000Z')],
         ],
         orderBy: ['id', 'asc'],
         limit: 5000,

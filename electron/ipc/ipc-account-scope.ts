@@ -87,6 +87,8 @@ export const EMAIL_GLOBAL_OBJECT_CHANNELS = new Map<string, string>([
     'Workflows are not account-gated here (like email:get-workflow); the list carries run status only, log and steps resolve the run message.',
   ],
   ['workflow:cancel-delayed-job', 'Local stub without effect; delayed jobs are server-only.'],
+  // Plan 050: nur Kennzahlen je Knoten (keine Mail-Zeilen), wie workflow:list-runs nicht kontogebunden.
+  ['workflow:ai-decision-stats', 'Aggregated counts for one workflow node (no message rows); workflow channels are not account-gated (like email:get-workflow).'],
   // TA-P5: Learnings sind workspace-weit und bereinigt (kein Konto); die Kanäle verlangen Owner/Admin.
   ['workflow:learnings-save-settings', 'Learnings settings are workspace-wide (knowledge base / AI profile ids); owner/admin only.'],
   ['workflow:learnings-delete-candidate', 'Learning candidates are workspace-wide redacted texts; owner/admin only.'],

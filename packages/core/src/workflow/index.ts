@@ -1,4 +1,5 @@
 export * from './ai-decide';
+export * from './ai-decision-accuracy';
 export * from './ai-decisions-api';
 export * from './ai-score';
 export * from './cron-schedule';

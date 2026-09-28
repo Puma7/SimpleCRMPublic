@@ -1,7 +1,7 @@
 # KI-Entscheidung: Treffsicherheit messen und Schwelle vorschlagen
 
-Entscheidungsdokument zu Plan 050 (Phase 0). Es ändert keinen Code. Phase 1
-(Entscheidungen speichern) beginnt erst, wenn unten `Status: APPROVED` steht.
+Entscheidungsdokument zu Plan 050 (Phase 0). Phasen 1–3 sind umgesetzt, siehe
+„Umsetzung“ am Ende; Phase 4 ist nicht gebaut (Q7).
 
 Status: **APPROVED** (Pascal, 28.09.2026) – alle Vorschläge zu Q1–Q7 angenommen, siehe „Antworten“ unten.
 
@@ -245,3 +245,27 @@ Die Vorgaben oben übernehmen (Vorschläge zu Q1–Q7). Sie speichern keinen Tex
 ändern kein Routing und bauen auf vorhandenen Eingängen auf (Spam-Status,
 Versand-Kennzeichnung). Das Risiko liegt in den Verknüpfungs-Haken; sie laufen
 nach dem eigentlichen Vorgang und fangen jeden Fehler ab.
+
+## Umsetzung (Phasen 1–3, 28.09.2026)
+
+| Teil | Server | Desktop |
+|---|---|---|
+| Kern (Regeln, Kennzahlen, Vorschlag) | `packages/core/src/workflow/ai-decision-accuracy.ts` | gleich |
+| Tabelle | Migration `0066_ai_decision_events` (RLS) | `createAiDecisionEventsTable` in `electron/database-schema.ts` |
+| Ereignis schreiben | `recordAiDecisionEvent` in `packages/server/src/ai-decision-events.ts`, aufgerufen nach der Entscheidung in `workflow-ai-decide.ts` (eigene Transaktion, nicht bei Kettenabbruch) | `electron/workflow/ai-decision-events.ts`, aufgerufen in `ai-nodes.ts` (`finish`, nicht bei Testlauf/Versandvorschau) |
+| Spam-Korrektur | `setSpamStatus`, `bulkSetSpamStatusRows` nur mit `actorUserId` (Savepoint, Fehler abgefangen) | `setMessageSpamStatus(…, { aiOverride: true })` aus IPC und Drag & Drop (auch „in den Posteingang“) |
+| Antwort / Versand ohne Prüfung | `recordSentProvenance` (`mail-sent-provenance.ts`) | `recordSentProvenance` (`email-sent-provenance.ts`) |
+| Aufbewahrung | `pruneAiDecisionEvents` im Wartungsjob `audit.retention` | `pruneAiDecisionEventsIfDue` im globalen Cron |
+| Kennzahlen lesen | `GET /api/v1/workflows/by-source/:sourceId/ai-decisions?nodeId=…&days=90` (Recht `workflows.view`; bei eingeschränkter Mail-Sicht nur sichtbare Mails, wie die Lauf-Liste) | IPC `workflow:ai-decision-stats` |
+| Anzeige | `src/components/email/workflow/ai-decision-accuracy.tsx` in den Knoten-Einstellungen | gleich |
+
+Abweichung vom Plan: Die Tabelle „KI-Entscheidungen (30 Tage)“ der Auswertung
+(Plan 049) bekommt **keine** Spalte „Übereinstimmung“. Übereinstimmung zählt nur
+abgeschlossene Fälle (korrigiert oder älter als 30 Tage); in einem 30-Tage-Fenster
+wären fast alle unkorrigierten Entscheidungen noch offen, die Spalte zeigte also
+nur Widersprüche. Die Kennzahl steht deshalb am Knoten (90 Tage).
+
+Tests: `tests/unit/ai-decision-accuracy-core.test.ts`,
+`tests/integration/postgres-ai-decision-accuracy.test.ts` (als Nicht-root),
+`tests/integration/sqlite-ai-decision-accuracy.test.ts`,
+`tests/unit/ai-decision-accuracy-panel.test.tsx`.

@@ -386,6 +386,8 @@ const EmailChannels = literal({
   CancelWorkflowDelayedJob: 'workflow:cancel-delayed-job',
   GetWorkflowRunLog: 'workflow:get-run-log',
   ListWorkflowRunSteps: 'workflow:list-run-steps',
+  /** Plan 050: Treffsicherheit eines ai.decide-Knotens (nur Kennzahlen). */
+  GetAiDecisionStats: 'workflow:ai-decision-stats',
   ListWorkflowTemplates: 'workflow:list-templates',
   ImportWorkflowBundle: 'workflow:import-bundle',
   ExportWorkflowBundle: 'workflow:export-bundle',

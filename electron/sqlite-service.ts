@@ -77,6 +77,9 @@ import {
     AI_LEARNINGS_INDEXES,
     AI_LEARNING_DIGESTS_TABLE,
     AI_LEARNING_CANDIDATES_TABLE,
+    AI_DECISION_EVENTS_TABLE,
+    createAiDecisionEventsTable,
+    AI_DECISION_EVENTS_INDEXES,
     EMAIL_WORKFLOW_VERSIONS_TABLE,
     EMAIL_WORKFLOW_RUN_STEPS_TABLE,
     WORKFLOW_KNOWLEDGE_BASES_TABLE,
@@ -205,8 +208,10 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailSpamDecisionsTable);
         connection.exec(createAiLearningDigestsTable);
         connection.exec(createAiLearningCandidatesTable);
+        connection.exec(createAiDecisionEventsTable);
         indexes.forEach((index) => connection.exec(index));
         AI_LEARNINGS_INDEXES.forEach((index) => connection.exec(index));
+        AI_DECISION_EVENTS_INDEXES.forEach((index) => connection.exec(index));
         runMigrations();
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
@@ -1184,6 +1189,8 @@ function runMigrations() {
         // TA-P5 Learnings: Tabellen und der KI-Schnappschuss am Entwurf (Server seit 0018).
         ensureMigrationTable(AI_LEARNING_DIGESTS_TABLE, createAiLearningDigestsTable, [...AI_LEARNINGS_INDEXES]);
         ensureMigrationTable(AI_LEARNING_CANDIDATES_TABLE, createAiLearningCandidatesTable, [...AI_LEARNINGS_INDEXES]);
+        // Plan 050: Treffsicherheit der KI-Entscheidung (Server seit 0066).
+        ensureMigrationTable(AI_DECISION_EVENTS_TABLE, createAiDecisionEventsTable, [...AI_DECISION_EVENTS_INDEXES]);
         // Übernommene Fassung getrennt vom KI-Vorschlag (Server seit 0061).
         const digestCols = conn.prepare(`PRAGMA table_info(${AI_LEARNING_DIGESTS_TABLE})`).all() as { name: string }[];
         if (!digestCols.some((c) => c.name === 'accepted_content')) {

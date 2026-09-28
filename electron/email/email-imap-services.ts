@@ -203,6 +203,13 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
           logger.warn('[workflow] run step detail prune', e);
         }
         try {
+          // Plan 050: Ereignisse der KI-Entscheidung nach 365 Tagen löschen.
+          const { pruneAiDecisionEventsIfDue } = await import('../workflow/ai-decision-events.js');
+          pruneAiDecisionEventsIfDue(logger);
+        } catch (e) {
+          logger.warn('[ai-decision] prune', e);
+        }
+        try {
           await scanDueTasksAndFireWorkflows();
         } catch (e) {
           logger.warn('[workflow] task due scan', e);

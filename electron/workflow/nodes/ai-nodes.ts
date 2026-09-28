@@ -13,6 +13,8 @@ import {
   normalizeAiDecideContextMode,
   type AiDecideOutcome,
 } from '../../../packages/core/src/workflow/ai-decide';
+import { normalizeAiDecisionFeedbackSignal } from '../../../packages/core/src/workflow/ai-decision-accuracy';
+import { recordAiDecisionEventSafe } from '../ai-decision-events';
 import type { AccountOverrideScope } from '../../../shared/mail-account-overrides';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
@@ -555,13 +557,29 @@ export function registerAiNodes(register: Reg): void {
       contextMode: 'full',
       threshold: 80,
       profileId: null,
+      feedbackSignal: 'none',
     },
-    execute: async (ctx, config) => {
+    execute: async (ctx, config, nodeId) => {
       // Ausgangs-Workflow: alles außer „ja“ hält den Versand an (wie
       // ai.outbound_review); die Ausgänge laufen dann nur für Zusatzschritte.
       // Eingehend nur Verzweigung — bewusst KEIN Spam-Überspringen, die Frage
       // kann gerade „Ist das Spam?“ sein.
       const finish = (outcome: AiDecideOutcome): NodeExecuteResult => {
+        // Plan 050: nur echte Läufe zählen (kein Testlauf, keine Versandvorschau).
+        if (!ctx.dryRun && !ctx.previewOutbound) {
+          recordAiDecisionEventSafe({
+            workflowId: ctx.workflowId,
+            nodeId,
+            runId: ctx.runId > 0 ? ctx.runId : null,
+            messageId: ctx.messageId ?? ctx.outbound?.messageId ?? null,
+            direction: ctx.direction,
+            answer: outcome.answer,
+            probability: outcome.probability,
+            threshold: config.threshold,
+            model: outcome.model || null,
+            feedbackSignal: normalizeAiDecisionFeedbackSignal(config.feedbackSignal),
+          });
+        }
         const variables = aiDecideVariables(outcome);
         const blockReason = ctx.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
         if (blockReason) {

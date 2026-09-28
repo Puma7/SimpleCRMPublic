@@ -36,6 +36,8 @@ import { escapeHtmlText } from '../../shared/compose-body';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
 import { APPROVAL_PENDING_VIEW_SQL, OUTBOUND_BLOCKED_VIEW_SQL } from './automation-view-sql';
 import { clearOutboundHoldFingerprints, clearOutboundReviewApprovalMarkers } from './outbound-hold-fingerprint';
+import { linkAiDecisionOverrideSafe } from '../workflow/ai-decision-events';
+import { overrideForSpamTransition } from '../../packages/core/src/workflow/ai-decision-accuracy';
 
 export type EmailAccountRow = {
   id: number;
@@ -1778,7 +1780,13 @@ function learningLabelForTransition(previous: string, next: SpamStatus): 'spam' 
 export function setMessageSpamStatus(
   messageId: number,
   status: SpamStatus,
-  opts: { train?: boolean; source?: string; preloadedRow?: EmailMessageRow } = {},
+  opts: {
+    train?: boolean;
+    source?: string;
+    preloadedRow?: EmailMessageRow;
+    /** Ein Mensch ändert den Status (IPC, Drag & Drop): Korrektur der KI-Entscheidung (Plan 050). */
+    aiOverride?: boolean;
+  } = {},
 ): void {
   const row = opts.preloadedRow ?? getEmailMessageById(messageId);
   if (!row) throw new Error('Nachricht nicht gefunden');
@@ -1835,12 +1843,26 @@ export function setMessageSpamStatus(
     }
   });
   tx();
+  if (opts.aiOverride) linkSpamDecisionOverride(messageId, previous, status);
+}
+
+/**
+ * Plan 050: Ein Mensch ändert den Spam-Status → Korrektur am neuesten offenen
+ * Ereignis einer KI-Entscheidung mit Rückmeldung „spam“ (Fehler abgefangen).
+ */
+function linkSpamDecisionOverride(messageId: number, previous: string, next: SpamStatus): void {
+  if ((next !== 'clean' && next !== 'spam') || previous === next) return;
+  linkAiDecisionOverrideSafe({
+    messageId,
+    signal: 'spam',
+    resolve: (answer) => overrideForSpamTransition({ answer, previous, next }),
+  });
 }
 
 export function setMessageSpam(
   messageId: number,
   spam: boolean,
-  opts: { train?: boolean; source?: string } = {},
+  opts: { train?: boolean; source?: string; aiOverride?: boolean } = {},
 ): void {
   setMessageSpamStatus(messageId, spam ? 'spam' : 'clean', opts);
 }
@@ -2087,6 +2109,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
            WHERE id = ?`,
         )
         .run(messageId);
+      linkSpamDecisionOverride(messageId, previousSpamStatus, 'clean');
       break;
     }
     case 'archived':
@@ -2100,10 +2123,10 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
         .run(messageId);
       break;
     case 'spam_review':
-      setMessageSpamStatus(messageId, 'review', { train: true, source: 'drag-and-drop', preloadedRow: row });
+      setMessageSpamStatus(messageId, 'review', { train: true, source: 'drag-and-drop', preloadedRow: row, aiOverride: true });
       break;
     case 'spam':
-      setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row });
+      setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row, aiOverride: true });
       break;
     case 'sent':
     case 'sent_ai':
