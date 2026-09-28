@@ -6,12 +6,15 @@ import {
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
   type WorkflowTriggerKind,
+  firstAngleBracketContent,
   isTrashMailboxName,
   normalizeEmailAddress,
   normalizeMailboxName,
   outgoing,
   pickEdge,
 } from '@simplecrm/core';
+// Lineare Adress-Helfer liegen in @simplecrm/core; die Knoten importieren sie von hier.
+export { firstAngleBracketContent, hasSimpleEmailShape } from '@simplecrm/core';
 import type { WorkspaceTransaction } from '../db/workspace-context';
 import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD, buildTrustedServiceJobPayload } from '../jobs/policy';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE } from '../mail-read-receipt-responder';
@@ -228,36 +231,6 @@ export function extractWorkflowEmailAddress(value: unknown): string {
   if (!candidate) return '';
   const inner = firstAngleBracketContent(candidate);
   return normalizeEmailAddress(inner ?? candidate);
-}
-
-/**
- * Wie `/<([^>]+)>/` (erster Treffer, Gruppe 1), aber linear: das Regex liest
- * bei vielen `<` ohne `>` ab jedem `<` bis zum Textende (quadratisch, CodeQL).
- */
-export function firstAngleBracketContent(value: string): string | null {
-  let open = value.indexOf('<');
-  while (open >= 0) {
-    const close = value.indexOf('>', open + 1);
-    if (close < 0) return null;
-    if (close > open + 1) return value.slice(open + 1, close);
-    open = value.indexOf('<', open + 1);
-  }
-  return null;
-}
-
-/**
- * Wie `^[^\s@X]+@[^\s@X]+\.[^\s@X]+$` (X = `forbiddenChars`), aber linear:
- * im Regex überlappen sich Domain-Teil und `\.` und laufen bei vielen Punkten
- * ohne passendes Ende polynomial (CodeQL).
- */
-export function hasSimpleEmailShape(value: string, forbiddenChars = ''): boolean {
-  const at = value.indexOf('@');
-  if (at <= 0 || at !== value.lastIndexOf('@')) return false;
-  for (const char of value) {
-    if (char !== '@' && (forbiddenChars.includes(char) || /\s/.test(char))) return false;
-  }
-  const domain = value.slice(at + 1);
-  return domain.length >= 3 && domain.slice(1, -1).includes('.');
 }
 
 export function extractWorkflowEmailAddressCandidate(value: unknown): string {

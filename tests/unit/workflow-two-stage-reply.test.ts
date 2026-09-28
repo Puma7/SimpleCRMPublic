@@ -328,10 +328,13 @@ describe('ai.draft_reply (Agent 1)', () => {
 
   // F-N-redos-02: Der lineare Strip muss exakt den bisherigen Signaturtext liefern.
   test('Signaturtext entspricht der bisherigen Regex-Kette', async () => {
+    // Referenz der alten Kette, kein Sanitizer: split/join entfernt dieselben
+    // Treffer wie replace(/<[^>]+>/g, '') (das Muster hat keine Gruppen).
     const legacy = (html: string): string => html
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
+      .split(/<[^>]+>/)
+      .join('')
       .replace(/&nbsp;/g, ' ')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')

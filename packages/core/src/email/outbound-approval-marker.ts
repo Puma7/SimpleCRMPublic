@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { hasSimpleEmailShape, trailingAngleBracketContent } from './email-address-shape';
 import { normalizeOutboundHoldContent, type OutboundHoldContentInput } from './outbound-review-skip';
 
 /** Stable content fingerprint for outbound drafts, used by the approval marker
@@ -64,9 +65,12 @@ function normalizeRecipientList(value: string | null | undefined): string[] {
 
 function extractRecipientEmail(part: string): string {
   if (!part) return '';
-  const angle = part.match(/^(.+)<([^>]+)>$/);
-  const candidate = (angle ? angle[2] : part).trim().toLowerCase();
-  if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(candidate)) return candidate;
+  // Linear statt `/^(.+)<([^>]+)>$/` und `/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/`
+  // (CodeQL: polynomial bei präparierten Empfängern); gleiches Ergebnis, damit
+  // gespeicherte Fingerprints gültig bleiben.
+  const angle = trailingAngleBracketContent(part);
+  const candidate = (angle ?? part).trim().toLowerCase();
+  if (hasSimpleEmailShape(candidate, '<>')) return candidate;
   return part.trim().toLowerCase();
 }
 

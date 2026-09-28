@@ -8,6 +8,7 @@ export * from './automation-headers';
 export * from './imap-sync-cursor';
 export * from './inbound-message-size';
 export * from './email-address-normalize';
+export * from './email-address-shape';
 export * from './imap-mailbox-names';
 export * from './mail-host-hints';
 export * from './mail-permissions';
