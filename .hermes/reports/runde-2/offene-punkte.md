@@ -56,3 +56,10 @@
   entfernt, `vite.config.ts` bereinigt). Offen ist nur, die jetzt ungenutzte
   Abhängigkeit aus `package.json`/`pnpm-lock.yaml` zu entfernen:
   `pnpm remove -w node-cron`, sobald der Host erreichbar ist.
+- **Nebenwirkung des Fehlversuchs:** Der abgebrochene `pnpm add` entfernte den
+  Link `node_modules/better-sqlite3` (die Umgebung hatte `better-sqlite3@12.11.1`
+  aus der npm-Registry installiert, weil der Git-Tarball v12.11.2 aus dem
+  Lockfile nie ladbar war). Der Link wurde von Hand wiederhergestellt
+  (`node_modules/better-sqlite3 -> .pnpm/better-sqlite3@12.11.1/…`), Laden
+  geprüft; die Gates danach neu gestartet. Lockfile und `package.json` blieben
+  unverändert.
