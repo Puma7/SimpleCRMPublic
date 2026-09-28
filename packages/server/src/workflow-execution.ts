@@ -1,37 +1,50 @@
-import { createHash } from 'node:crypto';
-import { ilikeContainsPattern } from './db/sql-ilike';
-
-import { sql, type Kysely, type Selectable } from 'kysely';
 import {
+  AI_DECIDE_CRITERIA_MAX_CHARS,
+  AI_DECIDE_QUESTION_MAX_CHARS,
+  type AiDecideOutcome,
+  type BuildWorkflowStepDetailInput,
+  NODE_CHAIN_STOP_MESSAGE,
+  type SpamDecisionMessageInput,
+  type SpamEngineSettings,
+  type SpamFeatureStatInput,
+  type SpamListMatch,
+  WORKFLOW_CONTINUED_FROM_VARIABLE,
+  type WorkflowDirection,
+  type WorkflowGraphDocument,
+  type WorkflowGraphNode,
+  type WorkflowStepDetail,
+  type WorkflowTriggerKind,
   addressesFromRecipientJson,
   aiDecideAnswerHoldsOutbound,
   aiDecideDryRunOutcome,
+  aiDecideErrorOutcome,
   aiDecideOutboundBlockReason,
   aiDecidePortTripsInboundGate,
   aiDecideVariables,
-  AI_DECIDE_CRITERIA_MAX_CHARS,
-  AI_DECIDE_QUESTION_MAX_CHARS,
-  normalizeAiDecideContextMode,
-  normalizeAiDecideThreshold,
-  type AiDecideOutcome,
-  aiDecideErrorOutcome,
-  buildSpamDecision,
   buildFeaturePreview,
+  buildSpamDecision,
+  buildWorkflowStepDetail,
+  buildWorkflowStepMailSnapshot,
   compileUserRegex,
-  emailEvidenceWorkflowVariables,
+  createWorkflowRunDetailState,
+  decodeWorkflowContinuedFrom,
+  emailAddressForDelivery,
   emailEvidenceSummaryWorkflowVariables,
+  emailEvidenceWorkflowVariables,
   encodeOutboundApprovalMarker,
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
-  emailAddressForDelivery,
   generateTicketCode,
+  inboundChainStopReachableAfter,
   interpolateWorkflowPlaceholders,
   isAutoForwardedMessage,
-  isTrashMailboxName,
   isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
-  normalizeMailboxName,
+  messageIsSpamOrReviewForInboundWorkflow,
+  nodeRequestsChainStop,
+  normalizeAiDecideContextMode,
+  normalizeAiDecideThreshold,
   normalizeEmailAddress,
   outboundApprovalFingerprint,
   outboundHoldReasonOrFallback,
@@ -39,42 +52,67 @@ import {
   parseGraphDocument,
   parseSenderList,
   pickEdge,
+  serializeWorkflowStepDetailWithinBudget,
   stripHtmlTagsToText,
   workflowDirectionForTrigger,
-  workflowNodeRuntimeType,
-  workflowTriggerNeedsMessage,
-  inboundChainStopReachableAfter,
   workflowNodeDefersRun,
-  LOGIC_INMEMORY_NODE_TYPES,
-  READ_ONLY_WORKFLOW_NODE_TYPES,
-  type WorkflowDirection,
-  type WorkflowGraphDocument,
-  type WorkflowGraphNode,
-  type WorkflowTriggerKind,
-  messageIsSpamOrReviewForInboundWorkflow,
-  nodeRequestsChainStop,
-  NODE_CHAIN_STOP_MESSAGE,
-  type SpamDecisionMessageInput,
-  type SpamEngineSettings,
-  type SpamFeatureStatInput,
-  type SpamListMatch,
-  buildWorkflowStepDetail,
-  buildWorkflowStepMailSnapshot,
-  createWorkflowRunDetailState,
-  decodeWorkflowContinuedFrom,
-  serializeWorkflowStepDetailWithinBudget,
+  workflowNodeRuntimeType,
   workflowStepPortLabel,
+  workflowTriggerNeedsMessage,
   workflowUnwiredPortNote,
-  WORKFLOW_CONTINUED_FROM_VARIABLE,
-  type BuildWorkflowStepDetailInput,
-  type WorkflowRunDetailState,
-  type WorkflowStepDetail,
 } from '@simplecrm/core';
+import { type Kysely, type Selectable, sql } from 'kysely';
+import { createHash } from 'node:crypto';
+import { type AiReviewPreviewRunner, createAiReviewPreviewRunner } from './ai-classification';
+import { executeServerLearningsDigestNode } from './ai-learnings';
+import type { ServerEventPort } from './api/types';
+import type {
+  EmailWorkflowRunsTable,
+  ReturnItemCondition,
+  ReturnItemsTable,
+  ReturnOutcome,
+  ReturnStatus,
+  ReturnsTable,
+  ServerDatabase,
+  WorkflowDelayedJobsTable,
+} from './db';
+import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import type { PostgresSecretPort } from './db/postgres-secret-port';
+import { ilikeContainsPattern } from './db/sql-ilike';
 import {
-  inboundChainFieldsFromRecord,
-  parseInboundWorkflowChain,
-  type InboundWorkflowChainContext,
-} from './workflow-inbound-chain-context';
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+  withWorkspaceTransaction,
+} from './db/workspace-context';
+import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
+import type {
+  WorkflowExecutionDryRunResult,
+  WorkflowExecutionJobPlan,
+  WorkflowExecutionJobPort,
+} from './jobs';
+import { TRUSTED_SERVICE_JOB_MARKER_VALUE, buildTrustedServiceJobPayload } from './jobs/policy';
+import { searchKnowledgeSections } from './knowledge-workflow-search';
+import type { MailAccessService } from './mail-access/types';
+import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
+import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
+import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
+import {
+  READ_RECEIPT_REVIEW_ROUND_VARIABLE,
+  readReceiptReviewRoundFromJobContext,
+} from './mail-read-receipt-responder';
+import { markDraftOrigin } from './mail-sent-provenance';
+import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { type MssqlSettingsPort, validateReadOnlyMssqlQuery } from './mssql-settings';
+import { interpolateAiDecideField, runServerAiDecision } from './workflow-ai-decide';
+import {
+  type WorkflowAiDraftNodeDeps,
+  executeWorkflowAiDraftReply,
+  executeWorkflowAiReviewDraft,
+  fingerprintReviewedDraft,
+  firstReplyAddress,
+  setDraftApprovalPending,
+} from './workflow-ai-draft-nodes';
+import type { ServerWorkflowImapActionPort } from './workflow-imap-actions';
 import {
   DELAYED_JOB_CHAIN_SETTLED_FIELD,
   cancelPendingWorkflowDelayedJobsForMessage,
@@ -86,63 +124,71 @@ import {
   terminalChildCompletionKeyFor,
   tryClaimInboundChainHop,
 } from './workflow-inbound-chain-advance';
-
+import {
+  type InboundWorkflowChainContext,
+  inboundChainFieldsFromRecord,
+  parseInboundWorkflowChain,
+} from './workflow-inbound-chain-context';
+import {
+  DRY_RUN_LIVE_NODE_TYPES,
+  dryRunFailClosedResult,
+  dryRunMutatingNodeResult,
+  dryRunSideEffectResult,
+} from './workflow-nodes/dry-run';
+import {
+  CONTINUATION_HOPS_VARIABLE,
+  PreviewAiPendingSignal,
+  RESERVED_WORKFLOW_VARIABLES,
+  SUBFLOW_DEPTH_VARIABLE,
+  addWorkflowMessageTag,
+  applyWorkflowImapMoveLocalState,
+  booleanConfig,
+  boundedContinuationStrings,
+  extractWorkflowEmailAddress,
+  finiteNumber,
+  firstWorkflowRecipientAddress,
+  inboundChainFieldsFromContext,
+  inboundFanOutRunId,
+  loadWorkflow,
+  messageIsSpamOrReview,
+  normalizeWorkflowTrigger,
+  objectRecord,
+  optionalPositiveIntegerConfig,
+  parseJson,
+  positiveIntegerVariable,
+  resolveMessageSourceSqliteId,
+  resolveResumeNodeAfter,
+  runWorkflowImapMoveAction,
+  serverCreatedSourceSqliteId,
+  serverNodeHandlerFor,
+  serverNodeHandlerMap,
+  serverWorkerSourceRow,
+  softDeleteWorkflowMessage,
+  spamStatusConfig,
+  stampBranchKey,
+  terminalNodeExecutionId,
+  unsupportedWorkflowNodeResult,
+  updateWorkflowMessage,
+  workflowContinuationContextError,
+  workflowJobProvenance,
+  workflowSideEffectExecutionIdentity,
+  workflowSpamStatusPatch,
+} from './workflow-nodes/shared';
 import type {
-  WorkflowExecutionDryRunResult,
-  WorkflowExecutionJobPlan,
-  WorkflowExecutionJobPort,
-} from './jobs';
-import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD, TRUSTED_SERVICE_JOB_MARKER_VALUE } from './jobs/policy';
-import {
-  createAiReviewPreviewRunner,
-  type AiReviewPreviewRunner,
-} from './ai-classification';
-import {
-  executeWorkflowAiDraftReply,
-  executeWorkflowAiReviewDraft,
-  fingerprintReviewedDraft,
-  firstReplyAddress,
-  setDraftApprovalPending,
-  type WorkflowAiDraftNodeDeps,
-} from './workflow-ai-draft-nodes';
-import {
-  interpolateAiDecideField,
-  runServerAiDecision,
-  type WorkflowAiDecideDeps,
-} from './workflow-ai-decide';
-import type { PostgresSecretPort } from './db/postgres-secret-port';
-import type { MailAccessService } from './mail-access/types';
-import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
-import type { ServerEventPort } from './api/types';
-import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
-import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
-import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
-import type {
-  EmailMessagesTable,
-  EmailWorkflowRunsTable,
-  EmailWorkflowsTable,
-  ReturnItemCondition,
-  ReturnItemsTable,
-  ReturnOutcome,
-  ReturnsTable,
-  ReturnStatus,
-  ServerDatabase,
-  WorkflowDelayedJobsTable,
-} from './db';
-import {
-  withWorkspaceTransaction,
-  type WorkspaceSessionApplier,
-  type WorkspaceTransaction,
-} from './db/workspace-context';
-import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
-import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
-import { executeServerLearningsDigestNode } from './ai-learnings';
-import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
-import { markDraftOrigin } from './mail-sent-provenance';
-import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
-import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
-import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
-import { searchKnowledgeSections } from './knowledge-workflow-search';
+  DeferredWorkflowImapEffect,
+  MessageRow,
+  NodeResult,
+  PreviewAiMemo,
+  ServerNodeHandlerArgs,
+  ServerNodeHandlerMap,
+  ServerWorkflowContext,
+  ServerWorkflowRuntimePorts,
+  WorkflowRow,
+  WorkflowStepStatus,
+  WorkflowStringContext,
+  WorkflowVariableContext,
+  WorkflowVisibilityInvalidation,
+} from './workflow-nodes/types';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -156,8 +202,6 @@ const MAX_GRAPH_TOTAL_STEPS = 10_000;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
 /** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
 const MAX_SUBFLOW_DEPTH = 8;
-/** Reserved variable carrying the current subflow chain depth across child runs. */
-const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
 /**
  * Global cap on continuations (resumed runs) per workflow lineage. MAX_GRAPH_STEPS
  * only bounds a single job; a cycle through an async node (HTTP/AI/delay back to
@@ -167,14 +211,6 @@ const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
  * chain stops after 100 external calls instead of never.
  */
 const MAX_WORKFLOW_CONTINUATION_HOPS = 100;
-/** Reserved variable counting the continuations of this lineage (rides in eventVariables). */
-const CONTINUATION_HOPS_VARIABLE = '__continuation_hops';
-/** Variables only the executor may set; nodes can neither write nor overwrite them. */
-const RESERVED_WORKFLOW_VARIABLES = [
-  SUBFLOW_DEPTH_VARIABLE,
-  READ_RECEIPT_REVIEW_ROUND_VARIABLE,
-  CONTINUATION_HOPS_VARIABLE,
-];
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -186,53 +222,7 @@ const AUTO_REPLY_MAX_PER_SENDER_DEFAULT = 1;
 const AUTO_REPLY_NOREPLY_RE = /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;
 const MAX_WORKFLOW_JTL_LOOKUP_LIMIT = 50;
 const WORKFLOW_JTL_LOOKUP_RESULT_LIMIT = 8_000;
-const SERVER_CREATED_SOURCE_ID_OFFSET = 1_000_000_000_000n;
-const SERVER_CREATED_SOURCE_ID_SPAN = 7_000_000_000_000_000n;
 const safeRegex = require('safe-regex') as (pattern: string) => boolean;
-
-type WorkflowRow = Pick<
-  Selectable<EmailWorkflowsTable>,
-  | 'id'
-  | 'source_sqlite_id'
-  | 'account_id'
-  | 'trigger_name'
-  | 'enabled'
-  | 'definition_json'
-  | 'graph_json'
-  | 'execution_mode'
->;
-
-type MessageRow = Pick<
-  Selectable<EmailMessagesTable>,
-  | 'id'
-  | 'source_sqlite_id'
-  | 'account_id'
-  | 'subject'
-  | 'from_json'
-  | 'to_json'
-  | 'cc_json'
-  | 'snippet'
-  | 'body_text'
-  | 'body_html'
-  | 'has_attachments'
-  | 'attachments_json'
-  | 'customer_id'
-  | 'customer_source_sqlite_id'
-  | 'auth_spf'
-  | 'auth_dkim'
-  | 'auth_dmarc'
-  | 'auth_arc'
-  | 'rspamd_score'
-  | 'rspamd_action'
-  | 'is_spam'
-  | 'spam_status'
-  | 'spam_score'
-  | 'spam_score_label'
-  | 'spam_decision_source'
-  | 'spam_score_breakdown_json'
-  | 'raw_headers'
-  | 'reply_parent_message_id'
->;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
 type DelayedJobRow = Pick<
@@ -247,65 +237,6 @@ type DelayedJobRow = Pick<
 >;
 
 type WorkflowRunStatus = 'ok' | 'error' | 'blocked';
-type WorkflowStepStatus = 'ok' | 'error' | 'skipped';
-type WorkflowMessagePatch = {
-  archived?: boolean;
-  assigned_to?: string | null;
-  assigned_to_user_id?: string | null;
-  done_local?: boolean;
-  folder_kind?: string;
-  is_spam?: boolean;
-  seen_local?: boolean;
-  soft_deleted?: boolean;
-  spam_decided_at?: Date;
-  spam_status?: string;
-  trash_prev_archived?: boolean | null;
-  trash_prev_folder_kind?: string | null;
-  trash_prev_is_spam?: boolean | null;
-  updated_at?: Date;
-};
-
-type WorkflowStringContext = Record<string, string>;
-type WorkflowVariableContext = Record<string, string | number | boolean | null>;
-
-type ServerWorkflowContext = {
-  workspaceId: string;
-  workflowId: number;
-  workflowSourceSqliteId: number;
-  runId: number;
-  runSourceSqliteId: number;
-  messageId: number | null;
-  messageSourceSqliteId: number | null;
-  trigger: WorkflowTriggerKind;
-  direction: WorkflowDirection;
-  message: MessageRow | null;
-  strings: WorkflowStringContext;
-  variables: WorkflowVariableContext;
-  actorUserId?: string;
-  trustedService?: boolean;
-  manualAdminExecute?: boolean;
-  previewOutbound?: boolean;
-  /**
-   * Testlauf mit „KI wirklich fragen“ (Plan 047): ai.decide fragt das Modell
-   * wie die Versandvorschau synchron. Nur im gespeicherten Testlauf gesetzt.
-   */
-  testRealAi?: boolean;
-  /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
-  inboundWorkflowChain?: InboundWorkflowChainContext;
-  skipIfMessageSpamOrReview?: boolean;
-  /**
-   * Welcher Trigger-Zweig laeuft gerade? Genau die Einheit, die die
-   * Join-Barriere zaehlt (ein Zaehler pro Trigger-Kante).
-   */
-  branchKey?: string;
-  /** Lauf, der den Trigger-Fan-out gestartet hat (Schluessel der Join-Barriere). */
-  inboundFanOutRunId?: number;
-  /**
-   * Lauf-Historie: Mail nur im ersten Schritt, Budget für alle Details des
-   * Laufs. Geteilt über alle Zweige (Klone kopieren die Referenz).
-   */
-  stepDetail?: WorkflowRunDetailState;
-};
 
 type PreparedWorkflowRun =
   | {
@@ -326,19 +257,6 @@ type PreparedWorkflowRun =
     log: string[];
   };
 
-type NodeResult = {
-  status: WorkflowStepStatus;
-  port?: string | null;
-  message?: string | null;
-  stop?: boolean;
-  /** When true with stop, do not enqueue the next inbound priority-chain workflow. */
-  inboundChainStop?: boolean;
-  blocked?: boolean;
-  deferred?: boolean;
-  blockReason?: string | null;
-  variables?: WorkflowVariableContext;
-};
-
 type GraphRunResult = {
   status: WorkflowRunStatus;
   blocked: boolean;
@@ -356,80 +274,8 @@ type GraphRunResult = {
   log: string[];
 };
 
-type DeferredWorkflowImapEffect =
-  | { kind: 'set_seen'; workspaceId: string; messageId: number }
-  | {
-    kind: 'move';
-    workspaceId: string;
-    messageId: number;
-    targetFolderPath: string;
-    context: ServerWorkflowContext;
-    now: Date;
-  }
-  | {
-    kind: 'delete';
-    workspaceId: string;
-    messageId: number;
-    context: ServerWorkflowContext;
-    now: Date;
-  };
-
-/**
- * Sammelbecken fuer Sichtbarkeits-Invalidierungen.
- *
- * Schreibt ein Workflow Tags oder Kategorien, kann das die Sichtbarkeit einer
- * Nachricht fuer jeden kippen, dessen Binding genau diese Werte als Filter
- * fuehrt — bei einem Ausschlussfilter wird eine bereits geladene Nachricht
- * gesperrt, bei einem Allow-Filter erscheint sie neu. Ohne Invalidierung merkt
- * der Client das erst beim naechsten Reload.
- *
- * Gesammelt wird INNERHALB der Transaktion, veroeffentlicht wird danach: ein
- * Publish vor dem Commit waere bei einem Rollback schlicht falsch. Sets statt
- * Listen, damit ein Workflow, der denselben Tag mehrfach setzt, am Ende
- * trotzdem nur eine Invalidierung ausloest.
- */
-type WorkflowVisibilityInvalidation = {
-  tags: Set<string>;
-  categoryIds: Set<number>;
-  /**
-   * Eine ZUWEISUNG kippt die Sichtbarkeit ohne Tag und ohne Kategorie: die
-   * Filter assigned_to_me, assigned_to_my_groups und unassigned haengen allein
-   * an assigned_to_user_id. Der manuelle Assign-Pfad (mail-routes) invalidiert
-   * dafuer laengst; der Workflow-Knoten email.assign tat es nicht — betroffene
-   * Nutzer sahen eine gerade gesperrte, bereits geladene Nachricht weiter.
-   */
-  assignmentChanged: boolean;
-};
-
-type ServerWorkflowRuntimePorts = Readonly<{
-  mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
-  workflowImapActions?: ServerWorkflowImapActionPort;
-  deferredImapEffects?: DeferredWorkflowImapEffect[];
-  visibilityInvalidation?: WorkflowVisibilityInvalidation;
-  aiReviewPreview?: AiReviewPreviewRunner;
-  aiDraft?: WorkflowAiDraftNodeDeps;
-  /** KI-Entscheidung in der Versandvorschau (synchron, echter Modellaufruf). */
-  aiDecide?: WorkflowAiDecideDeps;
-  /** Nur im Probelauf: KI-Antworten der Versandvorschau (Aufrufe ohne offene Transaktion). */
-  previewAiMemo?: PreviewAiMemo;
-}>;
-
 /** Höchstzahl verschiedener KI-Aufrufe je Versandvorschau (danach fail-closed). */
 const MAX_PREVIEW_AI_CALLS_PER_DRY_RUN = 25;
-
-/**
- * KI-Antworten der Versandvorschau. Der Probelauf läuft in kurzen
- * Transaktionen: trifft er auf eine noch unbekannte KI-Frage, bricht der
- * Durchgang ab (Rollback, der Probelauf schreibt nichts), die Frage wird ohne
- * offene Transaktion gestellt und der Durchgang mit der gemerkten Antwort
- * wiederholt. Gleiche Fragen innerhalb einer Vorschau werden nur einmal gestellt.
- */
-type PreviewAiMemo = {
-  results: Map<string, unknown>;
-  pending: { key: string; run: () => Promise<unknown> } | null;
-};
-
-class PreviewAiPendingSignal extends Error {}
 
 async function callPreviewAi<T>(
   ports: ServerWorkflowRuntimePorts,
@@ -1415,29 +1261,6 @@ function dryRunFailure(
   };
 }
 
-async function loadWorkflow(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-  workflowId: number,
-): Promise<WorkflowRow | null> {
-  const row = await trx
-    .selectFrom('email_workflows')
-    .select([
-      'id',
-      'source_sqlite_id',
-      'account_id',
-      'trigger_name',
-      'enabled',
-      'definition_json',
-      'graph_json',
-      'execution_mode',
-    ])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', workflowId)
-    .executeTakeFirst();
-  return row ?? null;
-}
-
 async function loadDelayedJob(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -2301,33 +2124,6 @@ async function executePreviewOutboundAiReview(
   };
 }
 
-/** Plan 043: Eingaben eines Server-Knoten-Handlers (wie executeServerNode). */
-export type ServerNodeHandlerArgs = {
-  trx: WorkspaceTransaction;
-  doc: WorkflowGraphDocument;
-  context: ServerWorkflowContext;
-  node: WorkflowGraphNode;
-  config: Record<string, unknown>;
-  type: string;
-  log: string[];
-  now: Date;
-  ports: ServerWorkflowRuntimePorts;
-  dryRun: boolean;
-};
-
-/** null = Knoten nicht zuständig (weiter wie bisher im Ablauf). */
-export type ServerNodeHandler = (args: ServerNodeHandlerArgs) => Promise<NodeResult | null>;
-export type ServerNodeHandlerMap = Readonly<Record<string, ServerNodeHandler>>;
-
-/** Ohne Prototyp: ein Knotentyp wie `constructor` findet keinen Handler. */
-function serverNodeHandlerMap(entries: Record<string, ServerNodeHandler>): ServerNodeHandlerMap {
-  return Object.freeze(Object.assign(Object.create(null) as Record<string, ServerNodeHandler>, entries));
-}
-
-function serverNodeHandlerFor(map: ServerNodeHandlerMap, type: string): ServerNodeHandler | undefined {
-  return Object.prototype.hasOwnProperty.call(map, type) ? map[type] : undefined;
-}
-
 /** Knoten logic.stop, stop (vor dem Dry-Run-Schutz). */
 async function handleLogicStop(_args: ServerNodeHandlerArgs): Promise<NodeResult | null> {
   return { status: 'ok', port: 'default', stop: true };
@@ -3184,229 +2980,6 @@ async function markWorkflowMessageSeen(
   return { status: 'ok', port: 'default', variables };
 }
 
-function unsupportedWorkflowNodeResult(type: string, log: string[]): NodeResult {
-  const reason = `server_workflow_node_unsupported:${type}`;
-  log.push(reason);
-  return {
-    status: 'skipped',
-    port: 'blocked',
-    blocked: true,
-    blockReason: reason,
-    message: reason,
-  };
-}
-
-/**
- * Knotentypen, die im Dry-Run nach dryRunMutatingNodeResult live laufen. Die
- * Vorschau committet unter der System-Rolle; eine reine Denylist liess den
- * Vorlagen-Alias set_category und ai.pick_canned live laufen (C-A64). Alles,
- * was weder hier steht noch simuliert wird, faellt auf
- * dryRunFailClosedResult — ein neuer schreibender Knoten wirkt so in der
- * Vorschau nie live.
- */
-const DRY_RUN_LIVE_NODE_TYPES: ReadonlySet<string> = new Set([
-  ...READ_ONLY_WORKFLOW_NODE_TYPES,
-  ...LOGIC_INMEMORY_NODE_TYPES,
-  // Eigener Dry-Run-Zweig in executeServerNode.
-  'logic.delay',
-  'ai.draft_reply',
-  'ai.review_draft',
-  'email.release_outbound',
-  'email.send_draft',
-  // Nur Auswertung bzw. Halte-Ergebnis, kein Schreibzugriff.
-  'email.hold_outbound',
-  'hold_outbound',
-  'email.auto_reply',
-  'ai.spam_score',
-  'ai.agent_tool',
-  // Lesen live aus dem externen ERP. Ob die Vorschau das darf, ist eine offene
-  // Produktentscheidung; bis dahin bleibt das bisherige Verhalten.
-  'mssql.query',
-  'jtl.order_context',
-]);
-
-/**
- * Knoten ohne Live-Freigabe und ohne eigene Simulation: Bekannte Server-Knoten
- * werden simuliert, unbekannte und nicht serverfaehige bleiben wie im echten
- * Lauf "nicht unterstuetzt".
- */
-function dryRunFailClosedResult(type: string, log: string[]): NodeResult {
-  const knownServerNode = isServerWorkflowNodeTypeSupported(type)
-    && listBuiltinWorkflowNodeCatalog().some((entry) => entry.type === type);
-  return knownServerNode ? dryRunSideEffectResult(type, log) : unsupportedWorkflowNodeResult(type, log);
-}
-
-function dryRunMutatingNodeResult(
-  type: string,
-  config: Record<string, unknown>,
-  node: WorkflowGraphNode,
-  log: string[],
-): NodeResult | null {
-  switch (type) {
-    case 'ai.reply_suggestion':
-      return dryRunSideEffectResult(type, log, {
-        variables: { 'reply_suggestion.status': 'dry_run' },
-      });
-    case 'ai.outbound_review':
-    case 'ai.review':
-    case 'ai_review':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'ai.review.status': 'dry_run',
-      });
-    case 'ai.classify':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'ai.classification.status': 'dry_run',
-      });
-    case 'ai.transform_text':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'ai.transform_text.status': 'dry_run',
-      });
-    case 'ai.agent':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'ai.agent.status': 'dry_run',
-      });
-    case 'ai.pick_canned':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'ai.pick_canned.status': 'dry_run',
-      });
-    case 'email.tag':
-    case 'tag': {
-      const tag = String(config.tag ?? node.data.tag ?? '').trim();
-      return tag
-        ? dryRunSideEffectResult(type, log, { variables: { 'email.last_tag': tag } })
-        : { status: 'skipped', port: 'default', message: 'leerer Tag' };
-    }
-    case 'email.set_category':
-    case 'set_category': {
-      const path = String(config.path ?? '').trim();
-      return path
-        ? dryRunSideEffectResult(type, log, { variables: { 'email.category_path': path } })
-        : { status: 'skipped', port: 'default' };
-    }
-    case 'email.tag_attachment_meta':
-    case 'tag_attachment_meta': {
-      const tag = String(config.tag ?? node.data.tag ?? 'attachment').trim() || 'attachment';
-      return dryRunSideEffectResult(type, log, { variables: { 'email.last_tag': tag } });
-    }
-    case 'email.create_draft':
-      return dryRunSideEffectResult(type, log, { variables: { 'draft.status': 'dry_run' } });
-    case 'email.set_priority': {
-      const level = String(config.level ?? 'normal').toLowerCase();
-      const allowed = new Set(['hoch', 'high', 'normal', 'niedrig', 'low']);
-      if (!allowed.has(level)) return { status: 'error', port: 'error', message: 'level muss hoch, normal oder niedrig sein' };
-      const tag = level === 'hoch' || level === 'high'
-        ? 'priority:hoch'
-        : level === 'niedrig' || level === 'low'
-          ? 'priority:niedrig'
-          : 'priority:normal';
-      return dryRunSideEffectResult(type, log, {
-        variables: { 'email.priority': tag, 'email.last_tag': tag },
-      });
-    }
-    case 'email.mark_seen':
-    case 'mark_seen':
-      return dryRunSideEffectResult(type, log, { variables: { 'email.seen': true } });
-    case 'email.archive':
-    case 'archive':
-      return dryRunSideEffectResult(type, log, { variables: { 'email.archived': true } });
-    case 'email.set_spam_status': {
-      const status = spamStatusConfig(config.status);
-      return dryRunSideEffectResult(type, log, {
-        variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
-      });
-    }
-    case 'email.mark_spam': {
-      const spam = booleanConfig(config.spam, 'spam', true);
-      if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
-      return dryRunSideEffectResult(type, log, {
-        variables: { 'email.is_spam': spam.value, 'spam.status': spam.value ? 'spam' : 'clean' },
-      });
-    }
-    case 'email.move_imap':
-      return dryRunSideEffectResult(type, log, {
-        variables: { 'imap.moved_to': String(config.folderPath ?? config.folder ?? config.targetFolderPath ?? 'Spam') },
-      });
-    case 'email.delete_server':
-      return dryRunSideEffectResult(type, log, { variables: { 'imap.deleted': true } });
-    case 'email.assign': {
-      const raw = config.teamMemberId;
-      const teamMemberId = raw === null || raw === undefined || raw === '' ? null : String(raw).trim();
-      if (teamMemberId !== null && !teamMemberId) return { status: 'error', port: 'error', message: 'teamMemberId leer' };
-      return dryRunSideEffectResult(type, log, { variables: { 'email.assigned_to': teamMemberId } });
-    }
-    case 'crm.create_task':
-      return dryRunSideEffectResult(type, log, { variables: { 'task.status': 'dry_run' } });
-    case 'crm.log_activity':
-      return dryRunSideEffectResult(type, log, { variables: { 'activity_log.status': 'dry_run' } });
-    case 'crm.update_deal':
-      return dryRunSideEffectResult(type, log, { variables: { 'deal.status': 'dry_run' } });
-    case 'crm.link_customer':
-    case 'link_customer':
-      return dryRunSideEffectResult(type, log, { variables: { 'customer.link_status': 'dry_run' } });
-    case 'sync.run':
-      return dryRunSideEffectResult(type, log, { variables: { 'sync.status': 'dry_run' } });
-    case 'email.forward_copy':
-    case 'forward_copy':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'forward_copy.status': 'dry_run',
-      });
-    case 'email.ingest_dmarc_report':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'dmarc.status': 'dry_run',
-      });
-    case 'http.request':
-      return dryRunAsyncContinuationResult(type, config, node, log, {
-        'http.status': 'dry_run',
-      });
-    case 'workflow.subflow':
-      return dryRunSideEffectResult(type, log, { variables: { 'subflow.status': 'dry_run' } });
-    // returns.evaluate is intentionally NOT listed: it is read-only and runs live
-    // even in dry-run so the previewed routing port reflects the real decision.
-    case 'returns.offer_exchange':
-      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'exchange' } });
-    case 'returns.offer_credit':
-      return dryRunSideEffectResult(type, log, { variables: { 'returns.outcome': 'credit' } });
-    default:
-      return null;
-  }
-}
-
-function dryRunAsyncContinuationResult(
-  type: string,
-  config: Record<string, unknown>,
-  node: WorkflowGraphNode,
-  log: string[],
-  variables: WorkflowVariableContext,
-): NodeResult {
-  const resumeNodeId = String(config.resumeNodeId ?? '').trim() || '';
-  return dryRunSideEffectResult(type, log, {
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
-    variables: {
-      ...variables,
-      ...(resumeNodeId ? { 'workflow.resume_node_id': resumeNodeId } : {}),
-      'workflow.node_id': node.id,
-    },
-  });
-}
-
-function dryRunSideEffectResult(
-  type: string,
-  log: string[],
-  options: Partial<Pick<NodeResult, 'stop' | 'deferred' | 'message' | 'variables'>> = {},
-): NodeResult {
-  const message = options.message ?? `dry_run:${type}`;
-  log.push(message);
-  return {
-    status: 'ok',
-    port: 'default',
-    message,
-    ...(options.stop === undefined ? {} : { stop: options.stop }),
-    ...(options.deferred === undefined ? {} : { deferred: options.deferred }),
-    ...(options.variables === undefined ? {} : { variables: options.variables }),
-  };
-}
-
 async function moveWorkflowMessageOnImap(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -3492,50 +3065,6 @@ async function deleteWorkflowMessageOnImap(
   };
 }
 
-async function runWorkflowImapMoveAction(
-  context: ServerWorkflowContext,
-  targetFolderPath: string,
-  ports: ServerWorkflowRuntimePorts,
-  log: string[],
-  unsupportedType: string,
-  now: Date,
-): Promise<
-  | { ok: true; value: ServerWorkflowImapActionResult & { ok: true } }
-  | { ok: false; node: NodeResult }
-> {
-  if (context.messageId === null) {
-    return { ok: false, node: { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' } };
-  }
-  if (!ports.workflowImapActions) {
-    return { ok: false, node: unsupportedWorkflowNodeResult(unsupportedType, log) };
-  }
-  if (ports.deferredImapEffects) {
-    ports.deferredImapEffects.push({
-      kind: 'move',
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      targetFolderPath,
-      context,
-      now,
-    });
-    return {
-      ok: true,
-      value: {
-        ok: true,
-        sourceFolderPath: '',
-        targetFolderPath,
-      },
-    };
-  }
-  const result = await ports.workflowImapActions.move({
-    workspaceId: context.workspaceId,
-    messageId: context.messageId,
-    targetFolderPath,
-  });
-  if (!result.ok) return { ok: false, node: { status: 'error', port: 'error', message: result.error } };
-  return { ok: true, value: result };
-}
-
 async function flushDeferredWorkflowImapEffects(input: {
   effects: readonly DeferredWorkflowImapEffect[];
   db: Kysely<ServerDatabase>;
@@ -3586,49 +3115,6 @@ async function flushDeferredWorkflowImapEffects(input: {
       { applySession: input.applyWorkspaceSession },
     );
   }
-}
-
-async function applyWorkflowImapMoveLocalState(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  targetFolderPath: string,
-  now: Date,
-): Promise<NodeResult | null> {
-  const normalized = normalizeMailboxName(targetFolderPath);
-  if (new Set(['spam', 'junk', 'bulk', 'unwanted', 'ungewollt']).has(normalized)) {
-    return updateWorkflowMessage(trx, context, workflowSpamStatusPatch('spam', 'inbox', now));
-  }
-  if (new Set(['archive', 'archives', 'archiv', 'all mail', 'all']).has(normalized)) {
-    return updateWorkflowMessage(trx, context, {
-      soft_deleted: false,
-      archived: true,
-      is_spam: false,
-      spam_status: 'clean',
-      done_local: true,
-      trash_prev_archived: null,
-      trash_prev_is_spam: null,
-      trash_prev_folder_kind: null,
-      updated_at: now,
-    });
-  }
-  if (normalized === 'inbox' || normalized === 'posteingang') {
-    return updateWorkflowMessage(trx, context, {
-      soft_deleted: false,
-      archived: false,
-      is_spam: false,
-      spam_status: 'clean',
-      done_local: false,
-      folder_kind: 'inbox',
-      trash_prev_archived: null,
-      trash_prev_is_spam: null,
-      trash_prev_folder_kind: null,
-      updated_at: now,
-    });
-  }
-  if (isTrashMailboxName(targetFolderPath)) {
-    return softDeleteWorkflowMessage(trx, context, now);
-  }
-  return updateWorkflowMessage(trx, context, { updated_at: now });
 }
 
 async function scheduleWorkflowDelay(
@@ -3687,19 +3173,6 @@ async function scheduleWorkflowDelay(
     .execute();
 
   return delayedJobId;
-}
-
-function workflowJobProvenance(context: ServerWorkflowContext): Record<string, unknown> {
-  if (context.actorUserId) {
-    // Propagate the manual-admin marker onto this run's delayed continuations and
-    // side-effect children so the worker keeps re-verifying owner/admin across the
-    // whole chain (a demoted admin must not complete a run they queued while admin).
-    return {
-      actorUserId: context.actorUserId,
-      ...(context.manualAdminExecute ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
-    };
-  }
-  return context.trustedService ? buildTrustedServiceJobPayload({}) : {};
 }
 
 // Provenance columns for a workflow-armed scheduled send. When the run has an
@@ -4086,20 +3559,6 @@ async function claimTerminalHttpCompletion(
   return Boolean(claimed);
 }
 
-/**
- * Identitaet EINER Ausfuehrung eines terminalen Knotens.
- *
- * Zwei Trigger-Zweige koennen auf denselben Knoten zusammenlaufen; jeder Zweig
- * laeuft mit eigenem `seen`-Set und plant den Kindjob erneut ein. Ohne den
- * Zweigschluessel traegen beide Jobs dieselbe Identitaet: der Graphile-Job-Key
- * kollidiert (jobKeyMode 'replace' verschluckt einen) und die Einmal-Schranke
- * verwirft den zweiten Abschluss — die mit zwei Zweigen initialisierte
- * Join-Barriere faellt dann nie auf null.
- */
-function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowGraphNode): string {
-  return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
-}
-
 /** Workflow- und Kettenkontext eines terminalen Kindjobs; wozu jedes Feld dient, steht in workflow-inbound-terminal-child. */
 function terminalChainStamp(context: ServerWorkflowContext, node: WorkflowGraphNode): Record<string, unknown> {
   return {
@@ -4127,20 +3586,6 @@ function unwiredPortChainPayload(
     ...workflowJobProvenance(context),
     ...terminalStamp,
   };
-}
-
-/**
- * Zweig-Identitaet auf oberster Payload-Ebene eines deferierten Kindjobs.
- *
- * `graphileJobKeyForJob` sieht nur die Payload-Oberflaeche, nicht die
- * Continuation. Ohne diesen Stempel teilten sich zwei auf denselben Knoten
- * konvergierende Trigger-Zweige Workflow, Nachricht, Lauf UND Resume-Knoten;
- * jobKeyMode 'replace' verschluckte einen der beiden Kindjobs, waehrend der
- * Elternlauf die Join-Barriere mit zwei Zweigen initialisiert hat — sie bliebe
- * dauerhaft bei pending = 1.
- */
-function stampBranchKey(payload: Record<string, unknown>, context: ServerWorkflowContext): void {
-  if (context.branchKey) payload.branchKey = context.branchKey;
 }
 
 async function scheduleAiAgentJob(
@@ -5905,29 +5350,6 @@ function draftAttachmentPathsFromJson(value: unknown): readonly string[] {
   }
 }
 
-function extractWorkflowEmailAddress(value: unknown): string {
-  const candidate = extractWorkflowEmailAddressCandidate(value);
-  if (!candidate) return '';
-  const match = candidate.match(/<([^>]+)>/);
-  return normalizeEmailAddress(match ? match[1] : candidate);
-}
-
-function extractWorkflowEmailAddressCandidate(value: unknown): string {
-  if (typeof value === 'string') {
-    try {
-      return extractWorkflowEmailAddressCandidate(JSON.parse(value));
-    } catch {
-      return value;
-    }
-  }
-  if (!value || typeof value !== 'object') return '';
-  if (Array.isArray(value)) return extractWorkflowEmailAddressCandidate(value[0]);
-  const record = value as Record<string, unknown>;
-  if (typeof record.address === 'string') return record.address;
-  if (Array.isArray(record.value)) return extractWorkflowEmailAddressCandidate(record.value[0]);
-  return '';
-}
-
 function workflowDomainOf(email: string): string {
   const at = email.lastIndexOf('@');
   return at >= 0 ? email.slice(at + 1) : email;
@@ -5936,35 +5358,6 @@ function workflowDomainOf(email: string): string {
 function numericVariable(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function positiveIntegerVariable(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  if (typeof value === 'number') {
-    return Number.isSafeInteger(value) && value > 0 ? value : null;
-  }
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-type OptionalPositiveIntegerConfig =
-  | { ok: true; value: number | undefined }
-  | { ok: false; message: string };
-
-function optionalPositiveIntegerConfig(value: unknown, field: string): OptionalPositiveIntegerConfig {
-  if (value === undefined || value === null || value === '') return { ok: true, value: undefined };
-  if (typeof value !== 'number' && typeof value !== 'string') {
-    return { ok: false, message: `${field} ungueltig` };
-  }
-  const parsed = typeof value === 'number' ? value : Number(value.trim());
-  if (parsed === 0) return { ok: true, value: undefined };
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    return { ok: false, message: `${field} ungueltig` };
-  }
-  return { ok: true, value: parsed };
 }
 
 type OptionalSafeIntegerConfig =
@@ -5981,21 +5374,6 @@ function optionalSafeIntegerConfig(value: unknown, field: string): OptionalSafeI
     return { ok: false, message: `${field} ungueltig` };
   }
   return { ok: true, value: parsed };
-}
-
-type BooleanConfig =
-  | { ok: true; value: boolean }
-  | { ok: false; message: string };
-
-function booleanConfig(value: unknown, field: string, fallback: boolean): BooleanConfig {
-  if (value === undefined || value === null || value === '') return { ok: true, value: fallback };
-  if (typeof value === 'boolean') return { ok: true, value };
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true' || normalized === '1') return { ok: true, value: true };
-    if (normalized === 'false' || normalized === '0') return { ok: true, value: false };
-  }
-  return { ok: false, message: `${field} muss boolean sein` };
 }
 
 type ReplySuggestionTriggerConfig =
@@ -6267,36 +5645,6 @@ function jobContextFanOutRunId(jobContext: Record<string, unknown>, runId: numbe
   return inboundChainFieldsFromRecord(jobContext).inboundFanOutRunId ?? runId;
 }
 
-/**
- * Lauf, der den aktuellen Trigger-Fan-out gestartet hat.
- *
- * In der ersten Ausfuehrung ist das der eigene Lauf; in jeder Fortsetzung der
- * mitgereichte Ursprungslauf. Eltern (Barriere anlegen) und Kinder (Barriere
- * abbauen) muessen denselben Wert benutzen, sonst zeigen sie auf verschiedene
- * sync_info-Zeilen.
- */
-function inboundFanOutRunId(context: ServerWorkflowContext): number {
-  return context.inboundFanOutRunId ?? context.runId;
-}
-
-function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
-  // Continuations (AI/HTTP/delay) must keep the priority chain, but must NOT
-  // re-stamp skipIfMessageSpamOrReview — that guard is one-shot for the initial
-  // post-process enqueue. Re-applying it after mark_spam with stopFurther=false
-  // would abort the remaining graph on resume.
-  return inboundChainFieldsFromRecord({
-    ...(context.inboundWorkflowChain
-      ? { inboundWorkflowChain: context.inboundWorkflowChain }
-      : {}),
-    // Der Fan-out-Lauf dagegen MUSS mitreisen — er skopiert die kettenlose
-    // Join-Barriere auf genau diese Ausfuehrung.
-    inboundFanOutRunId: inboundFanOutRunId(context),
-    // Genauso der Zweig: nur mit ihm bleibt die Knotenausfuehrung auch hinter
-    // deferierten Kindjobs eindeutig (siehe workflow-inbound-chain-context).
-    ...(context.branchKey ? { branchKey: context.branchKey } : {}),
-  });
-}
-
 function boundedDelayMinutes(value: unknown): number {
   const parsed = Number(value ?? 5);
   if (!Number.isFinite(parsed)) return 5;
@@ -6309,11 +5657,6 @@ function boundedDelayMs(value: unknown): number {
   const parsed = Number(value ?? 60_000);
   if (!Number.isFinite(parsed)) return 60_000;
   return Math.max(1_000, Math.min(7 * 24 * 60 * 60_000, Math.trunc(parsed)));
-}
-
-function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
-  const outs = outgoing(doc.edges, nodeId);
-  return pickEdge(outs, 'ok')?.target ?? pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
 }
 
 function resolveResumeNodeAfterPort(doc: WorkflowGraphDocument, nodeId: string, port: string): string {
@@ -6332,23 +5675,6 @@ function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string)
 
 function resolveHttpErrorNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   return pickEdge(outgoing(doc.edges, nodeId), 'no')?.target ?? '';
-}
-
-async function updateWorkflowMessage(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  patch: WorkflowMessagePatch,
-): Promise<NodeResult | null> {
-  if (context.messageId === null) {
-    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
-  }
-  await trx
-    .updateTable('email_messages')
-    .set(patch)
-    .where('workspace_id', '=', context.workspaceId)
-    .where('id', '=', context.messageId)
-    .execute();
-  return null;
 }
 
 /**
@@ -6903,38 +6229,6 @@ function isAutoReplyRecipient(value: string): boolean {
   return value.length <= 320 && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value);
 }
 
-async function softDeleteWorkflowMessage(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  now: Date,
-): Promise<NodeResult | null> {
-  if (context.messageId === null) {
-    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
-  }
-  const current = await trx
-    .selectFrom('email_messages')
-    .select(['id', 'archived', 'is_spam', 'folder_kind'])
-    .where('workspace_id', '=', context.workspaceId)
-    .where('id', '=', context.messageId)
-    .executeTakeFirst();
-  if (!current) return { status: 'error', port: 'error', message: 'Nachricht nicht gefunden' };
-
-  await trx
-    .updateTable('email_messages')
-    .set({
-      soft_deleted: true,
-      done_local: true,
-      trash_prev_archived: Boolean(current.archived),
-      trash_prev_is_spam: Boolean(current.is_spam),
-      trash_prev_folder_kind: current.folder_kind == null ? null : String(current.folder_kind),
-      updated_at: now,
-    })
-    .where('workspace_id', '=', context.workspaceId)
-    .where('id', '=', context.messageId)
-    .execute();
-  return null;
-}
-
 async function linkWorkflowMessageCustomer(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -7464,59 +6758,6 @@ function workflowTaskDueDate(value: unknown, now: Date): Date | null {
   return Number.isFinite(due.getTime()) ? due : null;
 }
 
-async function addWorkflowMessageTag(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  tag: string,
-  now: Date,
-  ports?: ServerWorkflowRuntimePorts,
-): Promise<NodeResult | null> {
-  if (context.messageId === null) {
-    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
-  }
-
-  const messageSourceSqliteId = context.messageSourceSqliteId
-    ?? await resolveMessageSourceSqliteId(trx, context.workspaceId, context.messageId);
-  if (messageSourceSqliteId === null) {
-    return { status: 'error', port: 'error', message: 'Nachricht nicht gefunden' };
-  }
-
-  const normalized = tag.trim();
-  const existing = await trx
-    .selectFrom('email_message_tags')
-    .select('id')
-    .where('workspace_id', '=', context.workspaceId)
-    .where('message_source_sqlite_id', '=', messageSourceSqliteId)
-    .where('tag', '=', normalized)
-    .executeTakeFirst();
-  if (existing) return null;
-
-  // Ein neuer Tag kann die Sichtbarkeit fuer jeden kippen, dessen Binding genau
-  // diesen Tag als Filter fuehrt. Nach dem Commit invalidiert execute() sie.
-  ports?.visibilityInvalidation?.tags.add(normalized);
-
-  await trx
-    .insertInto('email_message_tags')
-    .values({
-      workspace_id: context.workspaceId,
-      source_sqlite_id: serverCreatedSourceSqliteId(
-        'email_message_tags',
-        context.workspaceId,
-        String(messageSourceSqliteId),
-        normalized.toLowerCase(),
-      ),
-      message_source_sqlite_id: messageSourceSqliteId,
-      message_id: context.messageId,
-      tag: normalized,
-      source_row: serverWorkerSourceRow(),
-      imported_in_run_id: null,
-      created_at: now,
-      updated_at: now,
-    })
-    .execute();
-  return null;
-}
-
 type WorkflowEmailCategoryReference = {
   id: number;
   sourceSqliteId: number;
@@ -7955,66 +7196,6 @@ async function trainWorkflowSpamStatus(
   }
 }
 
-function spamStatusConfig(value: unknown): 'clean' | 'review' | 'spam' {
-  const raw = String(value ?? 'review').trim().toLowerCase();
-  return raw === 'clean' || raw === 'review' || raw === 'spam' ? raw : 'review';
-}
-
-function workflowSpamStatusPatch(
-  status: 'clean' | 'review' | 'spam',
-  currentFolderKind: string,
-  now: Date,
-): WorkflowMessagePatch {
-  if (status === 'spam') {
-    return {
-      is_spam: true,
-      spam_status: 'spam',
-      soft_deleted: false,
-      archived: false,
-      done_local: true,
-      spam_decided_at: now,
-      updated_at: now,
-    };
-  }
-  if (status === 'review') {
-    return {
-      is_spam: false,
-      spam_status: 'review',
-      soft_deleted: false,
-      archived: false,
-      done_local: false,
-      seen_local: false,
-      folder_kind: 'inbox',
-      spam_decided_at: now,
-      updated_at: now,
-    };
-  }
-  return {
-    is_spam: false,
-    spam_status: 'clean',
-    soft_deleted: false,
-    archived: false,
-    done_local: false,
-    folder_kind: currentFolderKind === 'sent' || currentFolderKind === 'draft' ? currentFolderKind : 'inbox',
-    spam_decided_at: now,
-    updated_at: now,
-  };
-}
-
-async function resolveMessageSourceSqliteId(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-  messageId: number,
-): Promise<number | null> {
-  const row = await trx
-    .selectFrom('email_messages')
-    .select('source_sqlite_id')
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', messageId)
-    .executeTakeFirst();
-  return row ? Number(row.source_sqlite_id) : null;
-}
-
 async function insertRunStep(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -8237,11 +7418,6 @@ function securityVariablesFromMessage(message: MessageRow): WorkflowVariableCont
   }
 
   return variables;
-}
-
-function finiteNumber(value: unknown): number | null {
-  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''));
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function spamScoreBreakdown(value: unknown): Record<string, unknown> | null {
@@ -8622,25 +7798,6 @@ function interpolateServerSchemaFields(
   return copy ?? config;
 }
 
-function normalizeWorkflowTrigger(value: string | undefined): WorkflowTriggerKind {
-  switch (value) {
-    case 'inbound':
-    case 'outbound':
-    case 'draft_created':
-    case 'schedule':
-    case 'manual':
-    case 'relay':
-    case 'crm.deal_stage_changed':
-    case 'task.due':
-    case 'calendar.event_start':
-    case 'webhook.incoming':
-    case 'crm.customer_created':
-      return value;
-    default:
-      return 'manual';
-  }
-}
-
 function parseWorkflowGraph(value: unknown): WorkflowGraphDocument | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') return parseGraphDocument(value);
@@ -8674,17 +7831,6 @@ function addressesFromStoredJson(value: unknown): string {
   } catch {
     return '';
   }
-}
-
-function firstWorkflowRecipientAddress(value: unknown): string {
-  const parsed = typeof value === 'string' ? parseJson(value) : value;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '';
-  const recipients = (parsed as { value?: unknown }).value;
-  if (!Array.isArray(recipients)) return '';
-  const first = recipients[0];
-  if (!first || typeof first !== 'object') return '';
-  const address = (first as { address?: unknown }).address;
-  return typeof address === 'string' ? address.trim() : '';
 }
 
 function attachmentContextFromJsonValue(
@@ -8731,14 +7877,6 @@ function collectAttachmentMeta(item: unknown, names: string[], types: string[]):
       ? record.content_type
       : '';
   if (contentType) types.push(contentType);
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function mergeJobContexts(
@@ -8793,12 +7931,6 @@ function variableRecord(value: unknown): WorkflowVariableContext | null {
     }
   }
   return result;
-}
-
-function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
 }
 
 function contextHasOutbound(value: Record<string, unknown>): boolean {
@@ -8891,20 +8023,6 @@ async function maybeEnqueueNextInboundWorkflow(
     .execute();
 }
 
-function messageIsSpamOrReview(
-  message: Pick<MessageRow, 'is_spam' | 'spam_status' | 'spam_score_label'>,
-): boolean {
-  const status = String(message.spam_status ?? '').toLowerCase();
-  const label = String(message.spam_score_label ?? '').toLowerCase();
-  return (
-    message.is_spam === true
-    || status === 'spam'
-    || status === 'review'
-    || label === 'spam'
-    || label === 'review'
-  );
-}
-
 function outboundMessageIdFromContext(value: Record<string, unknown>): number | null {
   const outbound = objectRecord(value.outbound);
   const raw = outbound?.messageId;
@@ -8930,10 +8048,6 @@ function blockedResult(reason: string, existingLog: string[] = []): GraphRunResu
     blockReason: reason,
     log: existingLog,
   };
-}
-
-function serverWorkerSourceRow() {
-  return { origin: 'server_worker' };
 }
 
 /** sync_info-Schluessel: zuletzt ausgefuehrter Zeitplan-Zeitpunkt je Workflow. */
@@ -9002,47 +8116,6 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
   );
 }
 
-const MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH = 128 * 1024;
-const MAX_CONTINUATION_BODY_TEXT_LENGTH = 48_000;
-
-/**
- * Mailtext fuer Job-Payloads und Fortsetzungen kuerzen. body_text steht dort
- * zweimal (auch in combined_text); ungekuerzt scheiterte jeder deferierte
- * Knoten ab etwa 64 KB an der Kontextgrenze. Die KI-Jobs kuerzen fuer den
- * Prompt ohnehin weiter; der synchrone Teil des Laufs behaelt den vollen Text.
- * Nur Knoten nach der Fortsetzung sehen den gekuerzten Text (body_truncated).
- */
-function boundedContinuationStrings(strings: WorkflowStringContext): WorkflowStringContext {
-  const body = strings.body_text ?? '';
-  if (body.length <= MAX_CONTINUATION_BODY_TEXT_LENGTH) return strings;
-  let cut = MAX_CONTINUATION_BODY_TEXT_LENGTH;
-  // Kein halbes Surrogatpaar stehen lassen: jsonb lehnt ein einzelnes \ud83d ab.
-  const last = body.charCodeAt(cut - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
-  const boundedBody = body.slice(0, cut);
-  // combined_text aus denselben Teilen neu bauen, nur mit gekuerztem Body.
-  const combined = strings.combined_text ?? '';
-  const bodyAt = combined.indexOf(body);
-  return {
-    ...strings,
-    body_text: boundedBody,
-    combined_text: bodyAt < 0
-      ? combined
-      : `${combined.slice(0, bodyAt)}${boundedBody}${combined.slice(bodyAt + body.length)}`,
-    body_truncated: 'true',
-  };
-}
-
-function workflowContinuationContextError(context: ServerWorkflowContext): string | null {
-  if (
-    JSON.stringify(boundedContinuationStrings(context.strings)).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
-    || JSON.stringify(context.variables).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
-  ) {
-    return `Continuation-Kontext ueberschreitet ${MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH} JSON-Zeichen`;
-  }
-  return null;
-}
-
 function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: string): string {
   const hash = createHash('sha256')
     .update(context.workspaceId)
@@ -9065,13 +8138,6 @@ function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: stri
       .update(String(loopItem ?? ''));
   }
   return `simplecrm-workflow-http-${hash.digest('hex')}`;
-}
-
-function workflowSideEffectExecutionIdentity(context: ServerWorkflowContext): string {
-  const messageIdentity = context.messageSourceSqliteId ?? context.messageId;
-  return messageIdentity === null
-    ? `run:${context.runSourceSqliteId}`
-    : `message:${messageIdentity}`;
 }
 
 function serverCreatedWorkflowDealStageActivitySourceSqliteId(
@@ -9131,15 +8197,4 @@ function serverCreatedWorkflowSpamLearningEventSourceSqliteId(
     label,
     now.toISOString(),
   );
-}
-
-function serverCreatedSourceSqliteId(kind: string, ...parts: string[]): number {
-  const value = [kind, ...parts].join('\u001f');
-  let hash = 14_695_981_039_346_656_037n;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= BigInt(value.charCodeAt(index));
-    hash *= 1_099_511_628_211n;
-    hash &= 0xffff_ffff_ffff_ffffn;
-  }
-  return -Number(SERVER_CREATED_SOURCE_ID_OFFSET + (hash % SERVER_CREATED_SOURCE_ID_SPAN));
 }
