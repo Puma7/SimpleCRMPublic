@@ -29,6 +29,7 @@ export type WorkflowRow = Pick<
   | 'definition_json'
   | 'graph_json'
   | 'execution_mode'
+  | 'schedule_account_id'
 >;
 
 export type MessageRow = Pick<

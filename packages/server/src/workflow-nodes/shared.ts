@@ -66,6 +66,7 @@ export async function loadWorkflow(
       'definition_json',
       'graph_json',
       'execution_mode',
+      'schedule_account_id',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', workflowId)

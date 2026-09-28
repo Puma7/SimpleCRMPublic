@@ -26,6 +26,7 @@ const WORKSPACE_A = '10000000-0000-4000-8000-0000000000e4';
 const WORKSPACE_B = '10000000-0000-4000-8000-0000000000e5';
 const USER_A = '20000000-0000-4000-8000-0000000000e4';
 const ACCOUNT_A = 9401;
+const ACCOUNT_B = 9402;
 
 // Montag, 28.09.2026, 06:05 in Berlin (Sommerzeit, UTC+2).
 const NOW = new Date('2026-09-28T04:05:00.000Z');
@@ -326,6 +327,64 @@ describe('server schedule tick (TA-P4)', () => {
     const skipped = runs.rows.filter((row) => JSON.stringify(row.log_json).includes('skip:schedule_slot_already_ran'));
     expect(runs.rows).toHaveLength(2);
     expect(skipped).toHaveLength(1);
+  });
+
+  // Codex-Review PR #199: Seit „erst einreihen, dann vormerken“ stammt das
+  // Konto im Job aus dem Lesen der Seite. Wird schedule_account_id bis zur
+  // Vormerkung umgestellt, darf der Zeitpunkt nicht als erledigt gelten —
+  // sonst liefe er nur mit dem alten Postfach.
+  test('Konto zwischen Lesen und Vormerken umgestellt ⇒ Zeitpunkt bleibt offen, der nächste Takt reiht mit dem neuen Konto ein', async () => {
+    await postgres.admin.query(`
+      INSERT INTO email_accounts (id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username)
+      VALUES ($1, $2, $1, 'Vertrieb', 'vertrieb@example.test', 'imap.example.test', 'vertrieb')
+      ON CONFLICT (id) DO NOTHING
+    `, [ACCOUNT_B, WORKSPACE_A]);
+    let switchAccount = true;
+    const enqueued: Enqueued[] = [];
+    const queue = {
+      async enqueue(input: EnqueueJobInput) {
+        enqueued.push(input as Enqueued);
+        if (switchAccount) {
+          switchAccount = false;
+          // Jemand speichert den Workflow mit anderem Konto, waehrend der Takt einreiht.
+          await postgres.admin.query(
+            'UPDATE email_workflows SET schedule_account_id = $1, schedule_account_source_sqlite_id = $1 WHERE id = 9101',
+            [ACCOUNT_B],
+          );
+        }
+      },
+    };
+
+    const first = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: NOW, log: () => undefined });
+    expect(first).toEqual({ enqueued: 0, skippedInvalid: 1, failed: [] });
+    expect(enqueued[0]!.payload.context.eventVariables['email.account_id']).toBe(ACCOUNT_A);
+    expect(await lastSlot(9101)).toBe(ARMED);
+
+    const second = await runWorkflowScheduleTick({ db, queue, workspaceId: WORKSPACE_A, now: new Date(NOW.getTime() + 60_000), log: () => undefined });
+    expect(second.enqueued).toBe(1);
+    expect(await lastSlot(9101)).toBe(SLOT);
+    expect(enqueued).toHaveLength(2);
+    expect(enqueued[1]!.payload.context.eventVariables['email.account_id']).toBe(ACCOUNT_B);
+    // Derselbe Job-Key: ein noch wartender Job mit dem alten Konto wird ersetzt.
+    expect(new Set(enqueued.map((job) => graphileJobKeyForJob('workflow.execute', job.payload, WORKSPACE_A))).size).toBe(1);
+
+    // Lief der alte Job schon, bevor der neue ihn ersetzen konnte: Er überspringt
+    // sich (Konto passt nicht mehr) und beansprucht den Zeitpunkt nicht — sonst
+    // liefe der Zeitpunkt im falschen Postfach und der Job mit dem neuen Konto
+    // gälte als „schon gelaufen“.
+    const execution = createPostgresWorkflowExecutionJobPort({ db });
+    for (const job of enqueued) await execution.execute(buildWorkflowExecutionJobPlan(job.payload, WORKSPACE_A));
+    const runs = await postgres.admin.query<{ log_json: unknown }>(
+      'SELECT log_json FROM email_workflow_runs WHERE workflow_id = 9101 ORDER BY id',
+    );
+    expect(runs.rows).toHaveLength(2);
+    expect(JSON.stringify(runs.rows[0]!.log_json)).toContain('skip:workflow_scope_changed');
+    expect(JSON.stringify(runs.rows[1]!.log_json)).not.toContain('skip:');
+    const syncJobs = await postgres.admin.query<{ payload: Record<string, unknown> }>(
+      `SELECT payload FROM job_queue WHERE workspace_id = $1 AND type = 'mail.sync.imap'`,
+      [WORKSPACE_A],
+    );
+    expect(syncJobs.rows.map((row) => row.payload.accountId)).toEqual([ACCOUNT_B]);
   });
 
   test('Gatekeeper #4: Einreihung committed, Bestätigung verloren ⇒ der Zeitpunkt läuft trotzdem nur einmal', async () => {

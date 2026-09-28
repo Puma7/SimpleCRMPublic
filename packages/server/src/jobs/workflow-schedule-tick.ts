@@ -240,6 +240,7 @@ export async function runWorkflowScheduleTick(input: {
       if (workflow.schedule_last_slot_at === null) continue;
       const lastSlot = new Date(workflow.schedule_last_slot_at);
       if (slot.getTime() <= lastSlot.getTime()) continue;
+      const scheduleAccountId = workflow.schedule_account_id === null ? null : Number(workflow.schedule_account_id);
 
       // ERST einreihen, DANN vormerken (siehe oben): ein Absturz dazwischen
       // fuehrt zu einem zweiten Job fuer denselben Zeitpunkt, nie zu keinem.
@@ -255,13 +256,7 @@ export async function runWorkflowScheduleTick(input: {
             triggerName: 'schedule',
             // Traegt den Job-Key (Workflow + Zeitpunkt), siehe graphileJobKeyForJob.
             scheduleSlot: slot.toISOString(),
-            context: buildScheduleWorkflowContext({
-              firedAt: now,
-              slot,
-              scheduleAccountId: workflow.schedule_account_id === null
-                ? null
-                : Number(workflow.schedule_account_id),
-            }),
+            context: buildScheduleWorkflowContext({ firedAt: now, slot, scheduleAccountId }),
           }),
           maxAttempts: 3,
         });
@@ -277,6 +272,9 @@ export async function runWorkflowScheduleTick(input: {
       // Das bedingte UPDATE ist die Vormerkung; enabled/trigger/cron stehen mit
       // drin, damit ein zwischenzeitlich deaktivierter oder umgestellter
       // Workflow nicht als erledigt gilt (sein Lauf ueberspringt sich selbst).
+      // Ebenso das Konto: der Job traegt das beim Lesen gueltige Konto. Wurde es
+      // seitdem umgestellt, bleibt der Zeitpunkt offen und der naechste Takt
+      // reiht ihn mit dem neuen Konto unter demselben Job-Key erneut ein.
       let claimed: { id: number | string } | undefined;
       try {
         claimed = await withWorkspaceTransaction(
@@ -290,6 +288,7 @@ export async function runWorkflowScheduleTick(input: {
             .where('enabled', '=', true)
             .where('trigger_name', '=', 'schedule')
             .where('cron_expr', '=', cronExpr)
+            .where('schedule_account_id', 'is not distinct from', scheduleAccountId)
             // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
             .where('schedule_last_slot_at', '<', slot)
             .returning(['id'])

@@ -529,8 +529,18 @@ export function createPostgresWorkflowExecutionJobPort(
           // Ein Zeitplan-Lauf wurde fuer den damals gespeicherten Ausloeser
           // eingereiht (jobs/workflow-schedule-tick). Wurde der Workflow bis zum
           // Start auf einen anderen Ausloeser umgestellt, ist er fuer den
-          // Zeitplan nicht mehr zustaendig — wie deaktiviert behandeln.
-          if (trigger === 'schedule' && !resumeNodeId && workflow.trigger_name !== 'schedule') {
+          // Zeitplan nicht mehr zustaendig — wie deaktiviert behandeln. Ebenso,
+          // wenn ein Zeitpunkt-Job ein anderes Konto traegt als jetzt gespeichert:
+          // Er darf den Zeitpunkt nicht beanspruchen, der Takt reiht ihn mit dem
+          // neuen Konto erneut ein (Vormerkung prueft das Konto mit).
+          if (
+            trigger === 'schedule'
+            && !resumeNodeId
+            && (
+              workflow.trigger_name !== 'schedule'
+              || (input.scheduleSlot !== undefined && !scheduleJobMatchesAccount(workflow, jobContext))
+            )
+          ) {
             await finishRun(trx, input.workspaceId, run.id, {
               status: 'ok',
               log: ['skip:workflow_scope_changed'],
@@ -2748,6 +2758,14 @@ function mergeJobContexts(
     };
   }
   return merged;
+}
+
+/** Konto im Zeitplan-Job (email.account_id, siehe buildScheduleWorkflowContext) = gespeichertes Konto? */
+function scheduleJobMatchesAccount(workflow: WorkflowRow, jobContext: Record<string, unknown>): boolean {
+  const jobAccount = objectRecord(jobContext.eventVariables)?.['email.account_id'];
+  const expected = workflow.schedule_account_id === null ? null : Number(workflow.schedule_account_id);
+  const actual = typeof jobAccount === 'number' && Number.isSafeInteger(jobAccount) && jobAccount > 0 ? jobAccount : null;
+  return expected === actual;
 }
 
 function stringFromContext(value: unknown): string | null {
