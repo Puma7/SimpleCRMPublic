@@ -2,7 +2,7 @@ import { listBuiltinWorkflowNodeCatalog } from '../../packages/core/src/workflow
 import {
   PRE_DRY_RUN_GUARD_HANDLERS,
   SERVER_NODE_HANDLERS,
-} from '../../packages/server/src/workflow-execution';
+} from '../../packages/server/src/workflow-nodes';
 import { listServerWorkflowNodeCatalog } from '../../packages/server/src/workflow-node-catalog';
 
 /**
