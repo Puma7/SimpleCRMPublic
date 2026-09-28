@@ -124,6 +124,7 @@ import {
   dryRunSideEffectResult,
 } from './workflow-nodes/dry-run';
 import { ERP_NODE_HANDLERS } from './workflow-nodes/erp';
+import { IMAP_NODE_HANDLERS } from './workflow-nodes/imap';
 import { INTEGRATION_NODE_HANDLERS } from './workflow-nodes/integration';
 import {
   CONTINUATION_HOPS_VARIABLE,
@@ -2638,16 +2639,6 @@ async function handleEmailMarkSpam({ trx, context, config, log, now, ports }: Se
   });
 }
 
-/** Knoten email.move_imap. */
-async function handleEmailMoveImap({ trx, context, config, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  return await moveWorkflowMessageOnImap(trx, context, config, now, ports, log);
-}
-
-/** Knoten email.delete_server. */
-async function handleEmailDeleteServer({ trx, context, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  return await deleteWorkflowMessageOnImap(trx, context, now, ports, log);
-}
-
 /** Knoten email.assign. */
 async function handleEmailAssign({ trx, context, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
   const raw = config.teamMemberId;
@@ -2730,6 +2721,7 @@ export const SERVER_NODE_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
   ...ERP_NODE_HANDLERS,
   ...CRM_NODE_HANDLERS,
   ...INTEGRATION_NODE_HANDLERS,
+  ...IMAP_NODE_HANDLERS,
   'ai.reply_suggestion': handleAiReplySuggestion,
   'ai.outbound_review': handleAiOutboundReview,
   'ai.review': handleAiReview,
@@ -2764,8 +2756,6 @@ export const SERVER_NODE_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
   archive: handleEmailArchive,
   'email.set_spam_status': handleEmailSetSpamStatus,
   'email.mark_spam': handleEmailMarkSpam,
-  'email.move_imap': handleEmailMoveImap,
-  'email.delete_server': handleEmailDeleteServer,
   'email.assign': handleEmailAssign,
   'workflow.subflow': handleWorkflowSubflow,
 });
@@ -2878,91 +2868,6 @@ async function markWorkflowMessageSeen(
   }
 
   return { status: 'ok', port: 'default', variables };
-}
-
-async function moveWorkflowMessageOnImap(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  config: Record<string, unknown>,
-  now: Date,
-  ports: ServerWorkflowRuntimePorts,
-  log: string[],
-): Promise<NodeResult> {
-  const targetFolderPath = String(
-    config.folderPath ?? config.folder ?? config.targetFolderPath ?? 'Spam',
-  ).trim();
-  if (!targetFolderPath) return { status: 'skipped', port: 'default', message: 'Zielordner leer' };
-
-  const moveResult = await runWorkflowImapMoveAction(context, targetFolderPath, ports, log, 'email.move_imap', now);
-  if (!moveResult.ok) return moveResult.node;
-
-  if (!ports.deferredImapEffects) {
-    const localResult = await applyWorkflowImapMoveLocalState(trx, context, targetFolderPath, now);
-    if (localResult) return localResult;
-  }
-
-  return {
-    status: 'ok',
-    port: 'default',
-    variables: {
-      ...(moveResult.value.sourceFolderPath
-        ? { 'imap.source_folder': moveResult.value.sourceFolderPath }
-        : {}),
-      'imap.moved_to': moveResult.value.targetFolderPath ?? targetFolderPath,
-      'message.id': context.messageId,
-    },
-  };
-}
-
-async function deleteWorkflowMessageOnImap(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  now: Date,
-  ports: ServerWorkflowRuntimePorts,
-  log: string[],
-): Promise<NodeResult> {
-  if (context.messageId === null) {
-    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
-  }
-  if (!ports.workflowImapActions) {
-    return unsupportedWorkflowNodeResult('email.delete_server', log);
-  }
-  if (ports.deferredImapEffects) {
-    ports.deferredImapEffects.push({
-      kind: 'delete',
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      context,
-      now,
-    });
-    return {
-      status: 'ok',
-      port: 'default',
-      variables: {
-        'imap.deleted': true,
-        'message.id': context.messageId,
-      },
-    };
-  }
-
-  const deleted = await ports.workflowImapActions.delete({
-    workspaceId: context.workspaceId,
-    messageId: context.messageId,
-  });
-  if (!deleted.ok) return { status: 'error', port: 'error', message: deleted.error };
-
-  const localResult = await softDeleteWorkflowMessage(trx, context, now);
-  if (localResult) return localResult;
-
-  return {
-    status: 'ok',
-    port: 'default',
-    variables: {
-      'imap.source_folder': deleted.sourceFolderPath,
-      'imap.deleted': true,
-      'message.id': context.messageId,
-    },
-  };
 }
 
 async function flushDeferredWorkflowImapEffects(input: {
