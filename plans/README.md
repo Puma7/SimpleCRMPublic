@@ -135,7 +135,7 @@ update the row here.
 | 047 | R2: real workflow test run | P2 | M | direction | — | DONE |
 | 048 | R3: section-level knowledge retrieval + sources | P2 | M–L | direction | 028, 029 | TODO |
 | 049 | R4: automation cockpit | P2 | M | direction | — | DONE |
-| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | TODO |
+| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | BLOCKED — waiting for approval of docs/design/ai-decision-accuracy.md (Phase 0 fertig, Fragen Q1–Q7) |
 
 ### Dependency notes (Runde 2)
 
