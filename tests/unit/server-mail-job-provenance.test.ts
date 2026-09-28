@@ -402,19 +402,29 @@ function producerHasInitiatingProvenance(producer: QueueProducerBlock): boolean 
   const payloadFunctionName = producer.block.match(/payload:\s*([A-Za-z0-9_]+)\(/)?.[1];
   if (!payloadFunctionName) return false;
 
-  const functionBlock = extractFunctionBlock(source, payloadFunctionName);
+  const functionBlock = extractFunctionBlock(source, payloadFunctionName)
+    ?? extractFunctionBlockFromServer(payloadFunctionName);
   return functionBlock !== undefined && hasProvenanceEvidence(functionBlock, source);
 }
 
 function hasProvenanceEvidence(block: string, source: string): boolean {
   if (/actorUserId|buildTrustedServiceJobPayload|TRUSTED_SERVICE_JOB_MARKER_FIELD/.test(block)) return true;
   for (const match of block.matchAll(/\b(workflowJobProvenance|with[A-Za-z]+Provenance)\s*\(/g)) {
-    const helperBlock = extractFunctionBlock(source, match[1]!);
+    const helperBlock = extractFunctionBlock(source, match[1]!) ?? extractFunctionBlockFromServer(match[1]!);
     if (helperBlock && /actorUserId|buildTrustedServiceJobPayload|TRUSTED_SERVICE_JOB_MARKER_FIELD/.test(helperBlock)) {
       return true;
     }
   }
   return false;
+}
+
+/** Plan 043: gemeinsame Helfer (z. B. workflowJobProvenance) liegen in workflow-nodes/shared.ts. */
+function extractFunctionBlockFromServer(functionName: string): string | undefined {
+  for (const file of findServerSourceFiles('packages/server/src')) {
+    const block = extractFunctionBlock(readFileSync(file, 'utf8'), functionName);
+    if (block) return block;
+  }
+  return undefined;
 }
 
 function extractFunctionBlock(source: string, functionName: string): string | undefined {

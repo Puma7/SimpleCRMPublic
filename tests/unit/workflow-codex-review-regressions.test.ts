@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const repoRoot = join(__dirname, '..', '..');
@@ -7,15 +7,25 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), 'utf8');
 }
 
+/** Plan 043: die Server-Workflow-Ausführung liegt in workflow-execution.ts und workflow-nodes/*.ts. */
+function readServerWorkflowExecution(): string {
+  const nodesDir = join(repoRoot, 'packages/server/src/workflow-nodes');
+  const nodeModules = readdirSync(nodesDir).filter((name) => name.endsWith('.ts')).sort();
+  return [
+    readRepoFile('packages/server/src/workflow-execution.ts'),
+    ...nodeModules.map((name) => readFileSync(join(nodesDir, name), 'utf8')),
+  ].join('\n');
+}
+
 describe('codex review regression guards', () => {
   test('inbound chain continues after ordinary errors and only spam stops the chain', () => {
-    const source = readRepoFile('packages/server/src/workflow-execution.ts');
+    const source = readServerWorkflowExecution();
     expect(source).toMatch(/result\.status === 'ok' \|\| result\.status === 'error'/);
     expect(source).toContain('inboundChainStop: result.inboundChainStop === true && result.deferred !== true');
     expect(source).toContain('inboundChainStop: true');
     // Ordinary logic.stop must not set inboundChainStop — only spam short-circuits do.
     const logicStopBlock = source.match(
-      /if \(type === 'logic\.stop' \|\| type === 'stop'\) \{\s*return \{[^}]+\}/,
+      /async function handleLogicStop\([^)]*\)[^{]*\{\s*return \{[^}]+\}/,
     )?.[0] ?? '';
     expect(logicStopBlock).toContain('stop: true');
     expect(logicStopBlock).not.toContain('inboundChainStop');
@@ -43,7 +53,7 @@ describe('codex review regression guards', () => {
   });
 
   test('outbound dry-run block is fail-closed and import maps approval fields', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const desktop = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
     const runtime = readRepoFile('electron/workflow/runtime.ts');
     const importSql = readRepoFile('packages/server/src/db/postgres-core-mail-import.ts');
@@ -75,7 +85,7 @@ describe('codex review regression guards', () => {
   test('codex round-3: release on hold/block path is rejected and AI draft jobs are async', () => {
     const validate = readRepoFile('packages/core/src/workflow/graph-validate.ts');
     const sharedValidate = readRepoFile('shared/email-workflow-graph-validate.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const templates = readRepoFile('packages/core/src/workflow/templates.ts');
     const aiClass = readRepoFile('packages/server/src/ai-classification.ts');
     const desktopEngine = readRepoFile('electron/email/email-workflow-engine.ts');
@@ -114,7 +124,7 @@ describe('codex review regression guards', () => {
   });
 
   test('stopFurtherWorkflows runtime default is false for legacy graphs without the field', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
 
     // Aus #167 übernommen, an die endgültige Umsetzung angepasst: der Katalog-
@@ -133,7 +143,7 @@ describe('codex review regression guards', () => {
 
   test('codex round-4: snapshot guard, chain, ACL, approval sanitize, reply context', () => {
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const catalog = readRepoFile('packages/core/src/workflow/node-catalog.ts');
     const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
     const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
@@ -163,7 +173,7 @@ describe('codex review regression guards', () => {
     const runtime = readRepoFile('electron/workflow/runtime.ts');
     const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const chainCtx = readRepoFile('packages/server/src/workflow-inbound-chain-context.ts');
     const policy = readRepoFile('packages/server/src/mail-access/async-policy-enforcer.ts');
     const aiClass = readRepoFile('packages/server/src/ai-classification.ts');
@@ -194,7 +204,7 @@ describe('codex review regression guards', () => {
   });
 
   test('codex round-6: chain parse, draft skip continuation, stop_after_spam, fingerprint paths, approve triage', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
     const logic = readRepoFile('electron/workflow/nodes/logic-nodes.ts');
     const engine = readRepoFile('electron/email/email-workflow-engine.ts');
@@ -216,7 +226,7 @@ describe('codex review regression guards', () => {
 
   test('codex round-7: sibling deferred, SEND not via HOLD, HOLD disarms schedule, draft idempotent+spam recheck', () => {
     const runtime = readRepoFile('electron/workflow/runtime.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
 
     expect(runtime).toContain('Deferred (delay / async AI) must NOT abort sibling trigger branches');
@@ -234,7 +244,7 @@ describe('codex review regression guards', () => {
   test('codex round-8: desktop HOLD disarms schedule and draft_reply rechecks spam after AI', () => {
     const approval = readRepoFile('electron/email/email-draft-approval.ts');
     const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
     const handlers = readRepoFile('packages/server/src/jobs/production-handlers.ts');
 
@@ -253,7 +263,7 @@ describe('codex review regression guards', () => {
   });
 
   test('codex round-9: chain hop claim, approve requires To, draft_reply context caps', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
     const approval = readRepoFile('packages/server/src/draft-approval-actions.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
@@ -288,7 +298,7 @@ describe('codex review regression guards', () => {
   test('codex round-10: graphile RLS session, deferred join, approve attachment ACL, recipient precheck', () => {
     const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
     const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const httpPolicy = readRepoFile('packages/server/src/mail-access/http-policy-enforcer.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
 
@@ -332,7 +342,7 @@ describe('codex review regression guards', () => {
   test('codex round-11b: BEGIN RLS tx, sibling abort, draft guards, customer vars, early dedupe', () => {
     const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
     const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
 
     // set_config is transaction-local — claim path must BEGIN/COMMIT.
@@ -409,7 +419,7 @@ describe('codex review regression guards', () => {
   });
 
   test('gatekeeper: chain stop is opt-in everywhere and graphile advance is idempotent', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
     const runtime = readRepoFile('electron/workflow/runtime.ts');
     const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
@@ -432,7 +442,7 @@ describe('codex review regression guards', () => {
   });
 
   test('codex round-13: sibling abort before every external side effect', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const forward = readRepoFile('packages/server/src/workflow-forward-copy.ts');
     const http = readRepoFile('packages/server/src/workflow-http-request.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
@@ -461,7 +471,7 @@ describe('codex review regression guards', () => {
   });
 
   test('folgearbeit: terminale KI-Knoten und Desktop-Versand-Claim', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
     const classification = readRepoFile('packages/server/src/ai-classification.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
@@ -503,7 +513,7 @@ describe('codex review regression guards', () => {
   });
 
   test('review-runde 16: die Abschluss-Invariante terminaler KI-Kindjobs traegt', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
     const classification = readRepoFile('packages/server/src/ai-classification.ts');
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
@@ -785,7 +795,7 @@ describe('codex review regression guards', () => {
 
   test('review-runde 17: die Zweig-Identitaet ueberlebt jede Fortsetzung', () => {
     const chainContext = readRepoFile('packages/server/src/workflow-inbound-chain-context.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
 
     // Kern des Fundes: terminalNodeExecutionId ist nur mit branchKey eindeutig.
@@ -824,7 +834,7 @@ describe('codex review regression guards', () => {
     const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
     const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
     const terminalChild = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
 
     // payload.runId ist pro ZUSTELLUNG neu: eine nach ihrem Commit erneut

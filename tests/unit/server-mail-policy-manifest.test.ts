@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseSync } from '@swc/core';
 import {
@@ -567,9 +567,14 @@ describe('server mail policy manifest', () => {
   });
 });
 
+/** Plan 043: Jobs reihen workflow-execution.ts und die Knoten-Module in workflow-nodes/ ein. */
 function workflowJobQueueTypes(): string[] {
-  const path = join(process.cwd(), 'packages', 'server', 'src', 'workflow-execution.ts');
-  const sourceFile = parseSync(readFileSync(path, 'utf8'), { syntax: 'typescript' });
+  const srcDir = join(process.cwd(), 'packages', 'server', 'src');
+  const nodesDir = join(srcDir, 'workflow-nodes');
+  const paths = [
+    join(srcDir, 'workflow-execution.ts'),
+    ...readdirSync(nodesDir).filter((name) => name.endsWith('.ts')).sort().map((name) => join(nodesDir, name)),
+  ];
   const types: string[] = [];
 
   const visit = (node: unknown): void => {
@@ -585,7 +590,9 @@ function workflowJobQueueTypes(): string[] {
       visit(child);
     }
   };
-  visit(sourceFile);
+  for (const path of paths) {
+    visit(parseSync(readFileSync(path, 'utf8'), { syntax: 'typescript' }));
+  }
   return types;
 }
 
