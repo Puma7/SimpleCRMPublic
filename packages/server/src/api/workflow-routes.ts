@@ -603,10 +603,11 @@ async function handleWorkflowExecute(
       // Phase B: ai.decide im Testlauf wirklich fragen (kostet Tokens).
       ...(parsed.values.testRun === true && parsed.values.realAi === true ? { realAi: true } : {}),
     });
-    return data(result.success ? 200 : 409, {
-      ...result,
-      workflowId: workflow.sourceSqliteId ?? workflow.id,
-    });
+    const body = { ...result, workflowId: workflow.sourceSqliteId ?? workflow.id };
+    if (result.success) return data(200, body);
+    // Fehlgeschlagen im üblichen Fehlerformat: der Renderer liest den Grund nur
+    // aus { error: { message } }; Protokoll und Lauf bleiben in details.
+    return error(409, 'workflow_dry_run_failed', result.error ?? 'Testlauf fehlgeschlagen', body);
   }
 
   if (!ports.jobQueue) return error(503, 'job_queue_unavailable', 'Job queue API nicht konfiguriert');

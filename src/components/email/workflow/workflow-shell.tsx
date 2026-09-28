@@ -207,6 +207,10 @@ export function WorkflowShell() {
   const [testRunView, setTestRunView] = useState<{ runId: number; title: string } | null>(null)
   const [runHistoryRefresh, setRunHistoryRefresh] = useState(0)
   const [testRealAi, setTestRealAi] = useState(false)
+  // Testlauf (Plan 047): mit „KI wirklich fragen“ Sekunden lang und kostenpflichtig.
+  // Der Ref sperrt schon den zweiten Klick im selben Takt, der State den Knopf.
+  const [testRunPending, setTestRunPending] = useState(false)
+  const testRunInFlightRef = useRef(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   /**
    * Baseline for omitting unchanged execution-relevant fields on editor-only
@@ -1091,9 +1095,13 @@ export function WorkflowShell() {
                         size="sm"
                         variant="secondary"
                         title="Simuliert den Workflow mit dieser Mail – nichts wird gesendet, getaggt oder verschoben"
-                        disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid}
+                        disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid || testRunPending}
+                        aria-busy={testRunPending}
                         onClick={async () => {
                           if (!Number.isFinite(parsedId) || selectedId == null) return
+                          if (testRunInFlightRef.current) return
+                          testRunInFlightRef.current = true
+                          setTestRunPending(true)
                           try {
                             const r = await invokeRenderer(
                               IPCChannels.Email.TestWorkflowOnMessage,
@@ -1123,10 +1131,20 @@ export function WorkflowShell() {
                           } catch (e) {
                             logError("workflow-shell: test run", e)
                             toast.error(e instanceof Error ? e.message : "Testlauf fehlgeschlagen")
+                          } finally {
+                            testRunInFlightRef.current = false
+                            setTestRunPending(false)
                           }
                         }}
                       >
-                        Testlauf
+                        {testRunPending ? (
+                          <>
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+                            Testlauf läuft …
+                          </>
+                        ) : (
+                          "Testlauf"
+                        )}
                       </Button>
                     )
                   })()}

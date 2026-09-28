@@ -180,3 +180,37 @@ test('ohne KI-Entscheidung im Graph kein „KI wirklich fragen“', async () => 
   await openWorkflowWithMessage();
   expect(screen.queryByRole('checkbox', { name: /KI wirklich fragen/ })).not.toBeInTheDocument();
 });
+
+// Gatekeeper (Plan 047): Mit „KI wirklich fragen“ dauert ein Testlauf Sekunden
+// und kostet Tokens. Solange er läuft, ist der Knopf gesperrt – ein zweiter
+// Klick startet keinen zweiten (kostenpflichtigen) Aufruf.
+test('Testlauf sperrt den Knopf, solange der Aufruf läuft', async () => {
+  let finish: (value: unknown) => void = () => undefined;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  mockInvoke.mockImplementation(async (channel: string) => {
+    if (channel === IPCChannels.Email.ListWorkflows) return [row];
+    if (channel === IPCChannels.Email.GetWorkflow) return row;
+    if (channel === IPCChannels.Email.TestWorkflowOnMessage) return pending;
+    if (channel === IPCChannels.Email.GetWorkflowAutomationSettings) {
+      return { imapDeleteOptIn: false, httpAllowlist: '', autoReplyEnabled: false, autoReplyMaxPerSenderPerDay: 1 };
+    }
+    if (channel === IPCChannels.Email.GetEmailMiscSettings) return { maxAttachmentMb: '25', hasSecret: false };
+    return [];
+  });
+  await openWorkflowWithMessage();
+  const button = screen.getByRole('button', { name: 'Testlauf' });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  const running = await screen.findByRole('button', { name: /Testlauf läuft/ });
+  expect(running).toBeDisabled();
+  fireEvent.click(running);
+  const testCalls = () => mockInvoke.mock.calls.filter(([channel]) => channel === IPCChannels.Email.TestWorkflowOnMessage);
+  expect(testCalls()).toHaveLength(1);
+
+  finish({ success: true, runId: 56, log: [] });
+  const again = await screen.findByRole('button', { name: 'Testlauf' });
+  await waitFor(() => expect(again).not.toBeDisabled());
+  expect(testCalls()).toHaveLength(1);
+});
