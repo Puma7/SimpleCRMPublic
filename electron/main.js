@@ -12,12 +12,13 @@ app.commandLine.appendSwitch('js-flags', '--enable-experimental-regexp-engine-on
 
 // Plan 044: Zugangsdaten über safeStorage. Unter Linux ohne erkannte Desktop-
 // Umgebung libsecret anfordern (wie keytar); muss vor `ready` gesetzt werden.
+// Maßgeblich sind die Startargumente, nicht vorab angehängte Schalter.
 {
   const { linuxPasswordStoreSwitch } = require('../dist-electron/electron/credentials/linux-password-store');
   const passwordStore = linuxPasswordStoreSwitch({
     platform: process.platform,
     env: process.env,
-    hasPasswordStoreSwitch: app.commandLine.hasSwitch('password-store'),
+    argv: process.argv,
   });
   if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }

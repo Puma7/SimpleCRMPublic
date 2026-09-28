@@ -120,15 +120,29 @@ describe('Zugangsdaten-Speicher: Laufzeit', () => {
   });
 
   test('Linux ohne erkannte Desktop-Umgebung fordert libsecret an (wie keytar), KDE und explizite Wahl bleiben', () => {
-    const base = { platform: 'linux' as const, hasPasswordStoreSwitch: false };
+    const argv = ['/opt/SimpleCRM/simplecrm'];
+    const base = { platform: 'linux' as const, argv };
     expect(linuxPasswordStoreSwitch({ ...base, env: {} })).toBe('gnome-libsecret');
     expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'sway' } })).toBe('gnome-libsecret');
     expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'ubuntu:GNOME' } })).toBe('gnome-libsecret');
     expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'KDE' } })).toBeNull();
     expect(linuxPasswordStoreSwitch({ ...base, env: { DESKTOP_SESSION: 'plasma', KDE_FULL_SESSION: 'true' } })).toBeNull();
-    expect(linuxPasswordStoreSwitch({ ...base, hasPasswordStoreSwitch: true, env: {} })).toBeNull();
-    expect(linuxPasswordStoreSwitch({ platform: 'win32', hasPasswordStoreSwitch: false, env: {} })).toBeNull();
-    expect(linuxPasswordStoreSwitch({ platform: 'darwin', hasPasswordStoreSwitch: false, env: {} })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ platform: 'win32', argv, env: {} })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ platform: 'darwin', argv, env: {} })).toBeNull();
+  });
+
+  test('ausdrückliche Wahl kommt aus den Startargumenten und wird erneut gesetzt', () => {
+    const run = (...args: string[]) => linuxPasswordStoreSwitch({ platform: 'linux', env: {}, argv: ['simplecrm', ...args] });
+    expect(run('--password-store=basic')).toBe('basic');
+    expect(run('-password-store=kwallet6', '--disable-gpu')).toBe('kwallet6');
+    expect(run('--password-store=basic', '--password-store=gnome-libsecret')).toBe('gnome-libsecret');
+    expect(linuxPasswordStoreSwitch({ platform: 'linux', env: { XDG_CURRENT_DESKTOP: 'KDE' }, argv: ['simplecrm', '--password-store=basic'] })).toBe('basic');
+    // Leerer Wert: Chromium wählt selbst, nichts überschreiben.
+    expect(run('--password-store')).toBeNull();
+    expect(run('--password-store=')).toBeNull();
+    // Nach `--` und ähnlich benannte Schalter zählen nicht.
+    expect(run('--', '--password-store=basic')).toBe('gnome-libsecret');
+    expect(run('--password-store-x=basic', 'password-store=basic')).toBe('gnome-libsecret');
   });
 
   test('Mail-Backup und Wiederherstellung kennen nur database.sqlite und Anhänge', () => {

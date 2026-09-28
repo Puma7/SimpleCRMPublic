@@ -52,6 +52,15 @@ Fremdes Chiffrat (`decryptString`) wirft eine Ausnahme
    Das Spike-Skript liegt als Anhang am Ende und läuft mit
    `electron --no-sandbox spike.js`.
 
+**Nachtrag (Phase 1, mit laufendem gnome-keyring wie in CI, 28.09.2026):**
+ohne Schalter `basic_text`, sync `false`, async `v11`; mit
+`--password-store=gnome-libsecret` `gnome_libsecret`, sync `true`, async `v11`.
+`electron/main.js` fordert deshalb unter Linux ohne erkannte Desktop-Umgebung
+libsecret an (`electron/credentials/linux-password-store.ts`), außer unter KDE
+oder bei einem `--password-store` in den **Startargumenten**. Vorab angehängte
+Schalter zählen nicht: Playwrights Electron-Loader setzt `--password-store=basic`
+vor `main.js`; das führte im E2E-Lauf zu `v10` und damit zur Ablehnung.
+
 ## Entscheidungen
 
 ### 1. Wo das Chiffrat liegt
