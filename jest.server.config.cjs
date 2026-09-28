@@ -1,4 +1,5 @@
 /**
+ * CI nutzt jest.ci.config.cjs (ein Lauf für beide Scopes); diese Config bleibt für lokale Einzelmessungen und …:update-baseline.
  * Standalone Jest config: server-edition coverage over packages/server/src.
  * Baseline + ratchet only (no hard threshold) — the floor is enforced by
  * scripts/check-server-coverage-ratchet.mjs against server-coverage-baseline.json.

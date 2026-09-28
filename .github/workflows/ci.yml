@@ -18,8 +18,9 @@ concurrency:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    # Lint, the full Jest run and three coverage passes (mail, server, UI) now take
-    # about 22 minutes; 35 leaves headroom while still catching a hung job.
+    # Lint, one Jest run with coverage (unit + integration, server and UI scopes),
+    # the mail run and the build take about 16 minutes; 35 leaves headroom while
+    # still catching a hung job.
     timeout-minutes: 35
 
     steps:
@@ -68,19 +69,17 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
-      - name: Run tests
-        run: pnpm test
+      - name: Run tests (unit + integration, once, with coverage)
+        run: pnpm run test:ci:coverage
 
       - name: Mail module tests (coverage ratchet)
         run: pnpm run test:mail:coverage:check
 
-      - name: Server module coverage (ratchet)
-        run: |
-          pnpm run test:server:coverage
-          node scripts/check-server-coverage-ratchet.mjs
+      - name: Server coverage ratchet
+        run: node scripts/check-server-coverage-ratchet.mjs
 
       - name: Email UI coverage ratchet
-        run: pnpm run test:ui:coverage:check
+        run: node scripts/check-ui-coverage-ratchet.mjs
 
       - name: Upload coverage summaries
         if: ${{ always() }}
@@ -88,6 +87,7 @@ jobs:
         with:
           name: coverage-summaries-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            coverage/ci/coverage-summary.json
             coverage/mail/coverage-summary.json
             coverage/server/coverage-summary.json
             coverage/ui/coverage-summary.json

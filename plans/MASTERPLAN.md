@@ -34,8 +34,8 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 
 ## Welle 2 – CI und Testabsicherung
 
-- [ ] **031** CI: Jest nur einmal mit Coverage statt dreimal (≈ 8–9 min schneller) · Befund #8 · P2 · M · *nach 030*
-  - ⏸ **Wartet auf Pascal:** STOP in Schritt 4 (Zählweise ungetesteter UI-Dateien, 0,68 Punkte). Bericht und fertiger Patch: `.hermes/reports/runde-2/031-coverage-aequivalenz.md`, `031-teil2.patch`.
+- [x] **031** CI: Jest nur einmal mit Coverage statt dreimal (≈ 8–9 min schneller) · Befund #8 · P2 · M · *nach 030*
+  - ✅ Pascal hat am 28.09. die Zählweise angenommen: CI führt Unit + Integration einmal mit Coverage aus (`test:ci:coverage`), UI-Branch-Baseline auf den kombinierten Messwert (71,14). Bericht: `.hermes/reports/runde-2/031-coverage-aequivalenz.md`.
 - [x] **036** Vertragstest: Frontend-HTTP-Zuordnung gegen die echten Server-Routen · Befund #14 · P2 · M
 - [ ] **042** AGENTS.md und Handoff: alle CI-Pflichtprüfungen dokumentieren · Befund #17 · P3 · S · *nach 031*
 
