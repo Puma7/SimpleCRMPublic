@@ -116,6 +116,39 @@ function xlsLabels(count: number): Buffer {
   return compoundFile([{ name: 'Workbook', data: Buffer.concat(records) }]);
 }
 
+/**
+ * Excel 97 workbook stream: SST mit `empty` leeren Einträgen, danach ein Eintrag
+ * mit `tail`, verteilt auf CONTINUE-Datensätze; eine LABELSST-Zelle zeigt auf `tail`.
+ */
+function xlsEmptySharedStrings(empty: number, tail: string): Buffer {
+  const record = (type: number, payload: Buffer) => {
+    const header = Buffer.alloc(4);
+    header.writeUInt16LE(type, 0);
+    header.writeUInt16LE(payload.length, 2);
+    return Buffer.concat([header, payload]);
+  };
+  const tailBytes = Buffer.from(tail, 'latin1');
+  const tailEntry = Buffer.alloc(3 + tailBytes.length);
+  tailEntry.writeUInt16LE(tailBytes.length, 0);
+  tailBytes.copy(tailEntry, 3);
+  const perRecord = 2_740; // 3 Byte je leerem Eintrag, unter 8 224 Byte je Datensatz
+  const records: Buffer[] = [];
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(empty + 1, 0);
+  head.writeUInt32LE(empty + 1, 4);
+  records.push(record(0x00fc, head));
+  for (let done = 0; done < empty; done += perRecord) {
+    records.push(record(0x003c, Buffer.alloc(3 * Math.min(perRecord, empty - done))));
+  }
+  records.push(record(0x003c, tailEntry));
+  const label = Buffer.alloc(10);
+  label.writeUInt32LE(empty, 6);
+  records.push(record(0x00fd, label));
+  const data = Buffer.concat(records);
+  // compoundFile legt keinen Mini-Stream an: mindestens 4096 Byte (Nullen = leere Datensätze).
+  return compoundFile([{ name: 'Workbook', data: Buffer.concat([data, Buffer.alloc(Math.max(0, 4096 - data.length))]) }]);
+}
+
 describe('office attachment text', () => {
   test.each([
     ['xlsx', 'lieferant-ean.xlsx'],
@@ -308,6 +341,14 @@ describe('damaged or crafted office files fail safely', () => {
 
   test('xls: distinct values stop at the output budget', () => {
     expect(extract('xls', xlsLabels(6_000)).length).toBeLessThanOrEqual(OFFICE_TEXT_MAX_CHARS);
+  });
+
+  test('xls: leere Shared Strings zählen gegen das Budget (keine Millionen leerer Einträge)', () => {
+    // Codex-Review zu Plan 039: leere SST-Einträge erhöhten die Zeichenzahl nie.
+    expect(extract('xls', xlsEmptySharedStrings(10, 'Treffer'))).toContain('Treffer');
+    const started = Date.now();
+    expect(extract('xls', xlsEmptySharedStrings(OFFICE_TEXT_MAX_CHARS + 10, 'Treffer'))).not.toContain('Treffer');
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   test('rtf: plain text stops at the output budget', () => {

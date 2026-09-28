@@ -819,11 +819,13 @@ export function extractXlsText(data: Uint8Array): string {
         const reader = new BiffSegments(segments, 0);
         reader.u32();
         const unique = reader.u32();
-        let sharedChars = 0;
-        for (let n = 0; n < unique && sharedChars < OFFICE_TEXT_MAX_CHARS; n += 1) {
+        // Jeder Eintrag kostet mindestens eins (wie das Trennzeichen in
+        // DistinctValues): sonst liefen Millionen leerer Einträge ohne Grenze.
+        let sharedBudget = 0;
+        for (let n = 0; n < unique && sharedBudget < OFFICE_TEXT_MAX_CHARS; n += 1) {
           const value = reader.string();
           shared.push(value);
-          sharedChars += value.length;
+          sharedBudget += value.length + 1;
         }
         break;
       }
