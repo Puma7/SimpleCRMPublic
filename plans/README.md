@@ -132,7 +132,7 @@ update the row here.
 | 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | BLOCKED — waiting for approval of docs/design/desktop-credential-store.md (Phase 0 fertig) |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | TODO |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | DONE |
-| 047 | R2: real workflow test run | P2 | M | direction | — | TODO |
+| 047 | R2: real workflow test run | P2 | M | direction | — | DONE |
 | 048 | R3: section-level knowledge retrieval + sources | P2 | M–L | direction | 028, 029 | TODO |
 | 049 | R4: automation cockpit | P2 | M | direction | — | TODO |
 | 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | TODO |
