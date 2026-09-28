@@ -25,7 +25,6 @@ import {
   inboundChainStopReachableAfter,
   interpolateWorkflowPlaceholders,
   listBuiltinWorkflowNodeCatalog,
-  messageIsSpamOrReviewForInboundWorkflow,
   nodeRequestsChainStop,
   normalizeAiDecideContextMode,
   normalizeAiDecideThreshold,
@@ -96,18 +95,17 @@ import {
   DRY_RUN_LIVE_NODE_TYPES,
   dryRunFailClosedResult,
   dryRunMutatingNodeResult,
-  dryRunSideEffectResult,
 } from './workflow-nodes/dry-run';
 import { ERP_NODE_HANDLERS } from './workflow-nodes/erp';
 import { IMAP_NODE_HANDLERS } from './workflow-nodes/imap';
 import { INTEGRATION_NODE_HANDLERS } from './workflow-nodes/integration';
+import { LOGIC_NODE_HANDLERS, LOGIC_PRE_GUARD_HANDLERS } from './workflow-nodes/logic';
 import { MESSAGE_NODE_HANDLERS } from './workflow-nodes/message';
 import { OUTBOUND_NODE_HANDLERS } from './workflow-nodes/outbound';
 import {
   CONTINUATION_HOPS_VARIABLE,
   PreviewAiPendingSignal,
   RESERVED_WORKFLOW_VARIABLES,
-  SUBFLOW_DEPTH_VARIABLE,
   applyWorkflowImapMoveLocalState,
   booleanConfig,
   boundedContinuationStrings,
@@ -160,8 +158,6 @@ const MAX_GRAPH_STEPS = 500;
  */
 const MAX_GRAPH_TOTAL_STEPS = 10_000;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
-/** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
-const MAX_SUBFLOW_DEPTH = 8;
 /**
  * Global cap on continuations (resumed runs) per workflow lineage. MAX_GRAPH_STEPS
  * only bounds a single job; a cycle through an async node (HTTP/AI/delay back to
@@ -171,7 +167,6 @@ const MAX_SUBFLOW_DEPTH = 8;
  * chain stops after 100 external calls instead of never.
  */
 const MAX_WORKFLOW_CONTINUATION_HOPS = 100;
-const WORKFLOW_SPAM_SCORE_THRESHOLD_KEY = 'workflow_spam_score_threshold';
 const safeRegex = require('safe-regex') as (pattern: string) => boolean;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -2074,137 +2069,6 @@ async function executePreviewOutboundAiReview(
   };
 }
 
-/** Knoten logic.stop, stop (vor dem Dry-Run-Schutz). */
-async function handleLogicStop(_args: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  return { status: 'ok', port: 'default', stop: true };
-}
-
-/** Knoten logic.stop_after_spam (vor dem Dry-Run-Schutz). */
-async function handleLogicStopAfterSpam({ context }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  const message = context.message;
-  const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
-  const spamLabel = String(
-    context.variables['spam.label']
-    ?? context.variables['spam.score_label']
-    ?? message?.spam_score_label
-    ?? '',
-  ).toLowerCase();
-  const isSpam =
-    context.variables['email.is_spam'] === true
-    || messageIsSpamOrReviewForInboundWorkflow({
-      is_spam: message?.is_spam,
-      spam_status: spamStatus || message?.spam_status,
-      spam_score_label: spamLabel || message?.spam_score_label,
-    });
-  if (isSpam) {
-    return {
-      status: 'ok',
-      port: 'default',
-      stop: true,
-      inboundChainStop: true,
-      message: 'stop_after_spam',
-    };
-  }
-  return { status: 'ok', port: 'default', message: 'not_spam:continue' };
-}
-
-/** Knoten logic.merge, logic.loop (vor dem Dry-Run-Schutz). */
-async function handleLogicMerge(_args: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  return { status: 'ok', port: 'default' };
-}
-
-/** Knoten logic.set_variable (vor dem Dry-Run-Schutz). */
-async function handleLogicSetVariable({ config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  const name = String(config.name ?? 'var').trim() || 'var';
-  if (RESERVED_WORKFLOW_VARIABLES.includes(name)) {
-    return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
-  }
-  const value = config.value;
-  return {
-    status: 'ok',
-    port: 'default',
-    variables: {
-      [name]: typeof value === 'boolean' || typeof value === 'number' ? value : String(value ?? ''),
-    },
-  };
-}
-
-/** Knoten logic.delay (vor dem Dry-Run-Schutz). */
-async function handleLogicDelay({ trx, doc, context, node, config, log, now, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  // Accept either delaySeconds (what the UI writes) or legacy minutes. When
-  // both are present, delaySeconds wins; when neither is set, fall back to 5
-  // minutes as before. boundedDelayMs caps the total delay.
-  const totalMs = config.delaySeconds !== undefined
-    ? boundedDelayMs(Number(config.delaySeconds ?? 60) * 1000)
-    : boundedDelayMinutes(config.minutes) * 60_000;
-  const resumeNodeId = String(config.resumeNodeId ?? '').trim()
-    || resolveResumeNodeAfter(doc, node.id);
-  if (!resumeNodeId) {
-    return { status: 'error', port: 'error', message: 'Kein Folgeknoten fuer Resume' };
-  }
-  const executeAt = new Date(now.getTime() + totalMs);
-  if (dryRun) {
-    return dryRunSideEffectResult('logic.delay', log, {
-      stop: true,
-      deferred: true,
-      message: `delayed_until:${executeAt.toISOString()}`,
-      variables: { 'workflow.delayed_until': executeAt.toISOString() },
-    });
-  }
-  const continuationContextError = workflowContinuationContextError(context);
-  if (continuationContextError) {
-    return { status: 'error', port: 'error', message: continuationContextError };
-  }
-  const delayedJobId = await scheduleWorkflowDelay(trx, context, {
-    resumeNodeId,
-    executeAt,
-    now,
-  });
-  return {
-    status: 'ok',
-    port: 'default',
-    stop: true,
-    deferred: true,
-    message: `delayed_until:${executeAt.toISOString()}`,
-    variables: { 'workflow.delayed_job.id': delayedJobId, 'workflow.delayed_until': executeAt.toISOString() },
-  };
-}
-
-/** Knoten logic.threshold (vor dem Dry-Run-Schutz). */
-async function handleLogicThreshold({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  const field = String(config.variable ?? 'ai.spam_score');
-  const raw = context.variables[field];
-  const num = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''));
-  if (!Number.isFinite(num)) {
-    return { status: 'error', port: 'error', message: `Variable ${field} ist keine Zahl` };
-  }
-  const useGlobalThreshold = booleanConfig(config.useGlobalThreshold, 'useGlobalThreshold', false);
-  if (!useGlobalThreshold.ok) return { status: 'error', port: 'error', message: useGlobalThreshold.message };
-  const threshold = useGlobalThreshold.value
-    ? await loadWorkflowSpamScoreThreshold(trx, context.workspaceId)
-    : Number(config.value ?? 70);
-  if (!Number.isFinite(threshold)) {
-    return { status: 'error', port: 'error', message: 'Schwellwert ungueltig' };
-  }
-  const op = String(config.operator ?? 'gte') === 'lte' ? 'lte' : 'gte';
-  const matched = op === 'gte' ? num >= threshold : num <= threshold;
-  return { status: 'ok', port: matched ? 'yes' : 'no', variables: { 'threshold.matched': matched } };
-}
-
-/** Knoten logic.switch (vor dem Dry-Run-Schutz). */
-async function handleLogicSwitch({ context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  const field = String(config.field ?? 'ai.class');
-  const raw = context.variables[field] != null
-    ? String(context.variables[field])
-    : context.strings[field] ?? '';
-  const value = raw.trim().toLowerCase();
-  const cases = String(config.cases ?? '')
-    .split(',')
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
-  return { status: 'ok', port: cases.includes(value) ? value : 'default' };
-}
-
 /** Knoten ai.decide (vor dem Dry-Run-Schutz). */
 async function handleAiDecide({ trx, doc, context, node, config, log, now, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
   if (dryRun && (context.previewOutbound || context.testRealAi)) {
@@ -2375,22 +2239,9 @@ async function handleAiReviewDraft({ trx, doc, context, node, config, now, ports
   return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
 }
 
-/** Knoten workflow.subflow. */
-async function handleWorkflowSubflow({ trx, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
-  return await enqueueWorkflowSubflow(trx, context, node, config, now);
-}
-
 /** Plan 043: Knoten vor dem Dry-Run-Schutz (Reihenfolge wie bisher). */
 export const PRE_DRY_RUN_GUARD_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
-  'logic.stop': handleLogicStop,
-  stop: handleLogicStop,
-  'logic.stop_after_spam': handleLogicStopAfterSpam,
-  'logic.merge': handleLogicMerge,
-  'logic.loop': handleLogicMerge,
-  'logic.set_variable': handleLogicSetVariable,
-  'logic.delay': handleLogicDelay,
-  'logic.threshold': handleLogicThreshold,
-  'logic.switch': handleLogicSwitch,
+  ...LOGIC_PRE_GUARD_HANDLERS,
   'ai.decide': handleAiDecide,
   'ai.outbound_review': handlePreviewAiOutboundReview,
   'ai.review': handlePreviewAiReview,
@@ -2407,6 +2258,7 @@ export const SERVER_NODE_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
   ...MESSAGE_NODE_HANDLERS,
   ...SPAM_NODE_HANDLERS,
   ...OUTBOUND_NODE_HANDLERS,
+  ...LOGIC_NODE_HANDLERS,
   'ai.reply_suggestion': handleAiReplySuggestion,
   'ai.outbound_review': handleAiOutboundReview,
   'ai.review': handleAiReview,
@@ -2418,7 +2270,6 @@ export const SERVER_NODE_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
   'ai.agent_tool': handleAiAgentTool,
   'ai.draft_reply': handleAiDraftReply,
   'ai.review_draft': handleAiReviewDraft,
-  'workflow.subflow': handleWorkflowSubflow,
 });
 
 async function executeServerNode(
@@ -2510,64 +2361,6 @@ async function flushDeferredWorkflowImapEffects(input: {
       { applySession: input.applyWorkspaceSession },
     );
   }
-}
-
-async function scheduleWorkflowDelay(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  input: { resumeNodeId: string; executeAt: Date; now: Date },
-): Promise<number> {
-  const delayedContext = workflowDelayContext(context, input.resumeNodeId);
-  const delayedRow = await trx
-    .insertInto('workflow_delayed_jobs')
-    .values({
-      workspace_id: context.workspaceId,
-      source_sqlite_id: serverCreatedSourceSqliteId(
-        'workflow_delayed_jobs',
-        context.workspaceId,
-        String(context.workflowSourceSqliteId),
-        String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
-        input.resumeNodeId,
-        input.executeAt.toISOString(),
-      ),
-      workflow_source_sqlite_id: context.workflowSourceSqliteId,
-      message_source_sqlite_id: context.messageSourceSqliteId,
-      workflow_id: context.workflowId,
-      message_id: context.messageId,
-      resume_node_id: input.resumeNodeId,
-      execute_at: input.executeAt,
-      context_json: delayedContext,
-      status: 'pending',
-      source_row: serverWorkerSourceRow(),
-      imported_in_run_id: null,
-      created_at: input.now,
-      updated_at: input.now,
-    })
-    .returning('id')
-    .executeTakeFirstOrThrow();
-  const delayedJobId = Number(delayedRow.id);
-
-  await trx
-    .insertInto('job_queue')
-    .values({
-      type: 'workflow.execute',
-      payload: {
-        workspaceId: context.workspaceId,
-        workflowId: context.workflowId,
-        ...workflowJobProvenance(context),
-        ...(context.messageId === null ? {} : { messageId: context.messageId }),
-        delayedJobId,
-        triggerName: context.trigger,
-        context: delayedContext,
-      },
-      run_after: input.executeAt,
-      max_attempts: 3,
-      workspace_id: context.workspaceId,
-      updated_at: input.now,
-    })
-    .execute();
-
-  return delayedJobId;
 }
 
 async function scheduleAiReplySuggestionJob(
@@ -3513,25 +3306,6 @@ async function searchWorkflowKnowledgeChunks(
   return matches.map((match) => ({ id: match.id, title: match.title, content: match.content }));
 }
 
-async function loadWorkflowSpamScoreThreshold(
-  trx: WorkspaceTransaction,
-  workspaceId: string,
-): Promise<number> {
-  const row = await trx
-    .selectFrom('sync_info')
-    .select('value')
-    .where('workspace_id', '=', workspaceId)
-    .where('key', '=', WORKFLOW_SPAM_SCORE_THRESHOLD_KEY)
-    .executeTakeFirst();
-  return boundedWorkflowSpamScoreThreshold(row?.value);
-}
-
-function boundedWorkflowSpamScoreThreshold(value: unknown): number {
-  const parsed = Number(value ?? 70);
-  if (!Number.isFinite(parsed)) return 70;
-  return Math.max(1, Math.min(100, Math.floor(parsed)));
-}
-
 type ReplySuggestionTriggerConfig =
   | { ok: true; value: 'inbound' | 'open' }
   | { ok: false; message: string };
@@ -3686,18 +3460,6 @@ export async function loadOutboundReplyParentBlock(
   ].join('\n');
 }
 
-function workflowDelayContext(
-  context: ServerWorkflowContext,
-  resumeNodeId: string,
-): Record<string, unknown> {
-  return {
-    resumeNodeId,
-    eventStrings: boundedContinuationStrings(context.strings),
-    eventVariables: context.variables,
-    ...inboundChainFieldsFromContext(context),
-  };
-}
-
 /**
  * Fan-out-Lauf aus dem Job-Kontext, sonst dieser Lauf (erste Ausfuehrung).
  * Eltern (Barriere anlegen) und Kinder (Barriere abbauen) muessen denselben
@@ -3707,108 +3469,9 @@ function jobContextFanOutRunId(jobContext: Record<string, unknown>, runId: numbe
   return inboundChainFieldsFromRecord(jobContext).inboundFanOutRunId ?? runId;
 }
 
-function boundedDelayMinutes(value: unknown): number {
-  const parsed = Number(value ?? 5);
-  if (!Number.isFinite(parsed)) return 5;
-  return Math.max(1, Math.min(60 * 24 * 7, Math.trunc(parsed)));
-}
-
-/** Total delay cap: 7 days in milliseconds; floor: 1 second so sub-second
- *  configurations don't collapse to 0 and break scheduling. */
-function boundedDelayMs(value: unknown): number {
-  const parsed = Number(value ?? 60_000);
-  if (!Number.isFinite(parsed)) return 60_000;
-  return Math.max(1_000, Math.min(7 * 24 * 60 * 60_000, Math.trunc(parsed)));
-}
-
 function resolveResumeNodeAfterPort(doc: WorkflowGraphDocument, nodeId: string, port: string): string {
   const outs = outgoing(doc.edges, nodeId);
   return pickEdge(outs, port)?.target ?? '';
-}
-
-async function enqueueWorkflowSubflow(
-  trx: WorkspaceTransaction,
-  context: ServerWorkflowContext,
-  node: WorkflowGraphNode,
-  config: Record<string, unknown>,
-  now: Date,
-): Promise<NodeResult> {
-  const continuationContextError = workflowContinuationContextError(context);
-  if (continuationContextError) {
-    return { status: 'error', port: 'error', message: continuationContextError };
-  }
-  const configuredWorkflowId = optionalPositiveIntegerConfig(config.workflowId, 'workflowId');
-  if (!configuredWorkflowId.ok) return { status: 'error', port: 'error', message: configuredWorkflowId.message };
-  const workflowId = configuredWorkflowId.value;
-  if (!workflowId || workflowId === context.workflowId) {
-    return { status: 'error', port: 'error', message: 'Ungueltige Subflow-ID' };
-  }
-
-  // Depth guard: the direct self-reference check above does not stop an indirect
-  // cycle (A → B → A). For message-less / non-inbound subflows there is no
-  // applied-marker to break the loop, so without a depth cap the pair would
-  // enqueue each other forever and exhaust the job queue. Carry the depth in a
-  // reserved variable that rides along in eventVariables into each child run.
-  const rawDepth = context.variables[SUBFLOW_DEPTH_VARIABLE];
-  const subflowDepth = typeof rawDepth === 'number'
-    && Number.isInteger(rawDepth)
-    && rawDepth >= 0
-    ? rawDepth
-    : 0;
-  if (subflowDepth >= MAX_SUBFLOW_DEPTH) {
-    return {
-      status: 'error',
-      port: 'error',
-      message: `Subflow-Tiefe ${MAX_SUBFLOW_DEPTH} überschritten (mögliche Rekursion) — Subflow nicht eingereiht`,
-    };
-  }
-
-  const subflow = await loadWorkflow(trx, context.workspaceId, workflowId);
-  if (!subflow?.enabled) {
-    return { status: 'error', port: 'error', message: 'Subflow nicht gefunden oder inaktiv' };
-  }
-
-  const payload: Record<string, unknown> = {
-    workspaceId: context.workspaceId,
-    workflowId,
-    ...workflowJobProvenance(context),
-    triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
-    context: {
-      eventStrings: boundedContinuationStrings(context.strings),
-      eventVariables: { ...context.variables, [SUBFLOW_DEPTH_VARIABLE]: subflowDepth + 1 },
-      subflowParent: {
-        workflowId: context.workflowId,
-        runId: context.runId,
-        nodeId: node.id,
-      },
-    },
-  };
-  if (context.messageId !== null) payload.messageId = context.messageId;
-
-  const row = await trx
-    .insertInto('job_queue')
-    .values({
-      type: 'workflow.execute',
-      payload,
-      run_after: now,
-      max_attempts: 3,
-      workspace_id: context.workspaceId,
-      updated_at: now,
-    })
-    .returning('id')
-    .executeTakeFirstOrThrow();
-  const jobId = Number(row.id);
-
-  return {
-    status: 'ok',
-    port: 'default',
-    message: `queued_subflow:${jobId}`,
-    variables: {
-      'subflow.status': 'queued',
-      'subflow.job_id': jobId,
-      'subflow.workflow_id': workflowId,
-    },
-  };
 }
 
 async function insertRunStep(
