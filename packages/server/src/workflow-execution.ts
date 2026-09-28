@@ -2301,6 +2301,779 @@ async function executePreviewOutboundAiReview(
   };
 }
 
+/** Plan 043: Eingaben eines Server-Knoten-Handlers (wie executeServerNode). */
+export type ServerNodeHandlerArgs = {
+  trx: WorkspaceTransaction;
+  doc: WorkflowGraphDocument;
+  context: ServerWorkflowContext;
+  node: WorkflowGraphNode;
+  config: Record<string, unknown>;
+  type: string;
+  log: string[];
+  now: Date;
+  ports: ServerWorkflowRuntimePorts;
+  dryRun: boolean;
+};
+
+/** null = Knoten nicht zuständig (weiter wie bisher im Ablauf). */
+export type ServerNodeHandler = (args: ServerNodeHandlerArgs) => Promise<NodeResult | null>;
+export type ServerNodeHandlerMap = Readonly<Record<string, ServerNodeHandler>>;
+
+/** Ohne Prototyp: ein Knotentyp wie `constructor` findet keinen Handler. */
+function serverNodeHandlerMap(entries: Record<string, ServerNodeHandler>): ServerNodeHandlerMap {
+  return Object.freeze(Object.assign(Object.create(null) as Record<string, ServerNodeHandler>, entries));
+}
+
+function serverNodeHandlerFor(map: ServerNodeHandlerMap, type: string): ServerNodeHandler | undefined {
+  return Object.prototype.hasOwnProperty.call(map, type) ? map[type] : undefined;
+}
+
+/** Knoten logic.stop, stop (vor dem Dry-Run-Schutz). */
+async function handleLogicStop(_args: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return { status: 'ok', port: 'default', stop: true };
+}
+
+/** Knoten logic.stop_after_spam (vor dem Dry-Run-Schutz). */
+async function handleLogicStopAfterSpam({ context }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const message = context.message;
+  const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
+  const spamLabel = String(
+    context.variables['spam.label']
+    ?? context.variables['spam.score_label']
+    ?? message?.spam_score_label
+    ?? '',
+  ).toLowerCase();
+  const isSpam =
+    context.variables['email.is_spam'] === true
+    || messageIsSpamOrReviewForInboundWorkflow({
+      is_spam: message?.is_spam,
+      spam_status: spamStatus || message?.spam_status,
+      spam_score_label: spamLabel || message?.spam_score_label,
+    });
+  if (isSpam) {
+    return {
+      status: 'ok',
+      port: 'default',
+      stop: true,
+      inboundChainStop: true,
+      message: 'stop_after_spam',
+    };
+  }
+  return { status: 'ok', port: 'default', message: 'not_spam:continue' };
+}
+
+/** Knoten logic.merge, logic.loop (vor dem Dry-Run-Schutz). */
+async function handleLogicMerge(_args: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return { status: 'ok', port: 'default' };
+}
+
+/** Knoten logic.set_variable (vor dem Dry-Run-Schutz). */
+async function handleLogicSetVariable({ config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const name = String(config.name ?? 'var').trim() || 'var';
+  if (RESERVED_WORKFLOW_VARIABLES.includes(name)) {
+    return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
+  }
+  const value = config.value;
+  return {
+    status: 'ok',
+    port: 'default',
+    variables: {
+      [name]: typeof value === 'boolean' || typeof value === 'number' ? value : String(value ?? ''),
+    },
+  };
+}
+
+/** Knoten logic.delay (vor dem Dry-Run-Schutz). */
+async function handleLogicDelay({ trx, doc, context, node, config, log, now, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  // Accept either delaySeconds (what the UI writes) or legacy minutes. When
+  // both are present, delaySeconds wins; when neither is set, fall back to 5
+  // minutes as before. boundedDelayMs caps the total delay.
+  const totalMs = config.delaySeconds !== undefined
+    ? boundedDelayMs(Number(config.delaySeconds ?? 60) * 1000)
+    : boundedDelayMinutes(config.minutes) * 60_000;
+  const resumeNodeId = String(config.resumeNodeId ?? '').trim()
+    || resolveResumeNodeAfter(doc, node.id);
+  if (!resumeNodeId) {
+    return { status: 'error', port: 'error', message: 'Kein Folgeknoten fuer Resume' };
+  }
+  const executeAt = new Date(now.getTime() + totalMs);
+  if (dryRun) {
+    return dryRunSideEffectResult('logic.delay', log, {
+      stop: true,
+      deferred: true,
+      message: `delayed_until:${executeAt.toISOString()}`,
+      variables: { 'workflow.delayed_until': executeAt.toISOString() },
+    });
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const delayedJobId = await scheduleWorkflowDelay(trx, context, {
+    resumeNodeId,
+    executeAt,
+    now,
+  });
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: true,
+    deferred: true,
+    message: `delayed_until:${executeAt.toISOString()}`,
+    variables: { 'workflow.delayed_job.id': delayedJobId, 'workflow.delayed_until': executeAt.toISOString() },
+  };
+}
+
+/** Knoten logic.threshold (vor dem Dry-Run-Schutz). */
+async function handleLogicThreshold({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const field = String(config.variable ?? 'ai.spam_score');
+  const raw = context.variables[field];
+  const num = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''));
+  if (!Number.isFinite(num)) {
+    return { status: 'error', port: 'error', message: `Variable ${field} ist keine Zahl` };
+  }
+  const useGlobalThreshold = booleanConfig(config.useGlobalThreshold, 'useGlobalThreshold', false);
+  if (!useGlobalThreshold.ok) return { status: 'error', port: 'error', message: useGlobalThreshold.message };
+  const threshold = useGlobalThreshold.value
+    ? await loadWorkflowSpamScoreThreshold(trx, context.workspaceId)
+    : Number(config.value ?? 70);
+  if (!Number.isFinite(threshold)) {
+    return { status: 'error', port: 'error', message: 'Schwellwert ungueltig' };
+  }
+  const op = String(config.operator ?? 'gte') === 'lte' ? 'lte' : 'gte';
+  const matched = op === 'gte' ? num >= threshold : num <= threshold;
+  return { status: 'ok', port: matched ? 'yes' : 'no', variables: { 'threshold.matched': matched } };
+}
+
+/** Knoten logic.switch (vor dem Dry-Run-Schutz). */
+async function handleLogicSwitch({ context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const field = String(config.field ?? 'ai.class');
+  const raw = context.variables[field] != null
+    ? String(context.variables[field])
+    : context.strings[field] ?? '';
+  const value = raw.trim().toLowerCase();
+  const cases = String(config.cases ?? '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  return { status: 'ok', port: cases.includes(value) ? value : 'default' };
+}
+
+/** Knoten ai.decide (vor dem Dry-Run-Schutz). */
+async function handleAiDecide({ trx, doc, context, node, config, log, now, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (dryRun && (context.previewOutbound || context.testRealAi)) {
+    // Versandvorschau: echte Entscheidung, sonst übersprange eine dort
+    // erteilte Freigabe die KI-Entscheidung beim eigentlichen Versand.
+    // Testlauf mit „KI wirklich fragen“ (Plan 047): ebenso synchron, ohne Job.
+    return await executePreviewAiDecide(ports, context, config);
+  }
+  if (dryRun) {
+    // Testlauf: keine KI-Anfrage, Ergebnis „unsicher“.
+    log.push('dry_run:ai.decide');
+    return aiDecideNodeResult(context, aiDecideDryRunOutcome());
+  }
+  return await scheduleAiDecideJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten ai.outbound_review (vor dem Dry-Run-Schutz). */
+async function handlePreviewAiOutboundReview({ trx, context, config, type, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (!(dryRun && context.previewOutbound)) return null;
+  if (type === 'ai.outbound_review') {
+    if (context.direction !== 'outbound') {
+      return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+    }
+    return executePreviewOutboundAiReview(trx, ports, context, config, type);
+  }
+  return null;
+}
+
+/** Knoten ai.review, ai_review (vor dem Dry-Run-Schutz). */
+async function handlePreviewAiReview({ trx, context, config, type, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (!(dryRun && context.previewOutbound)) return null;
+  if (type === 'ai.review' || type === 'ai_review') {
+    return executePreviewOutboundAiReview(trx, ports, context, config, type);
+  }
+  return null;
+}
+
+/** Knoten ai.learnings_digest (vor dem Dry-Run-Schutz). */
+async function handleAiLearningsDigest({ trx, context, config, now, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  // TA-P5: prüft vorab und reiht den Auswertungs-Job ein; im Probelauf nur die Vorabprüfung.
+  return await executeServerLearningsDigestNode(trx, {
+    workspaceId: context.workspaceId,
+    workflowId: context.workflowId,
+    direction: context.direction,
+    config,
+    provenance: workflowJobProvenance(context),
+    dryRun: Boolean(dryRun),
+    now,
+  });
+}
+
+/** Knoten ai.reply_suggestion. */
+async function handleAiReplySuggestion({ trx, context, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const result = await scheduleAiReplySuggestionJob(trx, context, config, now);
+  return result ?? { status: 'ok', port: 'default' };
+}
+
+/** Knoten ai.outbound_review. */
+async function handleAiOutboundReview({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (context.direction !== 'outbound') {
+    return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
+  }
+  const portResumeTargets = {
+    ok: resolveResumeNodeAfterPort(doc, node.id, 'ok'),
+    block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
+    error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
+  };
+  const replyParentMessageId = config.checkReplyContext === false
+    ? undefined
+    : resolveOutboundReplyParentId(context);
+  return await scheduleAiReviewJob(trx, doc, context, node, {
+    ...config,
+    blockKeyword: 'BLOCK',
+    systemPrompt: workflowOutboundReviewSystemPrompt(),
+    // Parent body is loaded in the ai.review job AFTER content.read ACL —
+    // do not bake it into the template under the system role here.
+    fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
+    parseMode: 'outbound_structured',
+    portResumeTargets,
+    ...(replyParentMessageId !== undefined ? { replyParentMessageId } : {}),
+  }, now);
+}
+
+/** Knoten ai.review, ai_review. */
+async function handleAiReview({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleAiReviewJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten ai.classify. */
+async function handleAiClassify({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleAiClassificationJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten ai.transform_text. */
+async function handleAiTransformText({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleAiTransformTextJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten ai.agent. */
+async function handleAiAgent({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
+  if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+  if (context.messageId !== null) {
+    const currentMessage = await trx
+      .selectFrom('email_messages')
+      .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', context.messageId)
+      .executeTakeFirst();
+    if (currentMessage && messageIsSpamOrReview(currentMessage)) {
+      return { status: 'skipped', port: 'default', message: 'skip:agent_message_spam_or_review' };
+    }
+  }
+  return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
+}
+
+/** Knoten ai.pick_canned. */
+async function handleAiPickCanned({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
+  if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+  return await scheduleAiPickCannedJob(trx, doc, context, node, config, createDraft.value, now);
+}
+
+/** Knoten ai.agent_tool. */
+async function handleAiAgentTool({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await executeWorkflowAgentTool(trx, context, config);
+}
+
+/** Knoten ai.spam_score. */
+async function handleAiSpamScore({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await workflowAiSpamScoreResult(trx, context, config);
+}
+
+/** Knoten ai.draft_reply. */
+async function handleAiDraftReply({ trx, doc, context, node, config, now, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (context.direction !== 'inbound' || context.messageId === null) {
+    return { status: 'skipped', port: 'default', message: 'Nur fuer eingehende Nachrichten' };
+  }
+  if (dryRun) {
+    if (!ports.aiDraft) {
+      return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
+    }
+    return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      config,
+      strings: context.strings,
+      variables: context.variables,
+      actorUserId: context.actorUserId,
+      dryRun: true,
+      workflowId: context.workflowId,
+    });
+  }
+  return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten ai.review_draft. */
+async function handleAiReviewDraft({ trx, doc, context, node, config, now, ports, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (dryRun) {
+    if (!ports.aiDraft) {
+      return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
+    }
+    return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      config,
+      variables: context.variables,
+      strings: context.strings,
+      actorUserId: context.actorUserId,
+      dryRun: true,
+    });
+  }
+  return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten email.hold_outbound, hold_outbound. */
+async function handleEmailHoldOutbound({ node, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const reason = outboundHoldReasonOrFallback(String(config.reason ?? node.data.reason ?? ''));
+  return {
+    status: 'ok',
+    port: 'blocked',
+    blocked: true,
+    blockReason: reason,
+    message: reason,
+  };
+}
+
+/** Knoten email.release_outbound. */
+async function handleEmailReleaseOutbound({ trx, context, config, log, now, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (dryRun) {
+    return dryRunSideEffectResult('email.release_outbound', log, {
+      message: 'dry_run:email.release_outbound',
+    });
+  }
+  if (
+    context.direction === 'inbound'
+    && context.messageId !== null
+    && await isInboundSiblingAborted(trx, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      workflowId: context.workflowId,
+      chain: context.inboundWorkflowChain ?? null,
+      fanOutRunId: inboundFanOutRunId(context),
+    })
+  ) {
+    return {
+      status: 'skipped',
+      port: 'default',
+      message: 'skip:sibling_terminal_abort',
+    };
+  }
+  return await releaseWorkflowOutboundHold(trx, context, config, now);
+}
+
+/** Knoten email.send_draft. */
+async function handleEmailSendDraft({ trx, context, config, log, now, dryRun }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (dryRun) {
+    return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
+  }
+  // Wie bei release_outbound: der Einstieg der Fortsetzung hat den Marker
+  // schon gelesen, ein Geschwisterzweig kann die Kette seitdem gestoppt haben.
+  if (
+    context.direction === 'inbound'
+    && context.messageId !== null
+    && await isInboundSiblingAborted(trx, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      workflowId: context.workflowId,
+      chain: context.inboundWorkflowChain ?? null,
+      fanOutRunId: inboundFanOutRunId(context),
+    })
+  ) {
+    return {
+      status: 'skipped',
+      port: 'default',
+      message: 'skip:sibling_terminal_abort',
+    };
+  }
+  return await sendWorkflowDraft(trx, context, config, now);
+}
+
+/** Knoten email.tag, tag. */
+async function handleEmailTag({ trx, context, node, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const tag = String(config.tag ?? node.data.tag ?? '').trim();
+  if (!tag) return { status: 'skipped', port: 'default', message: 'leerer Tag' };
+  const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
+  return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
+}
+
+/** Knoten email.set_category, set_category. */
+async function handleEmailSetCategory({ trx, context, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  // Prefer a stable category reference (source_sqlite_id from the dropdown) so
+  // the workflow survives category renames; fall back to the path otherwise
+  // (and when the referenced category was deleted).
+  const categorySourceSqliteId = optionalPositiveIntegerConfig(config.categorySourceSqliteId, 'categorySourceSqliteId');
+  if (!categorySourceSqliteId.ok) return { status: 'error', port: 'error', message: categorySourceSqliteId.message };
+  if (categorySourceSqliteId.value !== undefined) {
+    const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now, ports);
+    if (byId) return byId;
+  }
+  const path = String(config.path ?? '').trim();
+  if (!path) return { status: 'skipped', port: 'default' };
+  return await setWorkflowMessageCategoryPath(trx, context, path, now, ports);
+}
+
+/** Knoten email.auto_reply. */
+async function handleEmailAutoReply({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await evaluateWorkflowAutoReply(trx, context, config);
+}
+
+/** Knoten email.tag_attachment_meta, tag_attachment_meta. */
+async function handleEmailTagAttachmentMeta({ trx, context, node, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  if (context.strings.has_attachments !== 'true') {
+    return { status: 'skipped', port: 'default', message: 'keine Anhaenge' };
+  }
+  const tag = String(config.tag ?? node.data.tag ?? 'attachment').trim() || 'attachment';
+  const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
+  return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
+}
+
+/** Knoten email.create_draft. */
+async function handleEmailCreateDraft({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await createWorkflowComposeDraft(trx, context, config);
+}
+
+/** Knoten email.set_priority. */
+async function handleEmailSetPriority({ trx, context, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const level = String(config.level ?? 'normal').toLowerCase();
+  const allowed = new Set(['hoch', 'high', 'normal', 'niedrig', 'low']);
+  if (!allowed.has(level)) {
+    return { status: 'error', port: 'error', message: 'level muss hoch, normal oder niedrig sein' };
+  }
+  const tag = level === 'hoch' || level === 'high'
+    ? 'priority:hoch'
+    : level === 'niedrig' || level === 'low'
+      ? 'priority:niedrig'
+      : 'priority:normal';
+  const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
+  return result ?? {
+    status: 'ok',
+    port: 'default',
+    variables: { 'email.priority': tag, 'email.last_tag': tag },
+  };
+}
+
+/** Knoten email.auth_check. */
+async function handleEmailAuthCheck({ context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const protocol = authProtocolConfig(config.protocol);
+  const value = String(context.variables[`auth.${protocol}`] ?? 'none').toLowerCase();
+  const softfailAsFail = booleanConfig(config.treatSoftfailAsFail, 'treatSoftfailAsFail', true);
+  if (!softfailAsFail.ok) return { status: 'error', port: 'error', message: softfailAsFail.message };
+  const failSet = new Set([
+    'fail',
+    'permerror',
+    ...(softfailAsFail.value ? ['softfail', 'policy'] : []),
+  ]);
+  const port = value === 'pass'
+    ? 'pass'
+    : failSet.has(value)
+      ? 'fail'
+      : value === 'none' || value === 'neutral' || value === 'skipped'
+        ? 'none'
+        : 'default';
+  return { status: 'ok', port, variables: { [`auth.check.${protocol}`]: value } };
+}
+
+/** Knoten email.read_tracking_evidence. */
+async function handleEmailReadTrackingEvidence({ trx, context }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return readWorkflowTrackingEvidence(trx, context);
+}
+
+/** Knoten email.sender_filter. */
+async function handleEmailSenderFilter({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await evaluateWorkflowSenderFilter(trx, context, config);
+}
+
+/** Knoten email.mark_seen, mark_seen. */
+async function handleEmailMarkSeen({ trx, context, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await markWorkflowMessageSeen(trx, context, now, ports, log);
+}
+
+/** Knoten email.archive, archive. */
+async function handleEmailArchive({ trx, context, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const result = await updateWorkflowMessage(trx, context, {
+    archived: true,
+    done_local: true,
+    is_spam: false,
+    spam_status: 'clean',
+    updated_at: now,
+  });
+  return result ?? { status: 'ok', port: 'default', variables: { 'email.archived': true } };
+}
+
+/** Knoten email.set_spam_status. */
+async function handleEmailSetSpamStatus({ trx, context, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const train = booleanConfig(config.train, 'train', false);
+  if (!train.ok) return { status: 'error', port: 'error', message: train.message };
+  const status = spamStatusConfig(config.status);
+  const tag = String(config.tag ?? '').trim();
+  // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+  // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+  // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+  const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
+  if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
+  return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
+    stopFurtherWorkflows: stopFurther.value,
+    ports,
+  });
+}
+
+/** Knoten email.mark_spam. */
+async function handleEmailMarkSpam({ trx, context, config, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const train = booleanConfig(config.train, 'train', false);
+  if (!train.ok) return { status: 'error', port: 'error', message: train.message };
+  const spam = booleanConfig(config.spam, 'spam', true);
+  if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
+  const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
+  if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
+  // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+  // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+  // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+  const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
+  if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
+  if (moveImap.value && spam.value) {
+    const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
+    if (!moveResult.ok) return moveResult.node;
+  }
+  const tag = String(config.tag ?? 'auto-spam').trim();
+  return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now, {
+    stopFurtherWorkflows: stopFurther.value,
+    ports,
+  });
+}
+
+/** Knoten email.move_imap. */
+async function handleEmailMoveImap({ trx, context, config, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await moveWorkflowMessageOnImap(trx, context, config, now, ports, log);
+}
+
+/** Knoten email.delete_server. */
+async function handleEmailDeleteServer({ trx, context, log, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await deleteWorkflowMessageOnImap(trx, context, now, ports, log);
+}
+
+/** Knoten email.assign. */
+async function handleEmailAssign({ trx, context, config, now, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  const raw = config.teamMemberId;
+  const teamMemberId = raw === null || raw === undefined || raw === ''
+    ? null
+    : String(raw).trim();
+  if (teamMemberId !== null && !teamMemberId) {
+    return { status: 'error', port: 'error', message: 'teamMemberId leer' };
+  }
+  // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
+  // stale UUID after workflow reassignment (mirrors the mail assign API).
+  // AUSSCHLIESSLICH email_team_members.linked_user_id: der frueher genutzte
+  // Fallback ueber die Id-Namensgleichheit haette eine bewusst entfernte
+  // Verknuepfung bei der naechsten Workflow-Zuweisung wiederhergestellt und
+  // dem Nutzer (plus seinen Gruppen-Peers) erneut assigned_to_me-Sicht
+  // gegeben — entgegen der gespeicherten Einstellung.
+  let assignedToUserId: string | null = null;
+  if (teamMemberId !== null) {
+    // Zeilensperre wie im API-Assign-Pfad: eine parallele Link-Aenderung des
+    // Admins darf hier keinen veralteten Nutzer in assigned_to_user_id
+    // schreiben.
+    const member = await trx
+      .selectFrom('email_team_members')
+      .select(['id', 'linked_user_id'])
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', teamMemberId)
+      .forUpdate()
+      .executeTakeFirst();
+    // Fehlt die Zeile (geloeschtes Mitglied im gespeicherten Knoten, oder das
+    // Loeschen hat die Sperre zuerst bekommen), darf hier NICHT geschrieben
+    // werden: assigned_to truege eine tote Id und assigned_to_user_id waere
+    // null. Die Nachricht passte danach auf keinen Zuweisungsfilter mehr —
+    // weder assigned_to_me/assigned_to_my_groups (brauchen die User-Id) noch
+    // unassigned (verlangt zusaetzlich ein leeres assigned_to) — und bliebe
+    // fuer eingeschraenkte Betrachter dauerhaft verwaist. Der API-Assign-Pfad
+    // antwortet in derselben Lage mit team_member_not_found.
+    if (!member) {
+      return { status: 'error', port: 'error', message: 'Teammitglied nicht gefunden' };
+    }
+    if (member.linked_user_id) assignedToUserId = String(member.linked_user_id);
+  }
+  const result = await updateWorkflowMessage(trx, context, {
+    assigned_to: teamMemberId,
+    assigned_to_user_id: assignedToUserId,
+    updated_at: now,
+  });
+  // Die Zuweisung kippt assigned_to_me, assigned_to_my_groups und
+  // unassigned — fuer den bisherigen Zustaendigen ebenso wie fuer den neuen.
+  // Ohne diese Meldung sieht ein eingeschraenkter Betrachter eine gerade
+  // gesperrte, bereits geladene Nachricht bis zum naechsten Reload weiter.
+  if (ports?.visibilityInvalidation) ports.visibilityInvalidation.assignmentChanged = true;
+  return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };
+}
+
+/** Knoten crm.create_task. */
+async function handleCrmCreateTask({ trx, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await createWorkflowTask(trx, context, node, config, now);
+}
+
+/** Knoten crm.log_activity. */
+async function handleCrmLogActivity({ trx, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await createWorkflowActivityLog(trx, context, node, config, now);
+}
+
+/** Knoten crm.update_deal. */
+async function handleCrmUpdateDeal({ trx, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await updateWorkflowDeal(trx, context, node, config, now);
+}
+
+/** Knoten crm.link_customer, link_customer. */
+async function handleCrmLinkCustomer({ trx, context, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await linkWorkflowMessageCustomer(trx, context, now);
+}
+
+/** Knoten sync.run. */
+async function handleSyncRun({ trx, context, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await enqueueWorkflowSyncRun(trx, context, now);
+}
+
+/** Knoten email.forward_copy, forward_copy. */
+async function handleEmailForwardCopy({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleWorkflowForwardCopyJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten email.ingest_dmarc_report. */
+async function handleEmailIngestDmarcReport({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleWorkflowDmarcIngestJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten http.request. */
+async function handleHttpRequest({ trx, doc, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await scheduleWorkflowHttpRequestJob(trx, doc, context, node, config, now);
+}
+
+/** Knoten jtl.lookup. */
+async function handleJtlLookup({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await executeWorkflowJtlLookup(trx, context, config);
+}
+
+/** Knoten mssql.query. */
+async function handleMssqlQuery({ context, config, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await executeWorkflowMssqlQuery(context, config, ports.mssql);
+}
+
+/** Knoten jtl.order_context. */
+async function handleJtlOrderContext({ context, config, ports }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await executeWorkflowJtlOrderContext(context, config, ports.mssql);
+}
+
+/** Knoten jtl.prepare_action. */
+async function handleJtlPrepareAction({ context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return executeWorkflowJtlPrepareAction(context, config);
+}
+
+/** Knoten returns.evaluate. */
+async function handleReturnsEvaluate({ trx, context, config }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await evaluateWorkflowReturn(trx, context, config);
+}
+
+/** Knoten returns.offer_exchange. */
+async function handleReturnsOfferExchange({ trx, context, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await applyWorkflowReturnOutcome(trx, context, config, 'exchange', now);
+}
+
+/** Knoten returns.offer_credit. */
+async function handleReturnsOfferCredit({ trx, context, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await applyWorkflowReturnOutcome(trx, context, config, 'credit', now);
+}
+
+/** Knoten workflow.subflow. */
+async function handleWorkflowSubflow({ trx, context, node, config, now }: ServerNodeHandlerArgs): Promise<NodeResult | null> {
+  return await enqueueWorkflowSubflow(trx, context, node, config, now);
+}
+
+/** Plan 043: Knoten vor dem Dry-Run-Schutz (Reihenfolge wie bisher). */
+export const PRE_DRY_RUN_GUARD_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
+  'logic.stop': handleLogicStop,
+  stop: handleLogicStop,
+  'logic.stop_after_spam': handleLogicStopAfterSpam,
+  'logic.merge': handleLogicMerge,
+  'logic.loop': handleLogicMerge,
+  'logic.set_variable': handleLogicSetVariable,
+  'logic.delay': handleLogicDelay,
+  'logic.threshold': handleLogicThreshold,
+  'logic.switch': handleLogicSwitch,
+  'ai.decide': handleAiDecide,
+  'ai.outbound_review': handlePreviewAiOutboundReview,
+  'ai.review': handlePreviewAiReview,
+  ai_review: handlePreviewAiReview,
+  'ai.learnings_digest': handleAiLearningsDigest,
+});
+
+/** Plan 043: alle übrigen Knoten (nach dem Dry-Run-Schutz). */
+export const SERVER_NODE_HANDLERS: ServerNodeHandlerMap = serverNodeHandlerMap({
+  'ai.reply_suggestion': handleAiReplySuggestion,
+  'ai.outbound_review': handleAiOutboundReview,
+  'ai.review': handleAiReview,
+  ai_review: handleAiReview,
+  'ai.classify': handleAiClassify,
+  'ai.transform_text': handleAiTransformText,
+  'ai.agent': handleAiAgent,
+  'ai.pick_canned': handleAiPickCanned,
+  'ai.agent_tool': handleAiAgentTool,
+  'ai.spam_score': handleAiSpamScore,
+  'ai.draft_reply': handleAiDraftReply,
+  'ai.review_draft': handleAiReviewDraft,
+  'email.hold_outbound': handleEmailHoldOutbound,
+  hold_outbound: handleEmailHoldOutbound,
+  'email.release_outbound': handleEmailReleaseOutbound,
+  'email.send_draft': handleEmailSendDraft,
+  'email.tag': handleEmailTag,
+  tag: handleEmailTag,
+  'email.set_category': handleEmailSetCategory,
+  set_category: handleEmailSetCategory,
+  'email.auto_reply': handleEmailAutoReply,
+  'email.tag_attachment_meta': handleEmailTagAttachmentMeta,
+  tag_attachment_meta: handleEmailTagAttachmentMeta,
+  'email.create_draft': handleEmailCreateDraft,
+  'email.set_priority': handleEmailSetPriority,
+  'email.auth_check': handleEmailAuthCheck,
+  'email.read_tracking_evidence': handleEmailReadTrackingEvidence,
+  'email.sender_filter': handleEmailSenderFilter,
+  'email.mark_seen': handleEmailMarkSeen,
+  mark_seen: handleEmailMarkSeen,
+  'email.archive': handleEmailArchive,
+  archive: handleEmailArchive,
+  'email.set_spam_status': handleEmailSetSpamStatus,
+  'email.mark_spam': handleEmailMarkSpam,
+  'email.move_imap': handleEmailMoveImap,
+  'email.delete_server': handleEmailDeleteServer,
+  'email.assign': handleEmailAssign,
+  'crm.create_task': handleCrmCreateTask,
+  'crm.log_activity': handleCrmLogActivity,
+  'crm.update_deal': handleCrmUpdateDeal,
+  'crm.link_customer': handleCrmLinkCustomer,
+  link_customer: handleCrmLinkCustomer,
+  'sync.run': handleSyncRun,
+  'email.forward_copy': handleEmailForwardCopy,
+  forward_copy: handleEmailForwardCopy,
+  'email.ingest_dmarc_report': handleEmailIngestDmarcReport,
+  'http.request': handleHttpRequest,
+  'jtl.lookup': handleJtlLookup,
+  'mssql.query': handleMssqlQuery,
+  'jtl.order_context': handleJtlOrderContext,
+  'jtl.prepare_action': handleJtlPrepareAction,
+  'returns.evaluate': handleReturnsEvaluate,
+  'returns.offer_exchange': handleReturnsOfferExchange,
+  'returns.offer_credit': handleReturnsOfferCredit,
+  'workflow.subflow': handleWorkflowSubflow,
+});
+
 async function executeServerNode(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -2321,561 +3094,22 @@ async function executeServerNode(
 
   const type = nodeRuntimeType(node);
   const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
-  if (type === 'logic.stop' || type === 'stop') {
-    return { status: 'ok', port: 'default', stop: true };
-  }
-  if (type === 'logic.stop_after_spam') {
-    const message = context.message;
-    const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
-    const spamLabel = String(
-      context.variables['spam.label']
-      ?? context.variables['spam.score_label']
-      ?? message?.spam_score_label
-      ?? '',
-    ).toLowerCase();
-    const isSpam =
-      context.variables['email.is_spam'] === true
-      || messageIsSpamOrReviewForInboundWorkflow({
-        is_spam: message?.is_spam,
-        spam_status: spamStatus || message?.spam_status,
-        spam_score_label: spamLabel || message?.spam_score_label,
-      });
-    if (isSpam) {
-      return {
-        status: 'ok',
-        port: 'default',
-        stop: true,
-        inboundChainStop: true,
-        message: 'stop_after_spam',
-      };
-    }
-    return { status: 'ok', port: 'default', message: 'not_spam:continue' };
-  }
-  if (type === 'logic.merge' || type === 'logic.loop') {
-    return { status: 'ok', port: 'default' };
-  }
-  if (type === 'logic.set_variable') {
-    const name = String(config.name ?? 'var').trim() || 'var';
-    if (RESERVED_WORKFLOW_VARIABLES.includes(name)) {
-      return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
-    }
-    const value = config.value;
-    return {
-      status: 'ok',
-      port: 'default',
-      variables: {
-        [name]: typeof value === 'boolean' || typeof value === 'number' ? value : String(value ?? ''),
-      },
-    };
-  }
-  if (type === 'logic.delay') {
-    // Accept either delaySeconds (what the UI writes) or legacy minutes. When
-    // both are present, delaySeconds wins; when neither is set, fall back to 5
-    // minutes as before. boundedDelayMs caps the total delay.
-    const totalMs = config.delaySeconds !== undefined
-      ? boundedDelayMs(Number(config.delaySeconds ?? 60) * 1000)
-      : boundedDelayMinutes(config.minutes) * 60_000;
-    const resumeNodeId = String(config.resumeNodeId ?? '').trim()
-      || resolveResumeNodeAfter(doc, node.id);
-    if (!resumeNodeId) {
-      return { status: 'error', port: 'error', message: 'Kein Folgeknoten fuer Resume' };
-    }
-    const executeAt = new Date(now.getTime() + totalMs);
-    if (dryRun) {
-      return dryRunSideEffectResult('logic.delay', log, {
-        stop: true,
-        deferred: true,
-        message: `delayed_until:${executeAt.toISOString()}`,
-        variables: { 'workflow.delayed_until': executeAt.toISOString() },
-      });
-    }
-    const continuationContextError = workflowContinuationContextError(context);
-    if (continuationContextError) {
-      return { status: 'error', port: 'error', message: continuationContextError };
-    }
-    const delayedJobId = await scheduleWorkflowDelay(trx, context, {
-      resumeNodeId,
-      executeAt,
-      now,
-    });
-    return {
-      status: 'ok',
-      port: 'default',
-      stop: true,
-      deferred: true,
-      message: `delayed_until:${executeAt.toISOString()}`,
-      variables: { 'workflow.delayed_job.id': delayedJobId, 'workflow.delayed_until': executeAt.toISOString() },
-    };
-  }
-  if (type === 'logic.threshold') {
-    const field = String(config.variable ?? 'ai.spam_score');
-    const raw = context.variables[field];
-    const num = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? ''));
-    if (!Number.isFinite(num)) {
-      return { status: 'error', port: 'error', message: `Variable ${field} ist keine Zahl` };
-    }
-    const useGlobalThreshold = booleanConfig(config.useGlobalThreshold, 'useGlobalThreshold', false);
-    if (!useGlobalThreshold.ok) return { status: 'error', port: 'error', message: useGlobalThreshold.message };
-    const threshold = useGlobalThreshold.value
-      ? await loadWorkflowSpamScoreThreshold(trx, context.workspaceId)
-      : Number(config.value ?? 70);
-    if (!Number.isFinite(threshold)) {
-      return { status: 'error', port: 'error', message: 'Schwellwert ungueltig' };
-    }
-    const op = String(config.operator ?? 'gte') === 'lte' ? 'lte' : 'gte';
-    const matched = op === 'gte' ? num >= threshold : num <= threshold;
-    return { status: 'ok', port: matched ? 'yes' : 'no', variables: { 'threshold.matched': matched } };
-  }
-  if (type === 'logic.switch') {
-    const field = String(config.field ?? 'ai.class');
-    const raw = context.variables[field] != null
-      ? String(context.variables[field])
-      : context.strings[field] ?? '';
-    const value = raw.trim().toLowerCase();
-    const cases = String(config.cases ?? '')
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean);
-    return { status: 'ok', port: cases.includes(value) ? value : 'default' };
-  }
-  if (type === 'ai.decide') {
-    if (dryRun && (context.previewOutbound || context.testRealAi)) {
-      // Versandvorschau: echte Entscheidung, sonst übersprange eine dort
-      // erteilte Freigabe die KI-Entscheidung beim eigentlichen Versand.
-      // Testlauf mit „KI wirklich fragen“ (Plan 047): ebenso synchron, ohne Job.
-      return await executePreviewAiDecide(ports, context, config);
-    }
-    if (dryRun) {
-      // Testlauf: keine KI-Anfrage, Ergebnis „unsicher“.
-      log.push('dry_run:ai.decide');
-      return aiDecideNodeResult(context, aiDecideDryRunOutcome());
-    }
-    return await scheduleAiDecideJob(trx, doc, context, node, config, now);
-  }
-  if (dryRun && context.previewOutbound) {
-    if (type === 'ai.outbound_review') {
-      if (context.direction !== 'outbound') {
-        return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
-      }
-      return executePreviewOutboundAiReview(trx, ports, context, config, type);
-    }
-    if (type === 'ai.review' || type === 'ai_review') {
-      return executePreviewOutboundAiReview(trx, ports, context, config, type);
-    }
-  }
-  if (type === 'ai.learnings_digest') {
-    // TA-P5: prüft vorab und reiht den Auswertungs-Job ein; im Probelauf nur die Vorabprüfung.
-    return await executeServerLearningsDigestNode(trx, {
-      workspaceId: context.workspaceId,
-      workflowId: context.workflowId,
-      direction: context.direction,
-      config,
-      provenance: workflowJobProvenance(context),
-      dryRun: Boolean(dryRun),
-      now,
-    });
+  const args: ServerNodeHandlerArgs = { trx, doc, context, node, config, type, log, now, ports, dryRun };
+  const preGuardHandler = serverNodeHandlerFor(PRE_DRY_RUN_GUARD_HANDLERS, type);
+  if (preGuardHandler) {
+    const preGuardResult = await preGuardHandler(args);
+    if (preGuardResult) return preGuardResult;
   }
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
     if (dryRunResult) return dryRunResult;
     if (!DRY_RUN_LIVE_NODE_TYPES.has(type)) return dryRunFailClosedResult(type, log);
   }
-  if (type === 'ai.reply_suggestion') {
-    const result = await scheduleAiReplySuggestionJob(trx, context, config, now);
-    return result ?? { status: 'ok', port: 'default' };
+  const handler = serverNodeHandlerFor(SERVER_NODE_HANDLERS, type);
+  if (handler) {
+    const result = await handler(args);
+    if (result) return result;
   }
-  if (type === 'ai.outbound_review') {
-    if (context.direction !== 'outbound') {
-      return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
-    }
-    const portResumeTargets = {
-      ok: resolveResumeNodeAfterPort(doc, node.id, 'ok'),
-      block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
-      error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
-    };
-    const replyParentMessageId = config.checkReplyContext === false
-      ? undefined
-      : resolveOutboundReplyParentId(context);
-    return await scheduleAiReviewJob(trx, doc, context, node, {
-      ...config,
-      blockKeyword: 'BLOCK',
-      systemPrompt: workflowOutboundReviewSystemPrompt(),
-      // Parent body is loaded in the ai.review job AFTER content.read ACL —
-      // do not bake it into the template under the system role here.
-      fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
-      parseMode: 'outbound_structured',
-      portResumeTargets,
-      ...(replyParentMessageId !== undefined ? { replyParentMessageId } : {}),
-    }, now);
-  }
-  if (type === 'ai.review' || type === 'ai_review') {
-    return await scheduleAiReviewJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'ai.classify') {
-    return await scheduleAiClassificationJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'ai.transform_text') {
-    return await scheduleAiTransformTextJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'ai.agent') {
-    const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
-    if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
-    if (context.messageId !== null) {
-      const currentMessage = await trx
-        .selectFrom('email_messages')
-        .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
-        .where('workspace_id', '=', context.workspaceId)
-        .where('id', '=', context.messageId)
-        .executeTakeFirst();
-      if (currentMessage && messageIsSpamOrReview(currentMessage)) {
-        return { status: 'skipped', port: 'default', message: 'skip:agent_message_spam_or_review' };
-      }
-    }
-    return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
-  }
-  if (type === 'ai.pick_canned') {
-    const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
-    if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
-    return await scheduleAiPickCannedJob(trx, doc, context, node, config, createDraft.value, now);
-  }
-  if (type === 'ai.agent_tool') {
-    return await executeWorkflowAgentTool(trx, context, config);
-  }
-  if (type === 'ai.spam_score') {
-    return await workflowAiSpamScoreResult(trx, context, config);
-  }
-  if (type === 'ai.draft_reply') {
-    if (context.direction !== 'inbound' || context.messageId === null) {
-      return { status: 'skipped', port: 'default', message: 'Nur fuer eingehende Nachrichten' };
-    }
-    if (dryRun) {
-      if (!ports.aiDraft) {
-        return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
-      }
-      return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
-        workspaceId: context.workspaceId,
-        messageId: context.messageId,
-        config,
-        strings: context.strings,
-        variables: context.variables,
-        actorUserId: context.actorUserId,
-        dryRun: true,
-        workflowId: context.workflowId,
-      });
-    }
-    return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'ai.review_draft') {
-    if (dryRun) {
-      if (!ports.aiDraft) {
-        return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
-      }
-      return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
-        workspaceId: context.workspaceId,
-        messageId: context.messageId,
-        config,
-        variables: context.variables,
-        strings: context.strings,
-        actorUserId: context.actorUserId,
-        dryRun: true,
-      });
-    }
-    return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'email.hold_outbound' || type === 'hold_outbound') {
-    const reason = outboundHoldReasonOrFallback(String(config.reason ?? node.data.reason ?? ''));
-    return {
-      status: 'ok',
-      port: 'blocked',
-      blocked: true,
-      blockReason: reason,
-      message: reason,
-    };
-  }
-  if (type === 'email.release_outbound') {
-    if (dryRun) {
-      return dryRunSideEffectResult('email.release_outbound', log, {
-        message: 'dry_run:email.release_outbound',
-      });
-    }
-    if (
-      context.direction === 'inbound'
-      && context.messageId !== null
-      && await isInboundSiblingAborted(trx, {
-        workspaceId: context.workspaceId,
-        messageId: context.messageId,
-        workflowId: context.workflowId,
-        chain: context.inboundWorkflowChain ?? null,
-        fanOutRunId: inboundFanOutRunId(context),
-      })
-    ) {
-      return {
-        status: 'skipped',
-        port: 'default',
-        message: 'skip:sibling_terminal_abort',
-      };
-    }
-    return await releaseWorkflowOutboundHold(trx, context, config, now);
-  }
-  if (type === 'email.send_draft') {
-    if (dryRun) {
-      return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
-    }
-    // Wie bei release_outbound: der Einstieg der Fortsetzung hat den Marker
-    // schon gelesen, ein Geschwisterzweig kann die Kette seitdem gestoppt haben.
-    if (
-      context.direction === 'inbound'
-      && context.messageId !== null
-      && await isInboundSiblingAborted(trx, {
-        workspaceId: context.workspaceId,
-        messageId: context.messageId,
-        workflowId: context.workflowId,
-        chain: context.inboundWorkflowChain ?? null,
-        fanOutRunId: inboundFanOutRunId(context),
-      })
-    ) {
-      return {
-        status: 'skipped',
-        port: 'default',
-        message: 'skip:sibling_terminal_abort',
-      };
-    }
-    return await sendWorkflowDraft(trx, context, config, now);
-  }
-  if (type === 'email.tag' || type === 'tag') {
-    const tag = String(config.tag ?? node.data.tag ?? '').trim();
-    if (!tag) return { status: 'skipped', port: 'default', message: 'leerer Tag' };
-    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
-    return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
-  }
-  if (type === 'email.set_category' || type === 'set_category') {
-    // Prefer a stable category reference (source_sqlite_id from the dropdown) so
-    // the workflow survives category renames; fall back to the path otherwise
-    // (and when the referenced category was deleted).
-    const categorySourceSqliteId = optionalPositiveIntegerConfig(config.categorySourceSqliteId, 'categorySourceSqliteId');
-    if (!categorySourceSqliteId.ok) return { status: 'error', port: 'error', message: categorySourceSqliteId.message };
-    if (categorySourceSqliteId.value !== undefined) {
-      const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now, ports);
-      if (byId) return byId;
-    }
-    const path = String(config.path ?? '').trim();
-    if (!path) return { status: 'skipped', port: 'default' };
-    return await setWorkflowMessageCategoryPath(trx, context, path, now, ports);
-  }
-  if (type === 'email.auto_reply') {
-    return await evaluateWorkflowAutoReply(trx, context, config);
-  }
-  if (type === 'email.tag_attachment_meta' || type === 'tag_attachment_meta') {
-    if (context.strings.has_attachments !== 'true') {
-      return { status: 'skipped', port: 'default', message: 'keine Anhaenge' };
-    }
-    const tag = String(config.tag ?? node.data.tag ?? 'attachment').trim() || 'attachment';
-    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
-    return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
-  }
-  if (type === 'email.create_draft') {
-    return await createWorkflowComposeDraft(trx, context, config);
-  }
-  if (type === 'email.set_priority') {
-    const level = String(config.level ?? 'normal').toLowerCase();
-    const allowed = new Set(['hoch', 'high', 'normal', 'niedrig', 'low']);
-    if (!allowed.has(level)) {
-      return { status: 'error', port: 'error', message: 'level muss hoch, normal oder niedrig sein' };
-    }
-    const tag = level === 'hoch' || level === 'high'
-      ? 'priority:hoch'
-      : level === 'niedrig' || level === 'low'
-        ? 'priority:niedrig'
-        : 'priority:normal';
-    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
-    return result ?? {
-      status: 'ok',
-      port: 'default',
-      variables: { 'email.priority': tag, 'email.last_tag': tag },
-    };
-  }
-  if (type === 'email.auth_check') {
-    const protocol = authProtocolConfig(config.protocol);
-    const value = String(context.variables[`auth.${protocol}`] ?? 'none').toLowerCase();
-    const softfailAsFail = booleanConfig(config.treatSoftfailAsFail, 'treatSoftfailAsFail', true);
-    if (!softfailAsFail.ok) return { status: 'error', port: 'error', message: softfailAsFail.message };
-    const failSet = new Set([
-      'fail',
-      'permerror',
-      ...(softfailAsFail.value ? ['softfail', 'policy'] : []),
-    ]);
-    const port = value === 'pass'
-      ? 'pass'
-      : failSet.has(value)
-        ? 'fail'
-        : value === 'none' || value === 'neutral' || value === 'skipped'
-          ? 'none'
-          : 'default';
-    return { status: 'ok', port, variables: { [`auth.check.${protocol}`]: value } };
-  }
-  if (type === 'email.read_tracking_evidence') {
-    return readWorkflowTrackingEvidence(trx, context);
-  }
-  if (type === 'email.sender_filter') {
-    return await evaluateWorkflowSenderFilter(trx, context, config);
-  }
-  if (type === 'email.mark_seen' || type === 'mark_seen') {
-    return await markWorkflowMessageSeen(trx, context, now, ports, log);
-  }
-  if (type === 'email.archive' || type === 'archive') {
-    const result = await updateWorkflowMessage(trx, context, {
-      archived: true,
-      done_local: true,
-      is_spam: false,
-      spam_status: 'clean',
-      updated_at: now,
-    });
-    return result ?? { status: 'ok', port: 'default', variables: { 'email.archived': true } };
-  }
-  if (type === 'email.set_spam_status') {
-    const train = booleanConfig(config.train, 'train', false);
-    if (!train.ok) return { status: 'error', port: 'error', message: train.message };
-    const status = spamStatusConfig(config.status);
-    const tag = String(config.tag ?? '').trim();
-    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
-    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
-    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
-    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
-    return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
-      stopFurtherWorkflows: stopFurther.value,
-      ports,
-    });
-  }
-  if (type === 'email.mark_spam') {
-    const train = booleanConfig(config.train, 'train', false);
-    if (!train.ok) return { status: 'error', port: 'error', message: train.message };
-    const spam = booleanConfig(config.spam, 'spam', true);
-    if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
-    const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
-    if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
-    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
-    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
-    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
-    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
-    if (moveImap.value && spam.value) {
-      const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
-      if (!moveResult.ok) return moveResult.node;
-    }
-    const tag = String(config.tag ?? 'auto-spam').trim();
-    return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now, {
-      stopFurtherWorkflows: stopFurther.value,
-      ports,
-    });
-  }
-  if (type === 'email.move_imap') {
-    return await moveWorkflowMessageOnImap(trx, context, config, now, ports, log);
-  }
-  if (type === 'email.delete_server') {
-    return await deleteWorkflowMessageOnImap(trx, context, now, ports, log);
-  }
-  if (type === 'email.assign') {
-    const raw = config.teamMemberId;
-    const teamMemberId = raw === null || raw === undefined || raw === ''
-      ? null
-      : String(raw).trim();
-    if (teamMemberId !== null && !teamMemberId) {
-      return { status: 'error', port: 'error', message: 'teamMemberId leer' };
-    }
-    // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
-    // stale UUID after workflow reassignment (mirrors the mail assign API).
-    // AUSSCHLIESSLICH email_team_members.linked_user_id: der frueher genutzte
-    // Fallback ueber die Id-Namensgleichheit haette eine bewusst entfernte
-    // Verknuepfung bei der naechsten Workflow-Zuweisung wiederhergestellt und
-    // dem Nutzer (plus seinen Gruppen-Peers) erneut assigned_to_me-Sicht
-    // gegeben — entgegen der gespeicherten Einstellung.
-    let assignedToUserId: string | null = null;
-    if (teamMemberId !== null) {
-      // Zeilensperre wie im API-Assign-Pfad: eine parallele Link-Aenderung des
-      // Admins darf hier keinen veralteten Nutzer in assigned_to_user_id
-      // schreiben.
-      const member = await trx
-        .selectFrom('email_team_members')
-        .select(['id', 'linked_user_id'])
-        .where('workspace_id', '=', context.workspaceId)
-        .where('id', '=', teamMemberId)
-        .forUpdate()
-        .executeTakeFirst();
-      // Fehlt die Zeile (geloeschtes Mitglied im gespeicherten Knoten, oder das
-      // Loeschen hat die Sperre zuerst bekommen), darf hier NICHT geschrieben
-      // werden: assigned_to truege eine tote Id und assigned_to_user_id waere
-      // null. Die Nachricht passte danach auf keinen Zuweisungsfilter mehr —
-      // weder assigned_to_me/assigned_to_my_groups (brauchen die User-Id) noch
-      // unassigned (verlangt zusaetzlich ein leeres assigned_to) — und bliebe
-      // fuer eingeschraenkte Betrachter dauerhaft verwaist. Der API-Assign-Pfad
-      // antwortet in derselben Lage mit team_member_not_found.
-      if (!member) {
-        return { status: 'error', port: 'error', message: 'Teammitglied nicht gefunden' };
-      }
-      if (member.linked_user_id) assignedToUserId = String(member.linked_user_id);
-    }
-    const result = await updateWorkflowMessage(trx, context, {
-      assigned_to: teamMemberId,
-      assigned_to_user_id: assignedToUserId,
-      updated_at: now,
-    });
-    // Die Zuweisung kippt assigned_to_me, assigned_to_my_groups und
-    // unassigned — fuer den bisherigen Zustaendigen ebenso wie fuer den neuen.
-    // Ohne diese Meldung sieht ein eingeschraenkter Betrachter eine gerade
-    // gesperrte, bereits geladene Nachricht bis zum naechsten Reload weiter.
-    if (ports?.visibilityInvalidation) ports.visibilityInvalidation.assignmentChanged = true;
-    return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };
-  }
-  if (type === 'crm.create_task') {
-    return await createWorkflowTask(trx, context, node, config, now);
-  }
-  if (type === 'crm.log_activity') {
-    return await createWorkflowActivityLog(trx, context, node, config, now);
-  }
-  if (type === 'crm.update_deal') {
-    return await updateWorkflowDeal(trx, context, node, config, now);
-  }
-  if (type === 'crm.link_customer' || type === 'link_customer') {
-    return await linkWorkflowMessageCustomer(trx, context, now);
-  }
-  if (type === 'sync.run') {
-    return await enqueueWorkflowSyncRun(trx, context, now);
-  }
-  if (type === 'email.forward_copy' || type === 'forward_copy') {
-    return await scheduleWorkflowForwardCopyJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'email.ingest_dmarc_report') {
-    return await scheduleWorkflowDmarcIngestJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'http.request') {
-    return await scheduleWorkflowHttpRequestJob(trx, doc, context, node, config, now);
-  }
-  if (type === 'jtl.lookup') {
-    return await executeWorkflowJtlLookup(trx, context, config);
-  }
-  if (type === 'mssql.query') {
-    return await executeWorkflowMssqlQuery(context, config, ports.mssql);
-  }
-  if (type === 'jtl.order_context') {
-    return await executeWorkflowJtlOrderContext(context, config, ports.mssql);
-  }
-  if (type === 'jtl.prepare_action') {
-    return executeWorkflowJtlPrepareAction(context, config);
-  }
-  if (type === 'returns.evaluate') {
-    return await evaluateWorkflowReturn(trx, context, config);
-  }
-  if (type === 'returns.offer_exchange') {
-    return await applyWorkflowReturnOutcome(trx, context, config, 'exchange', now);
-  }
-  if (type === 'returns.offer_credit') {
-    return await applyWorkflowReturnOutcome(trx, context, config, 'credit', now);
-  }
-  if (type === 'workflow.subflow') {
-    return await enqueueWorkflowSubflow(trx, context, node, config, now);
-  }
-
   return unsupportedWorkflowNodeResult(type, log);
 }
 
