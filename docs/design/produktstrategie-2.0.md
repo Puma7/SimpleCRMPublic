@@ -52,10 +52,22 @@ Postgres, IPC und HTTP), samt Paritätstests.
 6. **Umzug bestehender Desktop-Nutzer** auf den Server vor 2.0: Der
    Desktop→Server-Import existiert (`packages/server/src/db/postgres-core-*-import.ts`,
    `postgres-sqlite-final-import.ts`); Weg dokumentieren und testen.
-7. **Lizenz:** heute FSL-1.1-ALv2 (Lizenzgeber laut `LICENSE.md`: „bl4ckh4nd“).
-   Sie erlaubt Unternehmen die interne Nutzung kostenlos, verbietet konkurrierende
-   Angebote und wird je Version nach zwei Jahren zu Apache 2.0. Ein Modell
-   „kostenlos nicht-kommerziell, kostenpflichtig kommerziell“ passt dazu nicht und
-   bräuchte eine andere Lizenz für neue Versionen (bereits veröffentlichte bleiben
-   FSL). Vorher klären: Rechteinhaber (Beiträge Dritter), rechtliche Beratung;
-   technisch später Lizenzprüfung und Nutzerzählung im Server.
+7. **Lizenz und Rechte:** heute FSL-1.1-ALv2, Lizenzgeber laut `LICENSE.md`
+   „bl4ckh4nd“ – eine andere Person als Pascal (Puma7). Befund aus der Historie
+   (28.09.2026, keine Rechtsberatung):
+   - bl4ckh4nd hat das Projekt am 06.05.2025 begonnen; letzter Commit 31.03.2026.
+     Die FSL hat er am 27.02.2026 hinzugefügt, davor gab es keine Lizenzdatei.
+   - Sein Stand: rund 30.000 Code-Zeilen (ohne Tests). Davon sind bis heute nur
+     rund 2.400 entfernt oder geändert; rund 27.700 seiner Zeilen stecken noch im
+     Code – etwa 10 % von heute rund 300.000 Zeilen. Der Rest kam danach dazu.
+   - Die FSL erlaubt interne Nutzung und Änderungen, also auch die Arbeit in einem
+     privaten Repository. Sie verbietet ein kommerzielles Angebot mit gleicher
+     oder ähnlicher Funktion („Competing Use“), solange sein Code enthalten ist.
+     Umbenennen oder eine neue Oberfläche ändern daran nichts.
+   - Wege zu einer kommerziellen Lizenz: (a) Erlaubnis bzw. Rechteübertragung
+     durch bl4ckh4nd; (b) warten, bis seine Versionen zu Apache 2.0 werden
+     (je Version zwei Jahre nach Veröffentlichung, die letzte am 31.03.2028);
+     (c) seine verbliebenen Teile nachweisbar neu schreiben. In jedem Fall
+     rechtlich beraten lassen, auch zur Schutzfähigkeit KI-generierten Codes.
+   - Solange sein Code enthalten ist: `LICENSE.md` und Copyright-Hinweis bleiben,
+     auch in einem neuen Repository.
