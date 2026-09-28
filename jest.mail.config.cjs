@@ -37,6 +37,7 @@ module.exports = {
     '^@simplecrm/core/(.*)$': '<rootDir>/packages/core/src/$1',
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^keytar$': '<rootDir>/tests/setup/keytar-mock.ts',
+    '^\\./credential-runtime$': '<rootDir>/tests/setup/credential-runtime-mock.ts',
     '^kysely$': '<rootDir>/tests/setup/kysely-mock.ts',
   },
   testMatch: [

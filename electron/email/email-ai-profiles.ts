@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import keytar from 'keytar';
+import { CREDENTIAL_SERVICES, deleteSecret, getSecret, setSecret } from '../credentials';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import {
   EMAIL_AI_PROFILES_TABLE,
@@ -7,7 +7,7 @@ import {
 import { getDb } from '../sqlite-service';
 import { getEmailAiApiKey, saveEmailAiApiKey } from './email-ai-keytar';
 
-const KEYTAR_SERVICE = 'SimpleCRMElectron-EmailAI';
+const KEYTAR_SERVICE = CREDENTIAL_SERVICES.emailAi;
 const LEGACY_MIGRATED = 'email_ai_profiles_legacy_migrated';
 
 import {
@@ -243,19 +243,19 @@ export function deleteAiProfile(id: number): void {
   const row = getAiProfileById(id);
   if (!row) return;
   getDb().prepare(`DELETE FROM ${EMAIL_AI_PROFILES_TABLE} WHERE id = ?`).run(id);
-  void keytar.deletePassword(KEYTAR_SERVICE, row.keytar_account);
+  void deleteSecret(KEYTAR_SERVICE, row.keytar_account).catch(() => undefined);
 }
 
 export async function saveAiProfileApiKey(keytarAccount: string, key: string): Promise<void> {
-  await keytar.setPassword(KEYTAR_SERVICE, keytarAccount, key);
+  await setSecret(KEYTAR_SERVICE, keytarAccount, key);
 }
 
 export async function getAiProfileApiKey(keytarAccount: string): Promise<string | null> {
-  return keytar.getPassword(KEYTAR_SERVICE, keytarAccount);
+  return getSecret(KEYTAR_SERVICE, keytarAccount);
 }
 
 export async function clearAiProfileApiKey(keytarAccount: string): Promise<void> {
-  await keytar.deletePassword(KEYTAR_SERVICE, keytarAccount);
+  await deleteSecret(KEYTAR_SERVICE, keytarAccount);
 }
 
 export async function getResolvedAiRuntime(profileId?: number | null): Promise<{

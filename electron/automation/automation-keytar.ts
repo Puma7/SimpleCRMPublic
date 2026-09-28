@@ -1,9 +1,9 @@
 import { randomBytes } from 'crypto';
-import keytar from 'keytar';
+import { CREDENTIAL_SERVICES, deleteSecret, getSecret, setSecret } from '../credentials';
 import type { AutomationScope } from '../../shared/automation-api';
 import { AUTOMATION_SCOPES } from '../../shared/automation-api';
 
-const SERVICE = 'SimpleCRMElectron-AutomationAPI';
+const SERVICE = CREDENTIAL_SERVICES.automationApi;
 const ACCOUNT = 'api-credentials';
 
 export type StoredApiCredentials = {
@@ -24,11 +24,11 @@ export function generateApiKeyToken(): string {
 }
 
 export async function saveApiCredentials(creds: StoredApiCredentials): Promise<void> {
-  await keytar.setPassword(SERVICE, ACCOUNT, JSON.stringify(creds));
+  await setSecret(SERVICE, ACCOUNT, JSON.stringify(creds));
 }
 
 export async function loadApiCredentials(): Promise<StoredApiCredentials | null> {
-  const raw = await keytar.getPassword(SERVICE, ACCOUNT);
+  const raw = await getSecret(SERVICE, ACCOUNT);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<StoredApiCredentials>;
@@ -44,7 +44,7 @@ export async function loadApiCredentials(): Promise<StoredApiCredentials | null>
 }
 
 export async function revokeApiCredentials(): Promise<boolean> {
-  return keytar.deletePassword(SERVICE, ACCOUNT);
+  return deleteSecret(SERVICE, ACCOUNT);
 }
 
 export function keyPreview(token: string): string {

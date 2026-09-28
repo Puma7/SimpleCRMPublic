@@ -20,6 +20,7 @@ import {
   type DesktopMaintenancePaths,
 } from './paths';
 import { purgeDesktopKeytarSecrets } from './keytar-purge';
+import { purgeCredentialStore } from '../credentials';
 
 export const DESKTOP_HARD_RESET_PHRASE = 'SYSTEM LÖSCHEN';
 
@@ -77,6 +78,8 @@ export async function executeDesktopHardReset(input: DesktopHardResetInput): Pro
   await purgeDesktopKeytarSecrets().catch(() => undefined);
 
   const paths = resolveDesktopMaintenancePaths();
+  // Plan 044: Zugangsdaten-Speicher (credentials.sqlite) ebenso leeren wie keytar.
+  purgeCredentialStore(paths.userDataPath);
   removePathIfExists(paths.databasePath);
   removePathIfExists(paths.attachmentsPath);
   removePathIfExists(paths.logsPath);

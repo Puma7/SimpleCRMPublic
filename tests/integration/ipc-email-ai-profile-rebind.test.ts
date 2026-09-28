@@ -41,6 +41,7 @@ import { bootstrapFreshDatabaseSchema, closeDatabase } from '../../electron/sqli
 import {
   createAiProfile,
   getAiProfileById,
+  clearAiProfileApiKey,
   getAiProfileApiKey,
   saveAiProfileApiKey,
 } from '../../electron/email/email-ai-profiles';
@@ -169,7 +170,9 @@ describe('KI-Profil: gespeicherter Key bleibt beim Host (C-A16)', () => {
   });
 
   test('ein Profil ohne gespeicherten Key darf den Host ohne Key wechseln', async () => {
+    // Plan 044: Der Key liegt im Zugangsdaten-Speicher; „ohne Key“ heißt gelöscht.
     keychain.clear();
+    await clearAiProfileApiKey(getAiProfileById(profileId)!.keytar_account);
 
     await expect(invoke(IPCChannels.Email.SaveAiProfile, eventFor('agent'), savePayload({
       baseUrl: 'http://127.0.0.1:11434/v1',

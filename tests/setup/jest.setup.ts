@@ -13,4 +13,6 @@ if (typeof globalThis.structuredClone !== 'function') {
 
 beforeEach(() => {
   jest.restoreAllMocks();
+  // Plan 044: Zugangsdaten-Speicher der Tests (tests/setup/credential-runtime-mock.ts) leeren.
+  (globalThis as { __simplecrmCredentialRows?: Map<string, unknown> }).__simplecrmCredentialRows?.clear();
 });

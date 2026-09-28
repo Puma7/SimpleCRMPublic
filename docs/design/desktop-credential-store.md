@@ -185,3 +185,32 @@ Antworten auf die offenen Punkte:
 - Linux ohne sicheren Speicher: neue Geheimnisse **nicht speichern**, Warnung anzeigen (kein Klartext-Modus).
 - Windows/macOS: Pascal führt das Spike-Skript aus und meldet das Ergebnis. Phase 1 beginnt schon vorher
   (Bau und Tests unter Linux); vor dem Release wird auf die Windows/macOS-Ergebnisse angepasst.
+
+## Umsetzung Phase 1 (Version N, 28.09.2026)
+
+| Teil | Datei |
+|---|---|
+| Regeln (Umzug, Gegenprobe, Grabstein, `v11`-Prüfung über Port) | `electron/credentials/credential-store.ts` |
+| Anbindung an `safeStorage` und `credentials.sqlite` (Rechte 0600) | `electron/credentials/credential-runtime.ts` |
+| einziger keytar-Zugriff (lesen, ausdrückliches Löschen) | `electron/credentials/legacy-keytar.ts` |
+| gemeinsamer Speicher, Dienstnamen | `electron/credentials/index.ts` |
+| umgestellt | `email/email-keytar.ts`, `email/email-ai-keytar.ts`, `email/email-ai-profiles.ts`, `mssql-keytar-service.ts`, `automation/automation-keytar.ts` (Funktionsnamen unverändert) |
+| Hard Reset | `maintenance/reset-service.ts` löscht `credentials.sqlite`, `keytar-purge.ts` weiter keytar |
+| Tests | `tests/unit/desktop-credential-store.test.ts`, `tests/integration/desktop-credential-runtime.test.ts`; Jest ersetzt die Laufzeit durch `tests/setup/credential-runtime-mock.ts` |
+
+Auslegung einer Stelle, die das Dokument offen lässt: **Löscht der Nutzer ein
+Geheimnis** (Konto entfernt, KI-Key geleert, MSSQL-Passwort gelöscht), bleibt ein
+leerer Eintrag (Grabstein) im neuen Speicher, damit der alte keytar-Wert nicht
+wieder auftaucht, und der keytar-Eintrag wird wie bisher gelöscht (Fehler dabei
+werden nur protokolliert). Das betrifft nur ausdrückliches Löschen; der Umzug
+verändert keytar nie (Entscheidung 5).
+
+Noch offen:
+
+- Windows/macOS-Spike (Pascal) – vor dem Release; `isSecureCiphertext` prüft dort
+  heute nur, dass ein Chiffrat entstanden ist.
+- E2E (`electron-e2e` in CI, mit gnome-keyring) läuft erst im Draft-PR; hier
+  fehlt ein Keyring-Dienst.
+- Version N+1: keytar-Einträge nach erneuter Gegenprobe löschen; Version N+2:
+  `keytar` entfernen (Abhängigkeit, `legacy-keytar.ts`, Jest-Zuordnung,
+  `vite.config.ts`, CI/`release.yml`, AGENTS.md-Hinweis).

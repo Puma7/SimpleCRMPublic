@@ -21,7 +21,7 @@ In der E-Mail-Unterleiste können Sie **Klassisch** / **Beta** wählen (wird ges
 
 1. Unter **E-Mail** ein neues Konto anlegen.
 2. **Protokoll wählen:** **IMAP** (Ordner, meist komfortabler) oder **POP3** (klassisches Abrufen; Server speichert Mails je nach Einstellung).
-3. Zugangsdaten eingeben — Passwörter werden im **System-Schlüsselbund** gespeichert, nicht im Klartext in der Datenbank.
+3. Zugangsdaten eingeben — Passwörter werden mit der Verschlüsselung des Betriebssystems gespeichert (Windows: DPAPI, macOS: Schlüsselbund, Linux: GNOME-Schlüsselbund/KWallet) in der eigenen Datei `credentials.sqlite`, nie im Klartext und nie in der Mail-Datenbank. Früher im System-Schlüsselbund gespeicherte Zugangsdaten werden beim ersten Zugriff automatisch übernommen. Findet SimpleCRM unter Linux keinen Schlüsselbund-Dienst, erscheint „Kein sicherer Schlüsselspeicher gefunden – Zugangsdaten werden nicht gespeichert.“ – dann GNOME-Schlüsselbund (`gnome-keyring`) oder KWallet einrichten und die App neu starten.
 4. Optional **Google** oder **Microsoft** über die Felder in den Einstellungen (OAuth) — dafür braucht es eine registrierte App beim Anbieter.
 
 ## Postfach nutzen
@@ -103,7 +103,7 @@ Unter **E-Mail → Einstellungen**:
 - **ZIP mit Anhängeordner** — kann bei sehr vielen Dateien groß werden; oberhalb einer Größe muss ggf. der **Export nur mit Metadaten** gewählt werden.
 - **ZIP nur Metadaten** — ohne die Dateien im Anhänge-Ordner; leichter und für Übersichten oft ausreichend.
 
-**Hinweis:** Der Export enthält **keine** gespeicherten Passwörter aus dem Schlüsselbund.
+**Hinweis:** Der Export enthält **keine** gespeicherten Passwörter (weder im Klartext noch verschlüsselt); eine Wiederherstellung ändert keine Zugangsdaten.
 
 ## Wenn etwas nicht klappt
 

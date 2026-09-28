@@ -1,5 +1,5 @@
 import sql from 'mssql';
-import keytar from 'keytar';
+import { CREDENTIAL_SERVICES, deleteSecret, getSecret, setSecret } from './credentials';
 import { MssqlSettings } from './types'; // Assuming types.ts exists
 import { performance } from 'perf_hooks'; // For timing
 import {
@@ -53,7 +53,7 @@ function categorizeAndTranslateMssqlError(error: unknown): DetailedMssqlError {
 }
 
 const STORE_KEY_SETTINGS = 'mssqlSettings_v2';
-const KEYTAR_SERVICE = 'SimpleCRMElectron-MSSQL';
+const KEYTAR_SERVICE = CREDENTIAL_SERVICES.mssql;
 
 // Define the schema type explicitly
 type MssqlKeytarStoreSchema = {
@@ -195,11 +195,11 @@ export async function saveMssqlSettingsWithKeytar(settings: MssqlSettings): Prom
             // Password field was explicitly provided in the input object
             if (settings.password.length > 0) {
                 // Non-empty string: save/update password
-                await keytar.setPassword(KEYTAR_SERVICE, account, settings.password);
+                await setSecret(KEYTAR_SERVICE, account, settings.password);
                 console.log('[MSSQL Keytar] Password updated in keychain.');
             } else {
                 // Empty string: user explicitly wants to clear the password
-                await keytar.deletePassword(KEYTAR_SERVICE, account);
+                await deleteSecret(KEYTAR_SERVICE, account);
                 console.log('[MSSQL Keytar] Password deleted from keychain due to empty string input.');
             }
         }
@@ -230,7 +230,7 @@ export async function getMssqlSettingsWithKeytar(): Promise<MssqlSettings | null
         const account = getKeytarAccount(storedSettingsWithoutPassword as Pick<MssqlSettings, 'server' | 'database' | 'user' | 'port'>);
         console.log('[MSSQL Keytar] getMssqlSettingsWithKeytar: Generated keytar account for retrieval:', account);
         try {
-            const password = await keytar.getPassword(KEYTAR_SERVICE, account);
+            const password = await getSecret(KEYTAR_SERVICE, account);
             // Combine stored settings with password. All fields from MssqlSettings (optional or not)
             // that were in storedSettingsWithoutPassword are spread, and password is added.
             return {
@@ -259,7 +259,7 @@ export async function clearMssqlPasswordFromKeytar(): Promise<{ success: boolean
         const account = getKeytarAccount(storedSettingsWithoutPassword as Pick<MssqlSettings, 'server' | 'database' | 'user' | 'port'>);
         console.log('[MSSQL Keytar] clearMssqlPasswordFromKeytar: Generated keytar account for password deletion:', account);
         try {
-            const wasPasswordDeleted = await keytar.deletePassword(KEYTAR_SERVICE, account);
+            const wasPasswordDeleted = await deleteSecret(KEYTAR_SERVICE, account);
             if (wasPasswordDeleted) {
                 console.log('[MSSQL Keytar] Password successfully deleted from keychain for account:', account);
                 // After clearing the password, it's a good idea to close any existing connection pool
@@ -295,7 +295,7 @@ export async function testConnectionWithKeytar(settings: MssqlSettings): Promise
             // Use original server for keytar account for password retrieval
             const account = getKeytarAccount(settings as Pick<MssqlSettings, 'server' | 'database' | 'user' | 'port'>);
             try {
-                const storedPassword = await keytar.getPassword(KEYTAR_SERVICE, account);
+                const storedPassword = await getSecret(KEYTAR_SERVICE, account);
                 effectivePassword = storedPassword !== null ? storedPassword : undefined;
                 console.log('[MSSQL Keytar] For test connection, using password from keychain.');
             } catch (keytarError) {

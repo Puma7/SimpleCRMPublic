@@ -129,7 +129,7 @@ update the row here.
 | 041 | Sent provenance: edits in signature/quote zones count | P3 | M | bug | — | DONE |
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | DONE |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | DONE |
-| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO — Phase 0 APPROVED (Pascal 28.09.); Windows/macOS-Spike durch Pascal ausstehend |
+| 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | DONE (Phase 1 = Version N); offen: Windows/macOS-Spike (Pascal) vor dem Release, keytar-Einträge löschen in N+1, keytar entfernen in N+2 |
 | 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | DONE bis auf `pnpm remove -w node-cron` (Pascal 28.09.: zurückgestellt, entfernt die ungenutzte Abhängigkeit lokal) |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | DONE |
 | 047 | R2: real workflow test run | P2 | M | direction | — | DONE |
