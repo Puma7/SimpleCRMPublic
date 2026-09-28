@@ -103,8 +103,9 @@
 
 **Basis (jetzt):**
 - [x] `ai.agent` gibt genutzte Wissens-Chunks als `ai.agent.sources` (Titel/#id) + `ai.agent.source_count` in die Continuation-Variablen.
+- [x] Quellen direkt am Entwurf (2026-09, Plan 048): `ai.draft_reply` speichert „Wissensbasis › Abschnitt; …“ (≤ 500 Zeichen) in `email_messages.ai_sources`; der Freigabe-Hinweis zeigt „Genutztes Wissen: …“. Grundlage ist die Abschnitts-Suche (`workflow_knowledge_sections`, Server-Migrationen `0064`/`0065`).
 
-**Tiefe (später):** Quellen direkt am Entwurf sichtbar (interne Notiz/Header); JTL-Kontextquellen mit aufführen; Relevanz-Scores.
+**Tiefe (später):** JTL-Kontextquellen mit aufführen; Relevanz-Scores; Server-Embeddings (pgvector).
 
 ---
 
@@ -169,6 +170,7 @@
 | 2026-06-06 | P1-6 | Native Anthropic/Gemini Provider-Adapter (`ai-providers.ts`) | 2bbb546 |
 | 2026-06-06 | P2-9 | Feedback-Lernen (`ai_reply_feedback` + Snapshot/Diff beim Senden) | 0a028a0 |
 | 2026-06-06 | P1-5 | `ai.pick_canned` (KI wählt Textbaustein, async Pipeline) | _dieser Commit_ |
+| 2026-09-28 | P1-8 Tiefe | Abschnitts-Suche in Wissensbasen + „Genutztes Wissen“ am Entwurf (beide Editionen) | Plan 048 |
 | 2026-07-10 | P1-4 Tiefe | Auto-Versand + Zwei-Stufen-Gegenprüfung + RFC-3834/Rate-Limit-Anti-Loop + Schalter-UI (Desktop) | 8dc8298 |
 
 **Alle P0/P1/P2-Items: Basis steht ✅** — verbleibend sind nur noch als „Tiefe (später)" markierte Vertiefungen je Item. **Update 2026-07:** Die P1-4-Tiefe (Versand, RFC-3834-Header, Rate-Limit-Dedup, Schalter-UI) ist im Desktop-Workflow-Overhaul gebaut; zusätzlich ist die Zwei-Stufen-KI-Antwort (`ai.draft_reply` + `ai.review_draft` mit Freigabe-Zustand) ausgeliefert — siehe [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) „Überarbeitung 2026-07".

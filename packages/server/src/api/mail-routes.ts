@@ -3432,6 +3432,7 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     // Approval fields must also pass through — otherwise Freigabe UI is invisible.
     approvalState: message.approvalState ?? null,
     approvalReason: message.approvalReason ?? null,
+    aiSources: message.aiSources ?? null,
     // Ohne diese Felder zeigt die Server-Oberfläche angehaltene Entwürfe nicht als
     // angehalten (kein „Versand blockiert“-Hinweis, kein Listen-Kennzeichen).
     ...(message.outboundHold === undefined ? {} : { outboundHold: message.outboundHold }),

@@ -142,6 +142,7 @@ import { markDraftOrigin } from './mail-sent-provenance';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
+import { searchKnowledgeSections } from './knowledge-workflow-search';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
@@ -5308,6 +5309,7 @@ type WorkflowKnowledgeChunkMatch = {
   content: string;
 };
 
+/** Plan 048: Werkzeug search_knowledge nutzt die Abschnittssuche der Wissensbasis. */
 async function searchWorkflowKnowledgeChunks(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -5315,37 +5317,8 @@ async function searchWorkflowKnowledgeChunks(
   query: string,
   limit: number,
 ): Promise<WorkflowKnowledgeChunkMatch[]> {
-  const rows = await trx
-    .selectFrom('workflow_knowledge_chunks')
-    .select(['id', 'title', 'content'])
-    .where('workspace_id', '=', workspaceId)
-    .where('knowledge_base_id', '=', knowledgeBaseId)
-    .orderBy('id', 'desc')
-    .limit(200)
-    .execute();
-  const chunks = rows.map((row) => ({
-    id: Number(row.id),
-    title: row.title === null || row.title === undefined ? null : String(row.title),
-    content: String(row.content ?? ''),
-  }));
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((term) => term.length > 2)
-    .slice(0, 12);
-  if (terms.length === 0) return chunks.slice(0, limit);
-  const scored = chunks
-    .map((chunk) => {
-      const haystack = `${chunk.title ?? ''}\n${chunk.content}`.toLowerCase();
-      let score = 0;
-      for (const term of terms) {
-        if (haystack.includes(term)) score += 1;
-      }
-      return { chunk, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score);
-  return scored.slice(0, limit).map((item) => item.chunk);
+  const matches = await searchKnowledgeSections(trx, workspaceId, [knowledgeBaseId], query, limit);
+  return matches.map((match) => ({ id: match.id, title: match.title, content: match.content }));
 }
 
 async function loadWorkflowSpamScoreThreshold(

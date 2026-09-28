@@ -563,27 +563,27 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
       workspaceId: WS_A, actorUserId: USER_A, id: Number(created.digestId), content: digest!.proposedContent,
     })).resolves.toMatchObject({ ok: true });
 
-    const chunkKb = new Map<number, number>();
-    const chunkRows = await postgres.admin.query('SELECT id, knowledge_base_id FROM workflow_knowledge_chunks WHERE workspace_id = $1', [WS_A]);
-    for (const row of chunkRows.rows as Array<{ id: string | number; knowledge_base_id: string | number }>) {
-      chunkKb.set(Number(row.id), Number(row.knowledge_base_id));
-    }
-    const countByKb = (rows: { id: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
-      const kbId = chunkKb.get(row.id) ?? -1;
-      acc[kbId] = (acc[kbId] ?? 0) + 1;
+    // Plan 048: Treffer sind Abschnitte und tragen ihre Wissensbasis selbst.
+    const countByKb = (rows: { knowledgeBaseId: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
+      acc[row.knowledgeBaseId] = (acc[row.knowledgeBaseId] ?? 0) + 1;
       return acc;
     }, {});
     const search = (direction: string | undefined, limit: number, explicit?: number) =>
       withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
         searchKnowledgeForWorkflow(trx, WS_A, ACCOUNT_ID, direction, 'Rückgabe Etikett', limit, explicit));
 
-    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    // Eingang: general + inbound + learnings. Plan 048: kleine Wissensbasen
+    // (≤ 6 000 Zeichen) gehen ganz mit – die vier Abschnitte von „Allgemein“ statt
+    // höchstens ceil(5 / 3) = 2 Chunks; Learnings = Einleitung + „Rückgabe“.
     const inbound = await search('inbound', 5);
-    expect(countByKb(inbound)).toEqual({ [GENERAL_KB]: 2, [KB_ID]: 1, [learningsKb]: 1 });
-    expect(inbound.find((chunk) => chunkKb.get(chunk.id) === learningsKb)?.content).toContain('Etikett im Kundenkonto');
+    expect(countByKb(inbound)).toEqual({ [GENERAL_KB]: 4, [KB_ID]: 1, [learningsKb]: 2 });
+    expect(inbound.filter((chunk) => chunk.knowledgeBaseId === learningsKb).map((chunk) => chunk.title))
+      .toEqual(['Learnings', 'Rückgabe']);
+    expect(inbound.find((chunk) => chunk.knowledgeBaseId === learningsKb && chunk.title === 'Rückgabe')?.content)
+      .toContain('Etikett im Kundenkonto');
     // Ausgang und manuell lesen die Learnings ebenfalls.
-    expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 1, [learningsKb]: 1 });
-    expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 3, [learningsKb]: 1 });
+    expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 4, [learningsKb]: 2 });
+    expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 4, [learningsKb]: 2 });
     // Explizit gewählte Wissensbasis (ai.draft_reply): die Learnings kommen wie
     // die übrigen Kontext-Wissensbasen dazu (Codex-Review PR #194).
     const explicit = countByKb(await search('inbound', 5, KB_ID));

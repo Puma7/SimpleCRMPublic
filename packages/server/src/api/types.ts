@@ -2178,6 +2178,8 @@ export type EmailMessageRecord = {
   replyParentMessageId?: number | null;
   approvalState?: string | null;
   approvalReason?: string | null;
+  /** Plan 048: genutztes Wissen am KI-Entwurf; null ohne Inhaltsrecht. */
+  aiSources?: string | null;
   /** Ausgangsprüfung: Entwurf angehalten (Versand blockiert). */
   outboundHold?: boolean;
   /** Grund der Sperre (Workflow/KI-Prüfung); null ohne Grund oder bei metadata-only. */

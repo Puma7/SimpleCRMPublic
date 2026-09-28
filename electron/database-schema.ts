@@ -41,6 +41,9 @@ export const EMAIL_AUTO_REPLY_DEDUP_TABLE = 'email_auto_reply_dedup';
 export const EMAIL_WORKFLOW_RUN_STEPS_TABLE = 'email_workflow_run_steps';
 export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
+/** Plan 048: aus dem Dokument abgeleitete `##`-Abschnitte (Suchindex). */
+export const WORKFLOW_KNOWLEDGE_SECTIONS_TABLE = 'workflow_knowledge_sections';
+export const WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE = 'workflow_knowledge_sections_fts';
 export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
 export const EMAIL_WORKFLOW_VERSIONS_TABLE = 'email_workflow_versions';
 export const EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE = 'email_remote_content_allowlist';
@@ -748,6 +751,45 @@ export const createWorkflowKnowledgeChunksTable = `
     FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
   );
 `;
+
+/**
+ * Plan 048: Abschnitte einer Wissensbasis, abgeleitet aus dem Dokument (die
+ * `.md`-Datei bleibt die Quelle; jederzeit neu baubar). Volltext über die
+ * FTS5-Tabelle mit externem Inhalt, per Trigger synchron gehalten.
+ */
+export const createWorkflowKnowledgeSectionsTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    knowledge_base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding_json TEXT,
+    built_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (knowledge_base_id, position),
+    FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS: readonly string[] = [
+  `CREATE VIRTUAL TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE} USING fts5(
+    title, content,
+    content='${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE}', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+  );`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_ai AFTER INSERT ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(rowid, title, content) VALUES (new.id, new.title, new.content);
+  END;`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_ad AFTER DELETE ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}, rowid, title, content)
+    VALUES ('delete', old.id, old.title, old.content);
+  END;`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_au AFTER UPDATE ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}, rowid, title, content)
+    VALUES ('delete', old.id, old.title, old.content);
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(rowid, title, content) VALUES (new.id, new.title, new.content);
+  END;`,
+];
 
 /**
  * TA-P5: Vorschläge für eine neue Wissensbasis-Fassung. Höchstens ein offener

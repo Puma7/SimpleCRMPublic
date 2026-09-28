@@ -70,6 +70,7 @@ export type ServerDatabase = {
   email_workflow_forward_dedup: EmailWorkflowForwardDedupTable;
   workflow_knowledge_bases: WorkflowKnowledgeBasesTable;
   workflow_knowledge_chunks: WorkflowKnowledgeChunksTable;
+  workflow_knowledge_sections: WorkflowKnowledgeSectionsTable;
   workflow_delayed_jobs: WorkflowDelayedJobsTable;
   email_spam_list_entries: EmailSpamListEntriesTable;
   email_spam_learning_events: EmailSpamLearningEventsTable;
@@ -833,6 +834,8 @@ export type EmailMessagesTable = {
   reply_suggestion_updated_at: TimestampColumn | null;
   approval_state: string | null;
   approval_reason: string | null;
+  /** Plan 048: genutztes Wissen am KI-Entwurf („Wissensbasis › Abschnitt“). */
+  ai_sources: ColumnType<string | null, string | null | undefined, string | null>;
   auto_submitted: ColumnType<number, number | undefined, number>;
   /** Teilautomatisierung P3: Entwurf von einem KI-/Workflow-Knoten angelegt ('ai' | 'workflow'). */
   draft_origin_kind: string | null;
@@ -1349,6 +1352,17 @@ export type WorkflowKnowledgeChunksTable = SourceImportedTable & {
   source_path: string | null;
   embedding_json: JsonColumn | null;
   created_at: TimestampColumn | null;
+};
+
+/** Plan 048: aus dem Dokument abgeleitete Abschnitte (Suchindex, search_vector generiert). */
+export type WorkflowKnowledgeSectionsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  knowledge_base_id: number;
+  position: number;
+  title: string;
+  content: string;
+  built_at: TimestampColumn;
 };
 
 export type WorkflowDelayedJobsTable = SourceImportedTable & {

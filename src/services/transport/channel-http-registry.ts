@@ -381,6 +381,7 @@ type EmailMessageRecord = {
   updatedAt?: string | null
   approvalState?: string | null
   approvalReason?: string | null
+  aiSources?: string | null
   outboundHold?: boolean | number | null
   outboundBlockReason?: string | null
   sentByKind?: string | null
@@ -5844,6 +5845,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     reply_parent_message_id: record.replyParentMessageId ?? null,
     approval_state: record.approvalState ?? null,
     approval_reason: record.approvalReason ?? null,
+    ai_sources: record.aiSources ?? null,
     // Hinweis „Versand blockiert“ und Listen-Kennzeichen brauchen beide Felder.
     outbound_hold: record.outboundHold ? 1 : 0,
     outbound_block_reason: record.outboundBlockReason ?? null,

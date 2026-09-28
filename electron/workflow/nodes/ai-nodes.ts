@@ -78,7 +78,8 @@ import {
   parseCannedPickNumber,
   parseClassificationOutput,
 } from '../ai-classification-parse';
-import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow, storeDraftAiSources } from '../knowledge-base';
+import { formatKnowledgeSourcesLabel } from '../../../packages/core/src/learnings/knowledge-chunking';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 import {
   joinKnowledgeWithinBudget,
@@ -151,10 +152,11 @@ async function resolveKnowledgeChunks(
   return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
 }
 
+/** Plan 048: „Wissensbasis › Abschnitt“, ohne Dubletten, höchstens 500 Zeichen (wie Server). */
 function knowledgeSourcesLabel(
   chunks: Awaited<ReturnType<typeof searchKnowledgeChunks>>,
 ): string {
-  return chunks.map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`)).join(', ');
+  return formatKnowledgeSourcesLabel(chunks.map((c) => ({ id: c.id, knowledgeBaseName: c.knowledge_base_name ?? null, title: c.title })));
 }
 
 /**
@@ -922,6 +924,8 @@ export function registerAiNodes(register: Reg): void {
       updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
       // TA-P5: KI-Text (ohne Anrede/Signatur) wie der Server für den Vergleich beim Versand.
       storeDraftAiSuggestionSnapshot(draftId, aiText);
+      // Plan 048: genutztes Wissen für den Freigabe-Hinweis.
+      storeDraftAiSources(draftId, knowledgeSourcesLabel(chunks));
       await markAiDraftOrigin(draftId, ctx.workflowId);
       // Bewusst KEIN markDraftAutoSubmitted hier: der RFC-3834-Marker gehört
       // an den tatsächlichen Versand (email.send_draft / ApproveDraftSend).

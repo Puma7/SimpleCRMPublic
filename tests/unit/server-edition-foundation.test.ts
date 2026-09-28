@@ -83,6 +83,14 @@ import {
   runRlsCheckCli,
   type RlsCheckPgClient,
 } from '../../packages/server/src/cli/rls-check';
+import { searchKnowledgeSections } from '../../packages/server/src/knowledge-workflow-search';
+
+// Plan 048: Durchreichen an die echte Abschnittssuche; einzelne Tests ersetzen
+// sie einmalig (die Fake-DB kann Volltext-SQL nicht nachbilden).
+jest.mock('../../packages/server/src/knowledge-workflow-search', () => {
+  const actual = jest.requireActual('../../packages/server/src/knowledge-workflow-search');
+  return { ...actual, searchKnowledgeSections: jest.fn(actual.searchKnowledgeSections) };
+});
 import {
   MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
@@ -401,6 +409,8 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0061_ai_learning_digest_accepted_content',
   '0062_workflow_run_dry_run_flag',
   '0063_workflow_run_step_ai_decide_index',
+  '0064_workflow_knowledge_sections',
+  '0065_email_message_ai_sources',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -5259,6 +5269,12 @@ describe('server edition foundation', () => {
         },
       ],
     });
+    // Plan 048: Abschnittssuche (Volltext) prüft der Postgres-Test
+    // postgres-knowledge-sections; hier nur, dass der Agent sie für seine
+    // Wissensbasis fragt und die Treffer nutzt.
+    const sectionSearch = (searchKnowledgeSections as jest.Mock).mockClear().mockResolvedValueOnce([
+      { id: 1, knowledgeBaseId: 5, knowledgeBaseName: 'Firma', title: 'Retoure', content: 'Retoure innerhalb von 30 Tagen moeglich.' },
+    ]);
     const chatInputs: unknown[] = [];
     const secrets = {
       async readSecret() {
@@ -5318,6 +5334,7 @@ describe('server edition foundation', () => {
     expect((chatInputs[0] as any).system).toBe('Agent fuer Retoure');
     expect((chatInputs[0] as any).user).toContain('Bitte erklaere die Retoure.');
     expect((chatInputs[0] as any).user).toContain('Retoure innerhalb von 30 Tagen moeglich.');
+    expect(sectionSearch).toHaveBeenCalledWith(expect.anything(), WORKSPACE_A_ID, [5], expect.stringContaining('Retoure'), expect.any(Number));
 
     await port.runAgent({
       workspaceId: WORKSPACE_A_ID,
@@ -10469,6 +10486,10 @@ describe('server edition foundation', () => {
       now: () => now,
       applyWorkspaceSession: async () => undefined,
     });
+    // Plan 048: Abschnittssuche siehe postgres-knowledge-sections; hier nur der Aufruf.
+    const sectionSearch = (searchKnowledgeSections as jest.Mock).mockClear().mockResolvedValueOnce([
+      { id: 1, knowledgeBaseId: 5, knowledgeBaseName: 'Firma', title: 'Refund', content: 'Refund policy' },
+    ]);
 
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
@@ -10477,6 +10498,7 @@ describe('server edition foundation', () => {
       triggerName: 'inbound',
       context: {},
     });
+    expect(sectionSearch).toHaveBeenCalledWith(expect.anything(), WORKSPACE_A_ID, [5], expect.any(String), expect.any(Number));
 
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['refund-info']);
     expect(rows.runs[0]).toMatchObject({

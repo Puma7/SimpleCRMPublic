@@ -3,9 +3,17 @@ import path from 'path';
 import { app } from 'electron';
 import { getDb } from '../sqlite-service';
 import {
+  EMAIL_MESSAGES_TABLE,
   WORKFLOW_KNOWLEDGE_BASES_TABLE,
   WORKFLOW_KNOWLEDGE_CHUNKS_TABLE,
+  WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE,
+  WORKFLOW_KNOWLEDGE_SECTIONS_TABLE,
 } from '../database-schema';
+import {
+  buildKnowledgeQueryTerms,
+  deriveKnowledgeSections,
+  KNOWLEDGE_SMALL_KB_MAX_CHARS,
+} from '../../packages/core/src/learnings/knowledge-chunking';
 import { runEmbedding } from '../email/email-openai';
 import { resolveScopedAccountOverrides, type AccountOverrideScope } from '../../shared/mail-account-overrides';
 import {
@@ -27,6 +35,8 @@ export type KnowledgeBaseRow = {
 export type KnowledgeChunkRow = {
   id: number;
   knowledge_base_id: number;
+  /** Plan 048: Name der Wissensbasis (Quellenangabe am Entwurf). */
+  knowledge_base_name?: string | null;
   title: string | null;
   content: string;
   source_path: string | null;
@@ -57,12 +67,32 @@ function parseEmbedding(json: string | null | undefined): number[] | null {
   }
 }
 
-async function storeEmbedding(chunkId: number, text: string): Promise<void> {
-  const vec = await runEmbedding(text);
-  if (!vec) return;
-  getDb()
-    .prepare(`UPDATE ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} SET embedding_json = ? WHERE id = ?`)
-    .run(JSON.stringify(vec), chunkId);
+/** Plan 048: höchstens so viele Abschnitte je Speichern einbetten. */
+const SECTION_EMBEDDINGS_MAX = 50;
+
+/**
+ * Einbettungen je Abschnitt, im Hintergrund und nur mit konfiguriertem
+ * Einbettungsmodell (runEmbedding liefert sonst null). Ein zwischenzeitlicher
+ * Neuaufbau macht die Updates wirkungslos (neue Ids).
+ */
+async function storeSectionEmbeddings(knowledgeBaseId: number): Promise<void> {
+  try {
+    const rows = getDb()
+      .prepare(
+        `SELECT id, title, content FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE}
+         WHERE knowledge_base_id = ? ORDER BY position LIMIT ?`,
+      )
+      .all(knowledgeBaseId, SECTION_EMBEDDINGS_MAX) as { id: number; title: string; content: string }[];
+    for (const row of rows) {
+      const vec = await runEmbedding(`${row.title}\n${row.content}`.slice(0, 8000));
+      if (!vec) return;
+      getDb()
+        .prepare(`UPDATE ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} SET embedding_json = ? WHERE id = ?`)
+        .run(JSON.stringify(vec), row.id);
+    }
+  } catch (error) {
+    console.warn('[knowledge] Abschnitts-Einbettung fehlgeschlagen:', error instanceof Error ? error.message : error);
+  }
 }
 
 export function listKnowledgeBases(scope?: AccountOverrideScope): KnowledgeBaseRow[] {
@@ -163,10 +193,12 @@ function syncChunksFromDocument(
   // Löschen und Neuanlegen als Einheit: scheitert das Einfügen, bleibt der
   // bisherige Suchindex stehen, statt die Wissensbasis für alle KI-Bausteine
   // leer erscheinen zu lassen.
-  const replaceChunks = db.transaction((): number => {
+  const replaceChunks = db.transaction((): void => {
+    // Plan 048: Abschnitte aus demselben Inhalt, in derselben Transaktion.
+    rebuildKnowledgeSections(knowledgeBaseId, capped, title);
     db.prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`)
       .run(knowledgeBaseId);
-    const r = db
+    db
       .prepare(
         `INSERT INTO ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}
          (knowledge_base_id, title, content, source_path, created_at)
@@ -179,10 +211,44 @@ function syncChunksFromDocument(
         knowledgeMarkdownPath(knowledgeBaseId),
         new Date().toISOString(),
       );
-    return Number(r.lastInsertRowid);
   });
-  const id = replaceChunks();
-  void storeEmbedding(id, capped.slice(0, 8000));
+  replaceChunks();
+  void storeSectionEmbeddings(knowledgeBaseId);
+}
+
+/**
+ * Plan 048: Abschnitte einer Wissensbasis aus dem Dokument neu ableiten
+ * (FTS5 folgt per Trigger). Die unveränderte Vorlage ergibt keine Abschnitte.
+ */
+function rebuildKnowledgeSections(knowledgeBaseId: number, document: string, kbName: string): number {
+  const db = getDb();
+  db.prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} WHERE knowledge_base_id = ?`).run(knowledgeBaseId);
+  if (document.trimEnd() === defaultMarkdownTemplate(kbName).trimEnd()) return 0;
+  const sections = deriveKnowledgeSections(document, kbName);
+  const insert = db.prepare(
+    `INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} (knowledge_base_id, position, title, content, built_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  const builtAt = new Date().toISOString();
+  for (const section of sections) insert.run(knowledgeBaseId, section.position, section.title, section.content, builtAt);
+  return sections.length;
+}
+
+/**
+ * Plan 048: baut die Abschnitte einer Wissensbasis nach, wenn sie noch keine
+ * hat (Bestand vor dem Suchindex). true = neu gebaut.
+ */
+export function ensureKnowledgeSections(knowledgeBaseId: number): boolean {
+  const db = getDb();
+  const existing = db
+    .prepare(`SELECT 1 FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} WHERE knowledge_base_id = ? LIMIT 1`)
+    .get(knowledgeBaseId);
+  if (existing) return false;
+  const kb = getKnowledgeBaseById(knowledgeBaseId);
+  if (!kb) return false;
+  const document = getKnowledgeBaseDocument(knowledgeBaseId);
+  if (!document) return false;
+  return db.transaction(() => rebuildKnowledgeSections(knowledgeBaseId, document.content, kb.name))() > 0;
 }
 
 export function createKnowledgeBase(
@@ -268,6 +334,7 @@ export function deleteKnowledgeBase(id: number): void {
       /* ignore */
     }
   }
+  getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} WHERE knowledge_base_id = ?`).run(id);
   getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ?`).run(id);
   getDb().prepare(`DELETE FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`).run(id);
 }
@@ -296,36 +363,6 @@ export function importFileToKnowledgeBase(knowledgeBaseId: number, filePath: str
     )
     .get(knowledgeBaseId) as { id: number } | undefined;
   return row?.id ?? 0;
-}
-
-function keywordSearch(
-  knowledgeBaseId: number,
-  query: string,
-  limit: number,
-): KnowledgeChunkRow[] {
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 2)
-    .slice(0, 12);
-  const rows = getDb()
-    .prepare(
-      `SELECT * FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ? ORDER BY id DESC LIMIT 200`,
-    )
-    .all(knowledgeBaseId) as KnowledgeChunkRow[];
-  if (terms.length === 0) return rows.slice(0, limit);
-  const scored = rows
-    .map((row) => {
-      const hay = `${row.title ?? ''}\n${row.content}`.toLowerCase();
-      let score = 0;
-      for (const t of terms) {
-        if (hay.includes(t)) score += 1;
-      }
-      return { row, score };
-    })
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit).map((x) => x.row);
 }
 
 export function findKnowledgeBaseForAccountContext(
@@ -380,42 +417,101 @@ export async function searchKnowledgeForWorkflow(
   for (const id of listKnowledgeBaseIdsForWorkflow(accountId, direction)) {
     kbIds.add(id);
   }
+  // Je Wissensbasis gedeckelt, nicht insgesamt: sonst fielen die zuletzt
+  // gelesenen (Learnings) heraus. Das Zeichenbudget verteilt joinKnowledgeWithinBudget.
   const merged: KnowledgeChunkRow[] = [];
   const perKb = Math.max(1, Math.ceil(limit / Math.max(1, kbIds.size)));
   for (const kbId of kbIds) {
-    const chunks = await searchKnowledgeChunks(kbId, query, perKb);
-    merged.push(...chunks);
+    merged.push(...await searchKnowledgeChunks(kbId, query, perKb));
   }
-  return merged.slice(0, limit);
+  return merged;
 }
 
-/** Keyword + optional embedding RAG */
+type KnowledgeSectionRow = {
+  id: number;
+  knowledge_base_id: number;
+  title: string;
+  content: string;
+  embedding_json: string | null;
+};
+
+function sectionToChunkRow(row: KnowledgeSectionRow, knowledgeBaseName: string | null): KnowledgeChunkRow {
+  return {
+    id: row.id,
+    knowledge_base_id: row.knowledge_base_id,
+    knowledge_base_name: knowledgeBaseName,
+    title: row.title,
+    content: row.content,
+    source_path: null,
+  };
+}
+
+/**
+ * Plan 048: Suche je `##`-Abschnitt. Kleine Wissensbasen (≤ 6 000 Zeichen)
+ * gehen ganz mit; sonst zuerst Einbettungen (falls ein Modell sie geliefert
+ * hat), dann Volltext (FTS5, bm25). Ohne Treffer (auch ohne Suchbegriffe, z. B.
+ * nur Füllwörter) nichts. Fehlende Abschnitte werden vorher nachgebaut.
+ */
 export async function searchKnowledgeChunks(
   knowledgeBaseId: number,
   query: string,
   limit = 5,
 ): Promise<KnowledgeChunkRow[]> {
-  const rows = getDb()
+  const max = Math.max(1, Math.floor(limit));
+  ensureKnowledgeSections(knowledgeBaseId);
+  const db = getDb();
+  const sections = db
     .prepare(
-      `SELECT * FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ? ORDER BY id DESC LIMIT 200`,
+      `SELECT id, knowledge_base_id, title, content, embedding_json FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE}
+       WHERE knowledge_base_id = ? ORDER BY position`,
     )
-    .all(knowledgeBaseId) as KnowledgeChunkRow[];
+    .all(knowledgeBaseId) as KnowledgeSectionRow[];
+  if (sections.length === 0) return [];
+  const kbName = getKnowledgeBaseById(knowledgeBaseId)?.name ?? null;
+  const toRow = (row: KnowledgeSectionRow) => sectionToChunkRow(row, kbName);
+  const size = sections.reduce((sum, row) => sum + row.title.length + row.content.length, 0);
+  if (size <= KNOWLEDGE_SMALL_KB_MAX_CHARS) return sections.map(toRow);
 
-  const queryVec = await runEmbedding(query);
-  if (queryVec) {
-    const scored = rows
-      .map((row) => {
-        const emb = parseEmbedding(row.embedding_json);
-        if (!emb) return { row, score: 0 };
-        return { row, score: cosineSimilarity(queryVec, emb) };
-      })
-      .filter((x) => x.score > 0.2)
-      .sort((a, b) => b.score - a.score);
-    if (scored.length > 0) {
-      return scored.slice(0, limit).map((x) => x.row);
+  if (sections.some((row) => row.embedding_json)) {
+    const queryVec = await runEmbedding(query);
+    if (queryVec) {
+      const scored = sections
+        .map((row) => {
+          const emb = parseEmbedding(row.embedding_json ?? null);
+          return { row, score: emb ? cosineSimilarity(queryVec, emb) : 0 };
+        })
+        .filter((entry) => entry.score > 0.2)
+        .sort((a, b) => b.score - a.score);
+      if (scored.length > 0) return scored.slice(0, max).map((entry) => toRow(entry.row));
     }
   }
-  return keywordSearch(knowledgeBaseId, query, limit);
+
+  const terms = buildKnowledgeQueryTerms(query);
+  if (terms.length === 0) return [];
+  // Nur Buchstaben und Ziffern, jeweils in Anführungszeichen: keine FTS5-Operatoren.
+  const match = terms.map((term) => `"${term}"`).join(' OR ');
+  const rows = db
+    .prepare(
+      `SELECT s.id, s.knowledge_base_id, s.title, s.content, s.embedding_json
+       FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE} f
+       JOIN ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} s ON s.id = f.rowid
+       WHERE ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE} MATCH ? AND s.knowledge_base_id = ?
+       ORDER BY bm25(${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}, 2.0, 1.0), s.position
+       LIMIT ?`,
+    )
+    .all(match, knowledgeBaseId, max) as KnowledgeSectionRow[];
+  return rows.map(toRow);
+}
+
+/** Plan 048: genutztes Wissen am KI-Entwurf (Freigabe-Hinweis); leer = keine Angabe. */
+export function storeDraftAiSources(draftId: number, label: string): void {
+  try {
+    getDb()
+      .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ai_sources = ? WHERE id = ?`)
+      .run(label.trim() ? label.slice(0, 500) : null, draftId);
+  } catch (error) {
+    console.warn('[knowledge] Quellen am Entwurf nicht gespeichert:', error instanceof Error ? error.message : error);
+  }
 }
 
 export function knowledgeStorageDir(): string {

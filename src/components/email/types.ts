@@ -132,6 +132,8 @@ export type EmailMessage = {
   /** KI-Gegenlese: 'pending' = Entwurf wartet auf menschliche Freigabe. */
   approval_state?: string | null
   approval_reason?: string | null
+  /** Plan 048: genutztes Wissen am KI-Entwurf („Wissensbasis › Abschnitt“). */
+  ai_sources?: string | null
   ticket_code?: string | null
   thread_id?: string | null
   thread_message_count?: number | null

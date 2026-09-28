@@ -45,6 +45,7 @@ jest.mock('../../electron/workflow/knowledge-base', () => ({
   searchKnowledgeForWorkflow: jest.fn(async () => [
     { id: 1, title: 'FAQ Retouren', content: 'Retouren über das Portal anmelden.' },
   ]),
+  storeDraftAiSources: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-draft-approval', () => ({
@@ -85,7 +86,7 @@ import {
 } from '../../electron/workflow/auto-reply-guard';
 import { parseDraftReviewResponse } from '../../electron/workflow/draft-review-parse';
 import { registerAiNodes } from '../../electron/workflow/nodes/ai-nodes';
-import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../../electron/workflow/knowledge-base';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow, storeDraftAiSources } from '../../electron/workflow/knowledge-base';
 import { registerEmailNodes } from '../../electron/workflow/nodes/email-nodes';
 
 function collect(registerNodes: (register: (def: RegisteredWorkflowNode) => void) => void) {
@@ -245,6 +246,17 @@ describe('ai.draft_reply (Agent 1)', () => {
     const r = await node.execute(ctx(), {}, 'd');
     expect(r.status).toBe('ok');
     expect(String((runChatCompletion as jest.Mock).mock.calls[0]![1])).toContain('LEARNING-MARKER Retoure 30 Tage');
+  });
+
+  // Plan 048: das genutzte Wissen wird am Entwurf gespeichert (Freigabe-Hinweis).
+  test('speichert „Wissensbasis › Abschnitt“ am Entwurf', async () => {
+    (searchKnowledgeForWorkflow as jest.Mock).mockResolvedValueOnce([
+      { id: 11, knowledge_base_id: 1, knowledge_base_name: 'Handbuch', title: 'Rücksendungen', content: 'Etikett liegt bei.' },
+      { id: 12, knowledge_base_id: 3, knowledge_base_name: 'Learnings', title: 'Rückgabe', content: 'Im Kundenkonto zeigen.' },
+    ]);
+    const r = await node.execute(ctx(), {}, 'd');
+    expect(r.status).toBe('ok');
+    expect(storeDraftAiSources).toHaveBeenCalledWith(42, 'Handbuch › Rücksendungen; Learnings › Rückgabe');
   });
 
   test('explizite Wissensbasis ergänzt die Kontext-Wissensbasen inkl. Learnings (wie Server)', async () => {

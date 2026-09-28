@@ -63,6 +63,9 @@ import {
     createEmailWorkflowRunStepsTable,
     createWorkflowKnowledgeBasesTable,
     createWorkflowKnowledgeChunksTable,
+    createWorkflowKnowledgeSectionsTable,
+    WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS,
+    WORKFLOW_KNOWLEDGE_SECTIONS_TABLE,
     createWorkflowDelayedJobsTable,
     createEmailWorkflowVersionsTable,
     createEmailSpamListEntriesTable,
@@ -912,6 +915,8 @@ function runMigrations() {
                 // (bewusst getrennt vom fail-closed outbound_hold) + RFC-3834-Marker.
                 { name: 'approval_state', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_state TEXT` },
                 { name: 'approval_reason', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_reason TEXT` },
+                // Plan 048: genutztes Wissen am KI-Entwurf (Freigabe-Hinweis).
+                { name: 'ai_sources', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN ai_sources TEXT` },
                 { name: 'auto_submitted', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auto_submitted INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of emailMsgCols) {
@@ -1156,6 +1161,9 @@ function runMigrations() {
         ensureMigrationTable(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE, createWorkflowKnowledgeChunksTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_kb_chunks_kb ON ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}(knowledge_base_id);`,
         ]);
+        // Plan 048: Abschnitte als Suchindex (abgeleitet, Volltext per FTS5).
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_SECTIONS_TABLE, createWorkflowKnowledgeSectionsTable, []);
+        for (const statement of WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS) conn.exec(statement);
         ensureMigrationTable(WORKFLOW_DELAYED_JOBS_TABLE, createWorkflowDelayedJobsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_delayed_execute ON ${WORKFLOW_DELAYED_JOBS_TABLE}(status, execute_at);`,
         ]);

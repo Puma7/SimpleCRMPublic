@@ -747,6 +747,10 @@ describe('server mailbox ACL migration', () => {
     const dryRunFlagMigration = serverMigrations.find((candidate) => candidate.id === '0062_workflow_run_dry_run_flag');
     expect(dryRunFlagMigration).toBeDefined();
     await applyStatements(dryRunFlagMigration!.upSql);
+    // Message selects include the knowledge sources of AI drafts (0065, Plan 048).
+    const aiSourcesMigration = serverMigrations.find((candidate) => candidate.id === '0065_email_message_ai_sources');
+    expect(aiSourcesMigration).toBeDefined();
+    await applyStatements(aiSourcesMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');

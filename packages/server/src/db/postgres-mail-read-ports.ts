@@ -229,6 +229,7 @@ const emailMessageSummaryColumns = [
   'reply_parent_message_id',
   'approval_state',
   'approval_reason',
+  'ai_sources',
   'outbound_hold',
   'outbound_block_reason',
   'sent_by_kind',
@@ -5800,6 +5801,8 @@ function mapEmailMessageRow(
     // approval_reason summarizes AI review of customer + draft content — redact for
     // metadata-only callers (content_readable===false), same boundary as snippet/body.
     approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
+    // Plan 048: genutztes Wissen am Entwurf – wie approval_reason nur mit Inhaltsrecht.
+    aiSources: row.content_readable === false ? null : (row.ai_sources ?? null),
     // Ausgangsprüfung: angehaltene Entwürfe zeigen Banner und Listen-Kennzeichen.
     // Der Grund stammt aus Workflows/KI-Prüfung über den Entwurfsinhalt — wie
     // approval_reason für metadata-only Aufrufer geschwärzt.

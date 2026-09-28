@@ -118,6 +118,8 @@ export type EmailMessageRow = {
   /** Zwei-Stufen-KI-Antwort: 'pending' = wartet auf menschliche Freigabe. */
   approval_state?: string | null;
   approval_reason?: string | null;
+  /** Plan 048: genutztes Wissen des KI-Entwurfs („Wissensbasis › Abschnitt; …“). */
+  ai_sources?: string | null;
   /** RFC-3834-Marker: Entwurf ist eine automatische Antwort. */
   auto_submitted?: number;
   thread_id: string | null;

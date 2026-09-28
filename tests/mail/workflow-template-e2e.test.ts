@@ -80,6 +80,7 @@ jest.mock('../../electron/email/email-ai-profiles', () => ({
 jest.mock('../../electron/workflow/knowledge-base', () => ({
   searchKnowledgeChunks: jest.fn(async () => []),
   searchKnowledgeForWorkflow: jest.fn(async () => []),
+  storeDraftAiSources: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-draft-approval', () => ({

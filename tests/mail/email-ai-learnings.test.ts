@@ -347,10 +347,6 @@ describe('Learnings (Desktop, TA-P5)', () => {
   test('Abruf: Learnings-Basis (eigener Kontext) neben anderer allgemeiner Wissensbasis, Quote je Wissensbasis', async () => {
     const firma = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
     saveKnowledgeBaseDocument(firma, '# Firma\n\n## Rückgabe\n\nRückgabe über das Portal.\n');
-    const insertChunk = db.prepare(
-      'INSERT INTO workflow_knowledge_chunks (knowledge_base_id, title, content, created_at) VALUES (?, ?, ?, ?)',
-    );
-    for (const n of [1, 2, 3]) insertChunk.run(firma, `Rückgabe ${n}`, `Rückgabe Hinweis ${n}.`, new Date().toISOString());
     const eingang = createKnowledgeBase('Eingang', null, { knowledgeContext: 'inbound' });
     saveKnowledgeBaseDocument(eingang, '# Eingang\n\n## Rückgabe\n\nRückgabe-Anfragen am selben Tag beantworten.\n');
 
@@ -370,13 +366,17 @@ describe('Learnings (Desktop, TA-P5)', () => {
       acc[row.knowledge_base_id] = (acc[row.knowledge_base_id] ?? 0) + 1;
       return acc;
     }, {});
-    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    // Eingang: general + inbound + learnings. Plan 048: Treffer sind Abschnitte
+    // des Dokuments; kleine Wissensbasen (≤ 6 000 Zeichen) gehen ganz mit
+    // (Learnings = Einleitung + „Rückgabe“). Die Quote je Wissensbasis greift
+    // erst bei großen Wissensbasen (tests/mail/knowledge-sections-desktop.test.ts).
     const inboundChunks = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe Etikett', 5);
-    expect(countByKb(inboundChunks)).toEqual({ [firma]: 2, [eingang]: 1, [learningsKb]: 1 });
-    expect(inboundChunks.find((c) => c.knowledge_base_id === learningsKb)?.content).toContain('Etikett im Kundenkonto');
-    // Ausgang und manuell lesen die Learnings ebenfalls; ceil(2 / 2) = 1 je Wissensbasis.
-    expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 1 });
-    expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 3, [learningsKb]: 1 });
+    expect(countByKb(inboundChunks)).toEqual({ [firma]: 1, [eingang]: 1, [learningsKb]: 2 });
+    expect(inboundChunks.find((c) => c.knowledge_base_id === learningsKb && c.title === 'Rückgabe')?.content)
+      .toContain('Etikett im Kundenkonto');
+    // Ausgang und manuell lesen die Learnings ebenfalls.
+    expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 2 });
+    expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 1, [learningsKb]: 2 });
     // Explizit gewählte Wissensbasis: die Learnings kommen wie die übrigen
     // Kontext-Wissensbasen dazu (Codex-Review PR #194).
     const explicit = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe', 5, eingang);
