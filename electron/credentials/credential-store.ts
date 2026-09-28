@@ -78,6 +78,20 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
   const logger = deps.logger ?? console;
   const inflight = new Map<string, Promise<string | null>>();
   const keyOf = (service: string, account: string) => `${service}\u0000${account}`;
+  /**
+   * Änderungsstand je Eintrag: setSecret/deleteSecret zählen beim Schreiben hoch,
+   * purgeAllSecrets über die Epoche für alle. Ein Lesen, während dessen sich der
+   * Stand ändert, ist veraltet (z. B. keytar-Wert nach Löschen) und wird wiederholt.
+   */
+  const versions = new Map<string, number>();
+  let epoch = 0;
+  const versionOf = (key: string) => `${epoch}:${versions.get(key) ?? 0}`;
+
+  /** Nach dem Schreiben: Stand erhöhen und laufendes Lesen abhängen, damit neue Leser frisch lesen. */
+  function markChanged(key: string): void {
+    versions.set(key, (versions.get(key) ?? 0) + 1);
+    inflight.delete(key);
+  }
 
   /** Verschlüsseln und vor dem Schreiben entschlüsseln und vergleichen; null = nicht sicher möglich. */
   async function sealVerified(value: string): Promise<Buffer | null> {
@@ -94,12 +108,12 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
   }
 
   /** Umzug aus keytar; bei jedem Fehler bleibt der Speicher wie vorher. */
-  async function migrate(service: string, account: string, value: string): Promise<void> {
+  async function migrate(service: string, account: string, value: string, isCurrent: () => boolean): Promise<void> {
     try {
       const sealed = await sealVerified(value);
       if (!sealed) return;
-      // Zwischenzeitlich gesetzt oder gelöscht (setSecret/deleteSecret): nichts überschreiben.
-      if (deps.table.get(service, account) !== undefined) return;
+      // Zwischenzeitlich gesetzt, gelöscht oder geleert: nichts überschreiben oder wiederbeleben.
+      if (!isCurrent() || deps.table.get(service, account) !== undefined) return;
       deps.table.put(service, account, sealed, now());
       if (!readBackEquals(service, account, sealed)) {
         deps.table.delete(service, account);
@@ -122,7 +136,7 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
     }
   }
 
-  async function readSecret(service: string, account: string): Promise<string | null> {
+  async function readSecret(service: string, account: string, isCurrent: () => boolean): Promise<string | null> {
     await deps.whenReady();
     const row = deps.table.get(service, account);
     if (row && row.ciphertext === null) return null;
@@ -140,8 +154,18 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
     }
     const legacy = await deps.legacy.getPassword(service, account);
     if (legacy === null || legacy === undefined) return null;
-    if (!undecryptable) await migrate(service, account, legacy);
+    if (!undecryptable && isCurrent()) await migrate(service, account, legacy, isCurrent);
     return legacy;
+  }
+
+  /** Liest so lange neu, bis kein setSecret/deleteSecret/purge dazwischenkam. */
+  async function readCurrentSecret(service: string, account: string, key: string): Promise<string | null> {
+    for (;;) {
+      const version = versionOf(key);
+      const isCurrent = () => versionOf(key) === version;
+      const value = await readSecret(service, account, isCurrent);
+      if (isCurrent()) return value;
+    }
   }
 
   return {
@@ -149,7 +173,10 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
       const key = keyOf(service, account);
       const running = inflight.get(key);
       if (running) return running;
-      const promise = readSecret(service, account).finally(() => inflight.delete(key));
+      const promise = readCurrentSecret(service, account, key).finally(() => {
+        // Nach einer Änderung kann schon ein neueres Lesen eingetragen sein.
+        if (inflight.get(key) === promise) inflight.delete(key);
+      });
       inflight.set(key, promise);
       return promise;
     },
@@ -172,6 +199,7 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
       const check = await deps.cipher.decrypt(sealed);
       if (check.result !== value) throw new Error(CREDENTIAL_WRITE_FAILED_MESSAGE);
       deps.table.put(service, account, sealed, now());
+      markChanged(keyOf(service, account));
       if (!readBackEquals(service, account, sealed)) throw new Error(CREDENTIAL_WRITE_FAILED_MESSAGE);
     },
 
@@ -180,6 +208,7 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
       const row = deps.table.get(service, account);
       const hadStoreValue = Boolean(row?.ciphertext);
       deps.table.put(service, account, null, now());
+      markChanged(keyOf(service, account));
       let hadLegacyValue = false;
       try {
         hadLegacyValue = await deps.legacy.deletePassword(service, account);
@@ -191,6 +220,8 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
 
     purgeAllSecrets() {
       deps.table.clear();
+      epoch += 1;
+      inflight.clear();
     },
   };
 }

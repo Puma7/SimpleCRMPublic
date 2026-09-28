@@ -6620,6 +6620,41 @@ async function collectLatestWorkflowRunFromFirstPage(
   return latest
 }
 
+/** Obergrenze gegen endloses Blättern: 1000 Seiten (bei 100 je Seite 100 000 Läufe einer Mail). */
+const MESSAGE_WORKFLOW_RUN_MAX_PAGES = 1000
+
+/**
+ * Der Server blättert Läufe aufsteigend nach id, die neuesten stehen also auf der
+ * letzten Seite. Deshalb bis zum Ende blättern und dabei nur die `keep` neuesten
+ * behalten (Speicher bleibt klein, auch bei sehr vielen Läufen).
+ */
+async function collectNewestWorkflowRuns(
+  firstPageBody: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+  keep: number,
+): Promise<WorkflowRunRecord[]> {
+  const seenCursors = new Set<number>()
+  let newest: WorkflowRunRecord[] = []
+  let page = listResult<WorkflowRunRecord>(firstPageBody)
+  for (;;) {
+    newest = [...newest, ...page.items].sort((a, b) => b.id - a.id).slice(0, keep)
+    const cursor = page.nextCursor ?? null
+    if (cursor === null) return newest
+    if (seenCursors.has(cursor)) throw new Error("Invalid paged list cursor")
+    if (seenCursors.size + 1 >= MESSAGE_WORKFLOW_RUN_MAX_PAGES) throw new Error("Too many workflow run pages")
+    seenCursors.add(cursor)
+    page = listResult<WorkflowRunRecord>(await context.fetchJson({
+      ...request,
+      query: {
+        ...request.query,
+        limit: request.query?.limit ?? DEFAULT_LIST_LIMIT,
+        cursor,
+      },
+    }))
+  }
+}
+
 /**
  * Details → Automatik: neueste Läufe der Mail mit Zusammenfassung. Je Lauf die
  * Schritte (wie ListWorkflowRunSteps) und je Workflow einmal der Name, parallel.
@@ -6629,9 +6664,7 @@ async function listWorkflowRunsForMessageTransform(
   context: HttpInvocationContext,
   request: HttpRequestSpec,
 ): Promise<MessageWorkflowRunSummary[]> {
-  const records = (await collectPagedListItems<WorkflowRunRecord>(body, context, request, 500))
-    .sort((a, b) => b.id - a.id)
-    .slice(0, MESSAGE_WORKFLOW_RUNS_LIMIT)
+  const records = await collectNewestWorkflowRuns(body, context, request, MESSAGE_WORKFLOW_RUNS_LIMIT)
   const workflowIds = [...new Set(records
     .map((record) => record.workflowSourceSqliteId ?? record.workflowId)
     .filter((id): id is number => typeof id === "number" && id !== 0))]

@@ -228,4 +228,69 @@ describe('Zugangsdaten-Speicher (safeStorage)', () => {
     store.purgeAllSecrets();
     expect(table.rows.size).toBe(0);
   });
+
+  describe('Änderung während eines laufenden keytar-Lesens', () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+    const flush = () => new Promise<void>((r) => setImmediate(r));
+
+    /** Leser hängt in keytar.getPassword, bis `keytarRead.resolve` aufgerufen wird. */
+    async function startPendingRead() {
+      const ctx = setup({ keytar: { [`${SERVICE}|acc-1`]: 'alt-pw' } });
+      const keytarRead = deferred<string | null>();
+      ctx.legacy.getPassword.mockImplementationOnce(() => keytarRead.promise);
+      const reading = ctx.store.getSecret(SERVICE, 'acc-1');
+      await flush();
+      expect(ctx.legacy.getPassword).toHaveBeenCalledTimes(1);
+      return { ...ctx, keytarRead, reading };
+    }
+
+    test('Löschen während keytar-Lesen: Leser bekommt null, kein Umzug über den Grabstein', async () => {
+      const { store, table, keytarRead, reading } = await startPendingRead();
+      await expect(store.deleteSecret(SERVICE, 'acc-1')).resolves.toBe(true);
+      keytarRead.resolve('alt-pw');
+      await expect(reading).resolves.toBeNull();
+      expect(table.get(SERVICE, 'acc-1')).toEqual({ ciphertext: null });
+    });
+
+    test('Setzen während keytar-Lesen: Leser bekommt den neuen Wert, Umzug überschreibt ihn nicht', async () => {
+      const { store, table, cipher, keytarRead, reading } = await startPendingRead();
+      await store.setSecret(SERVICE, 'acc-1', 'neu-pw');
+      const written = table.get(SERVICE, 'acc-1')?.ciphertext;
+      keytarRead.resolve('alt-pw');
+      await expect(reading).resolves.toBe('neu-pw');
+      expect(table.get(SERVICE, 'acc-1')?.ciphertext).toEqual(written);
+      await expect(cipher.decrypt(written as Buffer)).resolves.toEqual(expect.objectContaining({ result: 'neu-pw' }));
+    });
+
+    test('neuer Leser nach der Änderung hängt sich nicht an das veraltete Lesen', async () => {
+      const { store, legacy, keytarRead, reading } = await startPendingRead();
+      await store.setSecret(SERVICE, 'acc-1', 'neu-pw');
+      // Das alte keytar-Lesen läuft noch; der neue Leser darf nicht darauf warten.
+      const late = store.getSecret(SERVICE, 'acc-1');
+      await expect(Promise.race([late, flush().then(() => 'wartet auf altes Lesen')])).resolves.toBe('neu-pw');
+      expect(legacy.getPassword).toHaveBeenCalledTimes(1);
+
+      keytarRead.resolve('alt-pw');
+      await expect(reading).resolves.toBe('neu-pw');
+      // Nach dem Löschen bekommt ein neuer Leser sofort null.
+      await store.deleteSecret(SERVICE, 'acc-1');
+      await expect(store.getSecret(SERVICE, 'acc-1')).resolves.toBeNull();
+    });
+
+    test('purgeAllSecrets während keytar-Lesen: veralteter Wert wird nicht wieder umgezogen', async () => {
+      const { store, table, legacy, keytarRead, reading } = await startPendingRead();
+      // Hard Reset: keytar ist bereits geräumt, danach wird der Speicher geleert.
+      legacy.getPassword.mockResolvedValue(null);
+      store.purgeAllSecrets();
+      keytarRead.resolve('alt-pw');
+      await expect(reading).resolves.toBeNull();
+      expect(table.rows.size).toBe(0);
+    });
+  });
 });

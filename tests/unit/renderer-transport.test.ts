@@ -7199,6 +7199,35 @@ describe('renderer transport', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 
+  test('lists the truly newest workflow runs for a message with more than 500 runs', async () => {
+    // Der Server paginiert aufsteigend nach id (cursor = letzte id der Seite).
+    const totalRuns = 650;
+    const fetchImpl = jest.fn(async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/v1/email/messages/55/workflow-runs') {
+        const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
+        const limit = Number(parsed.searchParams.get('limit'));
+        const last = Math.min(cursor + limit, totalRuns);
+        const items = [];
+        for (let id = cursor + 1; id <= last; id += 1) {
+          items.push({ id, sourceSqliteId: -id, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, status: 'completed' });
+        }
+        return jsonResponse({ data: { items, nextCursor: last < totalRuns ? last : null } });
+      }
+      if (parsed.pathname.endsWith('/steps')) return jsonResponse({ data: { items: [], nextCursor: null } });
+      if (parsed.pathname === '/api/v1/workflows/by-source/-23') return jsonResponse({ data: { id: 23, sourceSqliteId: -23, name: 'Rückgaben' } });
+      throw new Error(`unexpected ${url}`);
+    });
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const result = await transport.invoke(IPCChannels.Email.ListWorkflowRunsForMessage, { messageId: 55 }) as Array<{ server_id: number }>;
+
+    // Die zwölf neuesten (650 … 639), nicht die neuesten der ersten 500.
+    expect(result.map((run) => run.server_id)).toEqual(Array.from({ length: 12 }, (_, index) => totalRuns - index));
+    // Schritte nur für die angezeigten Läufe.
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes('/steps'))).toHaveLength(12);
+  });
+
   test('maps PGP keyring channels to server HTTP compatibility routes', async () => {
     const fetchImpl = jest
       .fn()
