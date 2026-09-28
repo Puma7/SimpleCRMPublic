@@ -59,7 +59,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **046** R1 „Was ist mit dieser Mail passiert?“ – alle Automatik-Läufe im Lesefenster · P2 · S–M
 - [x] **047** R2 Echter Testlauf: Mail auswählen, auch deaktiviert, optional echte KI · P2 · M
 - [x] **049** R4 Automatik-Cockpit: Anteil Mensch/KI, Warteschlangen, KI-Kosten · P2 · M
-- [ ] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*
+- [x] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*
 - [ ] **050** R5 Treffsicherheit der KI-Entscheidungen, Schwellen-Vorschlag · P3 · L · *nach 046, 049*
 
 ## Welle 6 – Umbauten und Abhängigkeiten
