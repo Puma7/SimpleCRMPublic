@@ -19,6 +19,7 @@ import {
   removeRuntimeCredentialFile,
 } from '../../electron/credentials/credential-runtime';
 import { createCredentialStore, INSECURE_CREDENTIAL_STORE_MESSAGE } from '../../electron/credentials/credential-store';
+import { linuxPasswordStoreSwitch } from '../../electron/credentials/linux-password-store';
 
 /**
  * Plan 044: Laufzeit-Anbindung – eigene Datei credentials.sqlite (Rechte 0600,
@@ -102,6 +103,18 @@ describe('Zugangsdaten-Speicher: Laufzeit', () => {
     await expect(insecure.setSecret('SimpleCRMElectron-Email', 'acc-2', 'pw')).rejects.toThrow(INSECURE_CREDENTIAL_STORE_MESSAGE);
     expect(table.get('SimpleCRMElectron-Email', 'acc-2')).toBeUndefined();
     table.close();
+  });
+
+  test('Linux ohne erkannte Desktop-Umgebung fordert libsecret an (wie keytar), KDE und explizite Wahl bleiben', () => {
+    const base = { platform: 'linux' as const, hasPasswordStoreSwitch: false };
+    expect(linuxPasswordStoreSwitch({ ...base, env: {} })).toBe('gnome-libsecret');
+    expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'sway' } })).toBe('gnome-libsecret');
+    expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'ubuntu:GNOME' } })).toBe('gnome-libsecret');
+    expect(linuxPasswordStoreSwitch({ ...base, env: { XDG_CURRENT_DESKTOP: 'KDE' } })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ ...base, env: { DESKTOP_SESSION: 'plasma', KDE_FULL_SESSION: 'true' } })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ ...base, hasPasswordStoreSwitch: true, env: {} })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ platform: 'win32', hasPasswordStoreSwitch: false, env: {} })).toBeNull();
+    expect(linuxPasswordStoreSwitch({ platform: 'darwin', hasPasswordStoreSwitch: false, env: {} })).toBeNull();
   });
 
   test('Mail-Backup und Wiederherstellung kennen nur database.sqlite und Anhänge', () => {

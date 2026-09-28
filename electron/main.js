@@ -10,6 +10,18 @@ const { app, BrowserWindow, dialog, protocol, screen } = require('electron'); //
 require('v8').setFlagsFromString('--enable-experimental-regexp-engine-on-excessive-backtracks');
 app.commandLine.appendSwitch('js-flags', '--enable-experimental-regexp-engine-on-excessive-backtracks');
 
+// Plan 044: Zugangsdaten über safeStorage. Unter Linux ohne erkannte Desktop-
+// Umgebung libsecret anfordern (wie keytar); muss vor `ready` gesetzt werden.
+{
+  const { linuxPasswordStoreSwitch } = require('../dist-electron/electron/credentials/linux-password-store');
+  const passwordStore = linuxPasswordStoreSwitch({
+    platform: process.platform,
+    env: process.env,
+    hasPasswordStoreSwitch: app.commandLine.hasSwitch('password-store'),
+  });
+  if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
+}
+
 const path = require('path');
 const { pathToFileURL } = require('url');
 const windowStateKeeper = require('electron-window-state');

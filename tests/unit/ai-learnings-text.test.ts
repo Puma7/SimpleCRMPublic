@@ -192,6 +192,32 @@ describe('Wissensbasis-Abschnitte (TA-P5)', () => {
       .toBe('## A\n\nrepariert\n\n## B\n\nb\n\n## C\n\nc\n');
   });
 
+  // CodeQL (polynomielles Regex): am Ende verankerte Muster wie /\n*$/ oder /[:.]+$/
+  // prüften jede Startposition neu – lange Folgen mitten im Text liefen quadratisch.
+  it('lange Folgen von Zeilenumbrüchen, Doppelpunkten oder Rauten mitten im Text bleiben schnell', () => {
+    const run = 60_000;
+    let started = Date.now();
+    const fenced = applyKnowledgeOperations('## A\n\na\n', [
+      { op: 'update', section: 'A', content: `\`\`\`\n${'\n'.repeat(run)}x` },
+    ]);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(fenced.content.endsWith('x\n```\n')).toBe(true);
+    started = Date.now();
+    expect(normalizeKnowledgeSectionTitle(`Titel${':'.repeat(run)}x`)).toBe(`titel${':'.repeat(run)}x`);
+    expect(normalizeKnowledgeSectionTitle('Versand:.:')).toBe('versand');
+    expect(Date.now() - started).toBeLessThan(500);
+    started = Date.now();
+    const hashes = applyKnowledgeOperations('## A\n\na\n', [
+      { op: 'add', section: `B${'#'.repeat(run)}c`, content: 'b' },
+    ]);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(hashes.structureError).toBeUndefined();
+    started = Date.now();
+    const doc = parseKnowledgeSections(`# KB${'\n'.repeat(run)}x\n## A\n\na\n`);
+    serializeKnowledgeSections({ ...doc, sections: [...doc.sections, { title: 'B', content: 'b' }] });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it('korrekt geschlossene Codeblöcke bleiben unverändert', () => {
     expect(parseKnowledgeSections('## A\n\n```md\n## kein Abschnitt\n```\n\n## B\n\nb\n').sections.map((s) => s.title))
       .toEqual(['A', 'B']);

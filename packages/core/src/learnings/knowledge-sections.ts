@@ -55,6 +55,17 @@ function markdownHeadingTitle(line: string, minHashes: number, maxHashes: number
 }
 const FENCE_PATTERN = /^[ \t]*(```|~~~)/;
 
+/**
+ * Entfernt die angegebenen Zeichen am Ende. Linear statt `/[…]*$/`: ein am Ende
+ * verankertes Regex prüft jede Startposition neu und ist bei langen Folgen
+ * dieser Zeichen mitten im Text quadratisch (CodeQL, polynomielles Regex).
+ */
+function trimEndChars(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text[end - 1]!)) end -= 1;
+  return text.slice(0, end);
+}
+
 /** Schließt einen am Textende noch offenen Codeblock (``` oder ~~~). */
 export function closeUnterminatedKnowledgeFence(text: string): string {
   let fence: string | null = null;
@@ -64,7 +75,7 @@ export function closeUnterminatedKnowledgeFence(text: string): string {
     if (fence === null) fence = match[1]!;
     else if (fence === match[1]) fence = null;
   }
-  return fence === null ? text : `${text.replace(/\n*$/, '')}\n${fence}`;
+  return fence === null ? text : `${trimEndChars(text, '\n')}\n${fence}`;
 }
 
 /**
@@ -107,11 +118,11 @@ function findSectionStarts(lines: readonly string[]): { line: number; title: str
 
 /** Vergleichsschlüssel für Abschnittstitel (Groß-/Kleinschreibung, Leerzeichen). */
 export function normalizeKnowledgeSectionTitle(title: string): string {
-  return String(title ?? '')
+  const collapsed = String(title ?? '')
     .replace(/^#+\s*/, '')
     .replace(/[\s\u00a0]+/g, ' ')
-    .trim()
-    .replace(/[:.]+$/, '')
+    .trim();
+  return trimEndChars(collapsed, ':.')
     .trim()
     .toLocaleLowerCase('de-DE');
 }
@@ -166,7 +177,7 @@ export function serializeKnowledgeSections(doc: KnowledgeSectionDocument): strin
       continue;
     }
     // Neue/geänderte Abschnitte mit einer Leerzeile absetzen.
-    if (out.trim()) out = out.replace(/\n*$/, '\n\n');
+    if (out.trim()) out = `${trimEndChars(out, '\n')}\n\n`;
     else out = '';
     out += renderSection(section);
     previousRendered = true;
@@ -275,7 +286,7 @@ export function applyKnowledgeOperations(
   const content = serializeKnowledgeSections(doc);
   // Schutz gegen verschluckte oder erfundene Überschriften: das Ergebnis muss
   // genau die Abschnitte enthalten, die nach den Operationen erwartet werden.
-  const comparable = (title: string) => normalizeKnowledgeSectionTitle(title).replace(/[ \t#]+$/, '');
+  const comparable = (title: string) => trimEndChars(normalizeKnowledgeSectionTitle(title), ' \t#');
   const expected = doc.sections.map((section) => comparable(section.title));
   const actual = parseKnowledgeSections(content).sections.map((section) => comparable(section.title));
   const structureError = expected.length === actual.length && expected.every((title, index) => title === actual[index])
