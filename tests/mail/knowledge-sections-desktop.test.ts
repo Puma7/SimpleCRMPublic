@@ -24,6 +24,7 @@ import {
   storeDraftAiSources,
 } from '../../electron/workflow/knowledge-base';
 import { WORKFLOW_KNOWLEDGE_CHUNKS_TABLE } from '../../electron/database-schema';
+import { runEmbedding } from '../../electron/email/email-openai';
 
 let db: Database.Database;
 
@@ -88,6 +89,44 @@ test('Bestand ohne Abschnitte wird bei Bedarf nachgebaut; leere Vorlage ergibt k
   expect(sections(empty)).toEqual([]);
 });
 
+// Datei und Suchindex bleiben eine Einheit: scheitert das Schreiben der Datei
+// (voller oder schreibgeschützter Datenträger), rollt der Suchindex zurück.
+describe('Speichern mit Schreibfehler', () => {
+  function chunkContents(kbId: number): string[] {
+    return (db
+      .prepare(`SELECT content FROM ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE} WHERE knowledge_base_id = ? ORDER BY id`)
+      .all(kbId) as { content: string }[]).map((row) => row.content);
+  }
+
+  test.each([
+    ['writeFileSync', 'ENOSPC: no space left on device'],
+    ['renameSync', 'EROFS: read-only file system'],
+  ] as const)('%s scheitert: Fehler kommt an, Suchindex und Datei bleiben beim alten Stand', (fn, message) => {
+    const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, '## Rücksendung\n\nEtikett liegt bei.\n');
+    const dir = knowledgeStorageDir();
+    const filePath = path.join(dir, `${kb}.md`);
+    const before = { sections: sections(kb), chunks: chunkContents(kb), file: fs.readFileSync(filePath, 'utf8') };
+
+    const real = fs[fn] as (...args: unknown[]) => unknown;
+    const spy = jest.spyOn(fs, fn).mockImplementation(((target: unknown, ...rest: unknown[]) => {
+      if (String(target).startsWith(dir)) throw Object.assign(new Error(message), { code: message.split(':')[0] });
+      return real.call(fs, target, ...rest);
+    }) as never);
+    try {
+      expect(() => saveKnowledgeBaseDocument(kb, '## Versand\n\nDHL.\n')).toThrow(message);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(sections(kb)).toEqual(before.sections);
+    expect(chunkContents(kb)).toEqual(before.chunks);
+    expect(match('"dhl"')).toEqual([]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(before.file);
+    expect(fs.readdirSync(dir).filter((name) => !name.endsWith('.md'))).toEqual([]);
+  });
+});
+
 test('Löschen der Wissensbasis entfernt Abschnitte und Volltext', () => {
   const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
   saveKnowledgeBaseDocument(kb, '## Rücksendung\n\nEtikett liegt bei.\n');
@@ -128,6 +167,47 @@ describe('Suche', () => {
       [learnings, 'Rückgabe'],
       [learnings, 'Ton'],
     ]);
+  });
+
+  // Höchstens 50 Abschnitte werden eingebettet (SECTION_EMBEDDINGS_MAX): Solange
+  // nicht alle Abschnitte eine Einbettung haben, ergänzt der Volltext die Treffer.
+  function longHandbook(): string {
+    return ['# Handbuch', ...Array.from({ length: 55 }, (_, n) => (n === 52
+      ? '## Rücksendungen\n\nDas Rücksendeetikett liegt jedem Paket bei; Etikett verloren: im Kundenkonto neu drucken.'
+      : `## Thema ${n + 1}\n\n${filler(n + 1)}`))].join('\n\n');
+  }
+  function embed(kbId: number, where: string, vector: number[]): void {
+    db.prepare(`UPDATE workflow_knowledge_sections SET embedding_json = ? WHERE knowledge_base_id = ? AND ${where}`)
+      .run(JSON.stringify(vector), kbId);
+  }
+  const returnsQuery = 'Wo ist das Etikett für die Rücksendung?';
+
+  test('teilweise eingebettet: Volltexttreffer jenseits der Einbettungen ergänzen die Treffer', async () => {
+    const kb = createKnowledgeBase('Handbuch', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, longHandbook());
+    // Wie storeSectionEmbeddings: nur die ersten 50 Abschnitte haben eine Einbettung.
+    embed(kb, 'position < 50', [0, 1]);
+    embed(kb, "title = 'Thema 1'", [1, 0]);
+
+    // Ein einziger Einbettungs-Treffer beendet die Suche nicht.
+    jest.mocked(runEmbedding).mockResolvedValueOnce([1, 0]);
+    expect((await searchKnowledgeChunks(kb, returnsQuery, 5)).map((row) => row.title)).toEqual(['Thema 1', 'Rücksendungen']);
+
+    // Füllen die Einbettungs-Treffer das Limit, verdrängen sie den Volltexttreffer nicht.
+    embed(kb, 'position < 50', [1, 0]);
+    jest.mocked(runEmbedding).mockResolvedValueOnce([1, 0]);
+    const rows = await searchKnowledgeChunks(kb, returnsQuery, 5);
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.title)).toContain('Rücksendungen');
+  });
+
+  test('vollständig eingebettet: nur die Einbettungs-Treffer, ohne Volltext', async () => {
+    const kb = createKnowledgeBase('Handbuch', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, bigHandbook());
+    embed(kb, '1 = 1', [0, 1]);
+    embed(kb, "title = 'Thema 1'", [1, 0]);
+    jest.mocked(runEmbedding).mockResolvedValueOnce([1, 0]);
+    expect((await searchKnowledgeChunks(kb, returnsQuery, 5)).map((row) => row.title)).toEqual(['Thema 1']);
   });
 });
 

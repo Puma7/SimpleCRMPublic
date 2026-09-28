@@ -176,17 +176,40 @@ export function saveKnowledgeBaseDocument(knowledgeBaseId: number, content: stri
   if (!kb) throw new Error('Wissensbasis nicht gefunden');
   const normalized = content.trimEnd() + (content.endsWith('\n') ? '' : '\n');
   const filePath = knowledgeMarkdownPath(knowledgeBaseId);
-  // Erst der Suchindex (SQLite, rollt bei einem Fehler zurück — auch als Teil
-  // einer umgebenden Transaktion), dann die Datei: scheitert der Index, bleibt
-  // die Datei unverändert.
-  syncChunksFromDocument(knowledgeBaseId, normalized, kb.name);
-  fs.writeFileSync(filePath, normalized, 'utf8');
+  // Suchindex und Datei als Einheit: Die Datei wird als letzter Schritt in der
+  // SQLite-Transaktion des Index atomar ersetzt. Scheitert der Index, bleibt die
+  // Datei unverändert; scheitert das Schreiben (voller oder schreibgeschützter
+  // Datenträger), rollt der Index zurück — auch als Teil einer umgebenden
+  // Transaktion.
+  syncChunksFromDocument(knowledgeBaseId, normalized, kb.name, () => writeFileAtomicSync(filePath, normalized));
+}
+
+/**
+ * Ersetzt eine Datei atomar: erst eine temporäre Datei im selben Ordner, dann
+ * rename. Scheitert ein Schritt, bleibt die bisherige Datei unverändert und die
+ * temporäre Datei wird entfernt.
+ */
+function writeFileAtomicSync(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+    throw error;
+  }
 }
 
 function syncChunksFromDocument(
   knowledgeBaseId: number,
   content: string,
   title: string,
+  /** Läuft zuletzt in der Transaktion; wirft er, rollt der Index zurück. */
+  commitFile?: () => void,
 ): void {
   const db = getDb();
   const capped = content.slice(0, 500_000);
@@ -211,6 +234,7 @@ function syncChunksFromDocument(
         knowledgeMarkdownPath(knowledgeBaseId),
         new Date().toISOString(),
       );
+    commitFile?.();
   });
   replaceChunks();
   void storeSectionEmbeddings(knowledgeBaseId);
@@ -472,7 +496,8 @@ export async function searchKnowledgeChunks(
   const size = sections.reduce((sum, row) => sum + row.title.length + row.content.length, 0);
   if (size <= KNOWLEDGE_SMALL_KB_MAX_CHARS) return sections.map(toRow);
 
-  if (sections.some((row) => row.embedding_json)) {
+  const embeddedCount = sections.filter((row) => row.embedding_json).length;
+  if (embeddedCount > 0) {
     const queryVec = await runEmbedding(query);
     if (queryVec) {
       const scored = sections
@@ -482,15 +507,28 @@ export async function searchKnowledgeChunks(
         })
         .filter((entry) => entry.score > 0.2)
         .sort((a, b) => b.score - a.score);
-      if (scored.length > 0) return scored.slice(0, max).map((entry) => toRow(entry.row));
+      const semantic = scored.slice(0, max).map((entry) => entry.row);
+      if (semantic.length > 0 && embeddedCount === sections.length) return semantic.map(toRow);
+      if (semantic.length > 0) {
+        // Nur teilweise eingebettet (höchstens SECTION_EMBEDDINGS_MAX je
+        // Speichern, oder die Einbettung läuft noch): Volltexttreffer ergänzen,
+        // abwechselnd mit den Einbettungs-Treffern, damit ein exakter Treffer in
+        // einem nicht eingebetteten Abschnitt nicht verdrängt wird.
+        return interleaveSections(semantic, searchSectionsFullText(knowledgeBaseId, query, max), max).map(toRow);
+      }
     }
   }
 
+  return searchSectionsFullText(knowledgeBaseId, query, max).map(toRow);
+}
+
+/** Plan 048: Volltextsuche (FTS5, bm25) über die Abschnitte einer Wissensbasis. */
+function searchSectionsFullText(knowledgeBaseId: number, query: string, max: number): KnowledgeSectionRow[] {
   const terms = buildKnowledgeQueryTerms(query);
   if (terms.length === 0) return [];
   // Nur Buchstaben und Ziffern, jeweils in Anführungszeichen: keine FTS5-Operatoren.
   const match = terms.map((term) => `"${term}"`).join(' OR ');
-  const rows = db
+  return getDb()
     .prepare(
       `SELECT s.id, s.knowledge_base_id, s.title, s.content, s.embedding_json
        FROM ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE} f
@@ -500,7 +538,25 @@ export async function searchKnowledgeChunks(
        LIMIT ?`,
     )
     .all(match, knowledgeBaseId, max) as KnowledgeSectionRow[];
-  return rows.map(toRow);
+}
+
+/** Zwei Trefferlisten im Wechsel (erste zuerst), ohne doppelte Abschnitte, höchstens max. */
+function interleaveSections(
+  first: KnowledgeSectionRow[],
+  second: KnowledgeSectionRow[],
+  max: number,
+): KnowledgeSectionRow[] {
+  const seen = new Set<number>();
+  const merged: KnowledgeSectionRow[] = [];
+  for (let i = 0; i < Math.max(first.length, second.length) && merged.length < max; i++) {
+    for (const row of [first[i], second[i]]) {
+      if (row && !seen.has(row.id) && merged.length < max) {
+        seen.add(row.id);
+        merged.push(row);
+      }
+    }
+  }
+  return merged;
 }
 
 /** Plan 048: genutztes Wissen am KI-Entwurf (Freigabe-Hinweis); leer = keine Angabe. */

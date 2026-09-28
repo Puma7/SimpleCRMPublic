@@ -126,3 +126,32 @@ describe('Desktop: Automatik-Cockpit', () => {
     expect(snap).toMatchObject({ pendingApproval: 0, outboundBlocked: 0, aiDecideByWorkflow30d: [], aiCost30d: null });
   });
 });
+
+// Die Ansichten blenden aktiv zurückgestellte Entwürfe aus (SNOOZE_FILTER_SQL);
+// die Zähler im Cockpit müssen dieselbe Bedingung verwenden.
+describe('Desktop: Automatik-Cockpit und Zurückstellen', () => {
+  beforeAll(() => {
+    const draft = db.prepare(
+      `INSERT INTO email_messages
+         (id, account_id, folder_id, uid, subject, folder_kind, approval_state, outbound_hold, snoozed_until, date_received)
+       VALUES (?, 3, 10, ?, 'x', 'draft', ?, ?, ?, '2026-09-22T08:00:00Z')`,
+    );
+    draft.run(30, -30, 'pending', 0, '2099-01-01T00:00:00Z'); // zurückgestellt: zählt nicht
+    draft.run(31, -31, null, 1, '2099-01-01T00:00:00Z'); // zurückgestellt: zählt nicht
+    draft.run(32, -32, 'pending', 0, '2000-01-01T00:00:00Z'); // Zurückstellen abgelaufen: zählt
+    draft.run(33, -33, null, 1, '2000-01-01T00:00:00Z'); // Zurückstellen abgelaufen: zählt
+  });
+
+  afterAll(() => {
+    db.prepare('DELETE FROM email_messages WHERE id BETWEEN 30 AND 33').run();
+  });
+
+  test('aktiv zurückgestellte Entwürfe zählen nicht; Zähler = Ansichten', () => {
+    const snap = getAutomationCockpitSnapshot(db, { accountIds: [3] }, NOW);
+    expect(snap.pendingApproval).toBe(listMessagesForAccountView(3, 'approval_pending').length);
+    expect(snap.outboundBlocked).toBe(listMessagesForAccountView(3, 'outbound_blocked').length);
+    expect(snap).toMatchObject({ pendingApproval: 1, outboundBlocked: 1 });
+    // Alle Konten: die drei von oben plus je ein abgelaufen zurückgestellter Entwurf.
+    expect(getAutomationCockpitSnapshot(db, { accountIds: null }, NOW)).toMatchObject({ pendingApproval: 4, outboundBlocked: 4 });
+  });
+});

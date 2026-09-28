@@ -22,6 +22,7 @@ import {
   EMAIL_WORKFLOWS_TABLE,
 } from '../database-schema';
 import { APPROVAL_PENDING_VIEW_SQL, OUTBOUND_BLOCKED_VIEW_SQL } from './automation-view-sql';
+import { SNOOZE_FILTER_SQL } from './email-message-features';
 
 /** accountIds null = alle Konten; [] = keine. */
 export type AutomationCockpitScope = { accountIds: readonly number[] | null };
@@ -53,7 +54,8 @@ export function getAutomationCockpitSnapshot(
     )
     .all(automationWindowStart(now).toISOString(), ...sentFilter.params) as SentKindDayRow[];
 
-  // Warteschlangen mit denselben Bedingungen wie die Ansichten.
+  // Warteschlangen mit denselben Bedingungen wie die Ansichten, auch ohne aktiv
+  // zurückgestellte Entwürfe (SNOOZE_FILTER_SQL).
   const queueFilter = accountFilter(scope, 'm.account_id');
   const queues = db
     .prepare(
@@ -61,7 +63,7 @@ export function getAutomationCockpitSnapshot(
          SUM(CASE WHEN ${APPROVAL_PENDING_VIEW_SQL} THEN 1 ELSE 0 END) AS pendingApproval,
          SUM(CASE WHEN ${OUTBOUND_BLOCKED_VIEW_SQL} THEN 1 ELSE 0 END) AS outboundBlocked
        FROM ${EMAIL_MESSAGES_TABLE} m
-       WHERE m.soft_deleted = 0${queueFilter.sql}`,
+       WHERE m.soft_deleted = 0 AND ${SNOOZE_FILTER_SQL}${queueFilter.sql}`,
     )
     .get(...queueFilter.params) as { pendingApproval: number | null; outboundBlocked: number | null };
 
