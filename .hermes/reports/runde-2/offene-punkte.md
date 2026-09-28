@@ -71,3 +71,10 @@
   starten (`node_modules/.bin/jest …`, `npm run …`), nicht über `pnpm run`.
   Dauerhafte Lösung: `codeload.github.com` in der Netzwerk-Richtlinie der
   Umgebung freigeben, dann einmal `pnpm install`.
+
+## Entscheidung Pascal (28.09.2026)
+
+- **037** (Mail-Liste virtualisieren) und **`pnpm remove -w node-cron`** (045):
+  zurückgestellt; Pascal erledigt beides lokal (hier ist `codeload.github.com`
+  gesperrt und `better-sqlite3` v12.11.2 nicht ladbar). Der Patch für 037 bleibt
+  unter `037-nachrichtenliste.patch`.

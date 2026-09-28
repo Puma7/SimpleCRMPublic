@@ -60,15 +60,15 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **047** R2 Echter Testlauf: Mail auswählen, auch deaktiviert, optional echte KI · P2 · M
 - [x] **049** R4 Automatik-Cockpit: Anteil Mensch/KI, Warteschlangen, KI-Kosten · P2 · M
 - [x] **048** R3 Wissensbasis abschnittsweise durchsuchen, Quellen im Entwurf · P2 · M–L · *nach 028, 029*
-- [ ] **050** R5 Treffsicherheit der KI-Entscheidungen, Schwellen-Vorschlag · P3 · L · *nach 046, 049*
-  - ✅ Phase 0 freigegeben (Pascal 28.09., Q1–Q7 wie vorgeschlagen); Phasen 1–3 folgen.
+- [x] **050** R5 Treffsicherheit der KI-Entscheidungen, Schwellen-Vorschlag · P3 · L · *nach 046, 049*
+  - ✅ Phasen 1–3 umgesetzt (Server-Migration 0066, Desktop-Tabelle, Korrekturen, „Treffsicherheit (90 Tage)“ am Knoten); Phase 4 nicht gebaut (Q7).
 
 ## Welle 6 – Umbauten und Abhängigkeiten
 
 - [ ] **037** Mail-Liste virtualisieren (ersetzt Plan 008) · Befund #15 · P3 · M
-  - ⏸ **Blockiert:** `pnpm add` am gesperrten Host `codeload.github.com`; Code als Patch `.hermes/reports/runde-2/037-nachrichtenliste.patch` (ungetestet).
+  - ⏸ **Zurückgestellt (Pascal 28.09.):** setzt es lokal um; hier war `pnpm add` am Host `codeload.github.com` gesperrt. Ungetesteter Patch: `.hermes/reports/runde-2/037-nachrichtenliste.patch`.
 - [ ] **045** Desktop-Zeitpläne auf die gemeinsame Cron-Logik, `node-cron` entfernen · Befund #20 · P3 · M
-  - ✅ Umstellung fertig (Gates grün); offen nur `pnpm remove -w node-cron`, sobald `codeload.github.com` erreichbar ist.
+  - ✅ Umstellung fertig (Gates grün); `pnpm remove -w node-cron` zurückgestellt (Pascal 28.09., macht es lokal).
 - [x] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [ ] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
   - ✅ Phase 0 freigegeben (Pascal 28.09.); Phase 1 läuft, Windows/macOS-Spike durch Pascal ausstehend.

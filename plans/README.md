@@ -122,7 +122,7 @@ update the row here.
 | 034 | ai.decide model call outside DB transactions on send | P2 | M | perf | 024 | DONE |
 | 035 | Learnings digest: size preflight, failures recorded | P2 | S | bug | — | DONE |
 | 036 | Contract test: renderer HTTP registry vs server routes | P2 | M | tests | — | DONE |
-| 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | BLOCKED — `pnpm add` am Proxy abgelehnt (codeload.github.com, better-sqlite3-Tarball); Code als Patch in .hermes/reports/runde-2/037-nachrichtenliste.patch (ungetestet) |
+| 037 | Virtualize the email message list (supersedes 008) | P3 | M | perf | — | DEFERRED — Pascal 28.09.: zurückgestellt, setzt es lokal um (`pnpm add` hier am Proxy gesperrt); ungetesteter Patch: .hermes/reports/runde-2/037-nachrichtenliste.patch |
 | 038 | Learnings digest: prompt hardening + atomic acceptance | P3 | M | security | 035 | DONE |
 | 039 | Output budgets for DOC/XLS/RTF text extraction | P3 | S | security | — | DONE |
 | 040 | Schedule tick: enqueue before claiming the slot | P3 | S | bug | — | DONE |
@@ -130,12 +130,12 @@ update the row here.
 | 042 | Agent docs: document every CI gate | P3 | S | docs | 031 | DONE |
 | 043 | Split server workflow-execution.ts by node category | P3 | L | tech-debt | 030, 024, 034, 047 | DONE |
 | 044 | Desktop credentials: keytar → Electron safeStorage | P3 | L | migration | — | TODO — Phase 0 APPROVED (Pascal 28.09.); Windows/macOS-Spike durch Pascal ausstehend |
-| 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | DONE bis auf `pnpm remove -w node-cron` (am Proxy blockiert: codeload.github.com; Abhängigkeit ungenutzt, siehe .hermes/reports/runde-2/offene-punkte.md) |
+| 045 | Desktop schedules on the core cron engine | P3 | M | tech-debt | — | DONE bis auf `pnpm remove -w node-cron` (Pascal 28.09.: zurückgestellt, entfernt die ungenutzte Abhängigkeit lokal) |
 | 046 | R1: automation history per mail in the reader | P2 | S–M | direction | — | DONE |
 | 047 | R2: real workflow test run | P2 | M | direction | — | DONE |
 | 048 | R3: section-level knowledge retrieval + sources | P2 | M–L | direction | 028, 029 | DONE |
 | 049 | R4: automation cockpit | P2 | M | direction | — | DONE |
-| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | TODO — Phase 0 APPROVED (Pascal 28.09., Q1–Q7 wie vorgeschlagen) |
+| 050 | R5: AI decision accuracy loop | P3 | L | direction | 046, 049 | DONE (Phasen 1–3; Phase 4 `decision_override` nicht gebaut, Q7) |
 
 ### Dependency notes (Runde 2)
 
