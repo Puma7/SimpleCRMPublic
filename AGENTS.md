@@ -17,7 +17,7 @@ Domain: [`docs/DEVELOPER_EMAIL.md`](docs/DEVELOPER_EMAIL.md), [`docs/WORKFLOW_PH
 SimpleCRM ships in **two editions** from one pnpm-workspaces monorepo (`packages/core`, `packages/desktop`, `packages/server`; see `pnpm-workspace.yaml`):
 
 - **Desktop edition** — an Electron + React + TypeScript app. Data is stored locally in SQLite (`better-sqlite3`); everything runs inside the Electron main process plus a Vite-served renderer.
-- **Server edition** — a Fastify HTTP API (`packages/server`, ~185 source files) backed by PostgreSQL, deployed with Docker Compose (`docker/`: `caddy`, `api`, `postgres`, `migrate`, `backup`, …). See [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md). CI boots and smoke-tests it in the `server-compose-smoke` job of `.github/workflows/ci.yml`.
+- **Server edition** — a Fastify HTTP API (`packages/server`) backed by PostgreSQL, deployed with Docker Compose (`docker/`: `caddy`, `api`, `postgres`, `migrate`, `backup`, …). See [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md). CI boots and smoke-tests it in the `server-compose-smoke` job of `.github/workflows/ci.yml`.
 
 Unless noted otherwise, the commands and gotchas below target the **desktop edition**; for the server edition follow [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md).
 
@@ -27,16 +27,43 @@ Unless noted otherwise, the commands and gotchas below target the **desktop edit
 |---|---|
 | Install deps | `pnpm install` |
 | Lint | `pnpm run lint` |
+| Typecheck (all packages + renderer + electron main) | `pnpm run typecheck` |
+| Build workspace packages | `pnpm run build:packages` |
 | Unit + integration tests | `pnpm test` |
 | Unit tests only | `pnpm run test:unit` |
-| Mail module tests | `pnpm run test:mail` |
-| Mail module coverage (ratchet on `electron/email`) | `pnpm run test:mail:coverage` |
 | Integration tests only | `pnpm run test:integration` |
+| Focused test | `pnpm exec jest <path/to/file.test.ts>` |
+| CI's single coverage run (unit + integration) | `pnpm run test:ci:coverage` |
+| Server coverage ratchet | `pnpm run test:server:coverage && node scripts/check-server-coverage-ratchet.mjs` |
+| Email UI coverage ratchet | `pnpm run test:ui:coverage:check` |
+| Mail module tests | `pnpm run test:mail` |
+| Mail coverage ratchet (`electron/email`) | `pnpm run test:mail:coverage:check` |
+| Raise a coverage baseline | `pnpm run test:<server\|ui\|mail>:coverage:update-baseline` |
 | Build (web + electron main) | `pnpm run build` |
 | Dev mode | `xvfb-run --auto-servernum pnpm run electron:dev` |
 | Production mode | `pnpm run electron:start` |
 
 See `package.json` `scripts` for the full list.
+
+### CI gates
+
+`.github/workflows/ci.yml` is the source of truth; if this table and the workflow disagree, the workflow wins.
+
+| CI job / step | Command CI runs | Reproduce locally |
+|---|---|---|
+| `build-and-test` · Verify TypeScript 7 toolchain | `pnpm run check:typescript-toolchain` | same |
+| `build-and-test` · Lint | `pnpm run lint` | same |
+| `build-and-test` · Run tests (unit + integration, once, with coverage) | `pnpm run test:ci:coverage` | same (as a non-root user, see Gotchas) |
+| `build-and-test` · Mail module tests (coverage ratchet) | `pnpm run test:mail:coverage:check` | same |
+| `build-and-test` · Server coverage ratchet | `node scripts/check-server-coverage-ratchet.mjs` | after `pnpm run test:ci:coverage` (or `pnpm run test:server:coverage`) |
+| `build-and-test` · Email UI coverage ratchet | `node scripts/check-ui-coverage-ratchet.mjs` | after `pnpm run test:ci:coverage` (or `pnpm run test:ui:coverage:check`) |
+| `build-and-test` · Typecheck | `pnpm run typecheck` | same |
+| `build-and-test` · Build (renderer) | `pnpm run build` | same |
+| `electron-e2e` · Electron E2E suite | `pnpm run test:e2e` (Xvfb + keyring) | `xvfb-run --auto-servernum pnpm run test:e2e` |
+| `server-compose-smoke` · Compose config, boot, backup, doctor, restore drill | `docker compose -f docker/docker-compose.yml …` | see [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md) |
+
+Coverage ratchets fail when coverage drops more than 1 point below the committed `*-coverage-baseline.json`
+**or** exceeds it by more than 2 points (then raise the baseline with the matching `…:update-baseline` script).
 
 ### Gotchas
 
@@ -47,8 +74,8 @@ See `package.json` `scripts` for the full list.
 - **Xvfb is required** on headless Linux to run the Electron app or E2E tests. Use `xvfb-run --auto-servernum` as a prefix.
 - **Dev mode** (`pnpm run electron:dev`) starts four concurrent processes: Vite build watcher, TypeScript compiler watcher, Electron main via nodemon, and Vite dev server on port 5173. DevTools open automatically in dev mode.
 - The SQLite database file is created at `~/.config/simplecrm/database.sqlite` (on Linux).
-- **Mail tests in CI:** GitHub Actions runs `pnpm run test:mail` after the main Jest suite (see `.github/workflows/ci.yml`).
-- **Mail coverage:** `jest.mail.config.cjs` collects coverage from `electron/email/**/*.ts` with a **ratchet** threshold (~91% lines, ~80% branches). Run `pnpm run test:mail` while iterating (threshold disabled); use `pnpm run test:mail:coverage` before merging mail changes. See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
+- **Mail tests and coverage:** CI runs `pnpm run test:mail:coverage:check` after the main Jest run; the ratchet compares `electron/email` coverage against `mail-coverage-baseline.json`. Run `pnpm run test:mail` while iterating (threshold disabled). See [`docs/MAIL_TESTING.md`](docs/MAIL_TESTING.md).
+- **Embedded PostgreSQL tests need a non-root user.** Suites using `tests/integration/helpers/embedded-postgres.ts` start `initdb`, which refuses to run as root; CI runs as an unprivileged user. As root, run Jest as a normal user (e.g. `su <user> -c "cd <repo> && node_modules/.bin/jest --cacheDirectory /tmp/jest-<user> <file>"` after making the checkout writable for that user). Server coverage measured as root is several points too low.
 - The app UI is in German (e.g., "Kunden" = Customers, "Aufgaben" = Tasks, "Kalender" = Calendar, "Einstellungen" = Settings).
 - **Workflow graph UI:** `@xyflow/react` v12 (`^12.11.2`). Optional isolated Svelte experiment: `packages/svelte-lab` (`@xyflow/svelte`), see `packages/svelte-lab/README.md` and `VITE_ENABLE_SVELTE_LAB`.
 
@@ -81,5 +108,5 @@ Pascal has granted Hermes high autonomy for this project.
 2. Reproduce the bug or establish a baseline.
 3. Add a regression test first.
 4. Implement the smallest root-cause fix.
-5. Run focused tests and typecheck.
+5. Run focused tests (`pnpm exec jest <file>`) and `pnpm run typecheck`; before handing off, run the CI gates that cover the files you touched (see "CI gates").
 6. Write longer findings to `.hermes/reports/` and report only the concise result in German.

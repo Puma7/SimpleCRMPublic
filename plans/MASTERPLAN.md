@@ -37,7 +37,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
 - [x] **031** CI: Jest nur einmal mit Coverage statt dreimal (≈ 8–9 min schneller) · Befund #8 · P2 · M · *nach 030*
   - ✅ Pascal hat am 28.09. die Zählweise angenommen: CI führt Unit + Integration einmal mit Coverage aus (`test:ci:coverage`), UI-Branch-Baseline auf den kombinierten Messwert (71,14). Bericht: `.hermes/reports/runde-2/031-coverage-aequivalenz.md`.
 - [x] **036** Vertragstest: Frontend-HTTP-Zuordnung gegen die echten Server-Routen · Befund #14 · P2 · M
-- [ ] **042** AGENTS.md und Handoff: alle CI-Pflichtprüfungen dokumentieren · Befund #17 · P3 · S · *nach 031*
+- [x] **042** AGENTS.md und Handoff: alle CI-Pflichtprüfungen dokumentieren · Befund #17 · P3 · S · *nach 031*
 
 ## Welle 3 – Weitere Sicherheits- und Stabilitätsfixes
 
