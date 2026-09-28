@@ -63,3 +63,11 @@
   (`node_modules/better-sqlite3 -> .pnpm/better-sqlite3@12.11.1/…`), Laden
   geprüft; die Gates danach neu gestartet. Lockfile und `package.json` blieben
   unverändert.
+- **Auch `pnpm run <skript>` entfernt den Link** (bestätigt): pnpm 11 prüft vor
+  jedem Skript den Stand der Abhängigkeiten (`runDepsStatusCheck`), stellt fest,
+  dass `node_modules` nicht zum Lockfile passt (12.11.1 statt Git-v12.11.2),
+  startet eine Installation, scheitert am gesperrten Host und räumt dabei
+  `node_modules/better-sqlite3` ab. In dieser Umgebung daher Skripte direkt
+  starten (`node_modules/.bin/jest …`, `npm run …`), nicht über `pnpm run`.
+  Dauerhafte Lösung: `codeload.github.com` in der Netzwerk-Richtlinie der
+  Umgebung freigeben, dann einmal `pnpm install`.
