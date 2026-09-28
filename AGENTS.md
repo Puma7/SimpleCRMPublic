@@ -19,6 +19,8 @@ SimpleCRM ships in **two editions** from one pnpm-workspaces monorepo (`packages
 - **Desktop edition** — an Electron + React + TypeScript app. Data is stored locally in SQLite (`better-sqlite3`); everything runs inside the Electron main process plus a Vite-served renderer.
 - **Server edition** — a Fastify HTTP API (`packages/server`) backed by PostgreSQL, deployed with Docker Compose (`docker/`: `caddy`, `api`, `postgres`, `migrate`, `backup`, …). See [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md). CI boots and smoke-tests it in the `server-compose-smoke` job of `.github/workflows/ci.yml`.
 
+**Product direction (Pascal, 2026-09-28, [`docs/design/produktstrategie-2.0.md`](docs/design/produktstrategie-2.0.md)):** the server edition (server + browser) is the product. The standalone desktop edition (SQLite, logic in `electron/`) is **frozen** — security and critical bug fixes only, no new features, no new IPC channels, no parity work; it is deprecated in 2.0. Build new features in `packages/server`, `packages/core` and `src/` only.
+
 Unless noted otherwise, the commands and gotchas below target the **desktop edition**; for the server edition follow [`docs/SETUP_SERVER.md`](docs/SETUP_SERVER.md).
 
 ### Key commands

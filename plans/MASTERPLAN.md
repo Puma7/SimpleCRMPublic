@@ -71,7 +71,7 @@ Aufwand S = Stunden, M = etwa ein Tag, L = mehrere Tage.
   - ✅ Umstellung fertig (Gates grün); `pnpm remove -w node-cron` zurückgestellt (Pascal 28.09., macht es lokal).
 - [x] **043** `workflow-execution.ts` nach Knotentypen aufteilen (reine Verschiebung) · Befund #18 · P3 · L · *nach 030, 024, 034, 047*
 - [x] **044** Desktop-Zugangsdaten: `keytar` → Electron `safeStorage` (erst Entscheidungsdokument) · Befund #19 · P3 · L
-  - ✅ Phase 1 umgesetzt (eigene Datei `credentials.sqlite`, Umzug je Eintrag mit Gegenprobe, keytar nur lesend); offen: Windows/macOS-Spike (Pascal) vor dem Release, keytar-Einträge löschen in N+1, keytar entfernen in N+2.
+  - ✅ Phase 1 umgesetzt (eigene Datei `credentials.sqlite`, Umzug je Eintrag mit Gegenprobe, keytar nur lesend); offen: Windows/macOS-Spike (Pascal) vor einem weiteren Desktop-Release; N+1/N+2 entfallen (Desktop eingefroren, `docs/design/produktstrategie-2.0.md`).
 
 ## Sonstiges ohne eigenen Plan
 
