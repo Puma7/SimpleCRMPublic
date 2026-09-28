@@ -115,7 +115,10 @@ Menschliche Eingänge (Stand dieses Dokuments):
 
 - Anzahl Entscheidungen, Verteilung Ja/Nein/Unsicher/KI-Fehler
 - **Übereinstimmung mit Menschen** = bestätigt / (bestätigt + widersprochen),
-  nur über abgeschlossene Ereignisse (korrigiert oder älter als 30 Tage)
+  nur über abgeschlossene Ereignisse (korrigiert oder älter als 30 Tage) und nur
+  über Ereignisse mit Rückmeldung: `none` zählt nur zur Verteilung und zum
+  Histogramm, nie zu Übereinstimmung oder Schwellen-Vorschlag (ohne
+  Rückmeldung wird nie eine Korrektur verknüpft)
 - Histogramm der Ja-Wahrscheinlichkeit in 10 Stufen (0–9, 10–19, …, 90–100)
 - **Vorschlag Schwelle**, erst ab 30 gelabelten Ereignissen: kleinste Schwelle
   t (50…99), bei der höchstens 5 % der automatischen Antworten falsch wären

@@ -246,4 +246,37 @@ describe('Desktop: Treffsicherheit der KI-Entscheidung', () => {
     expect(logger.debug).toHaveBeenCalledTimes(1);
     expect(events().map((row) => row.message_id)).toEqual([531]);
   });
+
+  // Codex-Review PR #199: Ereignisse ohne Rückmeldung (`none`) galten nach
+  // 30 Tagen als bestätigt – scheinbar 100 % Übereinstimmung samt Vorschlag.
+  test('Kennzahlen: Ereignisse ohne Rückmeldung zählen nur zur Verteilung', () => {
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    const insert = db.prepare(
+      `INSERT INTO ai_decision_events
+         (workflow_id, workflow_source_id, node_id, direction, answer, probability, threshold,
+          feedback_signal, override_kind, truth, override_at, created_at)
+       VALUES (?, ?, 'decide', 'inbound', 'ja', ?, 70, ?, ?, ?, ?, ?)`,
+    );
+    for (let i = 0; i < 35; i += 1) insert.run(SPAM_WORKFLOW_ID, SPAM_WORKFLOW_ID, 95, 'none', null, null, null, old);
+
+    const onlyNone = loadAiDecisionStats({ workflowId: SPAM_WORKFLOW_ID, nodeId: 'decide' });
+    expect(onlyNone).toMatchObject({
+      total: 35,
+      byAnswer: { ja: 35, nein: 0, unsicher: 0, error: 0 },
+      closed: 0,
+      agreed: 0,
+      overridden: 0,
+      agreementRate: null,
+      labelled: 0,
+      suggestedThreshold: null,
+    });
+    expect(onlyNone.histogram[9]).toBe(35);
+
+    // Später Rückmeldung „spam“ gewählt: nur diese Ereignisse zählen.
+    insert.run(SPAM_WORKFLOW_ID, SPAM_WORKFLOW_ID, 97, 'spam', null, null, null, old);
+    insert.run(SPAM_WORKFLOW_ID, SPAM_WORKFLOW_ID, 96, 'spam', 'spam_to_clean', 'nein', old, old);
+    const mixed = loadAiDecisionStats({ workflowId: SPAM_WORKFLOW_ID, nodeId: 'decide' });
+    expect(mixed).toMatchObject({ total: 37, closed: 2, agreed: 1, overridden: 1, labelled: 2, suggestedThreshold: null });
+    expect(mixed.agreementRate).toBeCloseTo(0.5);
+  });
 });

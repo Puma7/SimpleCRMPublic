@@ -122,7 +122,7 @@ export function loadAiDecisionStats(input: Readonly<{
   const since = new Date(now.getTime() - days * DAY_MS).toISOString();
   const rows = getDb()
     .prepare(
-      `SELECT answer, probability, created_at, override_kind, truth FROM ${AI_DECISION_EVENTS_TABLE}
+      `SELECT answer, probability, created_at, override_kind, truth, feedback_signal FROM ${AI_DECISION_EVENTS_TABLE}
        WHERE workflow_source_id = ? AND node_id = ? AND created_at >= ?`,
     )
     .all(input.workflowId, input.nodeId, since) as Array<{
@@ -131,6 +131,7 @@ export function loadAiDecisionStats(input: Readonly<{
     created_at: string;
     override_kind: string | null;
     truth: AiDecisionTruth | null;
+    feedback_signal: string | null;
   }>;
   return summarizeAiDecisionEvents(rows.map((row) => ({
     answer: row.answer,
@@ -138,6 +139,7 @@ export function loadAiDecisionStats(input: Readonly<{
     createdAt: row.created_at,
     overrideKind: row.override_kind,
     truth: row.truth,
+    feedbackSignal: row.feedback_signal,
   })), now);
 }
 

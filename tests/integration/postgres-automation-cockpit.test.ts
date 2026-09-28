@@ -145,10 +145,12 @@ describe('Server: Automatik-Cockpit', () => {
     ]);
   });
 
-  test('Konto-Filter A2', async () => {
+  test('Konto-Filter A2: keine KI-Kosten, weil Nutzungsereignisse keinem Konto zugeordnet sind', async () => {
     const report = await createPostgresEmailReportingPort({ db }).collect({ workspaceId: WS_A, accountId: A2, now, mailScope: { kind: 'all' } });
     expect(totals(report.automation.sentByKindWeekly)).toMatchObject({ human: 0, workflow: 1 });
     expect(report.automation).toMatchObject({ pendingApproval: 1, outboundBlocked: 1 });
+    // Die Workspace-Summe (3000) darf nicht als Kosten von Konto A2 erscheinen.
+    expect(report.automation.aiCost30d).toBeNull();
     expect(report.automation.aiDecideByWorkflow30d).toEqual([expect.objectContaining({ nein: 1, total: 1 })]);
   });
 

@@ -107,6 +107,7 @@ describe('summarizeAiDecisionEvents', () => {
     createdAt: daysAgo(40),
     overrideKind: null,
     truth: null,
+    feedbackSignal: 'spam',
     ...overrides,
   });
 
@@ -140,5 +141,37 @@ describe('summarizeAiDecisionEvents', () => {
     const stats = summarizeAiDecisionEvents([event({ createdAt: daysAgo(1) })], now);
     expect(stats.agreementRate).toBeNull();
     expect(stats.closed).toBe(0);
+  });
+
+  // Codex-Review PR #199: Ohne Rückmeldung kann nie eine Korrektur verknüpft
+  // werden; nach 30 Tagen galten solche Ereignisse trotzdem als bestätigt
+  // (scheinbar 100 % Übereinstimmung samt Schwellen-Vorschlag).
+  test('Ereignisse ohne Rückmeldung (none) zählen nur zur Verteilung, nicht zu Übereinstimmung und Vorschlag', () => {
+    const withoutFeedback = [
+      ...Array.from({ length: 35 }, () => event({ feedbackSignal: 'none' })),
+      event({ probability: 5, answer: 'nein', feedbackSignal: 'none' }),
+    ];
+    const onlyNone = summarizeAiDecisionEvents(withoutFeedback, now);
+    expect(onlyNone).toMatchObject({
+      total: 36,
+      byAnswer: { ja: 35, nein: 1, unsicher: 0, error: 0 },
+      histogram: [1, 0, 0, 0, 0, 0, 0, 0, 0, 35],
+      closed: 0,
+      agreed: 0,
+      overridden: 0,
+      agreementRate: null,
+      labelled: 0,
+      suggestedThreshold: null,
+    });
+
+    // Später Rückmeldung „spam“ gewählt: nur diese Ereignisse zählen.
+    const mixed = summarizeAiDecisionEvents([
+      ...withoutFeedback,
+      event({ probability: 97 }),
+      event({ probability: 96, overrideKind: 'spam_to_clean', truth: 'nein' }),
+    ], now);
+    expect(mixed).toMatchObject({ total: 38, closed: 2, agreed: 1, overridden: 1, labelled: 2, suggestedThreshold: null });
+    expect(mixed.agreementRate).toBeCloseTo(0.5);
+    expect(mixed.histogram[9]).toBe(37);
   });
 });

@@ -89,6 +89,8 @@ export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegist
   workflowMailRoute('/api/v1/email/messages/:messageId/workflow-runs', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/),
   workflowMailRoute('/api/v1/workflows/:id/runs', ['GET'], /^\/api\/v1\/workflows\/([^/]+)\/runs$/),
   workflowMailRoute('/api/v1/workflows/by-source/:sourceId/runs', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/runs$/),
+  // Plan 050: Kennzahlen zählen Entscheidungen über Mails – Mail-Sicht wie die Lauf-Liste.
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/ai-decisions', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/ai-decisions$/),
   workflowMailRoute('/api/v1/workflow-runs', ['GET'], /^\/api\/v1\/workflow-runs$/),
   workflowMailRoute('/api/v1/workflow-runs/:id', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)$/),
   workflowMailRoute('/api/v1/workflow-runs/:id/steps', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/),

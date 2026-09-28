@@ -79,7 +79,7 @@ function AutomationCard({ automation }: { automation: AutomationCockpitSnapshot 
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Nur in der Server-Edition bzw. mit Vollzugriff verfügbar.
+                Nur in der Server-Edition, mit Vollzugriff und ohne Kontofilter verfügbar.
               </p>
             )}
           </div>

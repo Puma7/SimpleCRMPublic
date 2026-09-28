@@ -39411,6 +39411,69 @@ describe('server edition foundation', () => {
     expect(stepListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, limit: 50, includeDetail: false, runId: 80 }]);
   });
 
+  test('KI-Entscheidungs-Kennzahlen by-source laufen durch die Mail-Zugriffskontrolle wie die Lauf-Liste', async () => {
+    // Ohne Eintrag im Mail-Routen-Inventar lief die Route an der Mail-Policy
+    // vorbei: der Port bekam keine mailScope und zählte die Entscheidungen
+    // aller Mails des Workspaces – auch für Nutzer ohne Mailzugriff.
+    const statsCalls: Array<Record<string, unknown>> = [];
+    const scopePermissions: string[] = [];
+    let scope: { kind: 'all' } | { kind: 'none' } | {
+      kind: 'restricted'; accountIds: number[]; folderIds: number[]; messageIds: number[];
+    } = { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] };
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        workflows: {
+          async list() {
+            return { items: [{ ...makeWorkflowRecord(23), sourceSqliteId: -23 }], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+        },
+      }),
+      aiDecisionStats: {
+        async get(input: Record<string, unknown>) {
+          statsCalls.push(input);
+          return { total: 0 };
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope(input: { permission: string }) {
+          scopePermissions.push(input.permission);
+          return scope;
+        },
+      },
+    } as unknown as ServerApiPorts);
+    const request = {
+      method: 'GET' as const,
+      path: '/api/v1/workflows/by-source/-23/ai-decisions',
+      query: { nodeId: 'decide' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.view'] },
+    };
+
+    // Eingeschränkte Mail-Sicht: der Port zählt nur Mails dieser Sicht.
+    expect((await api.handle(request)).status).toBe(200);
+    expect(scopePermissions).toEqual(['mail.content.read']);
+    expect(statsCalls).toEqual([expect.objectContaining({
+      workflowSourceId: -23,
+      nodeId: 'decide',
+      mailScope: { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] },
+    })]);
+
+    // Kein Mailzugriff: leere Sicht statt Workspace-Summe.
+    scope = { kind: 'none' };
+    expect((await api.handle(request)).status).toBe(200);
+    expect(statsCalls[1]).toMatchObject({ mailScope: { kind: 'none' } });
+
+    // Volle Mail-Sicht: ungefiltert wie bisher.
+    scope = { kind: 'all' };
+    expect((await api.handle(request)).status).toBe(200);
+    expect(statsCalls[2]).not.toHaveProperty('mailScope');
+  });
+
   test('workflow run step details need workflows.view; CRM/integration values need crm.read', async () => {
     const detail = {
       v: 1,

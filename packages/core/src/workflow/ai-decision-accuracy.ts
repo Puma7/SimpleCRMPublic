@@ -130,6 +130,12 @@ export type AiDecisionEventForStats = Readonly<{
   createdAt: Date | string;
   overrideKind: string | null;
   truth: AiDecisionTruth | null;
+  /**
+   * Rückmeldungsart beim Entscheiden. `none` (auch unbekannt) zählt nur zur
+   * Verteilung: ohne Rückmeldung wird nie eine Korrektur verknüpft, nach
+   * 30 Tagen wäre sonst jede Antwort „bestätigt“.
+   */
+  feedbackSignal: string | null;
 }>;
 
 export type AiDecisionStats = Readonly<{
@@ -137,7 +143,7 @@ export type AiDecisionStats = Readonly<{
   byAnswer: Readonly<Record<AiDecideAnswer, number>>;
   /** 10 Stufen der Ja-Wahrscheinlichkeit: 0–9, 10–19, …, 90–100. */
   histogram: readonly number[];
-  /** Korrigiert oder älter als das 30-Tage-Fenster. */
+  /** Korrigiert oder älter als das 30-Tage-Fenster (nur mit Rückmeldung). */
   closed: number;
   /** Ja/Nein ohne Korrektur nach Ablauf des Fensters. */
   agreed: number;
@@ -172,6 +178,7 @@ export function summarizeAiDecisionEvents(
       ? Math.max(0, Math.min(100, Math.round(event.probability)))
       : null;
     if (probability !== null) histogram[Math.min(9, Math.floor(probability / 10))]! += 1;
+    if (normalizeAiDecisionFeedbackSignal(event.feedbackSignal) === 'none') continue;
     const hasOverride = Boolean(event.overrideKind) && (event.truth === 'ja' || event.truth === 'nein');
     const created = new Date(event.createdAt).getTime();
     const isClosed = hasOverride || (Number.isFinite(created) && created < windowStart);

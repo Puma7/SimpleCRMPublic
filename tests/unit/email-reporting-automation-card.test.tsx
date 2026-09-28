@@ -71,7 +71,7 @@ test('Wochen, Anteil automatisch, Warteschlangen, Entscheidungen und Kosten', as
 test('ohne Kosten: Hinweis; älterer Server ohne Cockpit: keine Karte', async () => {
   mockReporting(snapshot(null));
   const first = render(<EmailReportingPage />);
-  expect(await screen.findByText('Nur in der Server-Edition bzw. mit Vollzugriff verfügbar.')).toBeInTheDocument();
+  expect(await screen.findByText('Nur in der Server-Edition, mit Vollzugriff und ohne Kontofilter verfügbar.')).toBeInTheDocument();
   first.unmount();
 
   const legacy = snapshot(null) as Record<string, unknown>;

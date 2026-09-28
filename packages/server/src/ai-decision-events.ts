@@ -183,7 +183,7 @@ export async function loadAiDecisionStats(
   const since = new Date(input.now.getTime() - days * DAY_MS);
   let query = trx
     .selectFrom('ai_decision_events')
-    .select(['answer', 'probability', 'created_at', 'override_kind', 'truth'])
+    .select(['answer', 'probability', 'created_at', 'override_kind', 'truth', 'feedback_signal'])
     .where('workspace_id', '=', input.workspaceId)
     .where('workflow_source_id', '=', input.workflowSourceId)
     .where('node_id', '=', input.nodeId)
@@ -197,6 +197,7 @@ export async function loadAiDecisionStats(
     createdAt: row.created_at,
     overrideKind: row.override_kind,
     truth: row.truth,
+    feedbackSignal: row.feedback_signal,
   })), input.now);
 }
 

@@ -298,7 +298,7 @@ type CockpitCostRow = { events: CountValue; cost: CountValue };
  * Automatik-Cockpit (Plan 049): Herkunft gesendeter Mails je Woche,
  * Warteschlangen (gleiche Bedingungen wie die Ansichten approval_pending und
  * outbound_blocked), Antworten der KI-Entscheidung je Workflow und – nur mit
- * voller Mail-Sicht – die KI-Kosten. Jede Abfrage mit workspace_id,
+ * voller Mail-Sicht ohne Konto-Filter – die KI-Kosten. Jede Abfrage mit workspace_id,
  * Konto-Filter und Mail-Sicht wie selectReportingTotals.
  */
 async function selectAutomationCockpit(
@@ -388,8 +388,10 @@ async function selectAutomationCockpit(
     )`);
   }
 
-  // KI-Kosten nur mit voller Mail-Sicht: die Nutzungsdaten kennen keine Mail-Rechte.
-  const costQuery = messageScope
+  // KI-Kosten nur mit voller Mail-Sicht und ohne Konto-Filter: die Nutzungsdaten
+  // kennen weder Mail-Rechte noch ein Konto, sonst stünde die Workspace-Summe da.
+  const hideCost = messageScope !== undefined || accountId !== undefined;
+  const costQuery = hideCost
     ? Promise.resolve(undefined)
     : trx
       .selectFrom('ai_usage_events')
@@ -421,7 +423,7 @@ async function selectAutomationCockpit(
       port: row.port ?? '',
       count: countValue(row.count),
     }))),
-    aiCost30d: messageScope
+    aiCost30d: hideCost
       ? null
       : { costMicroUsd: countValue(costRow?.cost), events: countValue(costRow?.events) },
   };

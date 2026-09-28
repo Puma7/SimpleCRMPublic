@@ -59,6 +59,8 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/pgp/identities',
   '/api/v1/workflows/:id/runs',
   '/api/v1/workflows/by-source/:sourceId/runs',
+  // Leere Mail-Sicht → der Port zählt keine Entscheidungen (wie die Lauf-Liste).
+  '/api/v1/workflows/by-source/:sourceId/ai-decisions',
   '/api/v1/workflow-runs',
   '/api/v1/workflow-runs/:id',
   '/api/v1/workflow-runs/:id/steps',

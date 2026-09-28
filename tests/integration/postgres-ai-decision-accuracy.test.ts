@@ -21,6 +21,7 @@ import {
 } from '../../packages/server/src/db/postgres-workflow-read-ports';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
+import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { buildAiDecideJobPlan } from '../../packages/server/src/jobs/production-handlers';
 import type { JobPayload } from '../../packages/server/src/jobs/types';
 import { outboundReviewApprovedKey } from '../../packages/server/src/mail-outbound-approval-store';
@@ -407,11 +408,26 @@ describe('Treffsicherheit der KI-Entscheidung (Embedded Postgres)', () => {
       `UPDATE ai_decision_events SET created_at = now() - interval '40 days' WHERE message_id IN (9142, 9143)`,
     );
 
+    // Mail-Sicht des Aufrufers, wie sie die Mail-Zugriffskontrolle auflöst.
+    let routeMailScope: MailSqlScope = { kind: 'all' };
     const api = createServerApi({
       auth: {} as ServerApiPorts['auth'],
       locks: {} as ServerApiPorts['locks'],
       workflows: createPostgresWorkflowReadPort({ db }),
       aiDecisionStats: createPostgresAiDecisionStatsPort({ db }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return routeMailScope;
+        },
+      },
+      mailResourceLookup: {
+        async resolve() {
+          return [];
+        },
+      },
     } as unknown as ServerApiPorts);
     const principal = (capabilities: string[]) =>
       ({ userId: USER_ID, workspaceId: WORKSPACE_ID, role: 'user', capabilities }) as AuthenticatedPrincipal;
@@ -459,6 +475,23 @@ describe('Treffsicherheit der KI-Entscheidung (Embedded Postgres)', () => {
     });
     expect(badDays.status).toBe(400);
 
+    // Über die Route: workflows.view ohne volle Mail-Sicht zählt nur sichtbare
+    // Mails, ohne Mailzugriff keine – nie die Summe des ganzen Workspaces.
+    const viaRoute = async (scope: MailSqlScope) => {
+      routeMailScope = scope;
+      const scoped = await api.handle({
+        method: 'GET',
+        path: `/api/v1/workflows/by-source/${SPAM_WORKFLOW_ID}/ai-decisions`,
+        query: { nodeId: 'decide' },
+        principal: principal(['workflows.view']),
+      });
+      expect(scoped.status).toBe(200);
+      return (scoped.body as { data: { total: number } }).data.total;
+    };
+    expect(await viaRoute({ kind: 'restricted', accountIds: [], folderIds: [], messageIds: [9141] })).toBe(1);
+    expect(await viaRoute({ kind: 'none' })).toBe(0);
+    expect(await viaRoute({ kind: 'all' })).toBe(3);
+
     // Eingeschränkte Mail-Sicht (vom Enforcer gesetzt): nur sichtbare Mails zählen.
     const statsPort = createPostgresAiDecisionStatsPort({ db });
     const base = { workspaceId: WORKSPACE_ID, workflowSourceId: SPAM_WORKFLOW_ID, nodeId: 'decide', days: 90 };
@@ -477,6 +510,45 @@ describe('Treffsicherheit der KI-Entscheidung (Embedded Postgres)', () => {
       days: 90,
     });
     expect(other.total).toBe(0);
+  });
+
+  // Codex-Review PR #199: Ereignisse ohne Rückmeldung (`none`) galten nach
+  // 30 Tagen als bestätigt – scheinbar 100 % Übereinstimmung samt Vorschlag.
+  test('Kennzahlen: Ereignisse ohne Rückmeldung zählen nur zur Verteilung', async () => {
+    const insert = (count: number, probability: number, signal: string, override: [string, string] | null) =>
+      postgres.admin.query(`
+        INSERT INTO ai_decision_events (
+          workspace_id, workflow_id, workflow_source_id, node_id, direction, answer, probability, threshold,
+          feedback_signal, override_kind, truth, override_at, created_at
+        )
+        SELECT $1, $2, $2, 'decide', 'inbound', 'ja', $3, 80, $4, $5::text, $6::text,
+               CASE WHEN $5::text IS NULL THEN NULL ELSE now() - interval '39 days' END,
+               now() - interval '40 days'
+        FROM generate_series(1, $7::int)
+      `, [WORKSPACE_ID, PLAIN_WORKFLOW_ID, probability, signal, override?.[0] ?? null, override?.[1] ?? null, count]);
+    await insert(35, 95, 'none', null);
+    const statsPort = createPostgresAiDecisionStatsPort({ db });
+    const base = { workspaceId: WORKSPACE_ID, workflowSourceId: PLAIN_WORKFLOW_ID, nodeId: 'decide', days: 90 };
+
+    const onlyNone = await statsPort.get(base);
+    expect(onlyNone).toMatchObject({
+      total: 35,
+      byAnswer: { ja: 35, nein: 0, unsicher: 0, error: 0 },
+      closed: 0,
+      agreed: 0,
+      overridden: 0,
+      agreementRate: null,
+      labelled: 0,
+      suggestedThreshold: null,
+    });
+    expect(onlyNone.histogram[9]).toBe(35);
+
+    // Später Rückmeldung „spam“ gewählt: nur diese Ereignisse zählen.
+    await insert(1, 97, 'spam', null);
+    await insert(1, 96, 'spam', ['spam_to_clean', 'nein']);
+    const mixed = await statsPort.get(base);
+    expect(mixed).toMatchObject({ total: 37, closed: 2, agreed: 1, overridden: 1, labelled: 2, suggestedThreshold: null });
+    expect(mixed.agreementRate).toBeCloseTo(0.5);
   });
 
   test('Aufbewahrung: Ereignisse älter als 365 Tage werden gelöscht', async () => {

@@ -423,6 +423,8 @@ describe('server mail policy manifest', () => {
       ['POST', '/api/v1/workflows/23/execute', 'mail.content.read', optionalMessageBody()],
       ['POST', '/api/v1/workflows/by-source/-23/execute', 'mail.content.read', optionalMessageBody()],
       ['GET', '/api/v1/email/messages/42/workflow-runs', 'mail.content.read', messagePath()],
+      ['GET', '/api/v1/workflows/by-source/-23/runs', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflows/by-source/-23/ai-decisions', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-runs', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-runs/80', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-runs/80/steps', 'mail.content.read', { kind: 'mail_scope' }],

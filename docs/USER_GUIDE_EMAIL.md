@@ -83,7 +83,7 @@ Die Seite **Auswertung** zeigt in der Karte **Automatisierung**, wie viel die Te
 - **Je Woche** (acht Wochen, Montag bis Sonntag, UTC): gesendete Mails nach Herkunft (Mensch, KI automatisch, KI freigegeben, Automatik, Relay) und der **Anteil automatisch** = (KI automatisch + KI freigegeben + Automatik) / (dieselben + Mensch). Relay und Mails ohne Kennzeichnung zählen für den Anteil nicht.
 - **Wartet auf Freigabe** und **Versand blockiert:** dieselben Zahlen wie die beiden Ansichten.
 - **KI-Entscheidungen (30 Tage)** je Workflow: wie oft Ja, Nein, Unsicher oder KI-Fehler. Testläufe zählen nicht.
-- **KI-Kosten (30 Tage):** nur in der Server-Edition und nur mit Zugriff auf alle Postfächer; sonst ein Hinweis.
+- **KI-Kosten (30 Tage):** nur in der Server-Edition und nur mit Zugriff auf alle Postfächer und ohne Kontofilter (die Kosten sind keinem Konto zugeordnet); sonst ein Hinweis.
 
 Der Konto-Filter oben gilt auch für diese Karte. Die Tabelle „Workflow-Läufe (24h)“ zeigt jetzt Workflow-Namen statt Nummern.
 
