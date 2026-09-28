@@ -305,6 +305,19 @@ describe('Learnings (Desktop, TA-P5)', () => {
     expect(await getAiLearningDigest(99_999)).toBeNull();
   });
 
+  // Plan 035: eine Wissensbasis über 100 000 Zeichen wird vor dem KI-Aufruf abgelehnt.
+  test('Auswerten: zu große Wissensbasis ⇒ Meldung ohne KI-Aufruf, kein Vorschlag', async () => {
+    const kb = createKnowledgeBase('Groß', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, 'x'.repeat(100_001));
+    expect(saveAiLearningsSettings({ targetKnowledgeBaseId: kb }).success).toBe(true);
+    expect(addAiLearningNote({ text: 'Rückgaben sind 30 Tage kostenlos.', actorUserId: USER })).toMatchObject({ success: true });
+    const result = await runAiLearningsDigest({ trigger: 'manual', minCandidates: 1 });
+    expect(result).toMatchObject({ status: 'failed', digestId: null, error: expect.stringMatching(/zu groß/) });
+    expect(mockRunChatCompletion).not.toHaveBeenCalled();
+    expect(listAiLearningDigests()).toEqual([]);
+    expect(getAiLearningsOverview()).toMatchObject({ running: false, counts: { total: 1 } });
+  });
+
   // Codex-Review PR #194: Einträge über der Obergrenze rutschten vor das Ende
   // der letzten Auswertung und wurden mit „seit letzter Auswertung“ nie mehr ausgewertet.
   test('seit letzter Auswertung: Einträge über der Obergrenze kommen beim nächsten Lauf dran', async () => {
@@ -334,10 +347,6 @@ describe('Learnings (Desktop, TA-P5)', () => {
   test('Abruf: Learnings-Basis (eigener Kontext) neben anderer allgemeiner Wissensbasis, Quote je Wissensbasis', async () => {
     const firma = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
     saveKnowledgeBaseDocument(firma, '# Firma\n\n## Rückgabe\n\nRückgabe über das Portal.\n');
-    const insertChunk = db.prepare(
-      'INSERT INTO workflow_knowledge_chunks (knowledge_base_id, title, content, created_at) VALUES (?, ?, ?, ?)',
-    );
-    for (const n of [1, 2, 3]) insertChunk.run(firma, `Rückgabe ${n}`, `Rückgabe Hinweis ${n}.`, new Date().toISOString());
     const eingang = createKnowledgeBase('Eingang', null, { knowledgeContext: 'inbound' });
     saveKnowledgeBaseDocument(eingang, '# Eingang\n\n## Rückgabe\n\nRückgabe-Anfragen am selben Tag beantworten.\n');
 
@@ -357,13 +366,17 @@ describe('Learnings (Desktop, TA-P5)', () => {
       acc[row.knowledge_base_id] = (acc[row.knowledge_base_id] ?? 0) + 1;
       return acc;
     }, {});
-    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    // Eingang: general + inbound + learnings. Plan 048: Treffer sind Abschnitte
+    // des Dokuments; kleine Wissensbasen (≤ 6 000 Zeichen) gehen ganz mit
+    // (Learnings = Einleitung + „Rückgabe“). Die Quote je Wissensbasis greift
+    // erst bei großen Wissensbasen (tests/mail/knowledge-sections-desktop.test.ts).
     const inboundChunks = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe Etikett', 5);
-    expect(countByKb(inboundChunks)).toEqual({ [firma]: 2, [eingang]: 1, [learningsKb]: 1 });
-    expect(inboundChunks.find((c) => c.knowledge_base_id === learningsKb)?.content).toContain('Etikett im Kundenkonto');
-    // Ausgang und manuell lesen die Learnings ebenfalls; ceil(2 / 2) = 1 je Wissensbasis.
-    expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 1 });
-    expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 3, [learningsKb]: 1 });
+    expect(countByKb(inboundChunks)).toEqual({ [firma]: 1, [eingang]: 1, [learningsKb]: 2 });
+    expect(inboundChunks.find((c) => c.knowledge_base_id === learningsKb && c.title === 'Rückgabe')?.content)
+      .toContain('Etikett im Kundenkonto');
+    // Ausgang und manuell lesen die Learnings ebenfalls.
+    expect(countByKb(await searchKnowledgeForWorkflow(accountId, 'outbound', 'Rückgabe', 2))).toEqual({ [firma]: 1, [learningsKb]: 2 });
+    expect(countByKb(await searchKnowledgeForWorkflow(null, undefined, 'Rückgabe', 5))).toEqual({ [firma]: 1, [learningsKb]: 2 });
     // Explizit gewählte Wissensbasis: die Learnings kommen wie die übrigen
     // Kontext-Wissensbasen dazu (Codex-Review PR #194).
     const explicit = await searchKnowledgeForWorkflow(accountId, 'inbound', 'Rückgabe', 5, eingang);
@@ -394,6 +407,42 @@ describe('Learnings (Desktop, TA-P5)', () => {
 
     saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n30 Tage.\n');
     expect(chunks().map((row) => row.content)).toEqual(['# Firma\n\n## Rückgabe\n\n30 Tage.']);
+  });
+
+  // Plan 038: Übernehmen ist eine Einheit; der KI-Vorschlag bleibt erhalten.
+  test('Übernehmen: scheitert das Speichern, bleibt alles wie vorher; danach getrennt gespeichert', async () => {
+    const kb = createKnowledgeBase('Firma', null, { knowledgeContext: 'general' });
+    saveKnowledgeBaseDocument(kb, '# Firma\n\n## Rückgabe\n\n14 Tage.\n');
+    saveAiLearningsSettings({ targetKnowledgeBaseId: kb });
+    seedCandidates(2);
+    mockRunChatCompletion.mockResolvedValueOnce(JSON.stringify({ operations: [{ op: 'update', section: 'Rückgabe', content: '30 Tage.' }] }));
+    const created = await runAiLearningsDigest({ trigger: 'manual', period: 'week', minCandidates: 1 });
+    expect(created).toMatchObject({ status: 'created', digestId: expect.any(Number) });
+    const id = Number(created.digestId);
+    const proposal = '# Firma\n\n## Rückgabe\n\n30 Tage.\n';
+    const edited = '# Firma\n\n## Rückgabe\n\n30 Tage, kostenlos.\n';
+    const row = () => db.prepare('SELECT status, proposed_content, accepted_content FROM ai_learning_digests WHERE id = ?').get(id);
+    const documentBefore = getKnowledgeBaseDocument(kb)?.content;
+
+    db.exec(`CREATE TRIGGER kb_chunk_insert_fails BEFORE INSERT ON workflow_knowledge_chunks
+      BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+    try {
+      // Ergebnis statt nur „did not throw“: unter hoher Last schlug diese Prüfung
+      // selten fehl, ohne dass der Rückgabewert sichtbar war (nicht reproduzierbar).
+      const outcome = await acceptAiLearningDigest({ id, content: edited, actorUserId: USER })
+        .then((value) => ({ resolved: value }), (error: unknown) => ({ rejected: String(error) }));
+      expect(outcome).toEqual({ rejected: expect.stringContaining('disk I/O error') });
+    } finally {
+      db.exec('DROP TRIGGER kb_chunk_insert_fails');
+    }
+    expect(row()).toEqual({ status: 'pending', proposed_content: proposal, accepted_content: null });
+    expect(db.prepare('SELECT count(*) AS n FROM ai_learning_candidates WHERE digest_id = ?').get(id)).toEqual({ n: 2 });
+    expect(getKnowledgeBaseDocument(kb)?.content).toBe(documentBefore);
+
+    await expect(acceptAiLearningDigest({ id, content: edited, actorUserId: USER })).resolves.toMatchObject({ success: true });
+    expect(row()).toEqual({ status: 'accepted', proposed_content: proposal, accepted_content: edited });
+    expect(getKnowledgeBaseDocument(kb)?.content.trimEnd()).toBe(edited.trimEnd());
+    expect((await getAiLearningDigest(id))?.acceptedContent).toBe(edited);
   });
 
   test('Übernehmen mit Konfliktwarnung, Verwerfen, Fehlerfälle', async () => {

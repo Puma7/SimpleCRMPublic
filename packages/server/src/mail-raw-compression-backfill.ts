@@ -42,6 +42,8 @@ export type RawCompressionBatchResult = {
   skipped: number;
   bytesBefore: number;
   bytesAfter: number;
+  /** Rows that could not be converted; skipped. */
+  failures: Array<{ messageId: number; error: string }>;
 };
 
 /** One keyset batch. seen = 0 means the scan is done. */
@@ -71,11 +73,18 @@ export async function runRawCompressionBackfillBatch(
     skipped: 0,
     bytesBefore: 0,
     bytesAfter: 0,
+    failures: [],
   };
   for (const candidate of candidates) {
     const id = Number(candidate.id);
     result.lastId = id;
-    const outcome = await convertOneRow(options, candidate.workspace_id, id);
+    let outcome: Awaited<ReturnType<typeof convertOneRow>>;
+    try {
+      outcome = await convertOneRow(options, candidate.workspace_id, id);
+    } catch (error) {
+      result.failures.push({ messageId: id, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     if (outcome) {
       result.converted += 1;
       result.bytesBefore += outcome.bytesBefore;
@@ -126,8 +135,9 @@ async function convertOneRow(
 
 /**
  * Self-terminating run after server start: batches with pauses, ends when a
- * full keyset scan finds no candidates. A failing row aborts the run (it is
- * retried on the next start); the rows converted so far stay converted.
+ * full keyset scan finds no candidates. A row that cannot be converted is
+ * logged with its id and skipped (tried again on the next start); other errors
+ * abort the run. Rows converted so far stay converted.
  */
 export function startRawCompressionBackfillRun(
   options: RawCompressionBackfillOptions & { batchPauseMs?: number },
@@ -151,6 +161,9 @@ export function startRawCompressionBackfillRun(
         return;
       }
       lastId = batch.lastId;
+      for (const failure of batch.failures) {
+        console.warn(`[mail] raw original compression skipped message ${failure.messageId}: ${failure.error}`);
+      }
       total.converted += batch.converted;
       total.bytesBefore += batch.bytesBefore;
       total.bytesAfter += batch.bytesAfter;

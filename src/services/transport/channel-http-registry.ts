@@ -10,6 +10,11 @@ import {
   interpolateSignatureTemplate,
 } from "@shared/signature-template"
 import { escapeHtmlText } from "@shared/compose-body"
+import {
+  MESSAGE_WORKFLOW_RUNS_LIMIT,
+  summarizeRunSteps,
+  type MessageWorkflowRunSummary,
+} from "@shared/workflow-run-message-history"
 import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
@@ -376,6 +381,7 @@ type EmailMessageRecord = {
   updatedAt?: string | null
   approvalState?: string | null
   approvalReason?: string | null
+  aiSources?: string | null
   outboundHold?: boolean | number | null
   outboundBlockReason?: string | null
   sentByKind?: string | null
@@ -538,9 +544,17 @@ type EmailReportingRecord = {
   }>
   workflowRuns24h?: Array<{
     workflowId?: number | null
+    workflowName?: string | null
     count?: number | null
     errors?: number | null
   }>
+  automation?: {
+    sentByKindWeekly?: Array<Record<string, unknown>> | null
+    pendingApproval?: number | null
+    outboundBlocked?: number | null
+    aiDecideByWorkflow30d?: Array<Record<string, unknown>> | null
+    aiCost30d?: { costMicroUsd?: number | null; events?: number | null } | null
+  } | null
 }
 
 type DmarcStatsRecord = {
@@ -737,6 +751,7 @@ type WorkflowRunRecord = {
   messageId?: number | null
   direction?: string | null
   status?: string | null
+  dryRun?: boolean | null
   log?: unknown | null
   startedAt?: string | null
   finishedAt?: string | null
@@ -3461,12 +3476,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.TestWorkflowOnMessage, ([payload]) => {
     const input = objectPayload(payload, "workflow test payload")
+    const dryRun = input.dryRun !== false
     return {
       method: "POST",
       path: `/api/v1/workflows/by-source/${nonZeroPathId(input.workflowId, "workflow id")}/execute`,
       body: {
         messageId: positiveId(input.messageId, "email message id"),
-        dryRun: input.dryRun !== false,
+        dryRun,
+        // Plan 047: Testlauf speichern (Schritt für Schritt ansehbar), wie am Desktop.
+        ...(dryRun ? { testRun: true } : {}),
+        ...(dryRun && input.realAi === true ? { realAi: true } : {}),
       },
       transform: (body) => dataBody<Record<string, unknown>>(body),
     }
@@ -3508,6 +3527,18 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<WorkflowRunRecord>(body).map(mapWorkflowRunRecord),
   })],
+  [IPCChannels.Email.GetAiDecisionStats, ([payload]) => {
+    const input = objectPayload(payload, "ai decision stats payload")
+    return {
+      method: "GET",
+      path: `/api/v1/workflows/by-source/${nonZeroPathId(input.workflowId, "workflow id")}/ai-decisions`,
+      query: pruneQueryUndefined({
+        nodeId: typeof input.nodeId === "string" ? input.nodeId : undefined,
+        days: input.days === undefined ? undefined : positiveId(input.days, "ai decision stats days"),
+      }),
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
   [IPCChannels.Email.ListWorkflowDelayedJobs, ([payload]) => {
     const input = payload === undefined ? {} : objectPayload(payload, "workflow delayed jobs payload")
     return {
@@ -3546,6 +3577,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         const latest = await collectLatestWorkflowRunFromFirstPage(body, context, messageId)
         return latest ? mapWorkflowRunRecord(latest) : null
       },
+    }
+  }],
+  [IPCChannels.Email.ListWorkflowRunsForMessage, ([payload]) => {
+    const input = objectPayload(payload, "workflow runs for message payload")
+    const messageId = positiveId(input.messageId, "email message id")
+    const request: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/email/messages/${messageId}/workflow-runs`,
+      query: { limit: DEFAULT_LIST_LIMIT },
+    }
+    return {
+      ...request,
+      transform: (body, context) => listWorkflowRunsForMessageTransform(body, context, request),
     }
   }],
   [IPCChannels.Email.GetWorkflowRunLog, ([runId]) => ({
@@ -5813,6 +5857,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     reply_parent_message_id: record.replyParentMessageId ?? null,
     approval_state: record.approvalState ?? null,
     approval_reason: record.approvalReason ?? null,
+    ai_sources: record.aiSources ?? null,
     // Hinweis „Versand blockiert“ und Listen-Kennzeichen brauchen beide Felder.
     outbound_hold: record.outboundHold ? 1 : 0,
     outbound_block_reason: record.outboundBlockReason ?? null,
@@ -6023,11 +6068,50 @@ function mapEmailReportingSnapshot(record: EmailReportingRecord) {
       : [],
     workflowRuns24h: Array.isArray(record.workflowRuns24h)
       ? record.workflowRuns24h.map((row) => ({
-        workflow_id: countValue(row.workflowId),
+        // Server-Workflows haben negative Quell-Ids (by-source).
+        workflow_id: signedIdValue(row.workflowId),
+        workflow_name: typeof row.workflowName === "string" ? row.workflowName : null,
         count: countValue(row.count),
         errors: countValue(row.errors),
       }))
       : [],
+    automation: mapAutomationCockpit(record.automation),
+  }
+}
+
+function signedIdValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0
+}
+
+/** Plan 049: Automatik-Cockpit; fehlt es (älterer Server), ein leerer Schnappschuss. */
+function mapAutomationCockpit(value: EmailReportingRecord["automation"]) {
+  const weeks = Array.isArray(value?.sentByKindWeekly) ? value.sentByKindWeekly : []
+  const decisions = Array.isArray(value?.aiDecideByWorkflow30d) ? value.aiDecideByWorkflow30d : []
+  const cost = value?.aiCost30d
+  return {
+    sentByKindWeekly: weeks.map((week) => ({
+      weekStart: typeof week.weekStart === "string" ? week.weekStart : "",
+      human: countValue(week.human),
+      aiAuto: countValue(week.aiAuto),
+      aiApproved: countValue(week.aiApproved),
+      workflow: countValue(week.workflow),
+      relay: countValue(week.relay),
+      unknown: countValue(week.unknown),
+    })),
+    pendingApproval: countValue(value?.pendingApproval),
+    outboundBlocked: countValue(value?.outboundBlocked),
+    aiDecideByWorkflow30d: decisions.map((row) => ({
+      workflowId: signedIdValue(row.workflowId),
+      workflowName: typeof row.workflowName === "string" ? row.workflowName : null,
+      ja: countValue(row.ja),
+      nein: countValue(row.nein),
+      unsicher: countValue(row.unsicher),
+      error: countValue(row.error),
+      total: countValue(row.total),
+    })),
+    aiCost30d: cost && typeof cost === "object"
+      ? { costMicroUsd: countValue(cost.costMicroUsd), events: countValue(cost.events) }
+      : null,
   }
 }
 
@@ -6507,6 +6591,7 @@ function mapWorkflowRunRecord(record: WorkflowRunRecord) {
     message_source_sqlite_id: record.messageSourceSqliteId ?? undefined,
     direction: record.direction ?? "",
     status: record.status ?? "",
+    dry_run: record.dryRun === true ? 1 : 0,
     log_json: record.log === undefined || record.log === null ? null : stringifyJsonValue(record.log, null),
     started_at: record.startedAt ?? null,
     finished_at: record.finishedAt ?? null,
@@ -6533,6 +6618,98 @@ async function collectLatestWorkflowRunFromFirstPage(
     cursor = page.nextCursor
   }
   return latest
+}
+
+/** Obergrenze gegen endloses Blättern: 1000 Seiten (bei 100 je Seite 100 000 Läufe einer Mail). */
+const MESSAGE_WORKFLOW_RUN_MAX_PAGES = 1000
+
+/**
+ * Der Server blättert Läufe aufsteigend nach id, die neuesten stehen also auf der
+ * letzten Seite. Deshalb bis zum Ende blättern und dabei nur die `keep` neuesten
+ * behalten (Speicher bleibt klein, auch bei sehr vielen Läufen).
+ */
+async function collectNewestWorkflowRuns(
+  firstPageBody: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+  keep: number,
+): Promise<WorkflowRunRecord[]> {
+  const seenCursors = new Set<number>()
+  let newest: WorkflowRunRecord[] = []
+  let page = listResult<WorkflowRunRecord>(firstPageBody)
+  for (;;) {
+    newest = [...newest, ...page.items].sort((a, b) => b.id - a.id).slice(0, keep)
+    const cursor = page.nextCursor ?? null
+    if (cursor === null) return newest
+    if (seenCursors.has(cursor)) throw new Error("Invalid paged list cursor")
+    if (seenCursors.size + 1 >= MESSAGE_WORKFLOW_RUN_MAX_PAGES) throw new Error("Too many workflow run pages")
+    seenCursors.add(cursor)
+    page = listResult<WorkflowRunRecord>(await context.fetchJson({
+      ...request,
+      query: {
+        ...request.query,
+        limit: request.query?.limit ?? DEFAULT_LIST_LIMIT,
+        cursor,
+      },
+    }))
+  }
+}
+
+/**
+ * Details → Automatik: neueste Läufe der Mail mit Zusammenfassung. Je Lauf die
+ * Schritte (wie ListWorkflowRunSteps) und je Workflow einmal der Name, parallel.
+ */
+async function listWorkflowRunsForMessageTransform(
+  body: unknown,
+  context: HttpInvocationContext,
+  request: HttpRequestSpec,
+): Promise<MessageWorkflowRunSummary[]> {
+  const records = await collectNewestWorkflowRuns(body, context, request, MESSAGE_WORKFLOW_RUNS_LIMIT)
+  const workflowIds = [...new Set(records
+    .map((record) => record.workflowSourceSqliteId ?? record.workflowId)
+    .filter((id): id is number => typeof id === "number" && id !== 0))]
+  const names = new Map<number, string>()
+  const loadNames = Promise.all(workflowIds.map(async (id) => {
+    try {
+      const workflow = dataBody<WorkflowRecord | null>(await context.fetchJson({
+        method: "GET",
+        path: `/api/v1/workflows/by-source/${id}`,
+      }))
+      if (workflow?.name) names.set(id, workflow.name)
+    } catch {
+      // Kein Name (gelöscht, keine Rechte): „Workflow #<id>“.
+    }
+  }))
+  const summaries = Promise.all(records.map(async (record) => {
+    const stepsRequest: HttpRequestSpec = {
+      method: "GET",
+      path: `/api/v1/workflow-runs/by-source/${nonZeroPathId(record.sourceSqliteId ?? record.id, "workflow run id")}/steps`,
+      query: { limit: DEFAULT_LIST_LIMIT, includeDetail: true },
+    }
+    const steps = (await collectPagedListItems<WorkflowRunStepRecord>(
+      await context.fetchJson(stepsRequest),
+      context,
+      stepsRequest,
+    )).map(mapWorkflowRunStepRecord)
+    return { record, summary: summarizeRunSteps(steps) }
+  }))
+  const [, perRun] = await Promise.all([loadNames, summaries])
+  return perRun.map(({ record, summary }) => {
+    const mapped = mapWorkflowRunRecord(record)
+    const workflowId = mapped.workflow_id
+    return {
+      id: mapped.id,
+      server_id: record.id,
+      workflow_id: workflowId,
+      workflow_name: (workflowId !== null ? names.get(workflowId) : undefined) ?? `Workflow #${workflowId ?? record.id}`,
+      direction: mapped.direction,
+      status: mapped.status,
+      started_at: mapped.started_at,
+      finished_at: mapped.finished_at,
+      dry_run: record.dryRun === true,
+      ...summary,
+    }
+  })
 }
 
 function latestWorkflowRunByServerId(
@@ -6978,18 +7155,20 @@ function optionalPositiveQueryId(value: unknown, label: string): number | undefi
   return positiveId(value, label)
 }
 
-function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
+function messageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "approval_pending" | "outbound_blocked" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" {
   const view = optionalMessageViewValue(value)
   if (!view) throw new Error("Invalid email message view")
   return view
 }
 
-function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
+function optionalMessageViewValue(value: unknown): "inbox" | "sent" | "sent_ai" | "approval_pending" | "outbound_blocked" | "archived" | "drafts" | "scheduled_send" | "spam_review" | "spam" | "trash" | "snoozed" | "all" | undefined {
   if (value === undefined || value === null) return undefined
   if (
     value === "inbox"
     || value === "sent"
     || value === "sent_ai"
+    || value === "approval_pending"
+    || value === "outbound_blocked"
     || value === "archived"
     || value === "drafts"
     || value === "scheduled_send"

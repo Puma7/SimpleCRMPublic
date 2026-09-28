@@ -5,8 +5,9 @@ describe('validateWorkflowCronExpr', () => {
     expect(validateWorkflowCronExpr('*/15 * * * *')).toBeNull();
   });
 
+  // Plan 045: der Desktop-Editor prüft wie der Server (gleiche Meldung).
   it('rejects comma minute lists that fire too often', () => {
-    expect(validateWorkflowCronExpr('1,2,3,4,5,6,7,8,9,10 * * * *')).toMatch(/Zu viele/);
+    expect(validateWorkflowCronExpr('1,2,3,4,5,6,7,8,9,10 * * * *')).toMatch(/Intervall zu kurz/);
   });
 
   it('uses minute field index 1 for six-field cron', () => {

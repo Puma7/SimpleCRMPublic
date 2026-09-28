@@ -409,6 +409,55 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
     expect(await listAiLearningCandidates({ db }, WS_A)).toEqual([]);
   });
 
+  // Plan 038: erst sperren, dann vergleichen; KI-Vorschlag und übernommene Fassung getrennt.
+  test('Übernehmen überschreibt kein gleichzeitiges Speichern; Vorschlag bleibt erhalten', async () => {
+    await seedCandidates(2);
+    await saveAiLearningsSettings({ db }, WS_A, { targetKnowledgeBaseId: KB_ID });
+    const created = await runAiLearningsDigest({
+      db,
+      chat: async () => JSON.stringify({ summary: 's', operations: [{ op: 'add', section: 'Ton', content: 'Sie-Form.' }] }),
+    }, { workspaceId: WS_A, period: 'week', minCandidates: 1, trigger: 'manual', actorUserId: USER_A });
+    expect(created).toMatchObject({ status: 'created', knowledgeBaseId: KB_ID });
+    const digestId = Number(created.digestId);
+    const proposal = (await getAiLearningDigest({ db }, WS_A, digestId))!.proposedContent;
+
+    // Ein anderes Speichern hält die Wissensbasis gesperrt und ändert sie.
+    await postgres.admin.query('BEGIN');
+    let pendingAccept: Promise<unknown> | null = null;
+    try {
+      await postgres.admin.query('SELECT id FROM workflow_knowledge_bases WHERE id = $1 FOR UPDATE', [KB_ID]);
+      await postgres.admin.query(
+        `UPDATE workflow_knowledge_chunks SET content = content || $3 WHERE workspace_id = $1 AND knowledge_base_id = $2`,
+        [WS_A, KB_ID, '\n\n## Versand\n\n2 Tage.'],
+      );
+      pendingAccept = acceptAiLearningDigest({ db }, {
+        workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: '# Firma\n\nbearbeitet\n',
+      });
+      const deadline = Date.now() + 5000;
+      for (;;) {
+        const waiting = await postgres.admin.query<{ n: number }>('SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted');
+        if (waiting.rows[0]!.n >= 1) break;
+        if (Date.now() > deadline) throw new Error('accept did not wait for the knowledge base lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      await postgres.admin.query('COMMIT');
+    }
+    await expect(pendingAccept).resolves.toMatchObject({ ok: false, code: 'knowledge_base_changed' });
+    const chunks = await postgres.admin.query<{ content: string }>(
+      'SELECT content FROM workflow_knowledge_chunks WHERE workspace_id = $1 AND knowledge_base_id = $2', [WS_A, KB_ID],
+    );
+    expect(chunks.rows.map((row) => row.content).join('\n')).toContain('## Versand');
+
+    const submitted = '# Firma\n\n## Ton\n\nSie-Form (bearbeitet).\n';
+    await expect(acceptAiLearningDigest({ db }, {
+      workspaceId: WS_A, actorUserId: USER_A, id: digestId, content: submitted, confirmOverwrite: true,
+    })).resolves.toMatchObject({ ok: true });
+    const stored = await postgres.admin.query('SELECT status, proposed_content, accepted_content FROM ai_learning_digests WHERE id = $1', [digestId]);
+    expect(stored.rows[0]).toEqual({ status: 'accepted', proposed_content: proposal, accepted_content: submitted });
+    expect(await getAiLearningDigest({ db }, WS_A, digestId)).toMatchObject({ proposedContent: proposal, acceptedContent: submitted });
+  });
+
   test('Verwerfen und Aufräumen', async () => {
     await seedCandidates(2);
     const created = await runAiLearningsDigest({
@@ -514,27 +563,27 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
       workspaceId: WS_A, actorUserId: USER_A, id: Number(created.digestId), content: digest!.proposedContent,
     })).resolves.toMatchObject({ ok: true });
 
-    const chunkKb = new Map<number, number>();
-    const chunkRows = await postgres.admin.query('SELECT id, knowledge_base_id FROM workflow_knowledge_chunks WHERE workspace_id = $1', [WS_A]);
-    for (const row of chunkRows.rows as Array<{ id: string | number; knowledge_base_id: string | number }>) {
-      chunkKb.set(Number(row.id), Number(row.knowledge_base_id));
-    }
-    const countByKb = (rows: { id: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
-      const kbId = chunkKb.get(row.id) ?? -1;
-      acc[kbId] = (acc[kbId] ?? 0) + 1;
+    // Plan 048: Treffer sind Abschnitte und tragen ihre Wissensbasis selbst.
+    const countByKb = (rows: { knowledgeBaseId: number }[]) => rows.reduce<Record<number, number>>((acc, row) => {
+      acc[row.knowledgeBaseId] = (acc[row.knowledgeBaseId] ?? 0) + 1;
       return acc;
     }, {});
     const search = (direction: string | undefined, limit: number, explicit?: number) =>
       withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
         searchKnowledgeForWorkflow(trx, WS_A, ACCOUNT_ID, direction, 'Rückgabe Etikett', limit, explicit));
 
-    // Eingang: general + inbound + learnings → ceil(5 / 3) = 2 je Wissensbasis.
+    // Eingang: general + inbound + learnings. Plan 048: kleine Wissensbasen
+    // (≤ 6 000 Zeichen) gehen ganz mit – die vier Abschnitte von „Allgemein“ statt
+    // höchstens ceil(5 / 3) = 2 Chunks; Learnings = Einleitung + „Rückgabe“.
     const inbound = await search('inbound', 5);
-    expect(countByKb(inbound)).toEqual({ [GENERAL_KB]: 2, [KB_ID]: 1, [learningsKb]: 1 });
-    expect(inbound.find((chunk) => chunkKb.get(chunk.id) === learningsKb)?.content).toContain('Etikett im Kundenkonto');
+    expect(countByKb(inbound)).toEqual({ [GENERAL_KB]: 4, [KB_ID]: 1, [learningsKb]: 2 });
+    expect(inbound.filter((chunk) => chunk.knowledgeBaseId === learningsKb).map((chunk) => chunk.title))
+      .toEqual(['Learnings', 'Rückgabe']);
+    expect(inbound.find((chunk) => chunk.knowledgeBaseId === learningsKb && chunk.title === 'Rückgabe')?.content)
+      .toContain('Etikett im Kundenkonto');
     // Ausgang und manuell lesen die Learnings ebenfalls.
-    expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 1, [learningsKb]: 1 });
-    expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 3, [learningsKb]: 1 });
+    expect(countByKb(await search('outbound', 2))).toEqual({ [GENERAL_KB]: 4, [learningsKb]: 2 });
+    expect(countByKb(await search(undefined, 5))).toEqual({ [GENERAL_KB]: 4, [learningsKb]: 2 });
     // Explizit gewählte Wissensbasis (ai.draft_reply): die Learnings kommen wie
     // die übrigen Kontext-Wissensbasen dazu (Codex-Review PR #194).
     const explicit = countByKb(await search('inbound', 5, KB_ID));
@@ -612,5 +661,80 @@ describe('TA-P5 Learnings (PostgreSQL)', () => {
       executeServerLearningsDigestNode(trx, {
         workspaceId: WS_A, workflowId: 0, direction: 'manual', config: { minCandidates: 10 }, provenance: {}, dryRun: false, now: new Date(),
       }))).resolves.toMatchObject({ variables: { 'learnings.status': 'skipped_no_candidates' } });
+  });
+
+  // Plan 035: Die Spalte base_content erlaubt höchstens 100 000 Zeichen; eine
+  // größere Wissensbasis scheiterte erst nach dem (bezahlten) KI-Aufruf beim
+  // Speichern, und der Job wiederholte das bis zu fünfmal.
+  test('Zu große Wissensbasis: kein KI-Aufruf, klare Meldung, Knoten meldet Fehler', async () => {
+    await saveAiLearningsSettings({ db }, WS_A, { targetKnowledgeBaseId: KB_ID });
+    await postgres.admin.query(`
+      INSERT INTO workflow_knowledge_chunks (workspace_id, source_sqlite_id, knowledge_base_source_sqlite_id, knowledge_base_id, title, content)
+      VALUES ($1, 9713, $2, $2, 'Groß', $3)
+    `, [WS_A, KB_ID, 'x'.repeat(100_000)]);
+    try {
+      await seedCandidates(2);
+      const chat = jest.fn(async () => '{"operations":[]}');
+      const result = await runAiLearningsDigest({ db, chat }, {
+        workspaceId: WS_A, period: 'week', minCandidates: 1, trigger: 'manual',
+      });
+      // Direkter Job-Aufruf (Route/Knoten prüfen vorher): als fehlgeschlagener
+      // Vorschlag im Verlauf festgehalten.
+      expect(result).toMatchObject({ status: 'failed', digestId: expect.any(Number), error: expect.stringContaining('zu groß') });
+      expect(chat).not.toHaveBeenCalled();
+      const digests = await postgres.admin.query('SELECT status, base_content FROM ai_learning_digests WHERE workspace_id = $1', [WS_A]);
+      expect(digests.rows).toEqual([{ status: 'failed', base_content: '' }]);
+
+      await expect(withWorkspaceTransaction(db, { workspaceId: WS_A, role: 'system' }, (trx) =>
+        executeServerLearningsDigestNode(trx, {
+          workspaceId: WS_A,
+          workflowId: 0,
+          direction: 'schedule',
+          config: { period: 'since_last', minCandidates: 1 },
+          provenance: {},
+          dryRun: false,
+          now: new Date(),
+        }))).resolves.toMatchObject({ status: 'error', port: 'error', message: expect.stringContaining('zu groß') });
+      const jobs = await postgres.admin.query(`SELECT 1 FROM job_queue WHERE type = 'learnings.digest'`);
+      expect(jobs.rows).toHaveLength(0);
+      const open = await postgres.admin.query('SELECT count(*)::int AS n FROM ai_learning_candidates WHERE processed_at IS NULL');
+      expect(open.rows[0]).toEqual({ n: 2 });
+    } finally {
+      await postgres.admin.query(`DELETE FROM workflow_knowledge_chunks WHERE workspace_id = $1 AND source_sqlite_id = 9713`, [WS_A]);
+    }
+  });
+
+  test('Speicherfehler nach dem KI-Aufruf wird als fehlgeschlagener Vorschlag festgehalten', async () => {
+    await postgres.admin.query(`
+      CREATE OR REPLACE FUNCTION test_fail_pending_digest() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.status = 'pending' THEN RAISE EXCEPTION 'Testfehler beim Speichern'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER test_fail_pending_digest BEFORE INSERT ON ai_learning_digests
+        FOR EACH ROW EXECUTE FUNCTION test_fail_pending_digest();
+    `);
+    try {
+      await seedCandidates(3);
+      const chat = jest.fn(async () => JSON.stringify({
+        summary: 'Rückgabefrist ergänzt.',
+        operations: [{ op: 'add', section: 'Rückgabe', content: 'Innerhalb von 30 Tagen.' }],
+      }));
+      const result = await runAiLearningsDigest({ db, chat }, {
+        workspaceId: WS_A, period: 'since_last', minCandidates: 3, trigger: 'manual', actorUserId: USER_A,
+      });
+      expect(result).toMatchObject({
+        status: 'failed',
+        digestId: expect.any(Number),
+        error: expect.stringContaining('Testfehler beim Speichern'),
+      });
+      expect(chat).toHaveBeenCalledTimes(1);
+      const digests = await postgres.admin.query('SELECT status FROM ai_learning_digests WHERE workspace_id = $1', [WS_A]);
+      expect(digests.rows).toEqual([{ status: 'failed' }]);
+      const open = await postgres.admin.query('SELECT count(*)::int AS n FROM ai_learning_candidates WHERE processed_at IS NULL');
+      expect(open.rows[0]).toEqual({ n: 3 });
+    } finally {
+      await postgres.admin.query(`
+        DROP TRIGGER IF EXISTS test_fail_pending_digest ON ai_learning_digests;
+        DROP FUNCTION IF EXISTS test_fail_pending_digest();
+      `);
+    }
   });
 });

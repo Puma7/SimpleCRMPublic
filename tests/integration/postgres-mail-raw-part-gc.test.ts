@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { Kysely } from 'kysely';
 import { authenticate } from 'mailauth';
@@ -9,7 +9,7 @@ import { authenticate } from 'mailauth';
 import { createPostgresEmailMessageReadPort } from '../../packages/server/src/db/postgres-mail-read-ports';
 import type { PostgresSecretPort } from '../../packages/server/src/db/postgres-secret-port';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
-import { rawPartPath, rawPartsDir, sha256Hex } from '../../packages/server/src/mail-raw-parts';
+import { rawPartPath, rawPartsDir, setAsidePartPath, sha256Hex } from '../../packages/server/src/mail-raw-parts';
 import { runRawPartDedupBatch } from '../../packages/server/src/mail-raw-part-dedup';
 import { runRawPartGc, UNREFERENCED_GRACE_MS } from '../../packages/server/src/mail-raw-part-gc';
 import { loadStoredRaw, rawPartReaderFor, storedRawColumns } from '../../packages/server/src/mail-raw-storage';
@@ -256,5 +256,25 @@ describe('server raw part objects of deleted mails', () => {
     expect(due).toMatchObject({ removed: 1, bytesFreed: pdf.length, waiting: 0 });
     expect(setAsideFiles()).toEqual([]);
     expect(await runRawPartGc({ db, attachmentsRoot })).toMatchObject({ setAside: 0, removed: 0, restored: 0 });
+  });
+  (process.getuid?.() === 0 ? test.skip : test)('an entry that cannot be removed is reported; the others are still removed', async () => {
+    const partsDir = rawPartsDir(attachmentsRoot, WORKSPACE_ID)!;
+    const due = Date.now() - UNREFERENCED_GRACE_MS - 60_000;
+    const fileA = setAsidePartPath(partsDir, 'aa'.repeat(32), due);
+    const fileB = setAsidePartPath(partsDir, 'bb'.repeat(32), due);
+    for (const file of [fileA, fileB]) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, 'x');
+    }
+    chmodSync(dirname(fileA), 0o555);
+    try {
+      const result = await runRawPartGc({ db, attachmentsRoot });
+      expect(result).toMatchObject({ failed: 1, removed: 1 });
+      expect(existsSync(fileA)).toBe(true);
+      expect(existsSync(fileB)).toBe(false);
+      expect(result.failures[0]).toContain('aa'.repeat(32));
+    } finally {
+      chmodSync(dirname(fileA), 0o755);
+    }
   });
 });

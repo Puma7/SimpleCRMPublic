@@ -7,6 +7,8 @@ import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
   extractDraftBodyForOutboundBlock,
+  formatKnowledgeSourcesLabel,
+  joinKnowledgeWithinBudget,
   outboundDraftFingerprint,
   parseDraftReviewResponse,
   replaceTags,
@@ -52,6 +54,14 @@ import type { JobPayload } from './jobs/types';
 const DRAFT_REPLY_BODY_MAX = 12_000;
 const DRAFT_REPLY_KNOWLEDGE_MAX = 12_000;
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
+
+/** Wissens-Block des Entwurfs: Budget fair je Wissensbasis (Learnings bleiben drin). */
+export function draftReplyKnowledgeText(chunks: readonly { id: number; knowledgeBaseId?: number; content: string }[]): string {
+  return joinKnowledgeWithinBudget(
+    chunks.map((c) => ({ group: c.knowledgeBaseId ?? `chunk:${c.id}`, text: c.content })),
+    { maxChars: DRAFT_REPLY_KNOWLEDGE_MAX, separator: '\n---\n' },
+  );
+}
 
 export type WorkflowAiDraftNodeDeps = WorkflowAiChatDeps & Readonly<{
   db: import('kysely').Kysely<ServerDatabase>;
@@ -146,7 +156,7 @@ export async function executeWorkflowAiDraftReply(
       5,
     );
   }
-  const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
+  const kbText = draftReplyKnowledgeText(chunks);
 
   let cannedBlock = '';
   if (input.config.includeCanned === true) {
@@ -254,6 +264,7 @@ export async function executeWorkflowAiDraftReply(
     .set({
       reply_parent_message_id: input.messageId,
       ai_suggestion_snapshot: aiText,
+      ai_sources: knowledgeSourcesLabel(chunks) || null,
       updated_at: new Date(),
     })
     .where('workspace_id', '=', input.workspaceId)
@@ -580,12 +591,11 @@ async function resolveAccountSignatureText(
   );
 }
 
+/** Plan 048: „Wissensbasis › Abschnitt“, ohne Dubletten, höchstens 500 Zeichen. */
 function knowledgeSourcesLabel(
-  chunks: ReadonlyArray<{ id?: number; title?: string | null }>,
+  chunks: ReadonlyArray<{ id?: number; knowledgeBaseName?: string | null; title?: string | null }>,
 ): string {
-  return chunks
-    .map((c) => (c.title ? String(c.title) : `Chunk #${c.id ?? '?'}`))
-    .join(', ');
+  return formatKnowledgeSourcesLabel(chunks);
 }
 
 export function fingerprintReviewedDraft(draft: {
@@ -913,7 +923,7 @@ export function createPostgresAiDraftReplyPort(
                 query,
                 5,
               );
-            const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
+            const kbText = draftReplyKnowledgeText(chunks);
 
             let cannedBlock = '';
             if (config.includeCanned === true) {
@@ -1161,6 +1171,7 @@ export function createPostgresAiDraftReplyPort(
               .set({
                 reply_parent_message_id: input.messageId,
                 ai_suggestion_snapshot: aiText,
+                ai_sources: knowledgeSourcesLabel(prep.chunks) || null,
                 updated_at: stampedAt,
               })
               .where('workspace_id', '=', input.workspaceId)

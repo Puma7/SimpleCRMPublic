@@ -27,6 +27,7 @@ import type {
   WorkflowVersionRecord,
 } from './types';
 import {
+  AI_DECISION_STATS_DAYS,
   redactWorkflowStepDetailForViewer,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
@@ -53,7 +54,7 @@ const MAX_LIMIT = 100;
 export function isWorkflowRuntimeApiPath(path: string): boolean {
   return path.startsWith('/api/v1/workflow-')
     || /^\/api\/v1\/workflows\/[^/]+\/(?:versions|runs)(?:\/|$)/.test(path)
-    || /^\/api\/v1\/workflows\/by-source\/[^/]+\/(?:versions(?:\/snapshot)?|runs)(?:\/|$)/.test(path)
+    || /^\/api\/v1\/workflows\/by-source\/[^/]+\/(?:versions(?:\/snapshot)?|runs|ai-decisions)(?:\/|$)/.test(path)
     || /^\/api\/v1\/email\/messages\/[^/]+\/workflow-runs$/.test(path);
 }
 
@@ -128,6 +129,11 @@ export async function handleWorkflowRuntimeReadRoute(
   const workflowSourceRunsMatch = /^\/api\/v1\/workflows\/by-source\/([^/]+)\/runs$/.exec(req.path);
   if (workflowSourceRunsMatch) {
     return handleWorkflowSourceScopedRuns(req, ports, workflowSourceRunsMatch[1]);
+  }
+
+  const workflowSourceAiDecisionsMatch = /^\/api\/v1\/workflows\/by-source\/([^/]+)\/ai-decisions$/.exec(req.path);
+  if (workflowSourceAiDecisionsMatch) {
+    return handleWorkflowSourceAiDecisionStats(req, ports, workflowSourceAiDecisionsMatch[1]);
   }
 
   const workflowVersionsMatch = /^\/api\/v1\/workflows\/([^/]+)\/versions$/.exec(req.path);
@@ -294,6 +300,36 @@ async function handleWorkflowSourceScopedRuns(
   const route = await resolveWorkflowSourceRoute(req, ports, rawWorkflowSourceSqliteId);
   if ('status' in route) return route;
   return handleWorkflowRunList(req, ports, { workflowId: route.workflow.id });
+}
+
+/**
+ * Plan 050: Treffsicherheit eines `ai.decide`-Knotens. Nur Kennzahlen, nie
+ * einzelne Ereignisse; gleiche Rechte wie die Lauf-Liste (workflows.view).
+ */
+async function handleWorkflowSourceAiDecisionStats(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawWorkflowSourceSqliteId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'GET') return methodNotAllowed();
+  const nodeId = normalizeTextFilter(req.query?.nodeId, 200);
+  if (!nodeId) return error(400, 'invalid_node_id', 'nodeId fehlt oder ist länger als 200 Zeichen');
+  const rawDays = parseOptionalPositiveInt(req.query?.days);
+  if (rawDays === null || (rawDays !== undefined && rawDays > 365)) {
+    return error(400, 'invalid_days', 'days muss eine Ganzzahl von 1 bis 365 sein');
+  }
+  const route = await resolveWorkflowSourceRoute(req, ports, rawWorkflowSourceSqliteId);
+  if ('status' in route) return route;
+  if (!ports.aiDecisionStats || route.workflow.sourceSqliteId === null) {
+    return unavailable('ai_decision_stats_unavailable', 'Kennzahlen der KI-Entscheidung nicht konfiguriert');
+  }
+  const stats = await ports.aiDecisionStats.get({
+    workspaceId: route.principal.workspaceId,
+    workflowSourceId: route.workflow.sourceSqliteId,
+    nodeId,
+    days: rawDays ?? AI_DECISION_STATS_DAYS,
+  });
+  return data(200, stats);
 }
 
 async function handleMessageScopedRuns(
@@ -1872,6 +1908,7 @@ function sanitizeWorkflowRun(run: WorkflowRunRecord, includeLog: boolean): Workf
     messageId: run.messageId,
     direction: run.direction,
     status: run.status,
+    dryRun: run.dryRun,
     ...(includeLog ? { log: run.log } : {}),
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,

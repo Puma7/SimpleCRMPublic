@@ -81,6 +81,12 @@ type Harness = {
   syncWrites: Array<Record<string, string | null>>;
 };
 
+/** Ergebnis des nächsten Dry-Runs (Standard: erfolgreich). */
+let nextDryRunResult: Record<string, unknown> | null = null;
+afterEach(() => {
+  nextDryRunResult = null;
+});
+
 function harness(stored: WorkflowRecord = scheduleWorkflow()): Harness {
   const createCalls: Harness['createCalls'] = [];
   const updateCalls: Harness['updateCalls'] = [];
@@ -117,7 +123,7 @@ function harness(stored: WorkflowRecord = scheduleWorkflow()): Harness {
       async execute() { return undefined; },
       async dryRun(input: Record<string, unknown>) {
         dryRuns.push(input);
-        return { success: true, dryRun: true, status: 'ok', log: [], blocked: false, blockReason: null };
+        return nextDryRunResult ?? { success: true, dryRun: true, status: 'ok', log: [], blocked: false, blockReason: null };
       },
     },
     syncInfo: {
@@ -394,6 +400,31 @@ describe('„Jetzt ausführen" for schedule workflows', () => {
     expect(response.status).toBe(200);
     expect(h.dryRuns[0]).toMatchObject({ triggerName: 'schedule' });
     expect((h.dryRuns[0]!.context as any).eventVariables).not.toHaveProperty('email.account_id');
+  });
+
+  // Gatekeeper (Plan 047): Der Renderer liest Fehler nur aus { error: { message } }.
+  // Ein fehlgeschlagener Testlauf lieferte den Grund unter data.error, die
+  // Server-Edition zeigte nur „HTTP request failed with status 409“.
+  test('a failed dry run answers 409 in the error envelope with the reason', async () => {
+    nextDryRunResult = {
+      success: false, dryRun: true, status: 'error', blocked: false, blockReason: null,
+      log: ['message_not_found'], error: 'Nachricht nicht gefunden',
+    };
+    const h = harness(scheduleWorkflow({ triggerName: 'manual', graph: null }));
+    const response = await h.api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/41/execute',
+      body: { dryRun: true },
+      principal: admin,
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      error: {
+        code: 'workflow_dry_run_failed',
+        message: 'Nachricht nicht gefunden',
+        details: { success: false, log: ['message_not_found'], workflowId: 41 },
+      },
+    });
   });
 
   test('other workflows keep running as manual', async () => {

@@ -454,6 +454,7 @@ function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
   for (const path of [
     '/api/v1/workflows/:id/runs',
     '/api/v1/workflows/by-source/:sourceId/runs',
+    '/api/v1/workflows/by-source/:sourceId/ai-decisions',
     '/api/v1/workflow-runs',
     '/api/v1/workflow-runs/:id',
     '/api/v1/workflow-runs/:id/steps',

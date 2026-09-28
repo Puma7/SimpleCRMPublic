@@ -1,3 +1,5 @@
+import { normalizeAiDecisionFeedbackSignal } from '@simplecrm/core';
+
 import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
 import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
@@ -108,6 +110,17 @@ export type WorkflowExecutionJobPlan = Readonly<{
    * beansprucht ihn genau einmal; „Jetzt ausfuehren" setzt ihn nie.
    */
   scheduleSlot?: string;
+  /**
+   * Nur mit dryRun: den Probelauf als Testlauf speichern (Lauf und Schritte,
+   * gekennzeichnet), auch für einen deaktivierten Workflow. Nie in der
+   * Versandvorschau.
+   */
+  testRun?: boolean;
+  /**
+   * Nur mit testRun: die KI-Entscheidung (ai.decide) wirklich fragen statt
+   * „unsicher“ (Plan 047 Phase B). Kostet Tokens, bleibt ohne Seiteneffekte.
+   */
+  realAi?: boolean;
   context: JobPayload;
 }>;
 
@@ -121,6 +134,8 @@ export type WorkflowExecutionDryRunResult = Readonly<{
   blockReason?: string | null;
   log?: readonly string[];
   error?: string;
+  /** Gespeicherter Testlauf (Quell-Id wie in der Lauf-Historie). */
+  runId?: number;
 }>;
 
 export type MailSyncJobPort = Readonly<{
@@ -558,6 +573,10 @@ export function buildAiDecideJobPlan(
       : {}),
     ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
       ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
+    // Plan 050: nur für die Treffsicherheit; unbekannte Werte zählen als none.
+    ...(normalizeAiDecisionFeedbackSignal(payload.feedbackSignal) !== 'none'
+      ? { feedbackSignal: normalizeAiDecisionFeedbackSignal(payload.feedbackSignal) }
       : {}),
   };
 }

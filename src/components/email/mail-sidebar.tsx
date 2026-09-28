@@ -1,7 +1,7 @@
 "use client"
 
 import { type ReactNode, useState } from "react"
-import { Archive, Bot, Clock, FileEdit, FolderCog, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Timer, Trash2 } from "lucide-react"
+import { Archive, Ban, Bot, Clock, FileEdit, FolderCog, Hourglass, Inbox, Send, ShieldAlert, ShieldQuestion, Tag, Timer, Trash2 } from "lucide-react"
 import { MAX_EMAIL_CATEGORY_DEPTH } from "@shared/email-constants"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
@@ -49,6 +49,9 @@ const FOLDERS: {
   // TA-P3: gesendete Mails von KI oder Automatik; „Gesendet“ zeigt weiterhin alle.
   { id: "sent_ai", label: "Gesendet (KI)", icon: Bot, nested: true },
   { id: "drafts", label: "Entwürfe", icon: FileEdit, countKey: "drafts" },
+  // Plan 049: Warteschlangen der Teilautomatisierung (Entwürfe; kein Zähler, kein Ablageziel).
+  { id: "approval_pending", label: "Wartet auf Freigabe", icon: Hourglass, nested: true },
+  { id: "outbound_blocked", label: "Versand blockiert", icon: Ban, nested: true },
   { id: "scheduled_send", label: "Späterer Versand", icon: Timer, countKey: "scheduledSend" },
   { id: "archived", label: "Archiv", icon: Archive, countKey: "archived" },
   { id: "spam_review", label: "Spam prüfen", icon: ShieldQuestion, countKey: "spamReview" },

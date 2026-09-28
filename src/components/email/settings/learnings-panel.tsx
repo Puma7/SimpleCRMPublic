@@ -7,6 +7,7 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { isKnowledgeContext, KNOWLEDGE_CONTEXT_LABELS } from "@shared/knowledge-context"
 import {
   learningCandidateKindLabel,
+  removedKnowledgeSectionTitles,
   type AiLearningCandidateDto,
   type AiLearningDecisionResultDto,
   type AiLearningDigestDetailDto,
@@ -293,8 +294,21 @@ function LearningsManager() {
     }
   }
 
+  // Ganze Abschnitte, die der Vorschlag entfernt: Anweisungen in Kunden-Mails
+  // können eine KI zu Löschungen verleiten, deshalb Warnung und Rückfrage.
+  const removedSections = useMemo(
+    () => (pending ? removedKnowledgeSectionTitles(pending.currentContent ?? pending.baseContent, draft) : []),
+    [pending, draft],
+  )
+
   const accept = async () => {
     if (!pending) return
+    if (removedSections.length > 0) {
+      const ok = window.confirm(
+        `${removedSections.length} Abschnitt(e) werden aus der Wissensbasis entfernt: ${removedSections.join(", ")}. Trotzdem übernehmen?`,
+      )
+      if (!ok) return
+    }
     setDeciding(true)
     try {
       let result = await invokeRenderer(
@@ -431,8 +445,9 @@ function LearningsManager() {
           <p className="font-medium text-foreground">Datenschutz</p>
           <p>
             Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt
-            personenbezogene Daten (Namen, E-Mail-Adressen, Telefonnummern, IBAN, Links, Adressen, Bestell-,
-            Kunden- und Rechnungsnummern) durch Platzhalter. Gespeichert wird nur der bereinigte Text; die KI
+            personenbezogene Daten (Namen, E-Mail-Adressen, Telefonnummern, IBAN, Kartennummern, Steuer-,
+            Sozialversicherungs- und Ausweisnummern, IP-Adressen, Links, Adressen, Bestell-, Kunden- und
+            Rechnungsnummern) durch Platzhalter. Gespeichert wird nur der bereinigte Text; die KI
             soll nur allgemeine Regeln formulieren, ihre Ausgabe läuft erneut durch denselben Filter. Einträge
             werden nach der Entscheidung über den Vorschlag gelöscht, spätestens nach 90 Tagen.
           </p>
@@ -582,6 +597,17 @@ function LearningsManager() {
               <AlertDescription>
                 Die Änderungsansicht vergleicht mit dem aktuellen Stand. Beim Übernehmen werden Änderungen, die
                 nach dem Vorschlag gemacht wurden, überschrieben — bitte prüfen oder im Bearbeiten-Modus ergänzen.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+          {removedSections.length > 0 ? (
+            <Alert variant="destructive" data-testid="learnings-removed-sections">
+              <AlertTitle>
+                Der Vorschlag entfernt {removedSections.length === 1 ? "einen Abschnitt" : `${removedSections.length} Abschnitte`}
+              </AlertTitle>
+              <AlertDescription>
+                {removedSections.map((title) => `„${title}“`).join(", ")}. Bitte prüfen: Anweisungen in Kunden-Mails können
+                eine KI zu Löschungen verleiten.
               </AlertDescription>
             </Alert>
           ) : null}

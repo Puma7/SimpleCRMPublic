@@ -34,7 +34,10 @@ import {
 } from '../../shared/signature-template';
 import { escapeHtmlText } from '../../shared/compose-body';
 import { clearScheduledSendActor } from './email-scheduled-send-actor';
-import { clearOutboundHoldFingerprints } from './outbound-hold-fingerprint';
+import { APPROVAL_PENDING_VIEW_SQL, OUTBOUND_BLOCKED_VIEW_SQL } from './automation-view-sql';
+import { clearOutboundHoldFingerprints, clearOutboundReviewApprovalMarkers } from './outbound-hold-fingerprint';
+import { linkAiDecisionOverrideSafe } from '../workflow/ai-decision-events';
+import { overrideForSpamTransition } from '../../packages/core/src/workflow/ai-decision-accuracy';
 
 export type EmailAccountRow = {
   id: number;
@@ -117,6 +120,8 @@ export type EmailMessageRow = {
   /** Zwei-Stufen-KI-Antwort: 'pending' = wartet auf menschliche Freigabe. */
   approval_state?: string | null;
   approval_reason?: string | null;
+  /** Plan 048: genutztes Wissen des KI-Entwurfs („Wissensbasis › Abschnitt; …“). */
+  ai_sources?: string | null;
   /** RFC-3834-Marker: Entwurf ist eine automatische Antwort. */
   auto_submitted?: number;
   thread_id: string | null;
@@ -647,6 +652,10 @@ export type AccountMailView =
   | 'sent'
   /** TA-P3: „Gesendet (KI)“ — gesendete Mails automatischer Herkunft. */
   | 'sent_ai'
+  /** Plan 049: „Wartet auf Freigabe“ – KI-Entwürfe, die auf einen Menschen warten. */
+  | 'approval_pending'
+  /** Plan 049: „Versand blockiert“ – vom Ausgang angehaltene Entwürfe. */
+  | 'outbound_blocked'
   | 'archived'
   | 'drafts'
   | 'scheduled_send'
@@ -763,6 +772,10 @@ export function listMessagesForAccountView(
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'sent_ai') {
     sql += ` AND ${SENT_AI_VIEW_SQL}`;
+  } else if (view === 'approval_pending') {
+    sql += ` AND ${APPROVAL_PENDING_VIEW_SQL}`;
+  } else if (view === 'outbound_blocked') {
+    sql += ` AND ${OUTBOUND_BLOCKED_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -851,6 +864,10 @@ export function listMessagesForAllAccountsView(
     sql += ` AND m.folder_kind = 'sent' AND m.is_spam = 0`;
   } else if (view === 'sent_ai') {
     sql += ` AND ${SENT_AI_VIEW_SQL}`;
+  } else if (view === 'approval_pending') {
+    sql += ` AND ${APPROVAL_PENDING_VIEW_SQL}`;
+  } else if (view === 'outbound_blocked') {
+    sql += ` AND ${OUTBOUND_BLOCKED_VIEW_SQL}`;
   } else if (view === 'archived') {
     sql += ` AND m.archived = 1 AND ${nonDraftMail} AND m.is_spam = 0 AND COALESCE(m.spam_status, 'clean') = 'clean'`;
   } else if (view === 'drafts') {
@@ -1763,7 +1780,13 @@ function learningLabelForTransition(previous: string, next: SpamStatus): 'spam' 
 export function setMessageSpamStatus(
   messageId: number,
   status: SpamStatus,
-  opts: { train?: boolean; source?: string; preloadedRow?: EmailMessageRow } = {},
+  opts: {
+    train?: boolean;
+    source?: string;
+    preloadedRow?: EmailMessageRow;
+    /** Ein Mensch ändert den Status (IPC, Drag & Drop): Korrektur der KI-Entscheidung (Plan 050). */
+    aiOverride?: boolean;
+  } = {},
 ): void {
   const row = opts.preloadedRow ?? getEmailMessageById(messageId);
   if (!row) throw new Error('Nachricht nicht gefunden');
@@ -1820,12 +1843,26 @@ export function setMessageSpamStatus(
     }
   });
   tx();
+  if (opts.aiOverride) linkSpamDecisionOverride(messageId, previous, status);
+}
+
+/**
+ * Plan 050: Ein Mensch ändert den Spam-Status → Korrektur am neuesten offenen
+ * Ereignis einer KI-Entscheidung mit Rückmeldung „spam“ (Fehler abgefangen).
+ */
+function linkSpamDecisionOverride(messageId: number, previous: string, next: SpamStatus): void {
+  if ((next !== 'clean' && next !== 'spam') || previous === next) return;
+  linkAiDecisionOverrideSafe({
+    messageId,
+    signal: 'spam',
+    resolve: (answer) => overrideForSpamTransition({ answer, previous, next }),
+  });
 }
 
 export function setMessageSpam(
   messageId: number,
   spam: boolean,
-  opts: { train?: boolean; source?: string } = {},
+  opts: { train?: boolean; source?: string; aiOverride?: boolean } = {},
 ): void {
   setMessageSpamStatus(messageId, spam ? 'spam' : 'clean', opts);
 }
@@ -2072,6 +2109,7 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
            WHERE id = ?`,
         )
         .run(messageId);
+      linkSpamDecisionOverride(messageId, previousSpamStatus, 'clean');
       break;
     }
     case 'archived':
@@ -2085,13 +2123,15 @@ export function moveMessageToMailView(messageId: number, view: AccountMailView):
         .run(messageId);
       break;
     case 'spam_review':
-      setMessageSpamStatus(messageId, 'review', { train: true, source: 'drag-and-drop', preloadedRow: row });
+      setMessageSpamStatus(messageId, 'review', { train: true, source: 'drag-and-drop', preloadedRow: row, aiOverride: true });
       break;
     case 'spam':
-      setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row });
+      setMessageSpamStatus(messageId, 'spam', { train: true, source: 'drag-and-drop', preloadedRow: row, aiOverride: true });
       break;
     case 'sent':
     case 'sent_ai':
+    case 'approval_pending':
+    case 'outbound_blocked':
     case 'drafts':
     case 'all':
       throw new Error('Dieser Ordner unterstützt kein Verschieben per Drag & Drop');
@@ -2197,4 +2237,5 @@ export function updateComposeDraft(
   getDb()
     .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET ${sets.join(', ')} WHERE id = ?`)
     .run(...vals);
+  if (accountMoved) clearOutboundReviewApprovalMarkers(messageId);
 }

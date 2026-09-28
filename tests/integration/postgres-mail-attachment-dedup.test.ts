@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -137,5 +137,15 @@ describe('server links identical attachments to one file', () => {
     // Nochmals: nichts mehr zu tun.
     const again = await runAttachmentDedup({ db, attachmentsRoot });
     expect(again.linked).toBe(0);
+  });
+  (process.getuid?.() === 0 ? test.skip : test)('an unreadable file is counted as failed; the run completes', async () => {
+    const [, , third] = await files();
+    chmodSync(third!, 0o000);
+    try {
+      const result = await runAttachmentDedup({ db, attachmentsRoot });
+      expect(result.failed).toBe(1);
+    } finally {
+      chmodSync(third!, 0o644);
+    }
   });
 });

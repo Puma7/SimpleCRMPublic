@@ -20,6 +20,7 @@ import {
   isLearningsCollectEnabledValue,
   learningNamesFromAddressJson,
   learningsCandidateFilterStart,
+  learningsKnowledgeBaseTooLargeError,
   learningsPeriodStart,
   learningsRetentionCutoff,
   LEARNING_CANDIDATE_KINDS,
@@ -439,6 +440,7 @@ type DigestRow = {
   decided_by_name: string | null;
   base_content?: string;
   proposed_content?: string;
+  accepted_content?: string | null;
 };
 
 function parseOperations(value: string | null | undefined): unknown {
@@ -497,7 +499,7 @@ async function knowledgeDocument(knowledgeBaseId: number): Promise<{ content: st
 
 export async function getAiLearningDigest(id: number): Promise<AiLearningDigestDetailDto | null> {
   const row = getDb()
-    .prepare(`${DIGEST_SELECT.replace('SELECT d.id,', 'SELECT d.base_content, d.proposed_content, d.id,')} WHERE d.id = ?`)
+    .prepare(`${DIGEST_SELECT.replace('SELECT d.id,', 'SELECT d.base_content, d.proposed_content, d.accepted_content, d.id,')} WHERE d.id = ?`)
     .get(id) as DigestRow | undefined;
   if (!row) return null;
   const current = await knowledgeDocument(Number(row.knowledge_base_id));
@@ -506,6 +508,7 @@ export async function getAiLearningDigest(id: number): Promise<AiLearningDigestD
     ...mapDigestRow(row),
     baseContent,
     proposedContent: String(row.proposed_content ?? ''),
+    acceptedContent: row.accepted_content ?? null,
     currentContent: current?.content ?? null,
     knowledgeBaseChanged: current ? current.content !== baseContent : true,
   };
@@ -543,39 +546,37 @@ export async function acceptAiLearningDigest(input: {
 }): Promise<AiLearningDecisionResultDto> {
   const content = String(input.content ?? '');
   if (!content.trim() || content.length > LEARNINGS_KNOWLEDGE_DOCUMENT_MAX_LENGTH) return decisionFailure('content_invalid');
+  const { getKnowledgeBaseDocument, saveKnowledgeBaseDocument } = await import('../workflow/knowledge-base.js');
   const db = getDb();
-  const digest = db
-    .prepare(`SELECT id, status, knowledge_base_id, base_content FROM ${AI_LEARNING_DIGESTS_TABLE} WHERE id = ?`)
-    .get(input.id) as { id: number; status: string; knowledge_base_id: number; base_content: string } | undefined;
-  if (!digest) return decisionFailure('not_found');
-  if (digest.status !== 'pending') return decisionFailure('not_pending');
-  const current = await knowledgeDocument(Number(digest.knowledge_base_id));
-  if (!current) return decisionFailure('knowledge_base_missing');
-  if (current.content !== digest.base_content && input.confirmOverwrite !== true) {
-    return decisionFailure('knowledge_base_changed', current.content);
-  }
-  const { saveKnowledgeBaseDocument } = await import('../workflow/knowledge-base.js');
   const decidedAt = nowIso(input.now);
-  // Erst die Zeile beanspruchen (nur pending → accepted), dann schreiben: ein
-  // doppelter Klick übernimmt nie zweimal.
-  const claimed = db
-    .prepare(
-      `UPDATE ${AI_LEARNING_DIGESTS_TABLE}
-       SET status = 'accepted', decided_by_user_id = ?, decided_at = ?, proposed_content = ?
-       WHERE id = ? AND status = 'pending'`,
-    )
-    .run(input.actorUserId, decidedAt, content, input.id);
-  if (claimed.changes === 0) return decisionFailure('not_pending');
-  try {
+  // Eine Einheit: Zeile beanspruchen (nur pending → accepted), Wissensbasis
+  // speichern (erst Suchindex, dann Datei), Einträge löschen. Scheitert etwas,
+  // rollt SQLite alles zurück und die Datei bleibt unverändert. Der
+  // KI-Vorschlag bleibt in proposed_content; die übernommene Fassung steht in
+  // accepted_content.
+  return db.transaction((): AiLearningDecisionResultDto => {
+    const digest = db
+      .prepare(`SELECT id, status, knowledge_base_id, base_content FROM ${AI_LEARNING_DIGESTS_TABLE} WHERE id = ?`)
+      .get(input.id) as { id: number; status: string; knowledge_base_id: number; base_content: string } | undefined;
+    if (!digest) return decisionFailure('not_found');
+    if (digest.status !== 'pending') return decisionFailure('not_pending');
+    const current = getKnowledgeBaseDocument(Number(digest.knowledge_base_id));
+    if (!current) return decisionFailure('knowledge_base_missing');
+    if (current.content !== digest.base_content && input.confirmOverwrite !== true) {
+      return decisionFailure('knowledge_base_changed', current.content);
+    }
+    const claimed = db
+      .prepare(
+        `UPDATE ${AI_LEARNING_DIGESTS_TABLE}
+         SET status = 'accepted', decided_by_user_id = ?, decided_at = ?, accepted_content = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(input.actorUserId, decidedAt, content, input.id);
+    if (claimed.changes === 0) return decisionFailure('not_pending');
     saveKnowledgeBaseDocument(Number(digest.knowledge_base_id), content);
-  } catch (error) {
-    db.prepare(
-      `UPDATE ${AI_LEARNING_DIGESTS_TABLE} SET status = 'pending', decided_by_user_id = NULL, decided_at = NULL WHERE id = ?`,
-    ).run(input.id);
-    throw error;
-  }
-  db.prepare(`DELETE FROM ${AI_LEARNING_CANDIDATES_TABLE} WHERE digest_id = ?`).run(input.id);
-  return { success: true, digest: digestSummary(input.id) };
+    db.prepare(`DELETE FROM ${AI_LEARNING_CANDIDATES_TABLE} WHERE digest_id = ?`).run(input.id);
+    return { success: true, digest: digestSummary(input.id) };
+  })();
 }
 
 export function rejectAiLearningDigest(input: { id: number; actorUserId: string | null; now?: Date }): AiLearningDecisionResultDto {
@@ -726,6 +727,9 @@ export async function runAiLearningsDigest(request: AiLearningsDigestRequest): P
       | { name: string }
       | undefined;
     const baseContent = document?.content ?? '';
+    // Vor dem (bezahlten) KI-Aufruf ablehnen (Plan 035).
+    const tooLarge = learningsKnowledgeBaseTooLargeError(baseContent.length);
+    if (tooLarge) return { status: 'failed', digestId: null, candidateCount: preflight.candidates.length, error: tooLarge };
     const settings = getAiLearningsSettings();
     const profileId = request.profileId ?? settings.profileId ?? null;
     const chat = request.chat ?? (async (system: string, user: string, profile: number | null) => {

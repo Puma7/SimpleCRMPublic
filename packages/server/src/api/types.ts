@@ -9,6 +9,7 @@ import type {
   OutboundReviewSkipPolicy,
   WorkflowNodeCatalogEntry,
   WorkflowTemplate,
+  AutomationCockpitSnapshot,
 } from '@simplecrm/core';
 import type { Readable } from 'node:stream';
 
@@ -2177,6 +2178,8 @@ export type EmailMessageRecord = {
   replyParentMessageId?: number | null;
   approvalState?: string | null;
   approvalReason?: string | null;
+  /** Plan 048: genutztes Wissen am KI-Entwurf; null ohne Inhaltsrecht. */
+  aiSources?: string | null;
   /** Ausgangsprüfung: Entwurf angehalten (Versand blockiert). */
   outboundHold?: boolean;
   /** Grund der Sperre (Workflow/KI-Prüfung); null ohne Grund oder bei metadata-only. */
@@ -2404,9 +2407,12 @@ export type EmailReportingSnapshot = {
   }>;
   workflowRuns24h: Array<{
     workflowId: number;
+    workflowName: string | null;
     count: number;
     errors: number;
   }>;
+  /** Plan 049: Automatik-Cockpit (Konto-Filter und Mail-Sicht wie die Summen). */
+  automation: AutomationCockpitSnapshot;
 };
 
 export type EmailReportingApiPort = {
@@ -2796,7 +2802,7 @@ export type EmailMessageApiPort = {
     done?: boolean;
     spam?: boolean;
     search?: string;
-    view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+    view?: 'inbox' | 'sent' | 'sent_ai' | 'approval_pending' | 'outbound_blocked' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
     categoryId?: number;
     sort?: 'date_desc' | 'date_asc' | 'priority' | 'relevance';
     /** Suchbereich: 'broad' sucht ueber alle Ordner (nur mit search wirksam). */
@@ -3281,7 +3287,7 @@ export type EmailThreadSplitMessagePortResult =
 
 export type EmailThreadApiPort = EmailStringRecordApiPort<EmailThreadRecord, {
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'sent_ai' | 'approval_pending' | 'outbound_blocked' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -4344,6 +4350,8 @@ export type WorkflowRunRecord = {
   messageId: number | null;
   direction: string;
   status: string;
+  /** Plan 047: Testlauf mit einer ausgewählten Mail, ohne Seiteneffekte. */
+  dryRun: boolean;
   log?: unknown | null;
   startedAt: string | null;
   finishedAt: string | null;
@@ -5682,6 +5690,8 @@ export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   /** TA-P5: Learnings sammeln, auswerten, freigeben. */
   aiLearnings?: import('../ai-learnings').AiLearningsApiPort;
+  /** Plan 050: Treffsicherheit der KI-Entscheidung je Knoten (nur Kennzahlen). */
+  aiDecisionStats?: import('../ai-decision-events').AiDecisionStatsApiPort;
   auth: AuthApiPort;
   /** When set, POST /auth/initial-setup requires matching X-Initial-Setup-Token header or setupToken body field. */
   initialSetupToken?: string;

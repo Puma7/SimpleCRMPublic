@@ -282,6 +282,7 @@ async function selectWorkflowStats(
     ])
     .where('workspace_id', '=', workspaceId)
     .where('started_at', '>=', since)
+    .where('dry_run', '=', false)
     .executeTakeFirst();
 }
 

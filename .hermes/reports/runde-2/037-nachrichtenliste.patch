@@ -1,0 +1,1053 @@
+diff --git a/src/components/email/message-list.tsx b/src/components/email/message-list.tsx
+index 27a97910..cfbcd8e7 100644
+--- a/src/components/email/message-list.tsx
++++ b/src/components/email/message-list.tsx
+@@ -1,9 +1,10 @@
+ "use client"
+ 
+-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
++import { useCallback, useEffect, useMemo, useRef, useState } from "react"
++import { useVirtualizer } from "@tanstack/react-virtual"
+ import type { MessageListDisplayMode } from "@shared/email-list-options"
+ import { IPCChannels } from "@shared/ipc/channels"
+-import { ChevronDown, Loader2, Lock, Paperclip, Search, SlidersHorizontal } from "lucide-react"
++import { ChevronDown, Loader2, Search, SlidersHorizontal } from "lucide-react"
+ import { toast } from "sonner"
+ import { Input } from "@/components/ui/input"
+ import { Button } from "@/components/ui/button"
+@@ -40,29 +41,16 @@ import {
+   SelectValue,
+ } from "@/components/ui/select"
+ import type { MessageListSortMode } from "@shared/email-list-options"
+-import {
+-  highlightNeedlesInText,
+-  searchNeedlesFromQuery,
+-  splitHighlighted,
+-} from "@shared/email-search-highlight"
+-import { ScrollArea } from "@/components/ui/scroll-area"
++import { searchNeedlesFromQuery } from "@shared/email-search-highlight"
+ import { cn } from "@/lib/utils"
+ import { isAllAccountsScope } from "./account-scope"
+-import {
+-  formatFrom,
+-  formatMessageFrom,
+-  type EmailAccount,
+-  type EmailMessage,
+-  type MailView,
+-} from "./types"
++import type { EmailAccount, EmailMessage, MailView } from "./types"
+ import { useMailWorkspace } from "./workspace-context"
+-import { setMailDragData } from "./mail-drag"
+ import { MessageFilterChips } from "./message-filter-chips"
+ import { MessageDoneFilterChips } from "./message-done-filter-chips"
+ import { pickBulkAdvanceTargetId } from "./select-adjacent-message"
+ import { invokeRenderer } from "@/services/transport"
+-import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
+-import { SentProvenanceBadges } from "./sent-provenance"
++import { MessageRow } from "./message-row"
+ import type { BulkListAction } from "./hooks/use-email-messages"
+ 
+ type Props = {
+@@ -87,6 +75,9 @@ type Props = {
+   onScrolledToMessage?: () => void
+ }
+ 
++/** Stabile leere Liste für zugeklappte Threads (Plan 037: MessageRow bleibt gemerkt). */
++const NO_CHILDREN: EmailMessage[] = []
++
+ function threadKey(m: EmailMessage): string {
+   // thread_id is a globally-unique th-<hex>, so it keys directly. ticket_code and
+   // imap_thread_id are BOTH account-scoped: server ticket threads are unique per
+@@ -104,36 +95,6 @@ function threadKey(m: EmailMessage): string {
+   return `m:${m.id}`
+ }
+ 
+-/** Compact date+time so the column stays readable when the list pane is narrow. */
+-function formatListDateTime(iso: string | null): string {
+-  if (!iso) return ""
+-  const d = new Date(iso)
+-  if (Number.isNaN(d.getTime())) return ""
+-  return d.toLocaleString("de-DE", {
+-    day: "2-digit",
+-    month: "2-digit",
+-    hour: "2-digit",
+-    minute: "2-digit",
+-  })
+-}
+-
+-/** Sentinel-markierten Text als React-Knoten mit <mark> rendern (kein HTML-Parsing). */
+-function renderHighlighted(sentinelText: string): ReactNode {
+-  const parts = splitHighlighted(sentinelText)
+-  return parts.map((part, i) =>
+-    part.marked ? (
+-      <mark
+-        key={i}
+-        className="rounded-sm bg-yellow-200/80 px-0.5 text-inherit dark:bg-yellow-500/30"
+-      >
+-        {part.text}
+-      </mark>
+-    ) : (
+-      <span key={i}>{part.text}</span>
+-    ),
+-  )
+-}
+-
+ export function MessageList({
+   messages,
+   accounts,
+@@ -195,8 +156,10 @@ export function MessageList({
+     return map
+   }, [messages])
+   const showAccount = isAllAccountsScope(selectedAccountId)
+-  const accountLabel = (id: number) =>
+-    accounts.find((a) => a.id === id)?.display_name ?? `Konto ${id}`
++  const accountLabels = useMemo(
++    () => new Map(accounts.map((a) => [a.id, a.display_name] as const)),
++    [accounts],
++  )
+   const searchActive = searchQuery.trim().length > 0
+   const broadSearchActive = searchScope.allFolders && searchActive
+   const searchNeedles = useMemo(
+@@ -211,14 +174,6 @@ export function MessageList({
+   const [expandedThreads, setExpandedThreads] = useState<Set<string>>(new Set())
+   const [threadChildren, setThreadChildren] = useState<Record<string, EmailMessage[]>>({})
+ 
+-  useEffect(() => {
+-    if (scrollToMessageId == null) return
+-    const el = document.querySelector(`[data-message-id="${scrollToMessageId}"]`)
+-    if (el instanceof HTMLElement) {
+-      el.scrollIntoView({ block: "nearest" })
+-      onScrolledToMessage?.()
+-    }
+-  }, [scrollToMessageId, messages, onScrolledToMessage])
+   const searchInputRef = useRef<HTMLInputElement>(null)
+   const lastSelectionAnchorRef = useRef<number | null>(null)
+   const pendingFolderSelectIdsRef = useRef<number[]>([])
+@@ -259,12 +214,18 @@ export function MessageList({
+     return () => window.removeEventListener("keydown", onKeyDown)
+   }, [selectedIds.size, bulkBusy])
+ 
+-  const isMessageSelectable = (m: EmailMessage) =>
+-    mailView === "drafts" || mailView === "scheduled_send"
+-      ? m.uid < 0 && m.folder_kind === "draft"
+-      : m.uid >= 0 || Boolean(m.pop3_uidl)
++  const isMessageSelectable = useCallback(
++    (m: EmailMessage) =>
++      mailView === "drafts" || mailView === "scheduled_send"
++        ? m.uid < 0 && m.folder_kind === "draft"
++        : m.uid >= 0 || Boolean(m.pop3_uidl),
++    [mailView],
++  )
+ 
+-  const selectableIds = visibleMessages.filter(isMessageSelectable).map((m) => m.id)
++  const selectableIds = useMemo(
++    () => visibleMessages.filter(isMessageSelectable).map((m) => m.id),
++    [visibleMessages, isMessageSelectable],
++  )
+   const bulkAccountId = isAllAccountsScope(selectedAccountId) ? undefined : selectedAccountId
+   const allSelected =
+     selectableIds.length > 0 && selectableIds.every((id) => selectedIds.has(id))
+@@ -306,6 +267,69 @@ export function MessageList({
+     [selectableIds, toggleOne],
+   )
+ 
++  // Plan 037: Zustand für stabile Rückrufe (MessageRow bleibt gemerkt).
++  const selectedIdsRef = useRef(selectedIds)
++  const visibleMessagesRef = useRef(visibleMessages)
++  const expandedThreadsRef = useRef(expandedThreads)
++  const threadChildrenRef = useRef(threadChildren)
++  useEffect(() => {
++    selectedIdsRef.current = selectedIds
++    visibleMessagesRef.current = visibleMessages
++    expandedThreadsRef.current = expandedThreads
++    threadChildrenRef.current = threadChildren
++  }, [selectedIds, visibleMessages, expandedThreads, threadChildren])
++
++  // If the dragged row is part of the current multi-selection, drag the whole
++  // selection; otherwise just this one. Only selectable (server-backed) rows count.
++  const buildDragIds = useCallback((id: number): number[] => {
++    const selected = selectedIdsRef.current
++    return selected.has(id) && selected.size > 1
++      ? visibleMessagesRef.current
++          .filter((vm) => selected.has(vm.id) && vm.uid >= 0)
++          .map((vm) => vm.id)
++      : [id]
++  }, [])
++
++  const toggleThreadExpand = useCallback(async (tKey: string, threadIdForExpand: string) => {
++    const expanded = expandedThreadsRef.current.has(tKey)
++    if (!expanded && !threadChildrenRef.current[tKey] && threadIdForExpand) {
++      const rows = await invokeRenderer(IPCChannels.Email.ListThreadMessages, {
++        threadId: threadIdForExpand,
++        limit: 50,
++      })
++      if (Array.isArray(rows)) {
++        setThreadChildren((prev) => ({
++          ...prev,
++          [tKey]: rows as EmailMessage[],
++        }))
++      }
++    }
++    setExpandedThreads((prev) => {
++      const next = new Set(prev)
++      if (expanded) next.delete(tKey)
++      else next.add(tKey)
++      return next
++    })
++  }, [])
++
++  // Plan 037: nur sichtbare Zeilen (+ Überhang) rendern.
++  const scrollParentRef = useRef<HTMLDivElement>(null)
++  const rowVirtualizer = useVirtualizer({
++    count: visibleMessages.length,
++    getScrollElement: () => scrollParentRef.current,
++    estimateSize: () => 64,
++    overscan: 8,
++    getItemKey: (index) => visibleMessages[index]?.id ?? index,
++  })
++
++  useEffect(() => {
++    if (scrollToMessageId == null) return
++    const index = visibleMessages.findIndex((m) => m.id === scrollToMessageId)
++    if (index < 0) return // bleibt offen, bis die Zeile geladen ist
++    rowVirtualizer.scrollToIndex(index, { align: "auto" })
++    onScrolledToMessage?.()
++  }, [scrollToMessageId, visibleMessages, rowVirtualizer, onScrolledToMessage])
++
+   const toggleAllLoaded = useCallback(() => {
+     if (allSelected) {
+       setSelectedIds(new Set())
+@@ -761,7 +785,7 @@ export function MessageList({
+         ) : null}
+       </div>
+ 
+-      <ScrollArea className="flex-1">
++      <div ref={scrollParentRef} data-message-list-scroll className="min-h-0 flex-1 overflow-y-auto">
+         {loading ? (
+           <p className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+             <Loader2 className="h-4 w-4 animate-spin" />
+@@ -770,9 +794,9 @@ export function MessageList({
+         ) : visibleMessages.length === 0 ? (
+           <p className="p-4 text-sm text-muted-foreground">Keine Nachrichten.</p>
+         ) : (
+-          <ul className="divide-y">
++          <div>
+             {selectableIds.length > 0 ? (
+-              <li className="flex items-center gap-2 border-b bg-muted/20 px-2 py-1.5">
++              <div className="flex items-center gap-2 border-b bg-muted/20 px-2 py-1.5">
+                 <Checkbox
+                   checked={allSelected}
+                   disabled={bulkBusy}
+@@ -802,246 +826,69 @@ export function MessageList({
+                     </DropdownMenuItem>
+                   </DropdownMenuContent>
+                 </DropdownMenu>
+-              </li>
++              </div>
+             ) : null}
+-            {visibleMessages.map((m) => {
+-              const isDraft = m.folder_kind === "draft"
+-              const blocked = !!m.outbound_hold
+-              const unread = !m.seen_local && m.uid >= 0
+-              const open = mailView === "inbox" && !m.done_local && m.uid >= 0
+-              const active = selectedMessage?.id === m.id
+-              const canSelect = isMessageSelectable(m)
+-              const checked = selectedIds.has(m.id)
+-              const tKey = threadKey(m)
+-              const threadIdForExpand = m.thread_id?.trim() ?? ""
+-              const localSiblings = threadGroups.get(tKey) ?? []
+-              const hasLocalSiblings = localSiblings.length > 1
+-              // Every message carries a thread_id since backfill, so a bare
+-              // thread_id no longer implies a real thread. Prefer the
+-              // authoritative server count (chevron only when >1); fall back to
+-              // loaded siblings when the count isn't available (e.g. local mode).
+-              const serverThreadCount =
+-                typeof m.thread_message_count === "number" ? m.thread_message_count : null
+-              const isThreadRoot =
+-                listDisplayMode === "thread"
+-                && (serverThreadCount !== null ? serverThreadCount > 1 : hasLocalSiblings)
+-              const expanded = expandedThreads.has(tKey)
+-              // Prefer server-fetched thread messages; fall back to the siblings
+-              // already loaded on this page (covers imap_thread_id / ticket_code
+-              // groups with no thread_id). The child render filters out `m`.
+-              const children = threadChildren[tKey] ?? (expanded ? localSiblings : [])
+-              const lock = conversationLocks[m.id]
+-              const lockOwner = lock?.displayName?.trim() || lock?.email?.trim() || lock?.userId
+-              return (
+-                <li key={m.id}>
++            <div style={{ height: rowVirtualizer.getTotalSize(), position: "relative", width: "100%" }}>
++              {rowVirtualizer.getVirtualItems().map((v) => {
++                const m = visibleMessages[v.index]
++                if (!m) return null
++                const tKey = threadKey(m)
++                const threadIdForExpand = m.thread_id?.trim() ?? ""
++                const localSiblings = threadGroups.get(tKey) ?? NO_CHILDREN
++                const hasLocalSiblings = localSiblings.length > 1
++                // Every message carries a thread_id since backfill, so a bare
++                // thread_id no longer implies a real thread. Prefer the
++                // authoritative server count (chevron only when >1); fall back to
++                // loaded siblings when the count isn't available (e.g. local mode).
++                const serverThreadCount =
++                  typeof m.thread_message_count === "number" ? m.thread_message_count : null
++                const isThreadRoot =
++                  listDisplayMode === "thread"
++                  && (serverThreadCount !== null ? serverThreadCount > 1 : hasLocalSiblings)
++                const expanded = expandedThreads.has(tKey)
++                // Prefer server-fetched thread messages; fall back to the siblings
++                // already loaded on this page (covers imap_thread_id / ticket_code
++                // groups with no thread_id). The child render filters out `m`.
++                const childrenRows = threadChildren[tKey] ?? (expanded ? localSiblings : NO_CHILDREN)
++                return (
+                   <div
+-                    className={cn(
+-                      "flex w-full items-start transition-colors hover:bg-muted/60",
+-                      active && "bg-muted",
+-                    )}
++                    key={v.key}
++                    data-index={v.index}
++                    ref={rowVirtualizer.measureElement}
++                    style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${v.start}px)` }}
+                   >
+-                    <div className="flex w-7 shrink-0 flex-col items-center gap-0.5 pt-2">
+-                      {canSelect ? (
+-                        <Checkbox
+-                          checked={checked}
+-                          disabled={bulkBusy}
+-                          onCheckedChange={(v) => toggleCheckbox(m.id, v === true, false)}
+-                          aria-label={`Nachricht ${m.id} auswählen`}
+-                          onClick={(e) => {
+-                            e.stopPropagation()
+-                            if (e.shiftKey) {
+-                              e.preventDefault()
+-                              toggleCheckbox(m.id, true, true)
+-                            }
+-                          }}
+-                        />
+-                      ) : (
+-                        <span className="h-4 w-4" />
+-                      )}
+-                      {isThreadRoot ? (
+-                        <Button
+-                          type="button"
+-                          variant="ghost"
+-                          size="icon"
+-                          className="h-5 w-5"
+-                          onClick={async (e) => {
+-                            e.stopPropagation()
+-                            const next = new Set(expandedThreads)
+-                            if (expanded) next.delete(tKey)
+-                            else {
+-                              next.add(tKey)
+-                              if (!threadChildren[tKey] && threadIdForExpand) {
+-                                const rows = await invokeRenderer(IPCChannels.Email.ListThreadMessages, {
+-                                  threadId: threadIdForExpand,
+-                                  limit: 50,
+-                                })
+-                                if (Array.isArray(rows)) {
+-                                  setThreadChildren((prev) => ({
+-                                    ...prev,
+-                                    [tKey]: rows as EmailMessage[],
+-                                  }))
+-                                }
+-                              }
+-                            }
+-                            setExpandedThreads(next)
+-                          }}
+-                        >
+-                          <ChevronDown
+-                            className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")}
+-                          />
+-                        </Button>
+-                      ) : null}
+-                    </div>
+-                    <button
+-                      type="button"
+-                      data-message-id={m.id}
+-                      draggable={m.uid >= 0 && !bulkBusy}
+-                      disabled={bulkBusy}
+-                      onDragStart={(e) => {
+-                        if (m.uid < 0 || bulkBusy) return
+-                        // If the dragged row is part of the current multi-
+-                        // selection, drag the whole selection; otherwise just
+-                        // this one. Only selectable (server-backed) rows count.
+-                        const dragIds =
+-                          selectedIds.has(m.id) && selectedIds.size > 1
+-                            ? visibleMessages
+-                                .filter((vm) => selectedIds.has(vm.id) && vm.uid >= 0)
+-                                .map((vm) => vm.id)
+-                            : [m.id]
+-                        setMailDragData(e.dataTransfer, dragIds)
+-                      }}
+-                      onClick={(e) => {
+-                        if (bulkBusy) return
+-                        // Modifier-click selects (like a typical mail client):
+-                        // Shift = range from the anchor, Ctrl/Cmd = toggle this
+-                        // row. A plain click opens the message.
+-                        if (canSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+-                          e.preventDefault()
+-                          if (e.shiftKey) toggleCheckbox(m.id, true, true)
+-                          else toggleCheckbox(m.id, !checked, false)
+-                          return
+-                        }
+-                        void onOpen(m)
+-                      }}
+-                      className="min-w-0 flex-1 py-2 pl-0.5 pr-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
+-                    >
+-                      <div className="flex items-start gap-2">
+-                        <div
+-                          className={cn(
+-                            "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+-                            unread
+-                              ? "bg-primary"
+-                              : open
+-                                ? "bg-amber-500"
+-                                : "bg-emerald-500/70",
+-                          )}
+-                          title={
+-                            unread
+-                              ? "Ungelesen"
+-                              : open
+-                                ? "Offen (unerledigt)"
+-                                : "Erledigt"
+-                          }
+-                        />
+-                        <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
+-                          <span
+-                            className={cn(
+-                              "truncate text-xs",
+-                              unread ? "font-semibold" : "text-muted-foreground",
+-                              isDraft && blocked && "text-amber-700 dark:text-amber-300",
+-                            )}
+-                            title={
+-                              isDraft && blocked
+-                                ? (m.outbound_block_reason || OUTBOUND_HOLD_FALLBACK_REASON).toString()
+-                                : undefined
+-                            }
+-                          >
+-                            {isDraft
+-                              ? blocked
+-                                ? "Entwurf — Ausgang blockiert"
+-                                : "Entwurf"
+-                              : formatMessageFrom(m, accounts)}
+-                          </span>
+-                          <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
+-                            {(m.approval_state === "pending") ? (
+-                              <span
+-                                className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700 dark:text-sky-400"
+-                                title={(m.approval_reason || "Wartet auf Freigabe").toString()}
+-                              >
+-                                Freigabe
+-                              </span>
+-                            ) : null}
+-                            <SentProvenanceBadges message={m} />
+-                            {m.has_attachments ? (
+-                              <Paperclip
+-                                className="h-3 w-3 text-muted-foreground"
+-                                aria-label="Hat Anhang"
+-                              />
+-                            ) : null}
+-                            {lock ? (
+-                              <Lock
+-                                className="h-3 w-3 text-amber-600 dark:text-amber-300"
+-                                aria-label={`Gesperrt durch ${lockOwner}`}
+-                              />
+-                            ) : null}
+-                            {formatListDateTime(m.date_received)}
+-                          </span>
+-                          <span
+-                            className={cn(
+-                              "col-span-2 truncate text-sm",
+-                              unread && "font-medium",
+-                            )}
+-                          >
+-                            {searchActive && searchNeedles.length > 0
+-                              ? renderHighlighted(
+-                                  highlightNeedlesInText(
+-                                    m.subject?.trim() || "(Ohne Betreff)",
+-                                    searchNeedles,
+-                                  ),
+-                                )
+-                              : m.subject?.trim() || "(Ohne Betreff)"}
+-                          </span>
+-                          {searchActive && m.search_snippet ? (
+-                            <span className="col-span-2 truncate text-[11px] text-muted-foreground">
+-                              {renderHighlighted(m.search_snippet)}
+-                            </span>
+-                          ) : null}
+-                          {mailView === "snoozed" && m.snoozed_until ? (
+-                            <span className="col-span-2 truncate text-[10px] text-amber-700 dark:text-amber-300">
+-                              Bis {formatListDateTime(m.snoozed_until)}
+-                            </span>
+-                          ) : null}
+-                          {showAccount ? (
+-                            <span className="col-span-2 truncate text-[10px] text-muted-foreground">
+-                              {accountLabel(m.account_id)}
+-                            </span>
+-                          ) : null}
+-                        </div>
+-                      </div>
+-                    </button>
++                    <MessageRow
++                      message={m}
++                      accounts={accounts}
++                      mailView={mailView}
++                      active={selectedMessage?.id === m.id}
++                      checked={selectedIds.has(m.id)}
++                      canSelect={isMessageSelectable(m)}
++                      bulkBusy={bulkBusy}
++                      unread={!m.seen_local && m.uid >= 0}
++                      open={mailView === "inbox" && !m.done_local && m.uid >= 0}
++                      isDraft={m.folder_kind === "draft"}
++                      blocked={!!m.outbound_hold}
++                      showAccount={showAccount}
++                      accountLabelText={accountLabels.get(m.account_id) ?? `Konto ${m.account_id}`}
++                      searchActive={searchActive}
++                      searchNeedles={searchNeedles}
++                      isThreadRoot={isThreadRoot}
++                      expanded={expanded}
++                      childrenRows={childrenRows}
++                      lock={conversationLocks[m.id]}
++                      tKey={tKey}
++                      threadIdForExpand={threadIdForExpand}
++                      onOpen={onOpen}
++                      onToggleCheckbox={toggleCheckbox}
++                      onToggleExpand={toggleThreadExpand}
++                      buildDragIds={buildDragIds}
++                    />
+                   </div>
+-                  {expanded && children.length > 0
+-                    ? children
+-                        .filter((c) => c.id !== m.id)
+-                        .map((c) => (
+-                          <button
+-                            key={c.id}
+-                            type="button"
+-                            className="flex w-full border-t border-muted/40 py-2 pl-8 pr-3 text-left text-xs hover:bg-muted/40"
+-                            onClick={() => void onOpen(c)}
+-                          >
+-                            <span className="truncate font-medium">{formatFrom(c.from_json)}</span>
+-                            <span className="mx-2 text-muted-foreground">·</span>
+-                            <span className="truncate text-muted-foreground">
+-                              {formatListDateTime(c.date_received)}
+-                            </span>
+-                          </button>
+-                        ))
+-                    : null}
+-                </li>
+-              )
+-            })}
+-          </ul>
++                )
++              })}
++            </div>
++          </div>
+         )}
+         {hasMore && !loading ? (
+           <div className="border-t p-2">
+@@ -1057,7 +904,7 @@ export function MessageList({
+             </Button>
+           </div>
+         ) : null}
+-      </ScrollArea>
++      </div>
+ 
+       <AlertDialog open={selectAllDialogOpen} onOpenChange={setSelectAllDialogOpen}>
+         <AlertDialogContent>
+diff --git a/src/components/email/message-row.tsx b/src/components/email/message-row.tsx
+new file mode 100644
+index 00000000..7bbc47db
+--- /dev/null
++++ b/src/components/email/message-row.tsx
+@@ -0,0 +1,295 @@
++"use client"
++
++import * as React from "react"
++import { ChevronDown, Lock, Paperclip } from "lucide-react"
++import { highlightNeedlesInText, splitHighlighted } from "@shared/email-search-highlight"
++import { Button } from "@/components/ui/button"
++import { Checkbox } from "@/components/ui/checkbox"
++import { cn } from "@/lib/utils"
++import { OUTBOUND_HOLD_FALLBACK_REASON } from "../../../packages/core/src/email/outbound-review-parse"
++import { setMailDragData } from "./mail-drag"
++import { SentProvenanceBadges } from "./sent-provenance"
++import {
++  formatFrom,
++  formatMessageFrom,
++  type ConversationLockRecord,
++  type EmailAccount,
++  type EmailMessage,
++  type MailView,
++} from "./types"
++
++/** Compact date+time so the column stays readable when the list pane is narrow. */
++export function formatListDateTime(iso: string | null): string {
++  if (!iso) return ""
++  const d = new Date(iso)
++  if (Number.isNaN(d.getTime())) return ""
++  return d.toLocaleString("de-DE", {
++    day: "2-digit",
++    month: "2-digit",
++    hour: "2-digit",
++    minute: "2-digit",
++  })
++}
++
++/** Sentinel-markierten Text als React-Knoten mit <mark> rendern (kein HTML-Parsing). */
++function renderHighlighted(sentinelText: string): ReactNode {
++  const parts = splitHighlighted(sentinelText)
++  return parts.map((part, i) =>
++    part.marked ? (
++      <mark
++        key={i}
++        className="rounded-sm bg-yellow-200/80 px-0.5 text-inherit dark:bg-yellow-500/30"
++      >
++        {part.text}
++      </mark>
++    ) : (
++      <span key={i}>{part.text}</span>
++    ),
++  )
++}
++
++/**
++ * Plan 037: Props nur als Werte oder stabile Referenzen (Rückrufe aus
++ * useCallback, gemerkte Arrays) — sonst rendert jede Zeile bei jeder Änderung neu.
++ */
++export type MessageRowProps = {
++  message: EmailMessage
++  accounts: EmailAccount[]
++  mailView: MailView
++  active: boolean
++  checked: boolean
++  canSelect: boolean
++  bulkBusy: boolean
++  unread: boolean
++  open: boolean
++  isDraft: boolean
++  blocked: boolean
++  showAccount: boolean
++  accountLabelText: string
++  searchActive: boolean
++  searchNeedles: string[]
++  isThreadRoot: boolean
++  expanded: boolean
++  /** NO_CHILDREN, solange zugeklappt (stabile Referenz). */
++  childrenRows: EmailMessage[]
++  lock: ConversationLockRecord | undefined
++  tKey: string
++  threadIdForExpand: string
++  onOpen: (m: EmailMessage) => void | Promise<void>
++  onToggleCheckbox: (id: number, checked: boolean, shiftKey: boolean) => void
++  onToggleExpand: (tKey: string, threadIdForExpand: string) => void | Promise<void>
++  buildDragIds: (id: number) => number[]
++}
++
++/** Eine Zeile der Nachrichtenliste (Plan 037: gemerkt, damit ein Klick nur sie neu rendert). */
++export const MessageRow = React.memo(function MessageRow({
++  message: m,
++  accounts,
++  mailView,
++  active,
++  checked,
++  canSelect,
++  bulkBusy,
++  unread,
++  open,
++  isDraft,
++  blocked,
++  showAccount,
++  accountLabelText,
++  searchActive,
++  searchNeedles,
++  isThreadRoot,
++  expanded,
++  childrenRows,
++  lock,
++  tKey,
++  threadIdForExpand,
++  onOpen,
++  onToggleCheckbox,
++  onToggleExpand,
++  buildDragIds,
++}: MessageRowProps) {
++  const lockOwner = lock?.displayName?.trim() || lock?.email?.trim() || lock?.userId
++  return (
++    <div className="border-b">
++      <div
++        className={cn(
++          "flex w-full items-start transition-colors hover:bg-muted/60",
++          active && "bg-muted",
++        )}
++      >
++        <div className="flex w-7 shrink-0 flex-col items-center gap-0.5 pt-2">
++          {canSelect ? (
++            <Checkbox
++              checked={checked}
++              disabled={bulkBusy}
++              onCheckedChange={(v) => onToggleCheckbox(m.id, v === true, false)}
++              aria-label={`Nachricht ${m.id} auswählen`}
++              onClick={(e) => {
++                e.stopPropagation()
++                if (e.shiftKey) {
++                  e.preventDefault()
++                  onToggleCheckbox(m.id, true, true)
++                }
++              }}
++            />
++          ) : (
++            <span className="h-4 w-4" />
++          )}
++          {isThreadRoot ? (
++            <Button
++              type="button"
++              variant="ghost"
++              size="icon"
++              className="h-5 w-5"
++              onClick={(e) => {
++                e.stopPropagation()
++                void onToggleExpand(tKey, threadIdForExpand)
++              }}
++            >
++              <ChevronDown
++                className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")}
++              />
++            </Button>
++          ) : null}
++        </div>
++        <button
++          type="button"
++          data-message-id={m.id}
++          draggable={m.uid >= 0 && !bulkBusy}
++          disabled={bulkBusy}
++          onDragStart={(e) => {
++            if (m.uid < 0 || bulkBusy) return
++            setMailDragData(e.dataTransfer, buildDragIds(m.id))
++          }}
++          onClick={(e) => {
++            if (bulkBusy) return
++            // Modifier-click selects (like a typical mail client):
++            // Shift = range from the anchor, Ctrl/Cmd = toggle this
++            // row. A plain click opens the message.
++            if (canSelect && (e.shiftKey || e.ctrlKey || e.metaKey)) {
++              e.preventDefault()
++              if (e.shiftKey) onToggleCheckbox(m.id, true, true)
++              else onToggleCheckbox(m.id, !checked, false)
++              return
++            }
++            void onOpen(m)
++          }}
++          className="min-w-0 flex-1 py-2 pl-0.5 pr-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
++        >
++          <div className="flex items-start gap-2">
++            <div
++              className={cn(
++                "mt-1.5 h-2 w-2 shrink-0 rounded-full",
++                unread
++                  ? "bg-primary"
++                  : open
++                    ? "bg-amber-500"
++                    : "bg-emerald-500/70",
++              )}
++              title={
++                unread
++                  ? "Ungelesen"
++                  : open
++                    ? "Offen (unerledigt)"
++                    : "Erledigt"
++              }
++            />
++            <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
++              <span
++                className={cn(
++                  "truncate text-xs",
++                  unread ? "font-semibold" : "text-muted-foreground",
++                  isDraft && blocked && "text-amber-700 dark:text-amber-300",
++                )}
++                title={
++                  isDraft && blocked
++                    ? (m.outbound_block_reason || OUTBOUND_HOLD_FALLBACK_REASON).toString()
++                    : undefined
++                }
++              >
++                {isDraft
++                  ? blocked
++                    ? "Entwurf — Ausgang blockiert"
++                    : "Entwurf"
++                  : formatMessageFrom(m, accounts)}
++              </span>
++              <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
++                {(m.approval_state === "pending") ? (
++                  <span
++                    className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700 dark:text-sky-400"
++                    title={(m.approval_reason || "Wartet auf Freigabe").toString()}
++                  >
++                    Freigabe
++                  </span>
++                ) : null}
++                <SentProvenanceBadges message={m} />
++                {m.has_attachments ? (
++                  <Paperclip
++                    className="h-3 w-3 text-muted-foreground"
++                    aria-label="Hat Anhang"
++                  />
++                ) : null}
++                {lock ? (
++                  <Lock
++                    className="h-3 w-3 text-amber-600 dark:text-amber-300"
++                    aria-label={`Gesperrt durch ${lockOwner}`}
++                  />
++                ) : null}
++                {formatListDateTime(m.date_received)}
++              </span>
++              <span
++                className={cn(
++                  "col-span-2 truncate text-sm",
++                  unread && "font-medium",
++                )}
++              >
++                {searchActive && searchNeedles.length > 0
++                  ? renderHighlighted(
++                      highlightNeedlesInText(
++                        m.subject?.trim() || "(Ohne Betreff)",
++                        searchNeedles,
++                      ),
++                    )
++                  : m.subject?.trim() || "(Ohne Betreff)"}
++              </span>
++              {searchActive && m.search_snippet ? (
++                <span className="col-span-2 truncate text-[11px] text-muted-foreground">
++                  {renderHighlighted(m.search_snippet)}
++                </span>
++              ) : null}
++              {mailView === "snoozed" && m.snoozed_until ? (
++                <span className="col-span-2 truncate text-[10px] text-amber-700 dark:text-amber-300">
++                  Bis {formatListDateTime(m.snoozed_until)}
++                </span>
++              ) : null}
++              {showAccount ? (
++                <span className="col-span-2 truncate text-[10px] text-muted-foreground">
++                  {accountLabelText}
++                </span>
++              ) : null}
++            </div>
++          </div>
++        </button>
++      </div>
++      {expanded && childrenRows.length > 0
++        ? childrenRows
++            .filter((c) => c.id !== m.id)
++            .map((c) => (
++              <button
++                key={c.id}
++                type="button"
++                className="flex w-full border-t border-muted/40 py-2 pl-8 pr-3 text-left text-xs hover:bg-muted/40"
++                onClick={() => void onOpen(c)}
++              >
++                <span className="truncate font-medium">{formatFrom(c.from_json)}</span>
++                <span className="mx-2 text-muted-foreground">·</span>
++                <span className="truncate text-muted-foreground">
++                  {formatListDateTime(c.date_received)}
++                </span>
++              </button>
++            ))
++        : null}
++    </div>
++  )
++})
+diff --git a/tests/unit/message-list-virtualization.test.tsx b/tests/unit/message-list-virtualization.test.tsx
+new file mode 100644
+index 00000000..f28a3f06
+--- /dev/null
++++ b/tests/unit/message-list-virtualization.test.tsx
+@@ -0,0 +1,178 @@
++/**
++ * Plan 037: Die Nachrichtenliste rendert nur die sichtbaren Zeilen (+ Überhang),
++ * und ein Klick auf eine Zeile rendert nur diese Zeile neu.
++ */
++import React from 'react';
++import { act, fireEvent, render, screen } from '@testing-library/react';
++
++const mockInvoke = jest.fn();
++
++jest.mock('sonner', () => ({
++  toast: Object.assign(jest.fn(), {
++    success: jest.fn(),
++    error: jest.fn(),
++    warning: jest.fn(),
++    info: jest.fn(),
++    message: jest.fn(),
++  }),
++}));
++
++jest.mock('@/services/transport', () => ({
++  getRendererTransport: () => ({ kind: 'ipc' }),
++  invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
++}));
++
++// Zähler je gerenderter Zeile.
++jest.mock('../../src/components/email/sent-provenance', () => ({
++  SentProvenanceBadges: jest.fn(() => null),
++  SentProvenanceLine: () => null,
++}));
++
++const mockWorkspace = {
++  searchQuery: '',
++  setSearchQuery: jest.fn(),
++  searchScope: { allFolders: false },
++  setSearchScope: jest.fn(),
++  searchSortMode: 'relevance',
++  setSearchSortMode: jest.fn(),
++  selectedMessage: null,
++  selectedAccountId: 1,
++  messageListFilter: 'all',
++  messageDoneFilter: 'all',
++  mailView: 'inbox',
++  categoryFilterId: null,
++  listSortMode: 'date_desc',
++  setListSortMode: jest.fn(),
++  listDisplayMode: 'flat' as 'flat' | 'thread',
++  setListDisplayMode: jest.fn(),
++  conversationLocks: {},
++};
++jest.mock('../../src/components/email/workspace-context', () => ({
++  useMailWorkspace: () => mockWorkspace,
++}));
++
++import { IPCChannels } from '../../shared/ipc/channels';
++import { MessageList } from '../../src/components/email/message-list';
++import { SentProvenanceBadges } from '../../src/components/email/sent-provenance';
++import { MAIL_DRAG_TYPE } from '../../src/components/email/mail-drag';
++import type { EmailMessage } from '../../src/components/email/types';
++
++function inbox(id: number, extra: Partial<EmailMessage> = {}): EmailMessage {
++  return {
++    id,
++    account_id: 1,
++    folder_id: 1,
++    uid: id,
++    subject: `Nachricht ${id}`,
++    snippet: null,
++    date_received: '2026-09-20T10:00:00.000Z',
++    from_json: JSON.stringify({ value: [{ address: `absender${id}@example.com` }] }),
++    body_text: null,
++    body_html: null,
++    seen_local: 0,
++    done_local: 0,
++    ...extra,
++  } as EmailMessage;
++}
++
++const MESSAGES = Array.from({ length: 1000 }, (_, i) => inbox(i + 1));
++
++const heightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
++const widthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
++
++beforeAll(() => {
++  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
++    configurable: true,
++    get(this: HTMLElement) {
++      if (this.hasAttribute('data-index')) return 64;
++      return this.hasAttribute('data-message-list-scroll') ? 640 : 0;
++    },
++  });
++  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
++    configurable: true,
++    get() {
++      return 400;
++    },
++  });
++});
++
++afterAll(() => {
++  if (heightDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', heightDescriptor);
++  if (widthDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', widthDescriptor);
++});
++
++beforeEach(() => {
++  mockInvoke.mockReset();
++  (SentProvenanceBadges as unknown as jest.Mock).mockClear();
++  mockWorkspace.listDisplayMode = 'flat';
++});
++
++function renderList(props: Partial<React.ComponentProps<typeof MessageList>> = {}) {
++  return render(
++    <MessageList messages={MESSAGES} accounts={[]} loading={false} onOpen={jest.fn()} {...props} />,
++  );
++}
++
++describe('MessageList: nur sichtbare Zeilen (Plan 037)', () => {
++  test('von 1000 Mails sind höchstens Sichtbare + Überhang eingehängt', () => {
++    const { container } = renderList();
++    const mounted = container.querySelectorAll('[data-message-id]').length;
++    expect(mounted).toBeGreaterThan(0);
++    expect(mounted).toBeLessThanOrEqual(40);
++  });
++
++  test('Häkchen an einer Zeile rendert nur diese Zeile neu', () => {
++    renderList();
++    const badges = SentProvenanceBadges as unknown as jest.Mock;
++    const before = badges.mock.calls.length;
++    expect(before).toBeGreaterThan(0);
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Nachricht 1 auswählen' }));
++    expect(badges.mock.calls.length - before).toBeLessThanOrEqual(2);
++  });
++
++  test('scrollToMessageId: geladene Zeile wird angesteuert, fehlende bleibt offen', () => {
++    const scrolled = jest.fn();
++    const { unmount } = renderList({ scrollToMessageId: 900, onScrolledToMessage: scrolled });
++    expect(scrolled).toHaveBeenCalledTimes(1);
++    unmount();
++    const missing = jest.fn();
++    renderList({ scrollToMessageId: 9999, onScrolledToMessage: missing });
++    expect(missing).not.toHaveBeenCalled();
++  });
++
++  test('Shift-Klick wählt einen Bereich aus', () => {
++    renderList();
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Nachricht 1 auswählen' }));
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Nachricht 3 auswählen' }), { shiftKey: true });
++    expect(screen.getByText('3 ausgewählt')).toBeInTheDocument();
++  });
++
++  test('Ziehen einer ausgewählten Zeile nimmt die ganze Auswahl mit', () => {
++    const { container } = renderList();
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Nachricht 1 auswählen' }));
++    fireEvent.click(screen.getByRole('checkbox', { name: 'Nachricht 2 auswählen' }));
++    const row = container.querySelector('[data-message-id="2"]')!;
++    const dataTransfer = { setData: jest.fn(), effectAllowed: '' };
++    fireEvent.dragStart(row, { dataTransfer });
++    expect(dataTransfer.setData).toHaveBeenCalledWith(
++      MAIL_DRAG_TYPE,
++      JSON.stringify({ messageId: 1, messageIds: [1, 2] }),
++    );
++  });
++
++  test('Thread aufklappen lädt die Nachrichten des Threads', async () => {
++    mockWorkspace.listDisplayMode = 'thread';
++    mockInvoke.mockResolvedValue([inbox(11, { thread_id: 'th-a' }), inbox(12, { thread_id: 'th-a' })]);
++    const threadMessages = [
++      inbox(11, { thread_id: 'th-a', thread_message_count: 2 }),
++      inbox(12, { thread_id: 'th-a', thread_message_count: 2 }),
++    ];
++    const { container } = renderList({ messages: threadMessages });
++    const row = container.querySelector('[data-message-id="11"]')!;
++    const expand = row.parentElement!.querySelector('button:not([data-message-id]):not([role="checkbox"])')!;
++    await act(async () => {
++      fireEvent.click(expand);
++    });
++    expect(mockInvoke).toHaveBeenCalledWith(IPCChannels.Email.ListThreadMessages, { threadId: 'th-a', limit: 50 });
++  });
++});
+diff --git a/tests/unit/workflow-codex-review-regressions.test.ts b/tests/unit/workflow-codex-review-regressions.test.ts
+index eaf6a3b0..e48149c6 100644
+--- a/tests/unit/workflow-codex-review-regressions.test.ts
++++ b/tests/unit/workflow-codex-review-regressions.test.ts
+@@ -59,7 +59,7 @@ describe('codex review regression guards', () => {
+ 
+   test('server approval UI is reachable and terminal child failures advance the chain', () => {
+     const viewer = readRepoFile('src/components/email/message-viewer.tsx');
+-    const list = readRepoFile('src/components/email/message-list.tsx');
++    const list = readRepoFile('src/components/email/message-row.tsx');
+     const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+     const queue = readRepoFile('packages/server/src/db/postgres-job-queue-port.ts');
+     expect(viewer).toContain('approval_state === "pending"');

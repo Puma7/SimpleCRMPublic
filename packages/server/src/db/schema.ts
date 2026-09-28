@@ -70,6 +70,7 @@ export type ServerDatabase = {
   email_workflow_forward_dedup: EmailWorkflowForwardDedupTable;
   workflow_knowledge_bases: WorkflowKnowledgeBasesTable;
   workflow_knowledge_chunks: WorkflowKnowledgeChunksTable;
+  workflow_knowledge_sections: WorkflowKnowledgeSectionsTable;
   workflow_delayed_jobs: WorkflowDelayedJobsTable;
   email_spam_list_entries: EmailSpamListEntriesTable;
   email_spam_learning_events: EmailSpamLearningEventsTable;
@@ -93,6 +94,7 @@ export type ServerDatabase = {
   ai_usage_events: AiUsageEventsTable;
   ai_reply_feedback: AiReplyFeedbackTable;
   ai_learning_candidates: AiLearningCandidatesTable;
+  ai_decision_events: AiDecisionEventsTable;
   ai_learning_digests: AiLearningDigestsTable;
   return_reasons: ReturnReasonsTable;
   returns: ReturnsTable;
@@ -108,6 +110,27 @@ export type AiReplyFeedbackTable = {
   suggestion_len: number;
   sent_len: number;
   changed_ratio: number;
+  created_at: TimestampColumn;
+};
+
+/** Plan 050: Treffsicherheit der KI-Entscheidung, ohne Text (Migration 0066). */
+export type AiDecisionEventsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  workflow_id: number | null;
+  workflow_source_id: number;
+  node_id: string;
+  run_id: number | null;
+  message_id: number | null;
+  direction: string;
+  answer: 'ja' | 'nein' | 'unsicher' | 'error';
+  probability: number | null;
+  threshold: number;
+  model: string | null;
+  feedback_signal: ColumnType<'none' | 'spam' | 'human_needed' | 'send_ok', 'none' | 'spam' | 'human_needed' | 'send_ok' | undefined, 'none' | 'spam' | 'human_needed' | 'send_ok'>;
+  override_kind: 'spam_to_clean' | 'clean_to_spam' | 'review_to_clean' | 'review_to_spam' | 'human_reply' | 'sent_without_review' | null;
+  truth: 'ja' | 'nein' | null;
+  override_at: TimestampColumn | null;
   created_at: TimestampColumn;
 };
 
@@ -143,6 +166,8 @@ export type AiLearningDigestsTable = {
   candidate_count: number;
   base_content: string;
   proposed_content: string;
+  /** Übernommene Fassung (Admin ggf. bearbeitet); NULL bis zur Übernahme (Migration 0061). */
+  accepted_content: Generated<string | null>;
   summary: string;
   operations_json: JsonColumn;
   error: string | null;
@@ -831,6 +856,8 @@ export type EmailMessagesTable = {
   reply_suggestion_updated_at: TimestampColumn | null;
   approval_state: string | null;
   approval_reason: string | null;
+  /** Plan 048: genutztes Wissen am KI-Entwurf („Wissensbasis › Abschnitt“). */
+  ai_sources: ColumnType<string | null, string | null | undefined, string | null>;
   auto_submitted: ColumnType<number, number | undefined, number>;
   /** Teilautomatisierung P3: Entwurf von einem KI-/Workflow-Knoten angelegt ('ai' | 'workflow'). */
   draft_origin_kind: string | null;
@@ -1293,6 +1320,8 @@ export type EmailWorkflowRunsTable = SourceImportedTable & {
   log_json: JsonColumn | null;
   started_at: TimestampColumn | null;
   finished_at: TimestampColumn | null;
+  /** Testlauf (Migration 0062): gespeichert, aber ohne Seiteneffekte und nicht in Statistiken. */
+  dry_run: Generated<boolean>;
 };
 
 export type EmailWorkflowRunStepsTable = SourceImportedTable & {
@@ -1345,6 +1374,17 @@ export type WorkflowKnowledgeChunksTable = SourceImportedTable & {
   source_path: string | null;
   embedding_json: JsonColumn | null;
   created_at: TimestampColumn | null;
+};
+
+/** Plan 048: aus dem Dokument abgeleitete Abschnitte (Suchindex, search_vector generiert). */
+export type WorkflowKnowledgeSectionsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  knowledge_base_id: number;
+  position: number;
+  title: string;
+  content: string;
+  built_at: TimestampColumn;
 };
 
 export type WorkflowDelayedJobsTable = SourceImportedTable & {

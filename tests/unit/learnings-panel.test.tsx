@@ -191,6 +191,7 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     expect(within(diff).getByTitle('entfernt')).toHaveTextContent('14');
     expect(within(diff).getByTitle('neu')).toHaveTextContent('30');
     expect(screen.getByTestId('learnings-privacy')).toHaveTextContent('personenbezogene Daten');
+    expect(screen.getByTestId('learnings-privacy')).toHaveTextContent('Kartennummern');
     const history = screen.getByRole('region', { name: 'Verlauf' });
     expect(within(history).getByText('Fehlgeschlagen')).toBeInTheDocument();
     expect(within(history).getByText('Antwort der KI enthält kein gültiges JSON')).toBeInTheDocument();
@@ -236,6 +237,28 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     confirm.mockRestore();
   });
 
+  // Plan 038: ganze Abschnitte zu entfernen wird hervorgehoben und nachgefragt.
+  test('warnt, wenn der Vorschlag Abschnitte entfernt; Übernehmen fragt nach', async () => {
+    mockBackend({
+      detail: {
+        baseContent: '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n',
+        currentContent: '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n',
+        proposedContent: '# Firma\n\n## Rückgabe\n\n30 Tage.\n',
+      },
+    });
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<LearningsPanel />);
+    const alert = await screen.findByTestId('learnings-removed-sections');
+    expect(alert).toHaveTextContent('Der Vorschlag entfernt einen Abschnitt');
+    expect(alert).toHaveTextContent('„Versand“');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Übernehmen' }));
+    });
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Versand'));
+    expect(mockInvoke.mock.calls.filter(([channel]) => channel === IPCChannels.Email.AcceptLearningDigest)).toEqual([]);
+    confirm.mockRestore();
+  });
+
   test('warnt vorab, wenn die Wissensbasis seit dem Vorschlag geändert wurde; Verwerfen', async () => {
     mockBackend({ detail: { currentContent: '# Firma\n\n## Rückgabe\n\n21 Tage.\n', knowledgeBaseChanged: true } });
     const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
@@ -272,6 +295,19 @@ describe('Einstellungen → Learnings (TA-P5)', () => {
     });
     expect(mockInvoke).toHaveBeenCalledWith(IPCChannels.Email.RunLearningsDigest, { period: 'since_last' });
     expect(mockToast.info).toHaveBeenCalledWith('Im gewählten Zeitraum gibt es keine gesammelten Einträge.');
+
+    // Plan 035: zu große Wissensbasis ⇒ Meldung ohne KI-Aufruf.
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === IPCChannels.Email.RunLearningsDigest) {
+        return { status: 'failed', digestId: null, candidateCount: 0, error: 'Die Wissensbasis ist zu groß …' };
+      }
+      if (channel === IPCChannels.Email.GetLearningsOverview) return overview({ pendingDigestId: null });
+      return [];
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Learnings jetzt auswerten' }));
+    });
+    expect(mockToast.error).toHaveBeenCalledWith('Auswertung fehlgeschlagen: Die Wissensbasis ist zu groß …');
   });
 });
 

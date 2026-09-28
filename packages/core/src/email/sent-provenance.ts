@@ -155,9 +155,15 @@ export type DraftContentSnapshot = {
  * Entwurfsfenster speichert beim Öffnen und vor dem Senden immer alle Felder
  * — nur ein echter Unterschied zählt. Verglichen werden Betreff, Text
  * (Leerraum, HTML-Umformatierung des Editors und der Hinweis „Versand
- * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto. Trägt das
- * HTML die Zonen-Marker des Entwurfsfensters, zählen nur Anrede und Text:
- * Signatur- und Zitat-Zone setzt das Fenster selbst ein.
+ * blockiert“ zählen nicht), Empfänger-Adressen, Anhänge und Konto.
+ *
+ * Signatur- und Zitat-Zone setzt das Fenster beim ersten Speichern selbst ein
+ * (vorheriger Stand ohne Zonen-Marker): dieser Übergang zählt nicht. Tragen
+ * beide Stände die Marker, zählen Änderungen an Signatur und Zitat (auch ein
+ * P.S. unter der Signatur) wie jede andere Bearbeitung. Bekannte Lücke: eine
+ * Änderung in Signatur oder Zitat vor dem allerersten Speichern des Fensters
+ * bleibt unerkannt — das Fenster speichert beim Öffnen, sie bräuchte einen
+ * Speicherweg ohne dieses erste Speichern.
  */
 export function draftContentChanged(before: DraftContentSnapshot, after: DraftContentSnapshot): boolean {
   return normalizedDraftMeta(before) !== normalizedDraftMeta(after) || draftBodyChanged(before, after);
@@ -179,7 +185,11 @@ type DraftBodyForms = {
   text: string | null;
   /** Text und Link-/Bildziele des HTML-Teils (nur Anrede und Text); null = kein HTML. */
   html: { text: string; links: string[] } | null;
+  /** Signatur- und Zitat-Zone (Text und Ziele); null = HTML ohne Zonen-Marker. */
+  zones: { signature: DraftZoneForm; quote: DraftZoneForm } | null;
 };
+
+type DraftZoneForm = { text: string; links: string[] };
 
 /**
  * Review B7: Text- und HTML-Fassung zählen beide. Der Brieftext (HTML-Text,
@@ -192,7 +202,9 @@ function draftBodyChanged(before: DraftContentSnapshot, after: DraftContentSnaps
   const b = draftBodyForms(after);
   if ((a.html?.text ?? a.text ?? '') !== (b.html?.text ?? b.text ?? '')) return true;
   if (a.text !== null && b.text !== null && a.text !== b.text) return true;
-  return JSON.stringify(a.html?.links ?? []) !== JSON.stringify(b.html?.links ?? []);
+  if (JSON.stringify(a.html?.links ?? []) !== JSON.stringify(b.html?.links ?? [])) return true;
+  // Plan 041: Zonen nur vergleichen, wenn beide Stände sie tragen (das Einsetzen zählt nicht).
+  return a.zones !== null && b.zones !== null && JSON.stringify(a.zones) !== JSON.stringify(b.zones);
 }
 
 function draftBodyForms(snapshot: DraftContentSnapshot): DraftBodyForms {
@@ -218,24 +230,65 @@ function draftBodyForms(snapshot: DraftContentSnapshot): DraftBodyForms {
       if (at >= 0) text = collapseWhitespace(`${text.slice(0, at)} ${text.slice(at + zoneText.length)}`);
     }
   }
-  return { text: text || null, html: htmlForm };
+  const hasZoneMarkers = html.includes(LEARNING_COMPOSE_SIGNATURE_MARKER) || html.includes(LEARNING_COMPOSE_QUOTE_MARKER);
+  return {
+    text: text || null,
+    html: htmlForm,
+    zones: zones && hasZoneMarkers
+      ? { signature: draftZoneForm(zones.signatureHtml), quote: draftZoneForm(zones.quoteHtml) }
+      : null,
+  };
+}
+
+function draftZoneForm(zoneHtml: string): DraftZoneForm {
+  return { text: normalizedBodyText(plainTextFromHtml(zoneHtml)), links: htmlLinkTargets(zoneHtml) };
 }
 
 function normalizedBodyText(value: string): string {
   return collapseWhitespace(decodeHtmlEntities(value));
 }
 
-const LINK_TARGET = /\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+// Alle Attribute, die eine Adresse laden oder verlinken (Links, Bilder,
+// Hintergründe, Formularziele, Medien). Eine Änderung daran ist eine Änderung.
+const LINK_TARGET = /\b(?:href|src|srcset|background|action|formaction|poster|data|cite)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+const SRCSET_ATTRIBUTE = /^srcset/i;
 
-/** Link- und Bildziele (href/src) eines HTML-Teils, sortiert (auch für die Ausgangs-Sperre). */
+/** Link- und Bildziele eines HTML-Teils, sortiert (auch für die Ausgangs-Sperre). */
 export function htmlLinkTargets(html: string): string[] {
   const targets: string[] = [];
   LINK_TARGET.lastIndex = 0;
   for (let match = LINK_TARGET.exec(html); match; match = LINK_TARGET.exec(html)) {
     const value = collapseWhitespace(decodeHtmlEntities(match[1] ?? match[2] ?? match[3] ?? ''));
-    if (value) targets.push(value);
+    if (!value) continue;
+    if (SRCSET_ATTRIBUTE.test(match[0].replace(/^\W+/, ''))) {
+      // srcset: „url 1x, url 2x“ – je Kandidat nur die Adresse.
+      for (const candidate of value.split(',')) {
+        const url = candidate.trim().split(' ')[0];
+        if (url) targets.push(url);
+      }
+      continue;
+    }
+    targets.push(value);
   }
+  targets.push(...cssUrlTargets(html));
   return targets.sort();
+}
+
+/** Adressen aus CSS `url(...)` in style-Attributen und <style>-Blöcken (linear). */
+function cssUrlTargets(html: string): string[] {
+  const lower = html.toLowerCase();
+  const targets: string[] = [];
+  let cursor = 0;
+  for (;;) {
+    const start = lower.indexOf('url(', cursor);
+    if (start < 0) break;
+    const end = lower.indexOf(')', start + 4);
+    if (end < 0) break;
+    const raw = decodeHtmlEntities(html.slice(start + 4, end)).trim().replace(/^["']|["']$/g, '').trim();
+    if (raw) targets.push(`url(${raw})`);
+    cursor = end + 1;
+  }
+  return targets;
 }
 
 /**

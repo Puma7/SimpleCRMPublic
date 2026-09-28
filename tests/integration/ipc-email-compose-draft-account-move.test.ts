@@ -39,7 +39,7 @@ jest.mock('../../electron/auth/auth-store', () => ({
 
 import Database from 'better-sqlite3';
 import { IPCChannels } from '../../shared/ipc/channels';
-import { bootstrapFreshDatabaseSchema, closeDatabase } from '../../electron/sqlite-service';
+import { bootstrapFreshDatabaseSchema, closeDatabase, getSyncInfo, setSyncInfo } from '../../electron/sqlite-service';
 import {
   createComposeDraft,
   createEmailAccountRecord,
@@ -137,6 +137,18 @@ describe('Email.UpdateComposeDraft moves a local draft to another account', () =
       .prepare(`SELECT id FROM email_messages WHERE account_id = ? AND folder_kind = 'draft'`)
       .all(serviceAccountId);
     expect(leftovers).toEqual([]);
+  });
+
+  test('Kontowechsel verwirft Freigabe und „ohne Prüfung“', async () => {
+    mockAccessibleAccounts.add(serviceAccountId);
+    mockAccessibleAccounts.add(salesAccountId);
+    setSyncInfo(`outbound_review_approved:${draftId}`, 'x|y');
+    setSyncInfo(`outbound_review_skipped:${draftId}`, 'x|y');
+
+    await expect(invokeUpdate({ messageId: draftId, accountId: salesAccountId })).resolves.toEqual({ success: true });
+
+    expect(getSyncInfo(`outbound_review_approved:${draftId}`) || null).toBeNull();
+    expect(getSyncInfo(`outbound_review_skipped:${draftId}`) || null).toBeNull();
   });
 
   test('rejects a target account the user may not use and leaves the draft untouched', async () => {

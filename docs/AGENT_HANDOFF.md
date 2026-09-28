@@ -1,6 +1,6 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-09-26 (Teilautomatisierung eingehender E-Mails, Branch `claude/jolly-cerf-hkvznl`; davor Audit 2026-09, PR #193 gemergt)
+**Last updated:** 2026-09-28 (CI-Gates dokumentiert, Plan 042; davor Teilautomatisierung eingehender E-Mails, Branch `claude/jolly-cerf-hkvznl`; Audit 2026-09, PR #193 gemergt)
 **Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 **Current feature:** [`MAIL_TEILAUTOMATISIERUNG.md`](MAIL_TEILAUTOMATISIERUNG.md) (Konzept, Entscheidungen, Pakete P1–P6; Stand in [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) Abschnitt „Teilautomatisierung 2026-09“)
@@ -14,7 +14,7 @@
 2. **E-Mail:** [`DEVELOPER_EMAIL.md`](DEVELOPER_EMAIL.md), [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md).
 3. **CRM:** [`DEVELOPER_CRM.md`](DEVELOPER_CRM.md), [`CRM_PRODUCT_GUIDE.md`](CRM_PRODUCT_GUIDE.md).
 4. **Backup/Restore:** [`MAIL_BETA_PHASE3_PLAN.md`](MAIL_BETA_PHASE3_PLAN.md), [`MAIL_TROUBLESHOOTING.md`](MAIL_TROUBLESHOOTING.md).
-5. Verify: `pnpm run check:typescript-toolchain`, `pnpm test`, `pnpm run build`, `pnpm run lint`.
+5. Verify: see the "CI gates" table in [`AGENTS.md`](../AGENTS.md) — at minimum `pnpm run lint`, `pnpm run typecheck`, `pnpm test`, `pnpm run build`.
 
 **UI language:** German (Posteingang = inbox, Aufgaben = tasks, Kunden = customers).
 
@@ -39,7 +39,8 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 ## 3. Architecture — workflows
 
 - **Execution source:** `email_workflows.graph_json` (React Flow).
-- **Runtime:** `electron/workflow/runtime.ts` → node registry in `electron/workflow/nodes/*.ts`.
+- **Runtime (Desktop):** `electron/workflow/runtime.ts` → node registry in `electron/workflow/nodes/*.ts`.
+- **Runtime (Server):** `packages/server/src/workflow-execution.ts` (`createPostgresWorkflowExecutionJobPort`, run by the job worker, schedules via `packages/server/src/jobs/workflow-schedule-tick.ts`); node handlers per category in `packages/server/src/workflow-nodes/*.ts` (tables in `workflow-nodes/index.ts`); edition-neutral logic (graph compile/validate, cron, AI decide) in `packages/core/src/workflow/`.
 - **Triggers:** `inbound` / `outbound` / `schedule` / CRM / webhook — see [`WORKFLOW_PHASES.md`](WORKFLOW_PHASES.md) (W0–W7, P1–P7 ✅).
 
 **KI-Profil in Knoten:** `config.profileId` (number). UI: Dropdown in `node-properties-panel.tsx` (`AiProfileSelect`). Backend: `profileIdFromConfig` in `ai-nodes.ts`; bei Prompt-Knoten `effectiveProfileId` (Knoten > Prompt > Standard).
@@ -83,6 +84,9 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
 | Electron E2E CI | `.github/workflows/ci.yml`, `tests/e2e/playwright.electron.config.ts`, `tests/e2e/atomic-task-calendar.spec.ts` |
 | Atomic task/calendar | `packages/core/src/crm/task-calendar.ts`, `packages/server/src/db/postgres-core-crm-read-ports.ts`, `electron/sqlite-service.ts` |
+| Workflow runtime (Server) | `packages/server/src/workflow-execution.ts`, `packages/server/src/workflow-nodes/` |
+| Shared workflow logic | `packages/core/src/workflow/` |
+| CI gates | `.github/workflows/ci.yml`, [`AGENTS.md`](../AGENTS.md) („CI gates“) |
 
 ---
 

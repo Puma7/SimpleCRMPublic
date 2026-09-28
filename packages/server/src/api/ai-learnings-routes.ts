@@ -278,6 +278,10 @@ async function handleDigests(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
     ...(profileId ? { profileId } : {}),
   };
   const preflight = await ports.aiLearnings.prepareDigestRequest(plan);
+  if (preflight.status === 'failed' && preflight.code === 'knowledge_base_too_large') {
+    // Kein Job, kein KI-Aufruf: die Oberfläche zeigt die Meldung.
+    return data(200, { status: 'failed', digestId: null, candidateCount: preflight.candidateCount, error: preflight.error });
+  }
   if (preflight.status === 'failed') return error(404, 'workflow_knowledge_base_not_found', preflight.error);
   if (preflight.status !== 'ready') {
     return data(200, {
@@ -293,6 +297,8 @@ async function handleDigests(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
       ...buildAiLearningsDigestJobPayload({ ...plan, trigger: 'manual' }),
       actorUserId: principal.userId,
     },
+    // Wie der Knoten: ein fehlgeschlagener Lauf kostet schon einen KI-Aufruf, keine Wiederholung.
+    maxAttempts: 1,
   });
   return data(202, { status: 'queued', digestId: null, candidateCount: preflight.candidateCount });
 }

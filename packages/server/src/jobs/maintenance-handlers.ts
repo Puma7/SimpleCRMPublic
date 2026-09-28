@@ -12,6 +12,7 @@ import type { JobPayload } from './types';
 import { runMailSyncSchedule } from './mail-sync-scheduler';
 import { runWorkflowScheduleTick } from './workflow-schedule-tick';
 import { pruneAiLearningCandidates } from '../ai-learnings';
+import { pruneAiDecisionEvents } from '../ai-decision-events';
 import { pruneWorkflowRunStepDetails } from '../workflow-run-step-append';
 import type { JobHandlerRegistry } from './worker';
 
@@ -196,7 +197,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           : {}),
       });
       // Wie beim Sync: der Takt selbst scheitert nicht an einem einzelnen
-      // Workflow — der Anspruch ist zurueckgenommen, der naechste Takt
+      // Workflow — der Zeitpunkt bleibt unbeansprucht, der naechste Takt
       // versucht es erneut, solange der Zeitpunkt im Nachholfenster liegt.
       if (result.failed.length > 0) {
         const workflowIds = result.failed.map((entry) => entry.workflowId).join(', ');
@@ -351,6 +352,15 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
         ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
       }, plan.workspaceId).catch((error: unknown) => {
         console.warn(`[workflow] Aufräumen der Lauf-Details fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
+      });
+
+      // Plan 050: Ereignisse der KI-Entscheidung nach 365 Tagen löschen. Wie oben nur protokolliert.
+      await pruneAiDecisionEvents({
+        db: options.db,
+        now,
+        ...(options.applyWorkspaceSession ? { applyWorkspaceSession: options.applyWorkspaceSession } : {}),
+      }, plan.workspaceId).catch((error: unknown) => {
+        console.warn(`[ai-decision] Aufräumen fehlgeschlagen (Workspace ${plan.workspaceId}): ${error instanceof Error ? error.message : String(error)}`);
       });
     },
   };

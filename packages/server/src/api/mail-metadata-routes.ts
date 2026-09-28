@@ -2796,7 +2796,7 @@ function parseTeamMemberFilters(req: ApiRequest): ParseResult<{ search?: string;
 
 function parseThreadFilters(req: ApiRequest): ParseResult<{
   accountId?: number;
-  view?: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+  view?: 'inbox' | 'sent' | 'sent_ai' | 'approval_pending' | 'outbound_blocked' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
   search?: string;
   hasUnread?: boolean;
   hasAttachments?: boolean;
@@ -4123,6 +4123,8 @@ function parseOptionalThreadView(value: string | undefined):
   | 'inbox'
   | 'sent'
   | 'sent_ai'
+  | 'approval_pending'
+  | 'outbound_blocked'
   | 'archived'
   | 'drafts'
   | 'scheduled_send'
@@ -4134,7 +4136,7 @@ function parseOptionalThreadView(value: string | undefined):
   | undefined
   | null {
   if (value === undefined || value === '') return undefined;
-  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
+  return isOneOf(value, ['inbox', 'sent', 'sent_ai', 'approval_pending', 'outbound_blocked', 'archived', 'drafts', 'scheduled_send', 'spam_review', 'spam', 'trash', 'snoozed', 'all'])
     ? value
     : null;
 }

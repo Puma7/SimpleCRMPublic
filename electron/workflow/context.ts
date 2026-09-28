@@ -87,6 +87,7 @@ export function createWorkflowContext(input: {
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
   previewOutbound?: boolean;
+  testRealAi?: boolean;
   eventStrings?: WorkflowStringContext;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -141,6 +142,7 @@ export function createWorkflowContext(input: {
     runId: input.runId,
     dryRun: input.dryRun ?? false,
     previewOutbound: input.previewOutbound === true,
+    ...(input.dryRun === true && input.testRealAi === true ? { testRealAi: true } : {}),
     variables: vars,
     strings,
     ai: {},

@@ -1279,6 +1279,11 @@ export function MessageViewer(props: Props) {
                           "Die Gegenlese-KI empfiehlt eine menschliche Prüfung."}{" "}
                         Diese Antwort wurde von der KI entworfen und gegengelesen.
                       </p>
+                      {selectedMessage.ai_sources ? (
+                        <p className="mt-1 text-[12px] text-muted-foreground" data-testid="approval-ai-sources">
+                          Genutztes Wissen: {selectedMessage.ai_sources}
+                        </p>
+                      ) : null}
                       <div className="mt-2 flex flex-wrap gap-2">
                         <Button
                           type="button"
@@ -1827,6 +1832,7 @@ export function MessageViewer(props: Props) {
               reloadTags={reloadTags}
               refreshCurrentMessage={refreshCurrentMessage}
               onOpenMessage={onOpenMessage}
+              canViewAutomation={canViewWorkflows}
             />
           ) : null}
         </div>

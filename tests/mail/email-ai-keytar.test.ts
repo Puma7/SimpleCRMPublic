@@ -11,13 +11,17 @@ import {
   saveEmailAiApiKey,
 } from '../../electron/email/email-ai-keytar';
 
+/** Plan 044: alter KI-API-Key im Zugangsdaten-Speicher, keytar nur Rückfall. */
 describe('email-ai-keytar', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  test('save get delete api key', async () => {
-    await saveEmailAiApiKey('sk-abc');
-    expect(keytar.setPassword).toHaveBeenCalledWith('SimpleCRMElectron-EmailAI', 'api-key', 'sk-abc');
+  test('alter Wert aus keytar, danach gespeicherter Wert, Löschen', async () => {
     await expect(getEmailAiApiKey()).resolves.toBe('sk-test');
+    await saveEmailAiApiKey('sk-abc');
+    expect(keytar.setPassword).not.toHaveBeenCalled();
+    await expect(getEmailAiApiKey()).resolves.toBe('sk-abc');
     await expect(deleteEmailAiApiKey()).resolves.toBe(true);
+    expect(keytar.deletePassword).toHaveBeenCalledWith('SimpleCRMElectron-EmailAI', 'api-key');
+    await expect(getEmailAiApiKey()).resolves.toBeNull();
   });
 });

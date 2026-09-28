@@ -214,4 +214,52 @@ describe('server workflow loop and block-port guards', () => {
     expect(result.log).toContain('cycle:review');
     expect(preview.calls).toBe(1);
   });
+
+  // Plan 034: Die Vorschau fragt die KI zwischen kurzen Transaktionen und
+  // wiederholt den Durchgang mit der gemerkten Antwort.
+  test('two preview reviews in sequence are each asked once', async () => {
+    const review2: GraphNode = { ...review, id: 'review2', data: { nodeType: 'ai.review', config: { blockKeyword: 'STOPP' } } };
+    const workflowId = await insertWorkflow(
+      [trigger, review, review2],
+      [
+        { id: 'e1', source: 'trigger', target: 'review' },
+        { id: 'e2', source: 'review', target: 'review2', label: 'ok' },
+      ],
+    );
+    const preview = previewPort(0);
+
+    const result = await createPostgresWorkflowExecutionJobPort({ db, aiReviewPreview: preview.run }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId,
+      triggerName: 'manual',
+      context: { previewOutbound: true },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.blocked).toBe(false);
+    expect(preview.calls).toBe(2);
+  });
+
+  test('too many distinct preview AI calls fail closed', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => `punkt${i}`).join(',');
+    const workflowId = await insertWorkflow(
+      [trigger, loopNode('l1', items, 'l1_items'), review],
+      [
+        { id: 'e1', source: 'trigger', target: 'l1' },
+        { id: 'e2', source: 'l1', target: 'review', label: 'each' },
+      ],
+    );
+    const preview = previewPort(0);
+
+    const result = await createPostgresWorkflowExecutionJobPort({ db, aiReviewPreview: preview.run }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId,
+      triggerName: 'manual',
+      context: { previewOutbound: true },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Versandvorschau: zu viele KI-Aufrufe in einem Workflow');
+    expect(preview.calls).toBe(25);
+  });
 });

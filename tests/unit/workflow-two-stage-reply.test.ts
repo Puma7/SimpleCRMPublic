@@ -45,6 +45,7 @@ jest.mock('../../electron/workflow/knowledge-base', () => ({
   searchKnowledgeForWorkflow: jest.fn(async () => [
     { id: 1, title: 'FAQ Retouren', content: 'Retouren über das Portal anmelden.' },
   ]),
+  storeDraftAiSources: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-draft-approval', () => ({
@@ -85,6 +86,7 @@ import {
 } from '../../electron/workflow/auto-reply-guard';
 import { parseDraftReviewResponse } from '../../electron/workflow/draft-review-parse';
 import { registerAiNodes } from '../../electron/workflow/nodes/ai-nodes';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow, storeDraftAiSources } from '../../electron/workflow/knowledge-base';
 import { registerEmailNodes } from '../../electron/workflow/nodes/email-nodes';
 
 function collect(registerNodes: (register: (def: RegisteredWorkflowNode) => void) => void) {
@@ -235,6 +237,36 @@ describe('ai.draft_reply (Agent 1)', () => {
     );
   });
 
+  test('große Firmen- und Eingangs-Wissensbasis schneiden die Learnings nicht ab', async () => {
+    (searchKnowledgeForWorkflow as jest.Mock).mockResolvedValueOnce([
+      { id: 1, knowledge_base_id: 1, title: 'Dokument', content: 'G'.repeat(10_000) },
+      { id: 2, knowledge_base_id: 2, title: 'Dokument', content: 'I'.repeat(5_000) },
+      { id: 3, knowledge_base_id: 3, title: 'Dokument', content: 'LEARNING-MARKER Retoure 30 Tage' },
+    ]);
+    const r = await node.execute(ctx(), {}, 'd');
+    expect(r.status).toBe('ok');
+    expect(String((runChatCompletion as jest.Mock).mock.calls[0]![1])).toContain('LEARNING-MARKER Retoure 30 Tage');
+  });
+
+  // Plan 048: das genutzte Wissen wird am Entwurf gespeichert (Freigabe-Hinweis).
+  test('speichert „Wissensbasis › Abschnitt“ am Entwurf', async () => {
+    (searchKnowledgeForWorkflow as jest.Mock).mockResolvedValueOnce([
+      { id: 11, knowledge_base_id: 1, knowledge_base_name: 'Handbuch', title: 'Rücksendungen', content: 'Etikett liegt bei.' },
+      { id: 12, knowledge_base_id: 3, knowledge_base_name: 'Learnings', title: 'Rückgabe', content: 'Im Kundenkonto zeigen.' },
+    ]);
+    const r = await node.execute(ctx(), {}, 'd');
+    expect(r.status).toBe('ok');
+    expect(storeDraftAiSources).toHaveBeenCalledWith(42, 'Handbuch › Rücksendungen; Learnings › Rückgabe');
+  });
+
+  test('explizite Wissensbasis ergänzt die Kontext-Wissensbasen inkl. Learnings (wie Server)', async () => {
+    await node.execute(ctx(), { knowledgeBaseId: 9 }, 'd');
+    expect(searchKnowledgeForWorkflow).toHaveBeenCalledWith(
+      baseMessage.account_id, 'inbound', 'Frage zu Bestellung 1234\nWo bleibt meine Bestellung?', 5, 9,
+    );
+    expect(searchKnowledgeChunks).not.toHaveBeenCalled();
+  });
+
   test('legt adressierten Antwort-Entwurf mit Anrede, Signatur und Thread-Bezug an', async () => {
     const r = await node.execute(ctx(), {}, 'd');
     expect(r.status).toBe('ok');
@@ -296,10 +328,13 @@ describe('ai.draft_reply (Agent 1)', () => {
 
   // F-N-redos-02: Der lineare Strip muss exakt den bisherigen Signaturtext liefern.
   test('Signaturtext entspricht der bisherigen Regex-Kette', async () => {
+    // Referenz der alten Kette, kein Sanitizer: split/join entfernt dieselben
+    // Treffer wie replace(/<[^>]+>/g, '') (das Muster hat keine Gruppen).
     const legacy = (html: string): string => html
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
+      .split(/<[^>]+>/)
+      .join('')
       .replace(/&nbsp;/g, ' ')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')

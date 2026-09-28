@@ -33,6 +33,8 @@ import {
   type SpamListMatch,
   type SpamScoreBreakdown,
   type SenderFilterResult,
+  outboundReviewSkippedKey,
+  overrideForSpamTransition,
 } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
@@ -103,7 +105,7 @@ import {
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
-import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import { outboundReviewApprovedKey, persistManualOutboundApproval } from '../mail-outbound-approval-store';
 import {
   loadStoredRawForCheck,
   loadStoredRawOrNull,
@@ -112,6 +114,7 @@ import {
   type StoredRawColumns,
 } from '../mail-raw-storage';
 import { clearOutboundHoldFingerprints } from '../mail-outbound-hold';
+import { linkAiDecisionOverrideSafe } from '../ai-decision-events';
 import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
@@ -228,6 +231,7 @@ const emailMessageSummaryColumns = [
   'reply_parent_message_id',
   'approval_state',
   'approval_reason',
+  'ai_sources',
   'outbound_hold',
   'outbound_block_reason',
   'sent_by_kind',
@@ -1454,6 +1458,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             ? composeDraftUpdate.returning(kyselySql<boolean>`(${draftContentPredicate})`.as('content_readable'))
             : composeDraftUpdate
           ).executeTakeFirstOrThrow();
+          if (accountMove !== undefined) {
+            // Kontowechsel: Freigabe und „ohne Prüfung“ galten dem bisherigen Absender.
+            await trx
+              .deleteFrom('sync_info')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', 'in', [outboundReviewApprovedKey(input.messageId), outboundReviewSkippedKey(input.messageId)])
+              .execute();
+          }
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1955,6 +1967,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           messageIds: input.messageIds,
           values,
           ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+          ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
         }),
         { applySession: options.applyWorkspaceSession },
       );
@@ -2236,6 +2249,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             ? spamStatusUpdate.returning(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'))
             : spamStatusUpdate
           ).executeTakeFirstOrThrow();
+
+          if (input.actorUserId) {
+            await linkSpamDecisionOverride(trx, input.workspaceId, current, values.status, now);
+          }
 
           if (values.train !== false) {
             const label = learningLabelForSpamStatusTransition(
@@ -2974,6 +2991,30 @@ async function deleteLocalDraftRows(
   return { ok: true, count: rows.length, deletedIds };
 }
 
+/**
+ * Plan 050: Ein Mensch ändert den Spam-Status → Korrektur am neuesten offenen
+ * Ereignis einer KI-Entscheidung mit Rückmeldung „spam“ (Fehler abgefangen).
+ */
+async function linkSpamDecisionOverride(
+  trx: any,
+  workspaceId: string,
+  current: { id: unknown; spam_status: string | null; is_spam: boolean | null },
+  nextStatus: unknown,
+  now: Date,
+): Promise<void> {
+  const previous = current.spam_status ?? (current.is_spam ? 'spam' : 'clean');
+  const next = typeof nextStatus === 'string' ? nextStatus : null;
+  if (next !== 'clean' && next !== 'spam') return;
+  if (previous === next) return;
+  await linkAiDecisionOverrideSafe(trx, {
+    workspaceId,
+    messageId: Number(current.id),
+    signal: 'spam',
+    resolve: (answer) => overrideForSpamTransition({ answer, previous, next }),
+    now,
+  });
+}
+
 async function bulkSetSpamStatusRows(
   trx: any,
   input: {
@@ -2981,6 +3022,8 @@ async function bulkSetSpamStatusRows(
     accountId?: number;
     messageIds: readonly number[];
     values: EmailMessageSpamStatusMutationInput;
+    /** Gesetzt, wenn ein Mensch den Status ändert (Plan 050: Korrektur der KI-Entscheidung). */
+    actorUserId?: string;
   },
 ): Promise<{ count: number; rspamdLearningRequests: RspamdLearningRequest[] }> {
   const ids = normalizeMessageIdList(input.messageIds);
@@ -3019,6 +3062,9 @@ async function bulkSetSpamStatusRows(
       .executeTakeFirst();
     if (!updated) continue;
     count += 1;
+    if (input.actorUserId) {
+      await linkSpamDecisionOverride(trx, input.workspaceId, current, status, now);
+    }
 
     if (input.values.train !== false) {
       const label = learningLabelForSpamStatusTransition(
@@ -3676,6 +3722,13 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
       .where('folder_kind', '=', 'sent')
       .where('is_spam', '=', false)
       .where('sent_by_kind', 'in', [...SENT_AI_VIEW_KINDS]);
+  }
+  // Plan 049: Warteschlangen der Teilautomatisierung (wie im Posteingang).
+  if (view === 'approval_pending') {
+    return query.where(kyselySql<boolean>`(uid < 0 AND folder_kind = 'draft' AND approval_state = 'pending' AND scheduled_send_at IS NULL)`);
+  }
+  if (view === 'outbound_blocked') {
+    return query.where(kyselySql<boolean>`(uid < 0 AND folder_kind = 'draft' AND outbound_hold = true)`);
   }
   if (view === 'archived') {
     return query
@@ -5784,6 +5837,8 @@ function mapEmailMessageRow(
     // approval_reason summarizes AI review of customer + draft content — redact for
     // metadata-only callers (content_readable===false), same boundary as snippet/body.
     approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
+    // Plan 048: genutztes Wissen am Entwurf – wie approval_reason nur mit Inhaltsrecht.
+    aiSources: row.content_readable === false ? null : (row.ai_sources ?? null),
     // Ausgangsprüfung: angehaltene Entwürfe zeigen Banner und Listen-Kennzeichen.
     // Der Grund stammt aus Workflows/KI-Prüfung über den Entwurfsinhalt — wie
     // approval_reason für metadata-only Aufrufer geschwärzt.

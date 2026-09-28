@@ -2,6 +2,18 @@ import { createSqliteMock } from './helpers/sqlite-mock';
 
 const { db, stmt } = createSqliteMock();
 jest.mock('../../electron/sqlite-service', () => ({ getDb: () => db }));
+// Plan 049: das Cockpit hat eigene Tests mit echter DB; hier bleibt die
+// Reihenfolge der gemockten Statements unverändert.
+const mockCockpit = jest.fn((_db: unknown, _scope: unknown) => ({
+  sentByKindWeekly: [],
+  pendingApproval: 0,
+  outboundBlocked: 0,
+  aiDecideByWorkflow30d: [],
+  aiCost30d: null,
+}));
+jest.mock('../../electron/email/email-automation-cockpit', () => ({
+  getAutomationCockpitSnapshot: (db: unknown, scope: unknown) => mockCockpit(db, scope),
+}));
 
 import { getEmailReportingSnapshot } from '../../electron/email/email-reported-stats';
 
@@ -29,12 +41,15 @@ describe('getEmailReportingSnapshot', () => {
     expect(snap.perAccount[0].accountId).toBe(1);
     expect(snap.workflowRuns24h[0].workflow_id).toBe(3);
     expect(stmt.get).toHaveBeenCalledWith();
+    expect(snap.automation).toMatchObject({ pendingApproval: 0, aiCost30d: null });
+    expect(mockCockpit).toHaveBeenCalledWith(db, { accountIds: null });
   });
 
   test('filters by account id', () => {
     getEmailReportingSnapshot(7);
     expect(stmt.get).toHaveBeenCalledWith(7);
     expect(stmt.all).toHaveBeenCalledWith(7);
+    expect(mockCockpit).toHaveBeenCalledWith(db, { accountIds: [7] });
   });
 
   test('coerces missing numeric fields to zero', () => {

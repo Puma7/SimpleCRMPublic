@@ -21,7 +21,10 @@
 #   gleiche Inhalte wieder als Hardlink an.
 # - Die Aufbewahrung entfernt Objekte erst, wenn keine Liste sie mehr nennt
 #   und sie aelter als ein Tag sind (ein laufender Lauf kann gerade welche
-#   anlegen). Ohne jede Liste wird nichts entfernt.
+#   anlegen). Ein wiederverwendetes Objekt bekommt ein frisches mtime und ist
+#   damit ebenso geschuetzt, bis die neue Liste es nennt. Ohne jede Liste wird
+#   nichts entfernt. Gleichzeitige Laeufe verhindert zusaetzlich die Sperre in
+#   backup.sh.
 #
 # Alte Saetze mit attachments-<stamp>.tar bleiben lesbar (restore.sh).
 
@@ -83,7 +86,13 @@ write_attachment_list() {
 
   while IFS="$_tab" read -r _sha _size _mtime _path; do
     _object="$(attachment_store_object "$_store" "$_sha")"
-    [ -f "$_object" ] && continue
+    if [ -f "$_object" ]; then
+      # Wiederverwendet: frisches mtime, damit die Aufraeumung eines parallelen
+      # Laufs (nur Objekte aelter als ein Tag) es nicht entfernt, bevor diese
+      # Liste es nennt.
+      touch -c "$_object" 2>/dev/null || true
+      continue
+    fi
     mkdir -p "$(dirname "$_object")"
     _tmp="$_object.partial.$$"
     cp "$_src/$_path" "$_tmp"

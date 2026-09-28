@@ -1,15 +1,16 @@
-import keytar from 'keytar';
+import { CREDENTIAL_SERVICES, deleteSecret, getSecret, setSecret } from '../credentials';
 
-const SERVICE = 'SimpleCRMElectron-EmailAI';
+/** Alter einzelner KI-API-Key (vor den KI-Profilen); Zugangsdaten-Speicher seit Plan 044. */
+const ACCOUNT = 'api-key';
 
 export async function saveEmailAiApiKey(key: string): Promise<void> {
-  await keytar.setPassword(SERVICE, 'api-key', key);
+  await setSecret(CREDENTIAL_SERVICES.emailAi, ACCOUNT, key);
 }
 
 export async function getEmailAiApiKey(): Promise<string | null> {
-  return keytar.getPassword(SERVICE, 'api-key');
+  return getSecret(CREDENTIAL_SERVICES.emailAi, ACCOUNT);
 }
 
 export async function deleteEmailAiApiKey(): Promise<boolean> {
-  return keytar.deletePassword(SERVICE, 'api-key');
+  return deleteSecret(CREDENTIAL_SERVICES.emailAi, ACCOUNT);
 }

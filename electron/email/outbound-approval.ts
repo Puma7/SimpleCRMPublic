@@ -1,7 +1,8 @@
 import {
   encodeOutboundApprovalMarker,
-  outboundDraftFingerprint,
+  outboundApprovalFingerprint,
   parseOutboundApprovalMarker,
+  type OutboundDraftFingerprintInput as CoreOutboundDraftFingerprintInput,
 } from '../../packages/core/src/email/outbound-approval-marker';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { extractDraftBodyForOutboundBlock } from './email-outbound-review-parse';
@@ -10,21 +11,15 @@ import { createTicketCodeForAccount, ensureTicketInSubject, extractKnownTicketFr
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 
-export const OUTBOUND_REVIEW_APPROVED_PREFIX = 'outbound_review_approved:';
+import { outboundReviewApprovedKey } from './outbound-hold-fingerprint';
+
+export { OUTBOUND_REVIEW_APPROVED_PREFIX, outboundReviewApprovedKey } from './outbound-hold-fingerprint';
+
 const OUTBOUND_REVIEW_APPROVED_TTL_MS = 24 * 60 * 60 * 1000;
 
-export function outboundReviewApprovedKey(draftId: number): string {
-  return `${OUTBOUND_REVIEW_APPROVED_PREFIX}${draftId}`;
-}
-
-export type OutboundDraftFingerprintInput = {
-  subject?: string | null;
-  bodyText?: string | null;
-  bodyHtml?: string | null;
-  to?: string | null;
-  cc?: string | null;
-  bcc?: string | null;
-  attachmentPaths?: readonly string[] | null;
+/** Inhalt plus Absenderkonto: die Freigabe gilt nur für dieses Konto. */
+export type OutboundDraftFingerprintInput = CoreOutboundDraftFingerprintInput & {
+  accountId: number | string | null;
 };
 
 export function tryOutboundApprovalBypass(
@@ -39,9 +34,10 @@ export function tryOutboundApprovalBypass(
   const fresh =
     parsed.approvedAt !== null &&
     now - parsed.approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
-  const currentFingerprint = outboundDraftFingerprint(input);
+  const currentFingerprint = outboundApprovalFingerprint(input);
+  // Ohne Fingerprint (Altbestand) gilt der Marker nicht: erneut prüfen.
   const contentMatches =
-    parsed.fingerprint === null || parsed.fingerprint === currentFingerprint;
+    parsed.fingerprint !== null && parsed.fingerprint === currentFingerprint;
 
   if (fresh && contentMatches) return true;
 
@@ -55,7 +51,7 @@ export function stampOutboundApprovalMarker(
   draftId: number,
   input: OutboundDraftFingerprintInput,
 ): void {
-  const fingerprint = outboundDraftFingerprint(input);
+  const fingerprint = outboundApprovalFingerprint(input);
   setSyncInfo(
     outboundReviewApprovedKey(draftId),
     encodeOutboundApprovalMarker(new Date(), fingerprint),
@@ -68,7 +64,7 @@ export function clearOutboundApprovalMarker(draftId: number): void {
 
 export function applyManualComposeOutboundApproval(
   draftId: number,
-  input: OutboundDraftFingerprintInput,
+  input: CoreOutboundDraftFingerprintInput,
 ): void {
   const draftRow = getEmailMessageById(draftId);
   if (!draftRow) return;
@@ -107,5 +103,6 @@ export function applyManualComposeOutboundApproval(
     bcc: (input.bcc ?? recipientFieldFromJson(draftRow.bcc_json)) || null,
     attachmentPaths: input.attachmentPaths
       ?? parseDraftAttachmentPathsJson(draftRow.draft_attachment_paths_json),
+    accountId: draftRow.account_id,
   });
 }

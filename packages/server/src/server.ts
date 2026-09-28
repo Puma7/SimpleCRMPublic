@@ -9,6 +9,7 @@ import {
   type ServerApiPorts,
 } from './api';
 import { createPostgresAiLearningsApiPort, createPostgresAiLearningsDigestPort } from './ai-learnings';
+import { createPostgresAiDecisionStatsPort } from './ai-decision-events';
 import {
   assertNoKnownWeakProductionSecrets,
   MASTER_KEY_LOOKS_GUESSABLE_MESSAGE,
@@ -744,6 +745,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     workflowForwardDedup: createPostgresWorkflowForwardDedupReadPort({ db: options.db }),
     workflowKnowledgeBases: createPostgresWorkflowKnowledgeBaseReadPort({ db: options.db }),
     aiLearnings: createPostgresAiLearningsApiPort({ db: options.db }),
+    aiDecisionStats: createPostgresAiDecisionStatsPort({ db: options.db }),
     workflowKnowledgeChunks: createPostgresWorkflowKnowledgeChunkReadPort({ db: options.db }),
     workflowMessageApplied: createPostgresWorkflowMessageAppliedReadPort({ db: options.db }),
     workflowRuns: createPostgresWorkflowRunReadPort({ db: options.db }),

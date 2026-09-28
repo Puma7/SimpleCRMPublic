@@ -70,6 +70,8 @@
     "test:coverage": "jest --coverage --selectProjects unit integration",
     "test:mail": "jest --config=jest.mail.config.cjs --coverageThreshold={}",
     "test:mail:coverage": "jest --config jest.mail.config.cjs",
+    "test:ci:coverage": "jest --config jest.ci.config.cjs && node scripts/split-coverage-summary.mjs",
+    "test:mail:coverage:check": "pnpm run test:mail && node scripts/check-mail-coverage-ratchet.mjs",
     "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
     "test:server:coverage": "jest --config jest.server.config.cjs",
     "test:server:coverage:update-baseline": "npm run test:server:coverage && node scripts/check-server-coverage-ratchet.mjs --update-baseline",

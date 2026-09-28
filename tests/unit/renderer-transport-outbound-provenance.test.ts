@@ -114,6 +114,15 @@ describe('renderer transport: Ausgang und Versand-Herkunft', () => {
     }));
   });
 
+  test.each(['approval_pending', 'outbound_blocked'])('Plan 049: Ansicht %s wird übergeben', async (view) => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+    await transport.invoke(IPCChannels.Email.ListMessagesByView, { accountId: 'all', view, limit: 50 });
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe('/api/v1/email/messages');
+    expect(url.searchParams.get('view')).toBe(view);
+  });
+
   test('TA-P3: ohne Kennzeichnung (Altbestand) null bzw. 0; unbekannte Ansicht wird abgewiesen', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: serverMessage({ uid: 12, folderKind: 'sent' }),

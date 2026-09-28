@@ -13,6 +13,8 @@ import {
   normalizeAiDecideContextMode,
   type AiDecideOutcome,
 } from '../../../packages/core/src/workflow/ai-decide';
+import { normalizeAiDecisionFeedbackSignal } from '../../../packages/core/src/workflow/ai-decision-accuracy';
+import { recordAiDecisionEventSafe } from '../ai-decision-events';
 import type { AccountOverrideScope } from '../../../shared/mail-account-overrides';
 
 function profileIdFromConfig(config: Record<string, unknown>): number | null {
@@ -78,9 +80,15 @@ import {
   parseCannedPickNumber,
   parseClassificationOutput,
 } from '../ai-classification-parse';
-import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
+import { searchKnowledgeChunks, searchKnowledgeForWorkflow, storeDraftAiSources } from '../knowledge-base';
+import { formatKnowledgeSourcesLabel } from '../../../packages/core/src/learnings/knowledge-chunking';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
-import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint, replaceTags } from '@simplecrm/core';
+import {
+  joinKnowledgeWithinBudget,
+  messageIsSpamOrReviewForInboundWorkflow,
+  outboundDraftFingerprint,
+  replaceTags,
+} from '@simplecrm/core';
 import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
@@ -125,23 +133,32 @@ function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | nu
   return null;
 }
 
-/** Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung. */
+/**
+ * Wissensbasis für KI-Knoten. ai.agent: explizit gewählte KB allein.
+ * ai.draft_reply (wie Server): die gewählte KB ergänzt die Kontext-Wissensbasen
+ * der Richtung — die Learnings eingeschlossen — statt sie zu ersetzen.
+ */
 async function resolveKnowledgeChunks(
   ctx: WorkflowContext,
   config: Record<string, unknown>,
+  opts: { explicitSupplementsContext?: boolean } = {},
 ): Promise<Awaited<ReturnType<typeof searchKnowledgeChunks>>> {
   const kbId = config.knowledgeBaseId != null ? Number(config.knowledgeBaseId) : null;
+  const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
   if (kbId != null && kbId > 0) {
+    if (opts.explicitSupplementsContext) {
+      return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5, kbId);
+    }
     return searchKnowledgeChunks(kbId, ctx.strings.combined_text, 5);
   }
-  const accountId = ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
   return searchKnowledgeForWorkflow(accountId, ctx.direction, ctx.strings.combined_text, 5);
 }
 
+/** Plan 048: „Wissensbasis › Abschnitt“, ohne Dubletten, höchstens 500 Zeichen (wie Server). */
 function knowledgeSourcesLabel(
   chunks: Awaited<ReturnType<typeof searchKnowledgeChunks>>,
 ): string {
-  return chunks.map((c) => (c.title ? `${c.title}` : `Chunk #${c.id}`)).join(', ');
+  return formatKnowledgeSourcesLabel(chunks.map((c) => ({ id: c.id, knowledgeBaseName: c.knowledge_base_name ?? null, title: c.title })));
 }
 
 /**
@@ -540,13 +557,29 @@ export function registerAiNodes(register: Reg): void {
       contextMode: 'full',
       threshold: 80,
       profileId: null,
+      feedbackSignal: 'none',
     },
-    execute: async (ctx, config) => {
+    execute: async (ctx, config, nodeId) => {
       // Ausgangs-Workflow: alles außer „ja“ hält den Versand an (wie
       // ai.outbound_review); die Ausgänge laufen dann nur für Zusatzschritte.
       // Eingehend nur Verzweigung — bewusst KEIN Spam-Überspringen, die Frage
       // kann gerade „Ist das Spam?“ sein.
       const finish = (outcome: AiDecideOutcome): NodeExecuteResult => {
+        // Plan 050: nur echte Läufe zählen (kein Testlauf, keine Versandvorschau).
+        if (!ctx.dryRun && !ctx.previewOutbound) {
+          recordAiDecisionEventSafe({
+            workflowId: ctx.workflowId,
+            nodeId,
+            runId: ctx.runId > 0 ? ctx.runId : null,
+            messageId: ctx.messageId ?? ctx.outbound?.messageId ?? null,
+            direction: ctx.direction,
+            answer: outcome.answer,
+            probability: outcome.probability,
+            threshold: config.threshold,
+            model: outcome.model || null,
+            feedbackSignal: normalizeAiDecisionFeedbackSignal(config.feedbackSignal),
+          });
+        }
         const variables = aiDecideVariables(outcome);
         const blockReason = ctx.direction === 'outbound' ? aiDecideOutboundBlockReason(outcome) : null;
         if (blockReason) {
@@ -556,10 +589,10 @@ export function registerAiNodes(register: Reg): void {
         }
         return { status: 'ok', port: outcome.answer, message: outcome.summary, variables };
       };
-      // Testlauf: keine KI-Anfrage. Die Versandvorschau (previewOutbound)
-      // entscheidet dagegen echt — eine dort erteilte Freigabe überspringt
-      // die Ausgangsprüfung beim eigentlichen Versand.
-      if (ctx.dryRun && !ctx.previewOutbound) return finish(aiDecideDryRunOutcome());
+      // Testlauf: keine KI-Anfrage, außer mit „KI wirklich fragen“ (Plan 047).
+      // Die Versandvorschau (previewOutbound) entscheidet dagegen echt — eine
+      // dort erteilte Freigabe überspringt die Ausgangsprüfung beim Versand.
+      if (ctx.dryRun && !ctx.previewOutbound && !ctx.testRealAi) return finish(aiDecideDryRunOutcome());
       const question = String(config.question ?? '').trim().slice(0, AI_DECIDE_QUESTION_MAX_CHARS);
       if (!question) return finish(aiDecideErrorOutcome({ message: 'Keine Frage angegeben' }));
       const mode = normalizeAiDecideContextMode(config.contextMode);
@@ -794,8 +827,11 @@ export function registerAiNodes(register: Reg): void {
         return { status: 'ok', message: 'dry-run draft_reply', variables };
       }
 
-      const chunks = await resolveKnowledgeChunks(ctx, config);
-      const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
+      const chunks = await resolveKnowledgeChunks(ctx, config, { explicitSupplementsContext: true });
+      const kbText = joinKnowledgeWithinBudget(
+        chunks.map((c) => ({ group: c.knowledge_base_id ?? `chunk:${c.id}`, text: c.content })),
+        { maxChars: DRAFT_REPLY_KNOWLEDGE_MAX, separator: '\n---\n' },
+      );
 
       let cannedBlock = '';
       if (config.includeCanned === true) {
@@ -906,6 +942,8 @@ export function registerAiNodes(register: Reg): void {
       updateComposeDraft(draftId, { replyParentMessageId: ctx.messageId });
       // TA-P5: KI-Text (ohne Anrede/Signatur) wie der Server für den Vergleich beim Versand.
       storeDraftAiSuggestionSnapshot(draftId, aiText);
+      // Plan 048: genutztes Wissen für den Freigabe-Hinweis.
+      storeDraftAiSources(draftId, knowledgeSourcesLabel(chunks));
       await markAiDraftOrigin(draftId, ctx.workflowId);
       // Bewusst KEIN markDraftAutoSubmitted hier: der RFC-3834-Marker gehört
       // an den tatsächlichen Versand (email.send_draft / ApproveDraftSend).

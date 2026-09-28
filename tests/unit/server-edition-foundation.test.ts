@@ -7,6 +7,7 @@ import { PassThrough } from 'stream';
 import { ReadableStream } from 'stream/web';
 
 import type { Kysely } from 'kysely';
+import { encodeOutboundApprovalMarker, outboundApprovalFingerprint } from '../../packages/core/src/email/outbound-approval-marker';
 import {
   loadEmailEvidenceSummaryForTracking,
   type EmailTrackingService,
@@ -82,6 +83,14 @@ import {
   runRlsCheckCli,
   type RlsCheckPgClient,
 } from '../../packages/server/src/cli/rls-check';
+import { searchKnowledgeSections } from '../../packages/server/src/knowledge-workflow-search';
+
+// Plan 048: Durchreichen an die echte Abschnittssuche; einzelne Tests ersetzen
+// sie einmalig (die Fake-DB kann Volltext-SQL nicht nachbilden).
+jest.mock('../../packages/server/src/knowledge-workflow-search', () => {
+  const actual = jest.requireActual('../../packages/server/src/knowledge-workflow-search');
+  return { ...actual, searchKnowledgeSections: jest.fn(actual.searchKnowledgeSections) };
+});
 import {
   MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
@@ -397,6 +406,12 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0058_email_raw_rfc822_storage',
   '0059_attachment_text_extractor_version',
   '0060_workflow_run_step_detail_retention_index',
+  '0061_ai_learning_digest_accepted_content',
+  '0062_workflow_run_dry_run_flag',
+  '0063_workflow_run_step_ai_decide_index',
+  '0064_workflow_knowledge_sections',
+  '0065_email_message_ai_sources',
+  '0066_ai_decision_events',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -5255,6 +5270,12 @@ describe('server edition foundation', () => {
         },
       ],
     });
+    // Plan 048: Abschnittssuche (Volltext) prüft der Postgres-Test
+    // postgres-knowledge-sections; hier nur, dass der Agent sie für seine
+    // Wissensbasis fragt und die Treffer nutzt.
+    const sectionSearch = (searchKnowledgeSections as jest.Mock).mockClear().mockResolvedValueOnce([
+      { id: 1, knowledgeBaseId: 5, knowledgeBaseName: 'Firma', title: 'Retoure', content: 'Retoure innerhalb von 30 Tagen moeglich.' },
+    ]);
     const chatInputs: unknown[] = [];
     const secrets = {
       async readSecret() {
@@ -5314,6 +5335,7 @@ describe('server edition foundation', () => {
     expect((chatInputs[0] as any).system).toBe('Agent fuer Retoure');
     expect((chatInputs[0] as any).user).toContain('Bitte erklaere die Retoure.');
     expect((chatInputs[0] as any).user).toContain('Retoure innerhalb von 30 Tagen moeglich.');
+    expect(sectionSearch).toHaveBeenCalledWith(expect.anything(), WORKSPACE_A_ID, [5], expect.stringContaining('Retoure'), expect.any(Number));
 
     await port.runAgent({
       workspaceId: WORKSPACE_A_ID,
@@ -10465,6 +10487,10 @@ describe('server edition foundation', () => {
       now: () => now,
       applyWorkspaceSession: async () => undefined,
     });
+    // Plan 048: Abschnittssuche siehe postgres-knowledge-sections; hier nur der Aufruf.
+    const sectionSearch = (searchKnowledgeSections as jest.Mock).mockClear().mockResolvedValueOnce([
+      { id: 1, knowledgeBaseId: 5, knowledgeBaseName: 'Firma', title: 'Refund', content: 'Refund policy' },
+    ]);
 
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
@@ -10473,6 +10499,7 @@ describe('server edition foundation', () => {
       triggerName: 'inbound',
       context: {},
     });
+    expect(sectionSearch).toHaveBeenCalledWith(expect.anything(), WORKSPACE_A_ID, [5], expect.any(String), expect.any(Number));
 
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['refund-info']);
     expect(rows.runs[0]).toMatchObject({
@@ -14873,13 +14900,23 @@ describe('server edition foundation', () => {
         folder_kind: 'draft',
         outbound_hold: true,
         outbound_block_reason: 'pending',
+        account_id: 5,
         body_text: 'ok',
         body_html: null,
       }],
       syncInfo: [{
         workspace_id: WORKSPACE_A_ID,
         key: 'outbound_review_approved:81',
-        value: now.toISOString(),
+        value: encodeOutboundApprovalMarker(now, outboundApprovalFingerprint({
+          subject: 'After approval',
+          bodyText: 'ok',
+          bodyHtml: null,
+          to: 'kunde@example.com',
+          cc: null,
+          bcc: null,
+          attachmentPaths: null,
+          accountId: 5,
+        })),
       }],
     });
     const port = createPostgresComposeOutboundReviewPort({
@@ -15008,7 +15045,7 @@ describe('server edition foundation', () => {
         body_html: null,
       }],
       // Marker hash is intentionally a value that won't match the current
-      // input (a real one would be 32 hex chars from outboundDraftFingerprint).
+      // input (a real one would be 32 hex chars from outboundApprovalFingerprint).
       syncInfo: [{
         workspace_id: WORKSPACE_A_ID,
         key: 'outbound_review_approved:83',
@@ -15038,6 +15075,116 @@ describe('server edition foundation', () => {
     // The invalidated marker is cleared so the next review chain starts fresh
     // and the new approval (with new hash) will not collide with the old one.
     expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:83')).toBeUndefined();
+  });
+
+  test('reviewOutbound.review denies bypass when the draft moved to another sender account', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 94,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 940,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 84,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 840,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        account_id: 6,
+        body_text: 'ok',
+        body_html: null,
+      }],
+      // Freigabe galt Konto 5; der Entwurf steht inzwischen auf Konto 6.
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:84',
+        value: encodeOutboundApprovalMarker(now, outboundApprovalFingerprint({
+          subject: 'After approval',
+          bodyText: 'ok',
+          bodyHtml: null,
+          to: 'kunde@example.com',
+          cc: null,
+          bcc: null,
+          attachmentPaths: null,
+          accountId: 5,
+        })),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 84,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).not.toEqual({ allowed: true });
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:84')).toBeUndefined();
+  });
+
+  test('reviewOutbound.review denies bypass for an approval marker without fingerprint', async () => {
+    const now = new Date('2026-08-01T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 95,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 950,
+        trigger_name: 'outbound',
+        enabled: true,
+        priority: 1,
+      }],
+      messages: [{
+        id: 85,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 850,
+        uid: -1,
+        folder_kind: 'draft',
+        outbound_hold: true,
+        outbound_block_reason: 'pending',
+        account_id: 5,
+        body_text: 'ok',
+        body_html: null,
+      }],
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'outbound_review_approved:85',
+        value: now.toISOString(),
+      }],
+    });
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.review({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'tester',
+      draftMessageId: 85,
+      subject: 'After approval',
+      bodyText: 'ok',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+
+    expect(result).not.toEqual({ allowed: true });
+    expect(rows.syncInfo.find((r) => r.key === 'outbound_review_approved:85')).toBeUndefined();
   });
 
   test('postgres workflow execution job port skips email.release_outbound on inbound direction', async () => {
@@ -16067,6 +16214,91 @@ describe('server edition foundation', () => {
     expect(rows.jobs).toHaveLength(0);
   });
 
+  // Plan 034: Die Vorschau fragt ggf. ein KI-Modell (bis 90 s); dabei darf keine
+  // Transaktion offen sein, sonst hält jeder Versand Verbindungen aus dem Pool fest.
+  describe.each([
+    ['blocks', true],
+    ['allows', false],
+  ] as const)('reviewOutbound.review runs the workflow dry-run with no transaction open (dry-run %s)', (_label, blocked) => {
+    test('dry-run sees no open transaction; result unchanged', async () => {
+      const now = new Date('2026-08-01T09:00:00.000Z');
+      const { db, rows } = makeWorkflowExecutionDb({
+        workflows: [{
+          id: 95,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 950,
+          trigger_name: 'outbound',
+          enabled: true,
+          priority: 1,
+          name: 'Prüfer',
+        }],
+        messages: [{
+          id: 85,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 850,
+          uid: -1,
+          folder_kind: 'draft',
+          outbound_hold: false,
+          outbound_block_reason: null,
+          body_text: 'Anbei das Angebot.',
+          body_html: null,
+        }],
+      });
+      let openTransactions = 0;
+      const baseTransaction = (db as unknown as {
+        transaction: () => { execute: <T>(op: (trx: unknown) => Promise<T>) => Promise<T> };
+      }).transaction;
+      (db as unknown as { transaction: unknown }).transaction = () => ({
+        execute: async <T>(op: (trx: unknown) => Promise<T>) => {
+          openTransactions += 1;
+          try {
+            return await baseTransaction().execute(op);
+          } finally {
+            openTransactions -= 1;
+          }
+        },
+      });
+      const seen: number[] = [];
+      const port = createPostgresComposeOutboundReviewPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+        workflowDryRun: async () => {
+          seen.push(openTransactions);
+          return blocked
+            ? { success: true, dryRun: true as const, blocked: true, blockReason: 'KI blockiert', status: 'blocked' as const }
+            : { success: true, dryRun: true as const, blocked: false, status: 'ok' as const };
+        },
+      });
+
+      const result = await port.review({
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: 'tester',
+        draftMessageId: 85,
+        subject: 'Ihr Angebot',
+        bodyText: 'Anbei das Angebot.',
+        bodyHtml: null,
+        to: 'kunde@example.com',
+        attachmentCount: 0,
+      });
+
+      expect(seen).toEqual([0]);
+      if (blocked) {
+        expect(result).toEqual({ allowed: false, error: 'KI blockiert', held: true });
+        expect(rows.messages.find((m) => m.id === 85)).toEqual(expect.objectContaining({
+          outbound_hold: true,
+          outbound_block_reason: 'KI blockiert',
+        }));
+        expect(rows.runs).toHaveLength(0);
+        expect(rows.jobs).toHaveLength(0);
+      } else {
+        expect(result).toMatchObject({ allowed: false, workflowRunId: expect.any(Number) });
+        expect(rows.runs).toHaveLength(1);
+        expect(rows.jobs).toHaveLength(1);
+      }
+    });
+  });
+
   test('maintenance job plans validate workspace payloads and bounded retention windows', () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     expect(buildLockCleanupPlan({
@@ -16568,6 +16800,10 @@ describe('server edition foundation', () => {
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
       // … und leert Eingang/Ausgang alter Lauf-Schritte (30 Tage), ebenfalls eigene Transaktion.
       buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und löscht alte Testläufe (Plan 047), ebenfalls eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
+      // … und Ereignisse der KI-Entscheidung älter als 365 Tage (Plan 050), eigene Transaktion.
+      buildWorkspaceSessionCommand({ workspaceId: WORKSPACE_A_ID, role: 'system' }),
     ]);
     expect(calls).toEqual([
       {
@@ -16681,6 +16917,31 @@ describe('server edition foundation', () => {
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['detail_json', 'is not', null],
           ['created_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
+      },
+      // Testläufe älter als 30 Tage (Plan 047; hier keine).
+      {
+        kind: 'select',
+        table: 'email_workflow_runs',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['dry_run', '=', true],
+          ['started_at', '<', new Date('2026-05-04T12:00:00.000Z')],
+        ],
+        orderBy: ['id', 'asc'],
+        limit: 5000,
+      },
+      // Ereignisse der KI-Entscheidung älter als 365 Tage (Plan 050; hier keine).
+      {
+        kind: 'select',
+        table: 'ai_decision_events',
+        selected: 'id',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['created_at', '<', new Date('2025-06-03T12:00:00.000Z')],
         ],
         orderBy: ['id', 'asc'],
         limit: 5000,
@@ -38021,6 +38282,99 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('server workflow execute route forwards testRun only together with dryRun (Plan 047)', async () => {
+    const workflow = { ...makeWorkflowRecord(23), sourceSqliteId: -23 };
+    const dryRunCalls: any[] = [];
+    const queueCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() {
+          return { items: [workflow], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? workflow : null;
+        },
+      },
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 11 ? makeEmailMessageRecord(11) : null;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+      workflowExecution: {
+        async dryRun(input) {
+          dryRunCalls.push(input);
+          return {
+            success: true,
+            dryRun: true,
+            workflowId: 23,
+            messageId: input.messageId,
+            status: 'ok',
+            blocked: false,
+            blockReason: null,
+            log: ['dry_run:server'],
+            ...(input.testRun ? { runId: -501 } : {}),
+          };
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    const testRun = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, testRun: true },
+      principal,
+    });
+    expect(testRun.status).toBe(200);
+    expect((testRun.body as any).data).toMatchObject({ success: true, dryRun: true, runId: -501, workflowId: -23 });
+    expect(dryRunCalls).toEqual([expect.objectContaining({ messageId: 11, testRun: true })]);
+    expect(dryRunCalls[0]).not.toHaveProperty('realAi');
+
+    // Phase B: „KI wirklich fragen“ nur zusammen mit testRun.
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, testRun: true, realAi: true },
+      principal,
+    });
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: true, realAi: true },
+      principal,
+    });
+    expect(dryRunCalls[1]).toEqual(expect.objectContaining({ testRun: true, realAi: true }));
+    expect(dryRunCalls[2]).not.toHaveProperty('realAi');
+    dryRunCalls.length = 1;
+
+    const live = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, dryRun: false, testRun: true },
+      principal,
+    });
+    expect(live.status).toBe(202);
+    expect(dryRunCalls).toHaveLength(1);
+    expect(queueCalls).toHaveLength(1);
+    expect(queueCalls[0].payload).not.toHaveProperty('testRun');
+
+    const invalid = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-23/execute',
+      body: { messageId: 11, testRun: 'ja' },
+      principal,
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   test('server workflow inbound backfill route delegates to workspace-scoped backfill port', async () => {
     const calls: unknown[] = [];
     const api = createServerApi(makeServerApiPorts({
@@ -39055,6 +39409,69 @@ describe('server edition foundation', () => {
       { workspaceId: WORKSPACE_A_ID, limit: 100, includeLog: false },
     ]);
     expect(stepListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, limit: 50, includeDetail: false, runId: 80 }]);
+  });
+
+  test('KI-Entscheidungs-Kennzahlen by-source laufen durch die Mail-Zugriffskontrolle wie die Lauf-Liste', async () => {
+    // Ohne Eintrag im Mail-Routen-Inventar lief die Route an der Mail-Policy
+    // vorbei: der Port bekam keine mailScope und zählte die Entscheidungen
+    // aller Mails des Workspaces – auch für Nutzer ohne Mailzugriff.
+    const statsCalls: Array<Record<string, unknown>> = [];
+    const scopePermissions: string[] = [];
+    let scope: { kind: 'all' } | { kind: 'none' } | {
+      kind: 'restricted'; accountIds: number[]; folderIds: number[]; messageIds: number[];
+    } = { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] };
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        workflows: {
+          async list() {
+            return { items: [{ ...makeWorkflowRecord(23), sourceSqliteId: -23 }], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+        },
+      }),
+      aiDecisionStats: {
+        async get(input: Record<string, unknown>) {
+          statsCalls.push(input);
+          return { total: 0 };
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope(input: { permission: string }) {
+          scopePermissions.push(input.permission);
+          return scope;
+        },
+      },
+    } as unknown as ServerApiPorts);
+    const request = {
+      method: 'GET' as const,
+      path: '/api/v1/workflows/by-source/-23/ai-decisions',
+      query: { nodeId: 'decide' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.view'] },
+    };
+
+    // Eingeschränkte Mail-Sicht: der Port zählt nur Mails dieser Sicht.
+    expect((await api.handle(request)).status).toBe(200);
+    expect(scopePermissions).toEqual(['mail.content.read']);
+    expect(statsCalls).toEqual([expect.objectContaining({
+      workflowSourceId: -23,
+      nodeId: 'decide',
+      mailScope: { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] },
+    })]);
+
+    // Kein Mailzugriff: leere Sicht statt Workspace-Summe.
+    scope = { kind: 'none' };
+    expect((await api.handle(request)).status).toBe(200);
+    expect(statsCalls[1]).toMatchObject({ mailScope: { kind: 'none' } });
+
+    // Volle Mail-Sicht: ungefiltert wie bisher.
+    scope = { kind: 'all' };
+    expect((await api.handle(request)).status).toBe(200);
+    expect(statsCalls[2]).not.toHaveProperty('mailScope');
   });
 
   test('workflow run step details need workflows.view; CRM/integration values need crm.read', async () => {
@@ -46639,6 +47056,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     trackingEventClassifications: input.trackingEventClassifications ?? [],
     teamMembers: input.teamMembers ?? [],
   };
+  // Postgres-Standardwert (Migration 0062): Läufe ohne Angabe sind keine Testläufe.
+  for (const run of rows.runs) run.dry_run ??= false;
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table.split(' ')[0]) {
       case 'email_message_attachments':
@@ -46931,6 +47350,7 @@ class FakeWorkflowExecutionInsert {
     }
     const nextId = Math.max(0, ...this.rows.map((row) => Number(row.id ?? 0))) + 1;
     const stored = {
+      ...(this.table === 'email_workflow_runs' ? { dry_run: false } : {}),
       ...this.row,
       id: this.row.id ?? nextId,
     };

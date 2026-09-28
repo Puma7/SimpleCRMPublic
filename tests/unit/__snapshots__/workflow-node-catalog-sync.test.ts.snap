@@ -18,6 +18,7 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   ],
   "ai.decide": [
     "contextMode",
+    "feedbackSignal",
     "noCriteria",
     "profileId",
     "question",

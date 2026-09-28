@@ -526,6 +526,7 @@ export function createPostgresReadReceiptOutboundReviewPort(options: {
             .where('message_id', '=', input.messageId)
             .where('direction', '=', 'outbound')
             .where('status', 'in', ['queued', 'running'])
+            .where('dry_run', '=', false)
             .orderBy('id', 'asc')
             .limit(1)
             .executeTakeFirst();
@@ -664,6 +665,7 @@ async function readReceiptReviewRoundVerdict(
     .where('message_id', '=', input.messageId)
     .where('direction', '=', 'outbound')
     .where('id', '>=', round.firstRunId)
+    .where('dry_run', '=', false)
     .execute();
   if (runs.some((run) => run.status === 'queued' || run.status === 'running')) return { kind: 'pending' };
 

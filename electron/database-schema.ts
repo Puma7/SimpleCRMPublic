@@ -41,6 +41,9 @@ export const EMAIL_AUTO_REPLY_DEDUP_TABLE = 'email_auto_reply_dedup';
 export const EMAIL_WORKFLOW_RUN_STEPS_TABLE = 'email_workflow_run_steps';
 export const WORKFLOW_KNOWLEDGE_BASES_TABLE = 'workflow_knowledge_bases';
 export const WORKFLOW_KNOWLEDGE_CHUNKS_TABLE = 'workflow_knowledge_chunks';
+/** Plan 048: aus dem Dokument abgeleitete `##`-Abschnitte (Suchindex). */
+export const WORKFLOW_KNOWLEDGE_SECTIONS_TABLE = 'workflow_knowledge_sections';
+export const WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE = 'workflow_knowledge_sections_fts';
 export const WORKFLOW_DELAYED_JOBS_TABLE = 'workflow_delayed_jobs';
 export const EMAIL_WORKFLOW_VERSIONS_TABLE = 'email_workflow_versions';
 export const EMAIL_REMOTE_CONTENT_ALLOWLIST_TABLE = 'email_remote_content_allowlist';
@@ -62,6 +65,8 @@ export const EMAIL_SPAM_DECISIONS_TABLE = 'email_spam_decisions';
 /** TA-P5 Learnings (Server-Gegenstück: Migration 0057_ai_learnings). */
 export const AI_LEARNING_CANDIDATES_TABLE = 'ai_learning_candidates';
 export const AI_LEARNING_DIGESTS_TABLE = 'ai_learning_digests';
+/** Plan 050: Treffsicherheit der KI-Entscheidung (Server: Migration 0066). */
+export const AI_DECISION_EVENTS_TABLE = 'ai_decision_events';
 
 export const createCustomersTable = `
   CREATE TABLE IF NOT EXISTS ${CUSTOMERS_TABLE} (
@@ -750,6 +755,45 @@ export const createWorkflowKnowledgeChunksTable = `
 `;
 
 /**
+ * Plan 048: Abschnitte einer Wissensbasis, abgeleitet aus dem Dokument (die
+ * `.md`-Datei bleibt die Quelle; jederzeit neu baubar). Volltext über die
+ * FTS5-Tabelle mit externem Inhalt, per Trigger synchron gehalten.
+ */
+export const createWorkflowKnowledgeSectionsTable = `
+  CREATE TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    knowledge_base_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding_json TEXT,
+    built_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (knowledge_base_id, position),
+    FOREIGN KEY (knowledge_base_id) REFERENCES ${WORKFLOW_KNOWLEDGE_BASES_TABLE}(id) ON DELETE CASCADE
+  );
+`;
+
+export const WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS: readonly string[] = [
+  `CREATE VIRTUAL TABLE IF NOT EXISTS ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE} USING fts5(
+    title, content,
+    content='${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE}', content_rowid='id',
+    tokenize='unicode61 remove_diacritics 2'
+  );`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_ai AFTER INSERT ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(rowid, title, content) VALUES (new.id, new.title, new.content);
+  END;`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_ad AFTER DELETE ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}, rowid, title, content)
+    VALUES ('delete', old.id, old.title, old.content);
+  END;`,
+  `CREATE TRIGGER IF NOT EXISTS workflow_knowledge_sections_fts_au AFTER UPDATE ON ${WORKFLOW_KNOWLEDGE_SECTIONS_TABLE} BEGIN
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}, rowid, title, content)
+    VALUES ('delete', old.id, old.title, old.content);
+    INSERT INTO ${WORKFLOW_KNOWLEDGE_SECTIONS_FTS_TABLE}(rowid, title, content) VALUES (new.id, new.title, new.content);
+  END;`,
+];
+
+/**
  * TA-P5: Vorschläge für eine neue Wissensbasis-Fassung. Höchstens ein offener
  * Vorschlag je Wissensbasis (partieller Unique-Index in AI_LEARNINGS_INDEXES).
  */
@@ -766,6 +810,7 @@ export const createAiLearningDigestsTable = `
     candidate_count INTEGER NOT NULL DEFAULT 0,
     base_content TEXT NOT NULL DEFAULT '',
     proposed_content TEXT NOT NULL DEFAULT '',
+    accepted_content TEXT,
     summary TEXT NOT NULL DEFAULT '',
     operations_json TEXT NOT NULL DEFAULT '[]',
     error TEXT,
@@ -810,6 +855,42 @@ export const AI_LEARNINGS_INDEXES: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_open ON ${AI_LEARNING_CANDIDATES_TABLE}(processed_at, created_at);`,
   `CREATE INDEX IF NOT EXISTS idx_ai_learning_candidates_digest ON ${AI_LEARNING_CANDIDATES_TABLE}(digest_id);`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_learning_candidates_sent ON ${AI_LEARNING_CANDIDATES_TABLE}(sent_message_id) WHERE sent_message_id IS NOT NULL;`,
+];
+
+/**
+ * Plan 050: je produktiver KI-Entscheidung ein Ereignis ohne Text (Antwort,
+ * Wahrscheinlichkeit, Schwelle, Rückmeldungsart); menschliche Korrekturen setzen
+ * override_kind/truth/override_at. Gelöscht nach 365 Tagen. Auf dem Desktop ist
+ * workflow_source_id die lokale Workflow-Id (wie beim Import auf den Server).
+ */
+export const createAiDecisionEventsTable = `
+  CREATE TABLE IF NOT EXISTS ${AI_DECISION_EVENTS_TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id INTEGER,
+    workflow_source_id INTEGER NOT NULL,
+    node_id TEXT NOT NULL CHECK (length(node_id) <= 200),
+    run_id INTEGER,
+    message_id INTEGER,
+    direction TEXT NOT NULL CHECK (length(direction) <= 40),
+    answer TEXT NOT NULL CHECK (answer IN ('ja', 'nein', 'unsicher', 'error')),
+    probability INTEGER CHECK (probability IS NULL OR probability BETWEEN 0 AND 100),
+    threshold INTEGER NOT NULL CHECK (threshold BETWEEN 50 AND 99),
+    model TEXT CHECK (model IS NULL OR length(model) <= 200),
+    feedback_signal TEXT NOT NULL DEFAULT 'none'
+      CHECK (feedback_signal IN ('none', 'spam', 'human_needed', 'send_ok')),
+    override_kind TEXT CHECK (override_kind IS NULL OR override_kind IN (
+      'spam_to_clean', 'clean_to_spam', 'review_to_clean', 'review_to_spam', 'human_reply', 'sent_without_review')),
+    truth TEXT CHECK (truth IS NULL OR truth IN ('ja', 'nein')),
+    override_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
+  );
+`;
+
+export const AI_DECISION_EVENTS_INDEXES: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_ai_decision_events_node ON ${AI_DECISION_EVENTS_TABLE}(workflow_source_id, node_id, created_at);`,
+  `CREATE INDEX IF NOT EXISTS idx_ai_decision_events_open_message ON ${AI_DECISION_EVENTS_TABLE}(message_id, created_at) WHERE message_id IS NOT NULL AND override_at IS NULL;`,
 ];
 
 export const createEmailWorkflowVersionsTable = `
@@ -931,6 +1012,7 @@ export const createEmailWorkflowRunsTable = `
     log_json TEXT,
     started_at TEXT DEFAULT CURRENT_TIMESTAMP,
     finished_at TEXT,
+    dry_run INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (workflow_id) REFERENCES ${EMAIL_WORKFLOWS_TABLE}(id) ON DELETE CASCADE,
     FOREIGN KEY (message_id) REFERENCES ${EMAIL_MESSAGES_TABLE}(id) ON DELETE SET NULL
   );

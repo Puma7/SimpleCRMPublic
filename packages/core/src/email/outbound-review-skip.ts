@@ -5,7 +5,12 @@
  * Editionen setzen sie serverseitig bzw. im Main-Prozess durch. Das gilt nur
  * für den unveränderten, angehaltenen Inhalt (Fingerprint beim Anhalten).
  */
-import { stripOutboundWarningFromHtml, stripOutboundWarningFromPlain } from './outbound-review-parse';
+import {
+  OUTBOUND_WARNING_CLOSING_TEXT,
+  OUTBOUND_WARNING_MARKER,
+  stripOutboundWarningFromHtml,
+  stripOutboundWarningFromPlain,
+} from './outbound-review-parse';
 import { decodeHtmlEntities, plainTextFromHtml } from './parse-utils';
 import { draftRecipientAddresses, htmlLinkTargets } from './sent-provenance';
 
@@ -116,14 +121,21 @@ export type OutboundHoldContent = {
  */
 export function normalizeOutboundHoldContent(input: OutboundHoldContentInput): OutboundHoldContent {
   const html = stripOutboundWarningFromHtml(String(input.bodyHtml ?? ''));
+  const htmlPlain = plainTextFromHtml(html);
+  // Ein nach dem Entfernen verbliebener Hinweis ist kein echter Hinweis-Block
+  // (z. B. versteckt eingefügt): dann zählt der ganze Text, sonst fiele alles
+  // dahinter aus dem Vergleich und ginge ungeprüft raus.
+  const text = htmlPlain.includes(OUTBOUND_WARNING_MARKER)
+    ? normalizedText(htmlPlain)
+    : normalizedText(stripOutboundWarningFromPlain(htmlPlain));
+  const styles = styleBlockText(html);
   return {
     accountId: String(input.accountId ?? '').trim(),
     subject: collapseWhitespace(String(input.subject ?? '')),
-    bodyText: normalizedText(stripOutboundWarningFromPlain(String(input.bodyText ?? ''))),
-    bodyHtml: JSON.stringify({
-      text: normalizedText(stripOutboundWarningFromPlain(plainTextFromHtml(html))),
-      links: htmlLinkTargets(html),
-    }),
+    bodyText: normalizedText(stripKnownWarningFromPlain(String(input.bodyText ?? ''))),
+    // Neue Schlüssel nur, wenn es etwas zu vergleichen gibt: unveränderter
+    // Inhalt ergibt dieselbe Normalform wie bisher (gespeicherte Fingerprints).
+    bodyHtml: JSON.stringify(styles ? { text, links: htmlLinkTargets(html), styles } : { text, links: htmlLinkTargets(html) }),
     to: draftRecipientAddresses(input.to).join(', '),
     cc: draftRecipientAddresses(input.cc).join(', '),
     bcc: draftRecipientAddresses(input.bcc).join(', '),
@@ -138,6 +150,39 @@ export function outboundHoldContentEquals(a: OutboundHoldContentInput, b: Outbou
 
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Hinweis „Versand blockiert“ nur entfernen, wenn es ein echter Hinweis-Block
+ * ist (mit Trenner „---“ oder Schlusssatz). Ein nackter Marker mit Text
+ * dahinter bleibt Inhalt.
+ */
+function stripKnownWarningFromPlain(text: string): string {
+  const idx = text.indexOf(OUTBOUND_WARNING_MARKER);
+  if (idx < 0) return text.trim();
+  const after = text.slice(idx);
+  if (after.includes('\n---\n') || after.includes(OUTBOUND_WARNING_CLOSING_TEXT)) return stripOutboundWarningFromPlain(text);
+  return text.trim();
+}
+
+/** Inhalt aller <style>-Blöcke (linear, ohne Regex über das ganze Dokument). */
+function styleBlockText(html: string): string {
+  const lower = html.toLowerCase();
+  const parts: string[] = [];
+  let cursor = 0;
+  for (;;) {
+    const open = lower.indexOf('<style', cursor);
+    if (open < 0) break;
+    const gt = lower.indexOf('>', open);
+    if (gt < 0) break;
+    const close = lower.indexOf('</style', gt + 1);
+    const end = close < 0 ? html.length : close;
+    const content = collapseWhitespace(html.slice(gt + 1, end));
+    if (content) parts.push(content);
+    if (close < 0) break;
+    cursor = close + 7;
+  }
+  return parts.join('\n');
 }
 
 function normalizedText(value: string): string {

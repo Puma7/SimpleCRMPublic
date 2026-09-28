@@ -1,10 +1,13 @@
 import { getDb } from '../sqlite-service';
+import type { AutomationCockpitSnapshot } from '@simplecrm/core';
 import {
   EMAIL_MESSAGES_TABLE,
   EMAIL_WORKFLOW_RUNS_TABLE,
+  EMAIL_WORKFLOWS_TABLE,
   EMAIL_ACCOUNTS_TABLE,
 } from '../database-schema';
 import { accountIdsForMailScopeAll, type MailScopeSession } from './mail-scope-access';
+import { getAutomationCockpitSnapshot } from './email-automation-cockpit';
 
 export type EmailReportingSnapshot = {
   accounts: { id: number; display_name: string; email_address: string; protocol: string }[];
@@ -22,7 +25,9 @@ export type EmailReportingSnapshot = {
     unread: number;
     archived: number;
   }[];
-  workflowRuns24h: { workflow_id: number; count: number; errors: number }[];
+  workflowRuns24h: { workflow_id: number; workflow_name: string | null; count: number; errors: number }[];
+  /** Plan 049: Automatik-Cockpit (gleicher Konto-Filter wie die Summen). */
+  automation: AutomationCockpitSnapshot;
 };
 
 export function getEmailReportingSnapshot(
@@ -38,12 +43,15 @@ export function getEmailReportingSnapshot(
 
   let accClause = 'WHERE soft_deleted = 0';
   const params: number[] = [];
+  let cockpitAccountIds: readonly number[] | null = null;
   if (accountIdFilter != null) {
+    cockpitAccountIds = [accountIdFilter];
     accClause += ' AND account_id = ?';
     params.push(accountIdFilter);
     accounts = accounts.filter((a) => a.id === accountIdFilter);
   } else if (access) {
     const allowed = accountIdsForMailScopeAll(db, access);
+    cockpitAccountIds = allowed;
     if (allowed !== null) {
       if (allowed.length === 0) {
         accClause += ' AND 1=0';
@@ -92,12 +100,13 @@ export function getEmailReportingSnapshot(
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const workflowRuns24h = db
     .prepare(
-      `SELECT workflow_id,
+      `SELECT r.workflow_id, w.name AS workflow_name,
         COUNT(*) as count,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
-       FROM ${EMAIL_WORKFLOW_RUNS_TABLE}
-       WHERE datetime(finished_at) >= datetime(?)
-       GROUP BY workflow_id
+        SUM(CASE WHEN r.status = 'error' THEN 1 ELSE 0 END) as errors
+       FROM ${EMAIL_WORKFLOW_RUNS_TABLE} r
+       LEFT JOIN ${EMAIL_WORKFLOWS_TABLE} w ON w.id = r.workflow_id
+       WHERE datetime(r.finished_at) >= datetime(?) AND r.dry_run = 0
+       GROUP BY r.workflow_id, w.name
        ORDER BY count DESC
        LIMIT 30`,
     )
@@ -115,5 +124,6 @@ export function getEmailReportingSnapshot(
     },
     perAccount,
     workflowRuns24h,
+    automation: getAutomationCockpitSnapshot(db, { accountIds: cockpitAccountIds }),
   };
 }

@@ -260,7 +260,7 @@ corepack pnpm run cleanup-db
 | **SQLite database** | `%APPDATA%\simplecrm\database.sqlite` |
 | **Application logs** | `%APPDATA%\simplecrm\logs\main.log` |
 | **E-Mail attachments** | `%APPDATA%\simplecrm\email-attachments\` |
-| **Passwords & OAuth tokens** | Windows Credential Manager (via Keytar) |
+| **Passwords & OAuth tokens** | `%APPDATA%\simplecrm\credentials.sqlite`, encrypted with Windows DPAPI (Electron `safeStorage`); older entries in the Windows Credential Manager (Keytar) are migrated on first use |
 
 > In development mode, Electron may use `%APPDATA%\Electron\` instead of `%APPDATA%\simplecrm\`. This depends on whether the app name is set in `package.json` build config.
 

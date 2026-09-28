@@ -27,6 +27,8 @@ export async function executeWorkflowForTrigger(input: {
   outbound?: OutboundDraftPayload | null;
   dryRun?: boolean;
   previewOutbound?: boolean;
+  /** Nur mit dryRun: ai.decide fragt das Modell wirklich (Plan 047). */
+  testRealAi?: boolean;
   eventStrings?: Record<string, string>;
   eventVariables?: Record<string, string | number | boolean | null>;
   initialVariables?: Record<string, string | number | boolean | null>;
@@ -44,6 +46,9 @@ export async function executeWorkflowForTrigger(input: {
     workflowId: input.workflow.id,
     messageId: input.message?.id ?? input.outbound?.messageId ?? null,
     direction: input.direction,
+    // Nur echte Testläufe kennzeichnen: die Versandvorschau läuft auch trocken,
+    // ihr Lauf erklärt aber im Hinweis „Versand blockiert“, warum die Mail hängt.
+    dryRun: input.dryRun === true && input.previewOutbound !== true,
   });
 
   try {
@@ -60,6 +65,7 @@ export async function executeWorkflowForTrigger(input: {
         outbound: input.outbound,
         dryRun: input.dryRun,
         previewOutbound: input.previewOutbound,
+        testRealAi: input.testRealAi,
         eventStrings: input.eventStrings,
         eventVariables: input.eventVariables,
         initialVariables: input.initialVariables,
@@ -111,7 +117,7 @@ export async function executeWorkflowForTrigger(input: {
 
 export async function executeWorkflowNow(
   workflowId: number,
-  options: { messageId?: number | null; dryRun?: boolean } = {},
+  options: { messageId?: number | null; dryRun?: boolean; realAi?: boolean } = {},
 ): Promise<{
   success: boolean;
   runId?: number;
@@ -123,11 +129,12 @@ export async function executeWorkflowNow(
 }> {
   const wf = getWorkflowById(workflowId);
   if (!wf) return { success: false, error: 'Workflow nicht gefunden' };
-  if (wf.enabled !== 1) return { success: false, error: 'Workflow ist deaktiviert' };
+  const dryRun = options.dryRun === true;
+  // Testlauf auch für deaktivierte Workflows: vor dem Einschalten gefahrlos prüfen.
+  if (wf.enabled !== 1 && !dryRun) return { success: false, error: 'Workflow ist deaktiviert' };
 
   const trigger = (wf.trigger as WorkflowTriggerKind) || 'manual';
   const direction = workflowDirectionForTrigger(trigger);
-  const dryRun = options.dryRun === true;
 
   let message: EmailMessageRow | null = null;
   if (options.messageId != null) {
@@ -150,6 +157,7 @@ export async function executeWorkflowNow(
     message,
     outbound,
     dryRun,
+    testRealAi: dryRun && options.realAi === true,
   });
 
   return {
@@ -166,8 +174,9 @@ export async function testWorkflowOnMessage(
   workflowId: number,
   messageId: number,
   dryRun = true,
+  options: { realAi?: boolean } = {},
 ): Promise<{ success: boolean; runId?: number; log?: string[]; error?: string }> {
-  const r = await executeWorkflowNow(workflowId, { messageId, dryRun });
+  const r = await executeWorkflowNow(workflowId, { messageId, dryRun, realAi: options.realAi === true });
   if (!r.success) return { success: false, error: r.error };
   return { success: true, runId: r.runId, log: r.log };
 }

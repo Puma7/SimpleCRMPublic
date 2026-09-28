@@ -949,6 +949,13 @@ function threadMessageViewPredicate(
     // TA-P3: „Gesendet (KI)“ — automatisch oder aus KI-Entwurf versendet.
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.folder_kind = 'sent' AND m.is_spam = false AND m.sent_by_kind IN ('ai_auto', 'ai_approved', 'workflow')`;
   }
+  // Plan 049: Warteschlangen der Teilautomatisierung.
+  if (view === 'approval_pending') {
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.uid < 0 AND m.folder_kind = 'draft' AND m.approval_state = 'pending' AND m.scheduled_send_at IS NULL`;
+  }
+  if (view === 'outbound_blocked') {
+    return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = true`;
+  }
   if (view === 'archived') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND ${nonDraftMail} AND m.archived = true AND m.is_spam = false AND coalesce(m.spam_status, 'clean') = 'clean'`;
   }

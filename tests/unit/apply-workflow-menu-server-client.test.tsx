@@ -168,7 +168,7 @@ describe('ApplyWorkflowMenu server-client mode', () => {
         'https://crm.example.com/api/v1/workflows/by-source/44/execute',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ messageId: 99, dryRun: true }),
+          body: JSON.stringify({ messageId: 99, dryRun: true, testRun: true }),
         }),
       );
     });

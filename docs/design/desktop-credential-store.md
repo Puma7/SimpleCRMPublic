@@ -1,0 +1,225 @@
+# Desktop-Zugangsdaten: `keytar` → Electron `safeStorage`
+
+Entscheidungsdokument zu Plan 044 (Phase 0). Es ändert keinen Code. Phase 1
+(Umbau) beginnt erst, wenn unten `Status: APPROVED` steht.
+
+## Ausgangslage
+
+Alle Geheimnisse der Desktop-Edition liegen heute über `keytar` (7.9.0, letzte
+Version Februar 2022, natives Modul) im Schlüsselbund des Betriebssystems:
+
+| Dienst (keytar-Service) | Inhalt |
+|---|---|
+| `SimpleCRMElectron-Email` | IMAP/SMTP-Passwörter, OAuth-Refresh-Tokens (Google, Microsoft) |
+| `SimpleCRMElectron-PGP` | private PGP-Schlüssel |
+| `SimpleCRMElectron-EmailAI` | KI-API-Keys (`profile-<uuid>`, alt: `api-key`) |
+| `SimpleCRMElectron-MSSQL` | MSSQL-Passwort |
+| `SimpleCRMElectron-AutomationAPI` | Zugangsdaten der Automation-API |
+| `SimpleCRMElectron-StandalonePostgres` | nur für das Löschen beim Zurücksetzen |
+
+Electron 43 bringt `safeStorage` mit, das dieselben Betriebssystem-Dienste nutzt
+(Windows DPAPI, macOS-Schlüsselbund, unter Linux libsecret/KWallet) – ohne
+natives Zusatzmodul. Das Ziel: `keytar` ablösen, **ohne dass je ein Zugang
+verloren geht**.
+
+## Spike-Ergebnisse (Linux, Electron 43.1.0, Xvfb, 27.09.2026)
+
+Kleines Main-Prozess-Skript außerhalb des Repos, einmal pro Speicher-Option.
+In dieser Umgebung läuft **kein** Schlüsselbund-Dienst (kein gnome-keyring).
+
+| Start-Option | `getSelectedStorageBackend()` | `isEncryptionAvailable()` (sync) | `isAsyncEncryptionAvailable()` | async Hin und zurück | nach Neustart lesbar | Präfix Chiffrat |
+|---|---|---|---|---|---|---|
+| (keine) | `basic_text` | **false** | true | ja | – | `v10` |
+| `--password-store=basic` | `basic_text` | **false** | true | ja | ja | `v10` |
+| `--password-store=gnome-libsecret` | `gnome_libsecret` | **false** | true | ja | ja | `v10` |
+
+Fremdes Chiffrat (`decryptString`) wirft eine Ausnahme
+(„Decryption is not available“) – es stürzt nichts ab, muss aber abgefangen werden.
+`shouldReEncrypt` war in allen Läufen `false`.
+
+**Folgerungen aus dem Spike:**
+
+1. Die **synchrone** API ist unter Linux in Electron 43 nicht nutzbar
+   (`isEncryptionAvailable()` bleibt `false`, auch nach `ready`). Wir brauchen die
+   **asynchrone** API.
+2. **Der gemeldete Backend-Name reicht nicht.** Ohne laufenden Keyring-Dienst
+   meldet Electron `gnome_libsecret`, verschlüsselt aber mit dem fest eingebauten
+   Chromium-Schlüssel (Präfix `v10`). Das ist nur Verschleierung: jeder mit
+   Zugriff auf die Datei kann es entschlüsseln. Sicher ist unter Linux nur ein
+   Chiffrat mit Präfix `v11` (Schlüssel aus libsecret/KWallet).
+3. Windows und macOS konnten hier nicht getestet werden – **von Pascal zu
+   bestätigen** (erwartet: DPAPI bzw. Schlüsselbund, sync und async verfügbar).
+   Das Spike-Skript liegt als Anhang am Ende und läuft mit
+   `electron --no-sandbox spike.js`.
+
+**Nachtrag (Phase 1, mit laufendem gnome-keyring wie in CI, 28.09.2026):**
+ohne Schalter `basic_text`, sync `false`, async `v11`; mit
+`--password-store=gnome-libsecret` `gnome_libsecret`, sync `true`, async `v11`.
+`electron/main.js` fordert deshalb unter Linux ohne erkannte Desktop-Umgebung
+libsecret an (`electron/credentials/linux-password-store.ts`), außer unter KDE
+oder bei einem `--password-store` in den **Startargumenten**. Vorab angehängte
+Schalter zählen nicht: Playwrights Electron-Loader setzt `--password-store=basic`
+vor `main.js`; das führte im E2E-Lauf zu `v10` und damit zur Ablehnung.
+
+## Entscheidungen
+
+### 1. Wo das Chiffrat liegt
+
+- **(a)** Neue Tabelle `credential_store(service, account, ciphertext BLOB,
+  updated_at, PRIMARY KEY(service, account))` in `database.sqlite`.
+  Folgen: Mail-Backup-ZIP und Pre-Update-Backups enthalten das Chiffrat; eine
+  Wiederherstellung **ersetzt** es. Auf demselben Rechner springen die
+  Zugangsdaten auf den Stand des Backups zurück (ein inzwischen geändertes
+  Passwort wäre wieder das alte). Auf einem anderen Rechner ist das Chiffrat
+  nicht entschlüsselbar → muss als „fehlt“ gelten, darf nie abstürzen.
+- **(b)** Eigene Datei `credentials.sqlite` in `userData`, die Backup, Restore
+  und Pre-Update-Backup **nicht** anfassen. Folgen: Zugangsdaten bleiben wie
+  heute (Schlüsselbund) unabhängig vom Mail-Backup; eine Wiederherstellung ändert
+  keine Passwörter; die neue Datei muss beim Zurücksetzen gelöscht werden.
+
+**Empfehlung: (b).** Das entspricht dem heutigen Verhalten (Backups enthalten
+keine Zugangsdaten, `email-local-backup.ts`: „no Keytar secrets“), vermeidet
+Rücksprünge auf alte Passwörter nach einem Restore und hält Chiffrat aus
+ZIP-Dateien heraus, die Nutzer weitergeben.
+
+### 2. Synchrone oder asynchrone API
+
+**Empfehlung: nur asynchron** (`encryptStringAsync` / `decryptStringAsync`), weil
+die synchrone unter Linux nicht verfügbar ist (Spike). Alle Aufrufer sind heute
+schon `async` (keytar ist async). Liefert `decryptStringAsync`
+`shouldReEncrypt: true`, wird neu verschlüsselt und nach erfolgreicher
+Gegenprobe ersetzt.
+
+### 3. Linux ohne sicheren Speicher (`basic_text`, `unknown` oder Präfix `v10`)
+
+- **Neue Geheimnisse nicht speichern** und deutlich warnen:
+  „Kein sicherer Schlüsselspeicher gefunden – Zugangsdaten werden nicht
+  gespeichert.“ Lesen aus keytar funktioniert weiter.
+- Alternative: mit ausdrücklicher Zustimmung im Klartext-Modus speichern.
+
+**Empfehlung: nicht speichern** (wie im Plan), und die Prüfung am **Chiffrat**
+festmachen: nach `encryptStringAsync` muss das Ergebnis unter Linux mit `v11`
+beginnen, sonst gilt der Speicher als unsicher (Spike, Folgerung 2). Auf Windows
+und macOS gilt die Prüfung über `isAsyncEncryptionAvailable()`.
+
+Hinweis: keytar braucht unter Linux einen laufenden Secret-Service (libsecret);
+ohne ihn schlägt das Speichern heute vermutlich ebenfalls fehl – für diese Nutzer
+ändert sich dann nichts (im Spike nicht geprüft, keytar ist hier nicht gebaut).
+
+### 4. Umzug der vorhandenen Einträge
+
+**Empfehlung: bei Bedarf je Eintrag.** Lesen: erst neuer Speicher; fehlt der
+Eintrag (oder ist nicht entschlüsselbar), aus keytar lesen; wenn gefunden:
+verschlüsseln → schreiben → wieder lesen und vergleichen. Nur wenn alles gleich
+ist, gilt der Eintrag als umgezogen. Bei jedem Fehler wird der keytar-Wert
+zurückgegeben und nichts gelöscht. Gleichzeitige Zugriffe auf denselben Eintrag
+ziehen nur einmal um.
+
+### 5. Wann keytar-Einträge gelöscht werden
+
+- sofort nach erfolgreichem Umzug,
+- **eine Version später** (Version N zieht um, N+1 löscht),
+- nie (nur beim Zurücksetzen).
+
+Risiko „sofort“: Ein Downgrade über `backups/pre-update` auf die Vorversion liest
+nur keytar → alle Zugänge wären weg.
+
+**Empfehlung: eine Version später.** In Version N bleiben die keytar-Einträge
+unangetastet; Version N+1 löscht sie nach nochmaliger Gegenprobe.
+
+### 6. Wann `keytar` als Abhängigkeit entfällt
+
+**Empfehlung:** Version N (Umzug, keytar nur noch lesend), Version N+1 (löscht
+alte Einträge nach Gegenprobe, keytar noch lesend), Version N+2 entfernt
+`keytar`, den Lese-Adapter, die Jest-Zuordnung, `vite.config.ts`-External und
+in CI/`release.yml` den keytar-Neubau. Vor dem Entfernen von `gcc-12` und
+`libsecret-1-dev` in CI prüfen, ob `better-sqlite3` sie noch braucht (vermutlich
+`gcc-12` ja).
+
+### 7. Zurücksetzen (Hard Reset)
+
+Solange keytar Abhängigkeit ist: **beide** leeren – neue Speicherdatei löschen
+und alle keytar-Dienste wie heute (`keytar-purge.ts`) bereinigen.
+
+### 8. Klartext nie exportierbar
+
+Keine neue IPC- oder API-Antwort gibt entschlüsselte Geheimnisse heraus; es
+bleibt bei den heutigen Aufrufstellen (Senden, Abrufen, KI-Aufruf, MSSQL,
+Automation-API). Mit Entscheidung 1b enthält das Backup-ZIP weder Klartext noch
+Chiffrat. Logs enthalten nie Geheimnisse (auch nicht beim Umzug).
+
+## Offene Punkte für Pascal
+
+- Windows/macOS-Spike bestätigen (Skript unten).
+- Soll Entscheidung 3 (nicht speichern ohne sicheren Speicher) für Linux-Nutzer
+  ohne Keyring gelten, oder wird ein Klartext-Modus mit Zustimmung gewünscht?
+
+## Checkliste der Entscheidungen
+
+- [x] 1. Speicherort: **(b) eigene Datei `credentials.sqlite`**, außerhalb von Backup/Restore
+- [x] 2. Nur asynchrone API, `shouldReEncrypt` beachten
+- [x] 3. Kein sicherer Speicher (Linux: Chiffrat ohne `v11`) → nicht speichern, Warnung
+- [x] 4. Umzug je Eintrag beim ersten Lesen, mit Gegenprobe
+- [x] 5. keytar-Einträge erst in Version N+1 löschen
+- [x] 6. `keytar` in Version N+2 entfernen (CI-Pakete vorher prüfen)
+- [x] 7. Zurücksetzen leert neuen Speicher und keytar
+- [x] 8. Kein Klartext in IPC/API/Backup/Logs
+
+## Anhang: Spike-Skript
+
+```js
+const { app, safeStorage } = require('electron');
+app.whenReady().then(async () => {
+  const out = {};
+  out.syncAvailable = safeStorage.isEncryptionAvailable();
+  out.backend = process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : 'n/a';
+  out.asyncAvailable = await safeStorage.isAsyncEncryptionAvailable();
+  if (out.asyncAvailable) {
+    const enc = await safeStorage.encryptStringAsync('geheim-äö€');
+    const dec = await safeStorage.decryptStringAsync(enc);
+    out.prefix = enc.subarray(0, 3).toString('latin1');
+    out.roundTrip = dec.result === 'geheim-äö€';
+    out.shouldReEncrypt = dec.shouldReEncrypt;
+  }
+  console.log(JSON.stringify(out));
+  app.quit();
+});
+```
+
+Status: APPROVED (Pascal, 28.09.2026)
+
+Antworten auf die offenen Punkte:
+
+- Alle 8 Empfehlungen freigegeben (Speicherort: eigene Datei `credentials.sqlite`).
+- Linux ohne sicheren Speicher: neue Geheimnisse **nicht speichern**, Warnung anzeigen (kein Klartext-Modus).
+- Windows/macOS: Pascal führt das Spike-Skript aus und meldet das Ergebnis. Phase 1 beginnt schon vorher
+  (Bau und Tests unter Linux); vor dem Release wird auf die Windows/macOS-Ergebnisse angepasst.
+
+## Umsetzung Phase 1 (Version N, 28.09.2026)
+
+| Teil | Datei |
+|---|---|
+| Regeln (Umzug, Gegenprobe, Grabstein, `v11`-Prüfung über Port) | `electron/credentials/credential-store.ts` |
+| Anbindung an `safeStorage` und `credentials.sqlite` (Rechte 0600) | `electron/credentials/credential-runtime.ts` |
+| einziger keytar-Zugriff (lesen, ausdrückliches Löschen) | `electron/credentials/legacy-keytar.ts` |
+| gemeinsamer Speicher, Dienstnamen | `electron/credentials/index.ts` |
+| umgestellt | `email/email-keytar.ts`, `email/email-ai-keytar.ts`, `email/email-ai-profiles.ts`, `mssql-keytar-service.ts`, `automation/automation-keytar.ts` (Funktionsnamen unverändert) |
+| Hard Reset | `maintenance/reset-service.ts` löscht `credentials.sqlite`, `keytar-purge.ts` weiter keytar |
+| Tests | `tests/unit/desktop-credential-store.test.ts`, `tests/integration/desktop-credential-runtime.test.ts`; Jest ersetzt die Laufzeit durch `tests/setup/credential-runtime-mock.ts` |
+
+Auslegung einer Stelle, die das Dokument offen lässt: **Löscht der Nutzer ein
+Geheimnis** (Konto entfernt, KI-Key geleert, MSSQL-Passwort gelöscht), bleibt ein
+leerer Eintrag (Grabstein) im neuen Speicher, damit der alte keytar-Wert nicht
+wieder auftaucht, und der keytar-Eintrag wird wie bisher gelöscht (Fehler dabei
+werden nur protokolliert). Das betrifft nur ausdrückliches Löschen; der Umzug
+verändert keytar nie (Entscheidung 5).
+
+Noch offen:
+
+- Windows/macOS-Spike (Pascal) – vor dem Release; `isSecureCiphertext` prüft dort
+  heute nur, dass ein Chiffrat entstanden ist.
+- E2E (`electron-e2e` in CI, mit gnome-keyring) läuft erst im Draft-PR; hier
+  fehlt ein Keyring-Dienst.
+- Version N+1: keytar-Einträge nach erneuter Gegenprobe löschen; Version N+2:
+  `keytar` entfernen (Abhängigkeit, `legacy-keytar.ts`, Jest-Zuordnung,
+  `vite.config.ts`, CI/`release.yml`, AGENTS.md-Hinweis).

@@ -68,6 +68,15 @@ const DEGENERATE: Record<string, string> = {
   'Von: a\\n': repeatTo('Von: a\n'),
   '> ': repeatTo('> '),
   'Grüße ': repeatTo('Grüße '),
+  '1111 ': repeatTo('1111 '),
+  '1111-': repeatTo('1111-'),
+  '1.': repeatTo('1.'),
+  '1:': repeatTo('1:'),
+  'f:f::': repeatTo('f:f::'),
+  'Steuer-ID 1 ': repeatTo('Steuer-ID 1 '),
+  'Ausweis A ': repeatTo('Ausweis A '),
+  'SV-Nr 1 A ': repeatTo('SV-Nr 1 A '),
+  'Pass 1/': repeatTo('Pass 1/'),
   realistic: repeatTo('Hallo Herr Müller,\nbitte an Musterstraße 5, 12345 Berlin. Tel. 0761 123456, max@kunde.test, Bestellnummer 123456.\n\n'),
 };
 

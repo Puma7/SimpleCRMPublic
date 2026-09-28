@@ -13,8 +13,10 @@ import {
 } from '../../packages/core/src/learnings/reply-noise';
 import {
   applyKnowledgeOperations,
+  normalizeKnowledgeSectionContent,
   normalizeKnowledgeSectionTitle,
   parseKnowledgeSections,
+  removedKnowledgeSectionTitles,
   serializeKnowledgeSections,
 } from '../../packages/core/src/learnings/knowledge-sections';
 import { diffText, summarizeTextDiff, type TextDiffSegment } from '../../packages/core/src/learnings/text-diff';
@@ -88,6 +90,18 @@ describe('stripReplyNoise (TA-P5)', () => {
 });
 
 describe('Wissensbasis-Abschnitte (TA-P5)', () => {
+  // Plan 038: entfernte Abschnitte werden in der Freigabe hervorgehoben.
+  test('removedKnowledgeSectionTitles: entfernt, umbenannt, nur anders geschrieben, nichts', () => {
+    const before = '# Firma\n\n## Rückgabe\n\n14 Tage.\n\n## Versand\n\n2 Tage.\n\n## Kontakt\n\nHotline.\n';
+    expect(removedKnowledgeSectionTitles(before, '# Firma\n\n## Versand\n\n2 Tage.\n\n## Kontakt\n\nHotline.\n'))
+      .toEqual(['Rückgabe']);
+    expect(removedKnowledgeSectionTitles(before, '## Rücksendung\n\n14 Tage.\n\n## Versand\n\nx\n\n## Kontakt\n\ny\n'))
+      .toEqual(['Rückgabe']);
+    expect(removedKnowledgeSectionTitles(before, '## rückgabe:\n\n30 Tage.\n\n##   VERSAND\n\nx\n\n## Kontakt\n\ny\n'))
+      .toEqual([]);
+    expect(removedKnowledgeSectionTitles(before, before)).toEqual([]);
+  });
+
   const doc = '# Firma\n\nEinleitung.\n\n## Versand\n\nVersand in 2 Tagen.\n\n## Rückgabe\n\n30 Tage.\n\n```md\n## kein Abschnitt\n```\n';
 
   it('zerlegt verlustfrei und respektiert Codeblöcke', () => {
@@ -136,6 +150,80 @@ describe('Wissensbasis-Abschnitte (TA-P5)', () => {
       .toBe('## Ton\n\nSie-Form.\n');
     const middle = applyKnowledgeOperations('## A\n\na\n\n## B\n\nb\n\n## C\n\nc\n', [{ op: 'update', section: 'B', content: 'neu' }]);
     expect(middle.content).toBe('## A\n\na\n\n## B\n\nneu\n\n## C\n\nc\n');
+  });
+
+  it('Überschriften: gleiche Titel wie bisher, lange Leerzeilen bleiben schnell', () => {
+    expect(parseKnowledgeSections('## Titel ##\n## Titel # x ##  \n##\tA\t#\n## #\n##  \n## \n### x\n##x\n').sections.map((s) => s.title))
+      .toEqual(['Titel', 'Titel # x', 'A', '#', '']);
+    expect(normalizeKnowledgeSectionContent('## Versand ##\nText', 'Versand')).toBe('Text');
+    expect(normalizeKnowledgeSectionContent('####### x\nText')).toBe('####### x\nText');
+    let started = Date.now();
+    const long = parseKnowledgeSections(`## a${' '.repeat(40_000)}b`);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(long.sections[0]!.title).toBe(`a${' '.repeat(40_000)}b`);
+    started = Date.now();
+    normalizeKnowledgeSectionContent(`# a${' '.repeat(40_000)}b`);
+    expect(Date.now() - started).toBeLessThan(200);
+  });
+
+  it('offener Codeblock im KI-Inhalt verschluckt keine späteren Abschnitte', () => {
+    const base = '# KB\n\n## A\n\nalt A\n\n## B\n\nInhalt B\n\n## C\n\nInhalt C\n';
+    const first = applyKnowledgeOperations(base, [{ op: 'update', section: 'A', content: 'Neu:\n```\ncode ohne Ende' }]);
+    const parsed = parseKnowledgeSections(first.content);
+    expect(parsed.sections.map((s) => s.title)).toEqual(['A', 'B', 'C']);
+    expect(parsed.sections[0]!.content.endsWith('code ohne Ende\n```')).toBe(true);
+    const second = applyKnowledgeOperations(first.content, [{ op: 'update', section: 'A', content: 'ganz neu' }]);
+    expect(second.content).toContain('## B\n\nInhalt B');
+    expect(second.content).toContain('## C\n\nInhalt C');
+
+    const tilde = applyKnowledgeOperations(base, [
+      { op: 'add', section: 'D', content: '~~~\nx' },
+      { op: 'add', section: 'E', content: 'e' },
+    ]);
+    expect(parseKnowledgeSections(tilde.content).sections.map((s) => s.title)).toEqual(['A', 'B', 'C', 'D', 'E']);
+  });
+
+  it('liest ein bereits beschädigtes Dokument (offener Codeblock bis Dateiende) abschnittsweise', () => {
+    const broken = '## A\n\n```\ncode\n\n## B\n\nb\n\n## C\n\nc\n';
+    const parsed = parseKnowledgeSections(broken);
+    expect(parsed.sections.map((s) => s.title)).toEqual(['A', 'B', 'C']);
+    expect(serializeKnowledgeSections(parsed)).toBe(broken);
+    expect(applyKnowledgeOperations(broken, [{ op: 'update', section: 'A', content: 'repariert' }]).content)
+      .toBe('## A\n\nrepariert\n\n## B\n\nb\n\n## C\n\nc\n');
+  });
+
+  // CodeQL (polynomielles Regex): am Ende verankerte Muster wie /\n*$/ oder /[:.]+$/
+  // prüften jede Startposition neu – lange Folgen mitten im Text liefen quadratisch.
+  it('lange Folgen von Zeilenumbrüchen, Doppelpunkten oder Rauten mitten im Text bleiben schnell', () => {
+    const run = 60_000;
+    let started = Date.now();
+    const fenced = applyKnowledgeOperations('## A\n\na\n', [
+      { op: 'update', section: 'A', content: `\`\`\`\n${'\n'.repeat(run)}x` },
+    ]);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(fenced.content.endsWith('x\n```\n')).toBe(true);
+    started = Date.now();
+    expect(normalizeKnowledgeSectionTitle(`Titel${':'.repeat(run)}x`)).toBe(`titel${':'.repeat(run)}x`);
+    expect(normalizeKnowledgeSectionTitle('Versand:.:')).toBe('versand');
+    expect(Date.now() - started).toBeLessThan(500);
+    started = Date.now();
+    const hashes = applyKnowledgeOperations('## A\n\na\n', [
+      { op: 'add', section: `B${'#'.repeat(run)}c`, content: 'b' },
+    ]);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(hashes.structureError).toBeUndefined();
+    started = Date.now();
+    const doc = parseKnowledgeSections(`# KB${'\n'.repeat(run)}x\n## A\n\na\n`);
+    serializeKnowledgeSections({ ...doc, sections: [...doc.sections, { title: 'B', content: 'b' }] });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('korrekt geschlossene Codeblöcke bleiben unverändert', () => {
+    expect(parseKnowledgeSections('## A\n\n```md\n## kein Abschnitt\n```\n\n## B\n\nb\n').sections.map((s) => s.title))
+      .toEqual(['A', 'B']);
+    const open = parseKnowledgeSections('## A\n\n```\ncode ohne Ende\n');
+    expect(open.sections.map((s) => s.title)).toEqual(['A']);
+    expect(open.sections[0]!.content).toBe('```\ncode ohne Ende');
   });
 });
 

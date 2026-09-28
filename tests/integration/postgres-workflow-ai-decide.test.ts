@@ -17,6 +17,7 @@ import {
   createPostgresAiDecidePort,
 } from '../../packages/server/src/workflow-ai-decide';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { createPostgresComposeOutboundReviewPort } from '../../packages/server/src/mail-compose-send';
 import { pruneWorkflowRunStepDetails } from '../../packages/server/src/workflow-run-step-append';
 import { inboundSiblingAbortKey } from '../../packages/server/src/workflow-inbound-chain-advance';
 import { startMigratedEmbeddedPostgres, type EmbeddedPostgres } from './helpers/embedded-postgres';
@@ -540,6 +541,171 @@ describe('ai.decide server job (Embedded Postgres)', () => {
       [WORKSPACE_ID],
     );
     expect(draft.rows[0]!.outbound_block_reason).toBe('Ausgangspruefung laeuft');
+    expect(await takeJobs('ai.decide')).toEqual([]);
+  });
+
+  // Plan 034: Während das Modell gefragt wird, ist keine Transaktion offen.
+  async function openTransactionsNow(): Promise<number> {
+    const r = await postgres.admin.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE pid <> pg_backend_pid() AND state LIKE 'idle in transaction%'`,
+    );
+    return r.rows[0]!.n;
+  }
+
+  async function useDecisionsProfile(): Promise<void> {
+    await postgres.admin.query(
+      `UPDATE email_workflows SET graph_json = jsonb_set(graph_json, '{nodes,1,data,config,profileId}', to_jsonb($2::int)) WHERE workspace_id = $1 AND id = $3`,
+      [WORKSPACE_ID, decisionsProfileId, OUTBOUND_WORKFLOW_ID],
+    );
+  }
+
+  test('Versandvorschau: keine offene Transaktion während des Modellaufrufs', async () => {
+    await useDecisionsProfile();
+    await seedDraft(8205);
+    const seen: number[] = [];
+    guardedMock.mockImplementation(async () => {
+      seen.push(await openTransactionsNow());
+      return decisionsAnswer(0.3);
+    });
+    const result = await createPostgresWorkflowExecutionJobPort({ db, secrets }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: OUTBOUND_WORKFLOW_ID,
+      messageId: 8205,
+      triggerName: 'outbound',
+      context: {
+        previewOutbound: true,
+        outbound: { messageId: 8205, subject: 'Ihr Angebot', bodyText: 'Anbei das Angebot.', to: 'kunde@example.com' },
+      },
+    });
+    expect(seen).toEqual([0]);
+    expect(result).toMatchObject({
+      success: true,
+      blocked: true,
+      blockReason: 'Vom Entscheidungsmodell als nicht versandfähig blockiert – bitte E-Mail prüfen. (Ja-Wahrscheinlichkeit 30 %)',
+    });
+  });
+
+  test('Senden: Prüfung hält bei „nein“ und bei KI-Fehler an, ohne offene Transaktion', async () => {
+    await useDecisionsProfile();
+    const port = createPostgresComposeOutboundReviewPort({
+      db,
+      workflowDryRun: createPostgresWorkflowExecutionJobPort({ db, secrets }).dryRun!,
+    });
+    const review = (draftMessageId: number) => port.review({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: USER_ID,
+      draftMessageId,
+      subject: 'Ihr Angebot',
+      bodyText: 'Anbei das Angebot.',
+      bodyHtml: null,
+      to: 'kunde@example.com',
+      attachmentCount: 0,
+    });
+    const seen: number[] = [];
+
+    await seedDraft(8206);
+    guardedMock.mockImplementation(async () => {
+      seen.push(await openTransactionsNow());
+      return decisionsAnswer(0.3);
+    });
+    const no = await review(8206);
+    expect(no).toMatchObject({ allowed: false, held: true });
+    expect((no as { error?: string }).error).toContain('Ja-Wahrscheinlichkeit 30 %');
+
+    await seedDraft(8207);
+    guardedMock.mockImplementation(async () => {
+      seen.push(await openTransactionsNow());
+      throw new Error('socket hang up');
+    });
+    const failed = await review(8207);
+    expect(failed).toMatchObject({ allowed: false, held: true });
+    expect((failed as { error?: string }).error).toContain('KI-Fehler');
+    const held = await postgres.admin.query<{ outbound_hold: boolean; outbound_block_reason: string }>(
+      `SELECT outbound_hold, outbound_block_reason FROM email_messages WHERE workspace_id = $1 AND id = 8207`,
+      [WORKSPACE_ID],
+    );
+    expect(held.rows[0]).toMatchObject({ outbound_hold: true, outbound_block_reason: expect.stringContaining('KI-Fehler') });
+
+    await seedDraft(8208);
+    guardedMock.mockImplementation(async () => {
+      seen.push(await openTransactionsNow());
+      return decisionsAnswer(0.95);
+    });
+    const yes = await review(8208);
+    expect(yes).toMatchObject({ allowed: false, workflowRunId: expect.any(Number) });
+    expect(await takeJobs('workflow.execute')).toHaveLength(1);
+
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    expect(seen.every((n) => n === 0)).toBe(true);
+  });
+
+  // Plan 047 Phase B: Testlauf mit „KI wirklich fragen“ – echte Entscheidung,
+  // aber weiterhin ohne Seiteneffekte (einzige Schreibung: KI-Verbrauch).
+  async function testRunSteps(runId: number): Promise<Array<{ node_id: string; port: string | null }>> {
+    const rows = await postgres.admin.query<{ node_id: string; port: string | null }>(
+      `SELECT s.node_id, s.port FROM email_workflow_run_steps s
+         JOIN email_workflow_runs r ON r.id = s.run_id
+        WHERE s.workspace_id = $1 AND r.source_sqlite_id = $2 AND r.dry_run
+        ORDER BY s.id`,
+      [WORKSPACE_ID, runId],
+    );
+    return rows.rows;
+  }
+
+  test('Testlauf mit realAi fragt das Modell einmal und folgt der Antwort, ohne Jobs und Tags', async () => {
+    await seedInbound(8130, 'Gewinnspiel');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.95));
+    const result = await createPostgresWorkflowExecutionJobPort({ db, secrets }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8130,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      testRun: true,
+      realAi: true,
+    });
+    expect(guardedMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ success: true, dryRun: true, runId: expect.any(Number) });
+    expect(result.log).not.toContain('dry_run:ai.decide');
+    expect(await testRunSteps(result.runId!)).toEqual(expect.arrayContaining([
+      { node_id: 'decide', port: 'ja' },
+      expect.objectContaining({ node_id: 'tag-ja' }),
+    ]));
+    expect(await tags(8130)).toEqual([]);
+    expect(await takeJobs('ai.decide')).toEqual([]);
+    expect(await takeJobs('workflow.execute')).toEqual([]);
+    const usage = await postgres.admin.query(`SELECT 1 FROM ai_usage_events WHERE workspace_id = $1`, [WORKSPACE_ID]);
+    expect(usage.rows).toHaveLength(1);
+  });
+
+  test('Testlauf ohne realAi und realAi ohne testRun fragen das Modell nicht', async () => {
+    await seedInbound(8131, 'Gewinnspiel');
+    guardedMock.mockResolvedValue(decisionsAnswer(0.95));
+    const port = createPostgresWorkflowExecutionJobPort({ db, secrets });
+    const plain = await port.dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8131,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      testRun: true,
+    });
+    expect(plain.log).toContain('dry_run:ai.decide');
+    expect(await testRunSteps(plain.runId!)).toEqual(expect.arrayContaining([{ node_id: 'decide', port: 'unsicher' }]));
+    const withoutTestRun = await port.dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId: INBOUND_WORKFLOW_ID,
+      messageId: 8131,
+      triggerName: 'inbound',
+      actorUserId: USER_ID,
+      context: {},
+      realAi: true,
+    });
+    expect(withoutTestRun.log).toContain('dry_run:ai.decide');
+    expect(guardedMock).not.toHaveBeenCalled();
     expect(await takeJobs('ai.decide')).toEqual([]);
   });
 

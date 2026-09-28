@@ -85,6 +85,8 @@ import { WorkflowTemplatesDialog, type WorkflowTemplatePickInfo } from "./workfl
 import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
+import { WorkflowRunDetailDialog } from "./workflow-run-detail-dialog"
+import { WorkflowTestMessagePicker } from "./workflow-test-message-picker"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
 import { templatePickEdits } from "./workflow-template-checks"
 import { decideWorkflowSaveGate, type WorkflowSaveBaseline } from "./workflow-save-gate"
@@ -202,6 +204,13 @@ export function WorkflowShell() {
   const [referenceOpen, setReferenceOpen] = useState(false)
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
+  const [testRunView, setTestRunView] = useState<{ runId: number; title: string } | null>(null)
+  const [runHistoryRefresh, setRunHistoryRefresh] = useState(0)
+  const [testRealAi, setTestRealAi] = useState(false)
+  // Testlauf (Plan 047): mit „KI wirklich fragen“ Sekunden lang und kostenpflichtig.
+  // Der Ref sperrt schon den zweiten Klick im selben Takt, der State den Knopf.
+  const [testRunPending, setTestRunPending] = useState(false)
+  const testRunInFlightRef = useRef(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   /**
    * Baseline for omitting unchanged execution-relevant fields on editor-only
@@ -246,6 +255,11 @@ export function WorkflowShell() {
     return (triggerNode?.data as { kind?: string } | undefined)?.kind
   }, [graphNodes])
   const triggerKindDisplay = workflowTriggerLabel(graphTriggerKind)
+  // „KI wirklich fragen“ nur anbieten, wenn der Graph eine KI-Entscheidung hat.
+  const graphHasAiDecide = useMemo(
+    () => graphNodes.some((n) => (n.data as { nodeType?: unknown } | undefined)?.nodeType === "ai.decide"),
+    [graphNodes],
+  )
   const selectedRow = useMemo(() => rows.find((w) => w.id === selectedId) ?? null, [rows, selectedId])
   // Server: aktiver Zeitplan-Workflow mit leerem Zustand (Bestand vor dem
   // Update, Desktop-Import) loest nie aus, bis er einmal gespeichert wird.
@@ -548,8 +562,9 @@ export function WorkflowShell() {
       const cronTrim = editCron.trim()
       if (trig === "schedule") {
         // Server: dieselbe Pruefung wie die Route (genau 5 Felder); ein aktiver
-        // Zeitplan braucht dort einen Ausdruck. Desktop (node-cron): 5 oder 6
-        // Felder, ein leerer Ausdruck laesst den Workflow einfach nie laufen.
+        // Zeitplan braucht dort einen Ausdruck. Desktop: dieselbe Logik, ein
+        // festes Sekundenfeld und „?“ werden uebersetzt; ein leerer Ausdruck
+        // laesst den Workflow einfach nie laufen.
         const cronErr = serverClientMode
           ? cronTrim
             ? validateServerWorkflowCronExpr(cronTrim)
@@ -1064,17 +1079,11 @@ export function WorkflowShell() {
                       />
                     </div>
                   ) : null}
-                  <div className="w-[120px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Test-Nachricht-ID
-                    </Label>
-                    <Input
-                      value={testMessageId}
-                      onChange={(e) => setTestMessageId(e.target.value)}
-                      className="h-8 font-mono text-xs"
-                      placeholder="aus Details-Panel"
-                    />
-                  </div>
+                  <WorkflowTestMessagePicker
+                    trigger={rows.find((w) => w.id === selectedId)?.trigger ?? "inbound"}
+                    value={testMessageId}
+                    onChange={setTestMessageId}
+                  />
                   {(() => {
                     const trimmed = testMessageId.trim()
                     const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
@@ -1085,34 +1094,76 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="secondary"
-                        disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid}
+                        title="Simuliert den Workflow mit dieser Mail – nichts wird gesendet, getaggt oder verschoben"
+                        disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid || testRunPending}
+                        aria-busy={testRunPending}
                         onClick={async () => {
                           if (!Number.isFinite(parsedId) || selectedId == null) return
-                          const r = await invokeRenderer(
-                            IPCChannels.Email.TestWorkflowOnMessage,
-                            {
-                              workflowId: selectedId,
-                              messageId: parsedId,
-                              dryRun: true,
-                            },
-                          ) as {
-                            success: boolean
-                            log?: string[]
-                            error?: string
-                          }
-                          if (r.success) {
-                            toast.success(
-                              `Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ")}`,
-                            )
-                          } else {
-                            toast.error(r.error ?? "Test fehlgeschlagen")
+                          if (testRunInFlightRef.current) return
+                          testRunInFlightRef.current = true
+                          setTestRunPending(true)
+                          try {
+                            const r = await invokeRenderer(
+                              IPCChannels.Email.TestWorkflowOnMessage,
+                              {
+                                workflowId: selectedId,
+                                messageId: parsedId,
+                                dryRun: true,
+                                ...(graphHasAiDecide && testRealAi ? { realAi: true } : {}),
+                              },
+                            ) as {
+                              success: boolean
+                              runId?: number
+                              log?: string[]
+                              error?: string
+                            }
+                            if (!r.success) {
+                              toast.error(r.error ?? "Testlauf fehlgeschlagen")
+                            } else if (typeof r.runId === "number") {
+                              const name = rows.find((w) => w.id === selectedId)?.name ?? "Workflow"
+                              setTestRunView({ runId: r.runId, title: `Testlauf – ${name}` })
+                              setRunHistoryRefresh((n) => n + 1)
+                            } else {
+                              toast.success(
+                                `Testlauf OK: ${(r.log ?? []).slice(-3).join(", ")}`,
+                              )
+                            }
+                          } catch (e) {
+                            logError("workflow-shell: test run", e)
+                            toast.error(e instanceof Error ? e.message : "Testlauf fehlgeschlagen")
+                          } finally {
+                            testRunInFlightRef.current = false
+                            setTestRunPending(false)
                           }
                         }}
                       >
-                        Dry-Run testen
+                        {testRunPending ? (
+                          <>
+                            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" aria-hidden />
+                            Testlauf läuft …
+                          </>
+                        ) : (
+                          "Testlauf"
+                        )}
                       </Button>
                     )
                   })()}
+                  {graphHasAiDecide ? (
+                    <label className="flex max-w-[230px] items-start gap-1.5 self-center text-[11px] leading-tight">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={testRealAi}
+                        onChange={(e) => setTestRealAi(e.target.checked)}
+                      />
+                      <span>
+                        KI wirklich fragen
+                        <span className="block text-muted-foreground">
+                          Kostet KI-Tokens; es wird trotzdem nichts gesendet oder verändert.
+                        </span>
+                      </span>
+                    </label>
+                  ) : null}
                   {(() => {
                     const row = rows.find((w) => w.id === selectedId)
                     const trig = row?.trigger ?? "inbound"
@@ -1307,6 +1358,7 @@ export function WorkflowShell() {
                     )}
                   >
                     <NodePropertiesPanel
+                      workflowId={selectedId}
                       selectedNodeId={selectedNodeId}
                       selectedEdgeId={selectedEdgeId}
                       onClearSelection={() => {
@@ -1316,7 +1368,11 @@ export function WorkflowShell() {
                     />
                   </div>
                   <div className="flex min-h-[200px] flex-[2] flex-col overflow-hidden border-t">
-                    <WorkflowRunHistory workflowId={selectedId} graphNodes={graphNodes} />
+                    <WorkflowRunHistory
+                      workflowId={selectedId}
+                      graphNodes={graphNodes}
+                      refreshToken={runHistoryRefresh}
+                    />
                   </div>
                 </div>
               ) : (
@@ -1374,6 +1430,16 @@ export function WorkflowShell() {
             )
           }}
         />
+        {testRunView ? (
+          <WorkflowRunDetailDialog
+            runId={testRunView.runId}
+            open
+            onOpenChange={(open) => {
+              if (!open) setTestRunView(null)
+            }}
+            title={testRunView.title}
+          />
+        ) : null}
         <WorkflowVersionsDialog
           workflowId={selectedId}
           canEdit={canEditWorkflows}

@@ -89,7 +89,7 @@ async function openAdvanced(name = 'Eingang sortieren'): Promise<void> {
   render(<WorkflowShell />);
   fireEvent.click(await screen.findByText(name));
   fireEvent.click(await screen.findByRole('button', { name: /Erweitert/ }));
-  await screen.findByText('Test-Nachricht-ID');
+  await screen.findByText('Test-Mail');
 }
 
 // F-A9-01 (E30): Im Server-Modus war das Cron-Feld sichtbar, obwohl der Server
@@ -198,7 +198,7 @@ describe('workflow shell schedule fields', () => {
     expect(screen.queryByTestId('workflow-schedule-not-armed')).not.toBeInTheDocument();
   });
 
-  test('the desktop keeps its node-cron check (6 fields allowed)', async () => {
+  test('the desktop accepts a fixed seconds field (normalized to 5 fields)', async () => {
     mockTransportKind = 'ipc';
     // Desktop: Speichern ist Owner/Admin vorbehalten (G1).
     mockRole = 'admin';
@@ -212,5 +212,18 @@ describe('workflow shell schedule fields', () => {
     ).toBe(true));
     expect(toast.error).not.toHaveBeenCalled();
   });
-});
 
+  // Plan 045: L, W, # und variable Sekunden versteht die gemeinsame Zeitplan-Logik nicht.
+  test('the desktop rejects cron syntax the shared schedule logic does not support', async () => {
+    mockTransportKind = 'ipc';
+    mockRole = 'admin';
+    await openAdvanced('Morgens abholen');
+    const cron = screen.getByLabelText('Cron (Zeitplan)');
+    fireEvent.change(cron, { target: { value: '0 6 L * *' } });
+    fireEvent.click(screen.getByRole('button', { name: /Speichern/ }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(
+      mockInvoke.mock.calls.some(([channel]) => channel === IPCChannels.Email.UpdateWorkflow),
+    ).toBe(false);
+  });
+});

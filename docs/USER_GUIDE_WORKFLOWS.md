@@ -44,7 +44,7 @@ Den Zeitplan tragen Sie unter **„Erweitert (Zeitplan, Test, Backfill)“** im 
 
  Uhrzeiten, die es beim Umstellen auf Sommerzeit nicht gibt (z. B. 02:30), fallen an diesem Tag aus; doppelte Uhrzeiten beim Zurückstellen zählen nur einmal. Der Lauf reiht sich in die Workflow-Warteschlange des Workspaces ein und kann deshalb kurz hinter anderen Workflow-Läufen warten.
 
-**Desktop-Edition:** Zeitplan-Workflows laufen, solange SimpleCRM geöffnet ist, in der Zeitzone des Rechners; es gibt keine Nachholung.
+**Desktop-Edition:** Zeitplan-Workflows laufen, solange SimpleCRM geöffnet ist, in der Zeitzone des Rechners; es gibt keine Nachholung. Die Zeitplan-Logik ist dieselbe wie auf dem Server, auch bei der Zeitumstellung: Eine Uhrzeit, die beim Umstellen auf Sommerzeit ausfällt (z. B. 02:30), läuft an diesem Tag nicht; eine doppelte Uhrzeit im Herbst läuft einmal. Ein festes Sekundenfeld (`0 0 6 * * *`) und `?` aus älteren Workflows werden weiter akzeptiert; `L`, `W`, `#` und ein variables Sekundenfeld nicht mehr – der Editor zeigt dann einen Fehler, und ein solcher gespeicherter Zeitplan läuft nicht (Hinweis im Protokoll).
 
 ## Der Editor in 5 Minuten
 
@@ -134,6 +134,7 @@ Der Baustein **„KI-Entscheidung“** beantwortet eine Ja/Nein-Frage zur Mail, 
 | **Was darf die KI sehen?** | **Kompletten Text** (Standard: Betreff, Absender, Empfänger, Text bis 12 000 Zeichen, Anhangsnamen) oder **Nur Kopfdaten**. Im Ausgangs-Workflow ist die Mail der Entwurf (Betreff, Empfänger, Text). |
 | **Mindest-Sicherheit** | 50–99 %, Standard 80: „Ja“ ab 80 % Ja-Wahrscheinlichkeit, „Nein“ bis 20 %, dazwischen „Unsicher“. |
 | **KI-Profil** | Ein Entscheidungsmodell (Profil-Typ **„OpenRouter Entscheidungsmodell (Decisions API)“**, z. B. `typesafe/jev-1.13`) oder ein normales Chat-Modell. Chat-Modelle liefern zusätzlich eine kurze Begründung. |
+| **Rückmeldung für die Treffsicherheit** | Worauf sich „Ja“ bezieht, damit Korrekturen gezählt werden: **Keine** (Standard), **Ja = Spam**, **Ja = Mensch nötig** oder **Ja = versandfähig**. Siehe [Treffsicherheit der KI-Entscheidung](#treffsicherheit-der-ki-entscheidung). |
 
 | Ausgang | Bedeutung |
 |---------|-----------|
@@ -148,7 +149,7 @@ Im **Eingang** verzweigt der Baustein nur; er setzt keine Sperre und überspring
 
 Ergebnis-Variablen für spätere Schritte: `ai.decide.answer` (ja, nein, unsicher, error), `ai.decide.probability` (Ja-Wahrscheinlichkeit 0–100), `ai.decide.confidence` (Sicherheit der gewählten Antwort), `ai.decide.reason` (Begründung, nur Chat-Modelle), `ai.decide.summary` (ein Satz, z. B. „Entscheidungsmodell: Nein (Ja-Wahrscheinlichkeit 12 %)“) und `ai.decide.model`.
 
-Der **Testlauf** fragt die KI nicht, Ergebnis ist immer „Unsicher“ („Testlauf: keine KI-Anfrage“). Die Prüfung beim Senden (Ausgang prüfen) fragt die KI dagegen wirklich. Auf dem Server läuft der Baustein als Hintergrund-Job; nachrangige eingehende Workflows warten darauf.
+Der **Testlauf** fragt die KI standardmäßig nicht, Ergebnis ist dann „Unsicher“ („Testlauf: keine KI-Anfrage“). Mit dem Häkchen **„KI wirklich fragen“** neben **Testlauf** (nur sichtbar, wenn der Workflow eine KI-Entscheidung enthält) fragt der Testlauf das Modell echt und folgt seiner Antwort – das kostet KI-Tokens, es wird aber trotzdem nichts gesendet, getaggt oder verschoben. Die Prüfung beim Senden (Ausgang prüfen) fragt die KI dagegen wirklich. Auf dem Server läuft der Baustein als Hintergrund-Job; nachrangige eingehende Workflows warten darauf.
 
 ### Angehaltene Mails im Posteingang
 
@@ -276,7 +277,7 @@ Unter **Einstellungen → Learnings** schalten Sie **„Learnings sammeln“** e
 
 ### Datenschutz
 
-- Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt personenbezogene Daten durch Platzhalter: Namen (Absender, Empfänger, CRM-Kunde, Ihr Team) → `[Name]`, E-Mail-Adressen → `[E-Mail]`, Telefonnummern → `[Telefon]`, IBAN/BIC → `[IBAN]`/`[BIC]`, Links → `[Link]`, Straßen und PLZ/Ort → `[Adresse]`, Bestell-, Kunden-, Rechnungs- und Ticketnummern → `[Nummer]`. Datumsangaben, Preise und Mengen bleiben stehen.
+- Schon beim Sammeln entfernt SimpleCRM Zitat, Signatur, Anrede und Grußformel und ersetzt personenbezogene Daten durch Platzhalter: Namen (Absender, Empfänger, CRM-Kunde, Ihr Team) → `[Name]`, E-Mail-Adressen → `[E-Mail]`, Telefonnummern → `[Telefon]`, IBAN/BIC → `[IBAN]`/`[BIC]`, Links → `[Link]`, Straßen und PLZ/Ort → `[Adresse]`, Bestell-, Kunden-, Rechnungs- und Ticketnummern → `[Nummer]`, Kreditkartennummern (mit Prüfziffer) → `[Kartennummer]`, Steuer-ID/Steuernummer, Sozialversicherungs-, Ausweis-, Pass- und Führerscheinnummern (nach dem Stichwort) → `[Nummer]`, IP-Adressen → `[IP-Adresse]`. Datumsangaben, Preise und Mengen bleiben stehen. Bereits gesammelte Einträge werden nicht nachträglich bereinigt; sie werden spätestens nach 90 Tagen gelöscht.
 - Gespeichert wird nur der bereinigte Text. Die KI bekommt die Anweisung, nur allgemeine Regeln ohne Personenbezug zu formulieren; ihre Ausgabe läuft noch einmal durch denselben Filter (Kontaktdaten, die schon in der Wissensbasis stehen, z. B. Ihre Hotline, bleiben erhalten).
 - Die gesammelten Einträge werden gelöscht, sobald über den Vorschlag entschieden ist, spätestens nach **90 Tagen** — auch wenn der Vorschlag dann noch offen ist (er bleibt vollständig und kann weiter übernommen oder verworfen werden). Einzelne Einträge können Sie in der Übersicht selbst löschen.
 
@@ -417,6 +418,7 @@ Das Ergebnis ist ein Vorschlag unter **Einstellungen → Learnings**; die Wissen
 
 Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie**:
 
+- **Im Lesefenster:** Details → **Automatik** zeigt alle Läufe dieser einen Mail (über alle Workflows) mit Status, Ausgang und KI-Entscheidung; eine Fortsetzung steht eingerückt unter ihrem Ursprungslauf. Ein Klick öffnet die Schritte. Sichtbar für alle, die Workflows ansehen dürfen.
 - **Linke Spalte:** die letzten Läufe („Lauf #123“) mit Status und Zeitpunkt.
 - **Rechte Spalte:** nach Klick auf einen Lauf oben die **Mail** des Laufs (Betreff und Absender; aufklappen zeigt Empfänger, Anhänge und die ersten 2.000 Zeichen Text), darunter die einzelnen **Schritte** — welcher Baustein lief, mit welchem Ergebnis, über welchen **Ausgang** es weiterging und wie lange es dauerte.
 - **Klick auf einen Schritt:** öffnet **Eingang** und **Ausgang** nebeneinander (ähnlich n8n). Eingang: die Einstellungen des Bausteins, die Variablen vor dem Schritt und bei der KI-Entscheidung die Frage mit eingesetzten Platzhaltern, Kriterien, Schwelle und Modell. Ausgang: der gewählte Ausgang, das Ergebnis (z. B. Ja-Wahrscheinlichkeit) und die gesetzten Variablen. Passwörter, Tokens und API-Keys in den Einstellungen sind geschwärzt.
@@ -427,12 +429,34 @@ Rechts unten im Editor sehen Sie zum ausgewählten Workflow die **Lauf-Historie*
 
 Beispiele: Ein Gate-Schritt mit Ergebnis „Blockiert“ nennt den Grund — etwa dass die KI sich nicht sicher genug war (Kürzel `low_confidence`, siehe Tabelle unten). Bei der Gegenprüfung zeigt der Ausgang **Senden** bzw. **Prüfen**, wie die Prüf-KI entschieden hat.
 
-**Gefahrlos testen:** Unter **„Erweitert (Zeitplan, Test, Backfill)“** können Sie eine Nachrichten-Nummer eintragen und **Test** klicken — der Workflow wird nur simuliert (es wird nichts gesendet, getaggt oder verschoben), und Sie sehen das Ergebnis Schritt für Schritt. Ausnahme in der Server-Edition: **MSSQL (Read-only)** (`mssql.query`) und **JTL Bestell-Kontext** lesen auch im Test live aus der JTL-Datenbank. Verwenden Sie für die MSSQL-Verbindung deshalb einen Benutzer, der nur lesen darf (`db_datareader`, siehe [SETUP_SERVER.md](SETUP_SERVER.md#jtl-wawi--mssql-connection-optional)).
+### Treffsicherheit der KI-Entscheidung
+
+Klicken Sie im Editor auf einen Baustein **„KI-Entscheidung“**: Unter den Einstellungen steht **„Treffsicherheit (90 Tage)“**.
+
+- **Entscheidungen:** wie oft der Baustein in echten Läufen entschieden hat, aufgeteilt in Ja, Nein, Unsicher und KI-Fehler. Testläufe und die Versandvorschau zählen nicht.
+- **Übereinstimmung mit Menschen:** Anteil der Ja/Nein-Antworten, die niemand korrigiert hat. Eine Antwort gilt als bestätigt, wenn sie 30 Tage lang nicht korrigiert wurde; bis dahin ist sie noch offen.
+- **Verteilung:** zehn Balken für die Ja-Wahrscheinlichkeit (0–9 %, 10–19 %, … 90–100 %). Viele Balken in der Mitte bedeuten viele knappe Fälle.
+- **Vorschlag Schwelle:** ab 30 Fällen mit bekannter Antwort die kleinste Mindest-Sicherheit, bei der höchstens 5 % der automatischen Ja/Nein-Antworten falsch gewesen wären. **„Übernehmen“** trägt den Wert nur in die Einstellung ein; gespeichert wird wie immer mit **Speichern**. Die Zahlen ändern das Verhalten des Workflows nie von selbst.
+
+Damit Korrekturen zählen, wählen Sie am Baustein **„Rückmeldung für die Treffsicherheit“** (die drei Vorlagen der Teilautomatisierung setzen sie schon):
+
+| Rückmeldung | Als Korrektur zählt |
+|-------------|---------------------|
+| **Ja = Spam** | Jemand setzt eine Mail von Hand auf „kein Spam“ (nach Ja) oder „Spam“ (nach Nein) – über den Spam-Knopf oder per Ziehen in den Posteingang bzw. Spam-Ordner. Nach **Unsicher** zählt die Entscheidung des Menschen als geklärter Fall. |
+| **Ja = Mensch nötig** | Nach **Nein** beantwortet ein Mensch die Mail selbst. |
+| **Ja = versandfähig** | Nach **Nein** oder **Unsicher** sendet jemand mit **„Ohne Ausgangsprüfung senden“**. |
+
+Workflows und Programmschnittstellen gelten nie als Korrektur. Gespeichert werden nur Nummern und Zahlen (Antwort, Ja-Wahrscheinlichkeit, Schwelle, Modellname) – keine Frage, kein Mailtext, keine Begründung. Die Einträge werden nach 365 Tagen gelöscht.
+
+**Gefahrlos testen:** Unter **„Erweitert (Zeitplan, Test, Backfill)“** wählen Sie bei **Test-Mail** eine der 20 neuesten Mails (Betreff · Absender · Datum; bei Ausgangs- und Entwurfs-Workflows die Entwürfe) oder über **„Andere (Nachrichten-ID) …“** eine Nachrichten-Nummer, und klicken **Testlauf** (enthält der Workflow eine KI-Entscheidung, fragt **„KI wirklich fragen“** das Modell echt, siehe KI-Entscheidung). Der Workflow wird nur simuliert (es wird nichts gesendet, getaggt oder verschoben), das geht auch mit einem noch **deaktivierten** Workflow – so lässt sich ein neuer Workflow vor dem Einschalten ausprobieren. Danach öffnet sich das Ergebnis Schritt für Schritt (mit Eingang und Ausgang je Schritt). Der Testlauf steht außerdem in der Lauf-Historie mit der Marke **„Test“**; Testläufe zählen nicht in Statistiken und Diagnose und werden nach 30 Tagen gelöscht. Dasselbe gilt für **„Dry-Run“** im Menü „Workflow anwenden“ einer Mail. Ausnahme in der Server-Edition: **MSSQL (Read-only)** (`mssql.query`) und **JTL Bestell-Kontext** lesen auch im Test live aus der JTL-Datenbank. Verwenden Sie für die MSSQL-Verbindung deshalb einen Benutzer, der nur lesen darf (`db_datareader`, siehe [SETUP_SERVER.md](SETUP_SERVER.md#jtl-wawi--mssql-connection-optional)).
 
 ## Häufige Fragen
 
+**Was ist mit dieser Mail passiert?**
+Öffnen Sie die Mail → **Details** → **Automatik**. Dort stehen alle Workflow-Läufe dieser Mail mit Ergebnis, gewähltem Ausgang und KI-Entscheidung (Antwort, Ja-Wahrscheinlichkeit, Begründung). Ein Klick auf einen Lauf zeigt jeden Schritt mit Eingang und Ausgang. Auf dem Server kommt das Ergebnis einer KI-Entscheidung einige Sekunden später — **Aktualisieren** lädt neu.
+
 **Warum wurde auf eine Mail nicht automatisch geantwortet?**
-Schauen Sie in die Lauf-Historie: Der Gate-Schritt nennt den Grund (`auto_reply:blocked:…`):
+Öffnen Sie die Mail → Details → **Automatik** (oder die Lauf-Historie des Workflows): Der Gate-Schritt nennt den Grund (`auto_reply:blocked:…`):
 
 | Grund im Protokoll | Bedeutung | Abhilfe |
 |--------------------|-----------|---------|

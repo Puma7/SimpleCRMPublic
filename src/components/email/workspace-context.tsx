@@ -210,6 +210,8 @@ const VALID_MAIL_VIEWS: MailView[] = [
   "inbox",
   "sent",
   "sent_ai",
+  "approval_pending",
+  "outbound_blocked",
   "archived",
   "drafts",
   "scheduled_send",

@@ -537,6 +537,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/workflows/by-source/{sourceId}': { get: { summary: 'Get workflow by source id' } },
       '/workflows/by-source/{sourceId}/execute': { post: { summary: 'Enqueue or dry-run workflow execution by source id' } },
       '/workflows/by-source/{sourceId}/runs': { get: { summary: 'List workflow runs by source id' } },
+      '/workflows/by-source/{sourceId}/ai-decisions': { get: { summary: 'AI decision accuracy summary for one ai.decide node by workflow source id' } },
       '/workflows/by-source/{sourceId}/versions': { get: { summary: 'List workflow versions by source id' } },
       '/workflows/by-source/{sourceId}/versions/snapshot': { post: { summary: 'Snapshot workflow version by source id' } },
       '/workflows/inbound/backfill': { post: { summary: 'Queue inbound workflow backfill' } },

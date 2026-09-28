@@ -66,7 +66,20 @@ export type RawPartGcResult = {
   waiting: number;
   /** Folders of workspaces that do not exist in the database (left alone). */
   unknownWorkspaces: number;
+  /** Entries or workspaces that could not be handled (e.g. permissions); left in place. */
+  failed: number;
+  /** Up to 10 examples: `<path or workspace>: <message>`. */
+  failures: string[];
 };
+
+const MAX_GC_FAILURES = 10;
+
+function recordGcFailure(result: RawPartGcResult, what: string, error: unknown): void {
+  result.failed += 1;
+  if (result.failures.length < MAX_GC_FAILURES) {
+    result.failures.push(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 async function existingWorkspaces(options: RawPartGcOptions): Promise<Set<string>> {
   const rows = await withWorkspaceTransaction(
@@ -150,7 +163,12 @@ async function sweepSetAside(
         if (await stat(target).catch(() => null)) {
           await unlink(entry.file).catch(() => undefined);
         } else {
-          await mkdir(path.dirname(target), { recursive: true });
+          try {
+            await mkdir(path.dirname(target), { recursive: true });
+          } catch (error) {
+            recordGcFailure(result, entry.file, error);
+            continue;
+          }
           await rename(entry.file, target).catch(() => undefined);
         }
       } else if (now - entry.setAsideAt >= grace) {
@@ -160,7 +178,12 @@ async function sweepSetAside(
         }
         const info = await stat(entry.file).catch(() => null);
         if (!info) continue;
-        await unlink(entry.file);
+        try {
+          await unlink(entry.file);
+        } catch (error) {
+          recordGcFailure(result, entry.file, error);
+          continue;
+        }
         result.removed += 1;
         if (info.nlink <= 1) result.bytesFreed += info.size;
       } else {
@@ -190,14 +213,21 @@ async function setAsideUnreferenced(
       result.setAside += 1;
       if (options.checkOnly) continue;
       const target = setAsidePartPath(partsDir, sha, now);
-      await mkdir(path.dirname(target), { recursive: true });
+      try {
+        await mkdir(path.dirname(target), { recursive: true });
+      } catch (error) {
+        recordGcFailure(result, target, error);
+        continue;
+      }
       await rename(rawPartPath(partsDir, sha), target).catch(() => undefined);
     }
   }
 }
 
 export async function runRawPartGc(options: RawPartGcOptions): Promise<RawPartGcResult> {
-  const result: RawPartGcResult = { setAside: 0, restored: 0, removed: 0, bytesFreed: 0, waiting: 0, unknownWorkspaces: 0 };
+  const result: RawPartGcResult = {
+    setAside: 0, restored: 0, removed: 0, bytesFreed: 0, waiting: 0, unknownWorkspaces: 0, failed: 0, failures: [],
+  };
   const root = path.resolve(options.attachmentsRoot);
   const folders = await readdir(root, { withFileTypes: true }).catch(() => []);
   const candidates = folders.filter((folder) => folder.isDirectory() && UUID_NAME.test(folder.name));
@@ -211,8 +241,14 @@ export async function runRawPartGc(options: RawPartGcOptions): Promise<RawPartGc
       continue;
     }
     // Sweep first, then set aside: a part set aside now waits the full grace period.
-    await sweepSetAside(options, folder.name, partsDir, result);
-    await setAsideUnreferenced(options, folder.name, partsDir, result);
+    // Scheitert ein Workspace (auch die Datenbankabfrage), wird dort nichts
+    // entfernt; die übrigen Workspaces laufen weiter.
+    try {
+      await sweepSetAside(options, folder.name, partsDir, result);
+      await setAsideUnreferenced(options, folder.name, partsDir, result);
+    } catch (error) {
+      recordGcFailure(result, `workspace ${folder.name}`, error);
+    }
   }
   return result;
 }
@@ -230,6 +266,9 @@ export function startRawPartGcTicker(
       const result = await runRawPartGc(options);
       if (result.setAside + result.restored + result.removed > 0) {
         console.warn(`[mail] parts of deleted originals: ${result.setAside} set aside, ${result.restored} named again, ${result.removed} removed (${(result.bytesFreed / 1048576).toFixed(1)} MB)`);
+      }
+      if (result.failed > 0) {
+        console.warn(`[mail] raw part cleanup could not handle ${result.failed} entries: ${result.failures.join('; ')}`);
       }
     } catch (error) {
       console.warn(`[mail] raw part cleanup stopped (retry next tick): ${error instanceof Error ? error.message : String(error)}`);

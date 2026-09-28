@@ -5,7 +5,7 @@ import {
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   generateTicketCode,
-  outboundDraftFingerprint,
+  outboundApprovalFingerprint,
 } from '@simplecrm/core';
 
 import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
@@ -178,7 +178,7 @@ export async function persistManualOutboundApproval(
     now,
   );
   const finalSubject = ensureTicketInSubject(storedSubject || '(Ohne Betreff)', ticketCode);
-  const fingerprint = outboundDraftFingerprint({
+  const fingerprint = outboundApprovalFingerprint({
     subject: finalSubject,
     bodyText: cleaned.plain,
     bodyHtml: cleaned.html,
@@ -186,6 +186,7 @@ export async function persistManualOutboundApproval(
     cc: input.cc ?? addressesFromStoredRecipientJson(draftRow?.cc_json),
     bcc: input.bcc ?? addressesFromStoredRecipientJson(draftRow?.bcc_json),
     attachmentPaths: input.attachmentPaths ?? draftAttachmentPathsFromJson(draftRow?.draft_attachment_paths_json),
+    accountId: draftRow?.account_id ?? null,
   });
   const markerValue = encodeOutboundApprovalMarker(now, fingerprint);
 

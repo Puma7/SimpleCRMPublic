@@ -90,11 +90,40 @@ describe('redactPersonalData (TA-P5)', () => {
     expect(out).toContain('Frau [Name] Bescheid geben.');
   });
 
+  it('ersetzt Kartennummern, Steuer-/SV-/Ausweisnummern und IP-Adressen', () => {
+    expect(redactPersonalData('Kreditkarte 4111 1111 1111 1111')).toBe('Kreditkarte [Kartennummer]');
+    expect(redactPersonalData('Karte: 4111-1111-1111-1111.')).toBe('Karte: [Kartennummer].');
+    expect(redactPersonalData('Amex 3782 822463 10005 bitte')).toBe('Amex [Kartennummer] bitte');
+    expect(redactPersonalData('Steuer-ID 12 345 678 901')).toBe('Steuer-ID [Nummer]');
+    expect(redactPersonalData('Steuernummer 123/456/78901')).toBe('Steuernummer [Nummer]');
+    expect(redactPersonalData('St.-Nr. 21/815/08150')).toBe('St.-Nr. [Nummer]');
+    expect(redactPersonalData('Sozialversicherungsnummer 65 170839 J 003')).toBe('Sozialversicherungsnummer [Nummer]');
+    expect(redactPersonalData('SV-Nummer: 65170839J003 ist hinterlegt')).toBe('SV-Nummer: [Nummer] ist hinterlegt');
+    expect(redactPersonalData('Personalausweis L01X00T47')).toBe('Personalausweis [Nummer]');
+    expect(redactPersonalData('Ausweisnummer: L01X00T47, gültig')).toBe('Ausweisnummer: [Nummer], gültig');
+    expect(redactPersonalData('Reisepass C01X00T47')).toBe('Reisepass [Nummer]');
+    expect(redactPersonalData('IP 192.168.1.10.')).toBe('IP [IP-Adresse].');
+    expect(redactPersonalData('IPv6 2001:db8::1 und fe80::1ff:fe23:4567:890a'))
+      .toBe('IPv6 [IP-Adresse] und [IP-Adresse]');
+    expect(redactPersonalData('2001:0db8:85a3:0000:0000:8a2e:0370:7334')).toBe('[IP-Adresse]');
+  });
+
+  it('keine Fehlalarme bei Karten-, ID- und IP-Mustern', () => {
+    for (const text of [
+      'Karte 4111 1111 1111 1112', // Luhn falsch
+      'Preis 1.234,56 € am 12.03.2026 um 12:30:45 Uhr',
+      'Version 1.2.3.4 und v10.0.0.1', // Versionsnummern, keine IPs
+      'Lieferzeit 10-12 Werktage',
+      'Pass auf, 3 Tage. Ausweis bitte mitbringen. Steuer-ID bitte nachreichen.',
+    ]) expect(redactPersonalData(text)).toBe(text);
+  });
+
   it('ist idempotent und lässt Platzhalter unverändert', () => {
-    const input = 'Herr Max Mustermann, max@example.com, 0761 123456, IBAN DE89370400440532013000, Bestellung 12345.';
+    const input = 'Herr Max Mustermann, max@example.com, 0761 123456, IBAN DE89370400440532013000, Bestellung 12345, Karte 4111 1111 1111 1111, IP 10.0.0.7.';
     const once = redactPersonalData(input, { names: ['Max Mustermann'] });
     expect(redactPersonalData(once, { names: ['Max Mustermann'] })).toBe(once);
     expect(once).not.toMatch(/Mustermann|example\.com|123456|DE89/);
+    expect(once).not.toMatch(/4111|10\.0\.0\.7/);
   });
 
   it('keepExisting behält Daten, die schon in der Wissensbasis stehen', () => {

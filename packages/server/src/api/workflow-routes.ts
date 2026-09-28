@@ -89,6 +89,8 @@ export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegist
   workflowMailRoute('/api/v1/email/messages/:messageId/workflow-runs', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/),
   workflowMailRoute('/api/v1/workflows/:id/runs', ['GET'], /^\/api\/v1\/workflows\/([^/]+)\/runs$/),
   workflowMailRoute('/api/v1/workflows/by-source/:sourceId/runs', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/runs$/),
+  // Plan 050: Kennzahlen zählen Entscheidungen über Mails – Mail-Sicht wie die Lauf-Liste.
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/ai-decisions', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/ai-decisions$/),
   workflowMailRoute('/api/v1/workflow-runs', ['GET'], /^\/api\/v1\/workflow-runs$/),
   workflowMailRoute('/api/v1/workflow-runs/:id', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)$/),
   workflowMailRoute('/api/v1/workflow-runs/:id/steps', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/),
@@ -146,7 +148,7 @@ type WorkflowMutationParseResult =
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowExecuteParseResult =
-  | { ok: true; values: { messageId?: number; dryRun?: boolean } }
+  | { ok: true; values: { messageId?: number; dryRun?: boolean; testRun?: boolean; realAi?: boolean } }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 type WorkflowInboundBackfillParseResult =
@@ -595,11 +597,17 @@ async function handleWorkflowExecute(
       triggerName: runTriggerName,
       actorUserId: principal.userId,
       context: runContext,
+      // Plan 047: gespeicherter Testlauf (auch für deaktivierte Workflows);
+      // nur zusammen mit dryRun, ein Live-Lauf ignoriert das Feld.
+      ...(parsed.values.testRun === true ? { testRun: true } : {}),
+      // Phase B: ai.decide im Testlauf wirklich fragen (kostet Tokens).
+      ...(parsed.values.testRun === true && parsed.values.realAi === true ? { realAi: true } : {}),
     });
-    return data(result.success ? 200 : 409, {
-      ...result,
-      workflowId: workflow.sourceSqliteId ?? workflow.id,
-    });
+    const body = { ...result, workflowId: workflow.sourceSqliteId ?? workflow.id };
+    if (result.success) return data(200, body);
+    // Fehlgeschlagen im üblichen Fehlerformat: der Renderer liest den Grund nur
+    // aus { error: { message } }; Protokoll und Lauf bleiben in details.
+    return error(409, 'workflow_dry_run_failed', result.error ?? 'Testlauf fehlgeschlagen', body);
   }
 
   if (!ports.jobQueue) return error(503, 'job_queue_unavailable', 'Job queue API nicht konfiguriert');
@@ -2160,9 +2168,9 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     };
   }
 
-  const values: { messageId?: number; dryRun?: boolean } = {};
+  const values: { messageId?: number; dryRun?: boolean; testRun?: boolean; realAi?: boolean } = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['messageId', 'dryRun']);
+  const allowedFields = new Set(['messageId', 'dryRun', 'testRun', 'realAi']);
 
   for (const key of Object.keys(payload)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -2179,6 +2187,16 @@ function parseWorkflowExecuteBody(body: unknown): WorkflowExecuteParseResult {
     const dryRun = normalizeBodyBoolean(payload.dryRun, 'dryRun');
     if (dryRun.ok) values.dryRun = dryRun.value;
     else errors.push({ field: 'dryRun', message: dryRun.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'testRun')) {
+    const testRun = normalizeBodyBoolean(payload.testRun, 'testRun');
+    if (testRun.ok) values.testRun = testRun.value;
+    else errors.push({ field: 'testRun', message: testRun.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, 'realAi')) {
+    const realAi = normalizeBodyBoolean(payload.realAi, 'realAi');
+    if (realAi.ok) values.realAi = realAi.value;
+    else errors.push({ field: 'realAi', message: realAi.message });
   }
 
   if (errors.length > 0) {

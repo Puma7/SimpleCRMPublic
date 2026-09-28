@@ -136,6 +136,7 @@ describe('Desktop: Ohne Ausgangsprüfung senden', () => {
       cc: sendInput.cc ?? null,
       bcc: sendInput.bcc ?? null,
       attachmentPaths: [],
+      accountId: 1,
     })).toBe(true);
 
     const skipMarker = db.prepare(`SELECT value FROM sync_info WHERE key = 'outbound_review_skipped:61'`).get() as { value: string };
@@ -149,6 +150,35 @@ describe('Desktop: Ohne Ausgangsprüfung senden', () => {
       resource_type: 'email_message',
       resource_id: '61',
     }]);
+  });
+
+  test('Versand scheitert, danach Kontowechsel ⇒ die Freigabe gilt nicht für das neue Konto', async () => {
+    insertHeldDraft(67);
+    mockSendComposeDraft.mockResolvedValueOnce({ ok: false, error: 'SMTP down' });
+
+    const result = await sendDraftSkippingOutboundReview(67, user);
+    expect(result).toMatchObject({ success: false });
+    const sendInput = mockSendComposeDraft.mock.calls[0]![0] as {
+      subject: string;
+      bodyText: string;
+      bodyHtml: string | null;
+      to: string;
+      cc?: string;
+      bcc?: string;
+    };
+    const values = {
+      subject: sendInput.subject,
+      bodyText: sendInput.bodyText,
+      bodyHtml: sendInput.bodyHtml ?? null,
+      to: sendInput.to,
+      cc: sendInput.cc ?? null,
+      bcc: sendInput.bcc ?? null,
+      attachmentPaths: [] as string[],
+    };
+    expect(tryOutboundApprovalBypass(67, { ...values, accountId: 1 })).toBe(true);
+
+    db.prepare('UPDATE email_messages SET account_id = 2, folder_id = 20 WHERE id = 67').run();
+    expect(tryOutboundApprovalBypass(67, { ...values, accountId: 2 })).toBe(false);
   });
 
   test('Einstellung „niemand“ bzw. „nur Owner und Admin“ wird im Main-Prozess durchgesetzt', async () => {

@@ -130,8 +130,12 @@ export function ApplyWorkflowMenu({
         const r = await invokeRenderer(
           IPCChannels.Email.TestWorkflowOnMessage,
           { workflowId, messageId: message.id, dryRun: true },
-        ) as { success: boolean; log?: string[]; error?: string }
-        if (r.success) {
+        ) as { success: boolean; runId?: number; log?: string[]; error?: string }
+        if (r.success && typeof r.runId === "number") {
+          // Gespeicherter Testlauf (Plan 047): Schritt für Schritt statt Toast.
+          setRunDetailId(r.runId)
+          setRunDetailOpen(true)
+        } else if (r.success) {
           toast.success(`Dry-Run OK: ${(r.log ?? []).slice(-3).join(", ") || "fertig"}`)
         } else {
           toast.error(r.error ?? "Dry-Run fehlgeschlagen")

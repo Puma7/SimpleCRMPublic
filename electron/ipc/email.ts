@@ -1009,7 +1009,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessagesByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'approval_pending' | 'outbound_blocked' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1037,7 +1037,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListMessageIdsByView,
       async (event: IpcMainInvokeEvent, payload: {
           accountId: number | 'all';
-          view: 'inbox' | 'sent' | 'sent_ai' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
+          view: 'inbox' | 'sent' | 'sent_ai' | 'approval_pending' | 'outbound_blocked' | 'archived' | 'drafts' | 'scheduled_send' | 'spam_review' | 'spam' | 'trash' | 'snoozed' | 'all';
           limit?: number;
           offset?: number;
           categoryId?: number | null;
@@ -1339,6 +1339,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
         const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps.js');
         return getLatestWorkflowRunForMessage(payload.messageId);
+      },
+      { logger, accountAccess: 'ro' },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.ListWorkflowRunsForMessage,
+      async (_event: IpcMainInvokeEvent, payload: { messageId: number }) => {
+        const { listWorkflowRunsForMessage } = await import('../workflow/run-steps.js');
+        return listWorkflowRunsForMessage(payload.messageId);
       },
       { logger, accountAccess: 'ro' },
     ),
@@ -2844,7 +2855,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetMessageSpam,
       async (_event: IpcMainInvokeEvent, payload: { messageId: number; spam: boolean }) => {
-        setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual' });
+        setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual', aiOverride: true });
         return { success: true as const };
       },
       { logger, accountAccess: 'rw' },
@@ -2861,6 +2872,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSpamStatus(payload.messageId, payload.status, {
           train: payload.train !== false,
           source: 'manual',
+          aiOverride: true,
         });
         return { success: true as const };
       },

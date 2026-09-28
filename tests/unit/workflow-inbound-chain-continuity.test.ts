@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -11,6 +11,16 @@ const repoRoot = join(__dirname, '..', '..');
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), 'utf8');
+}
+
+/** Plan 043: die Server-Workflow-Ausführung liegt in workflow-execution.ts und workflow-nodes/*.ts. */
+function readServerWorkflowExecution(): string {
+  const nodesDir = join(repoRoot, 'packages/server/src/workflow-nodes');
+  const nodeModules = readdirSync(nodesDir).filter((name) => name.endsWith('.ts')).sort();
+  return [
+    readRepoFile('packages/server/src/workflow-execution.ts'),
+    ...nodeModules.map((name) => readFileSync(join(nodesDir, name), 'utf8')),
+  ].join('\n');
 }
 
 describe('workflow inbound chain continuity', () => {
@@ -40,7 +50,7 @@ describe('workflow inbound chain continuity', () => {
   });
 
   test('AI/HTTP/delay continuations and terminal success path plumb the chain', () => {
-    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const execution = readServerWorkflowExecution();
     const ai = readRepoFile('packages/server/src/ai-classification.ts');
     const http = readRepoFile('packages/server/src/workflow-http-request.ts');
     const injections = execution.split('...inboundChainFieldsFromContext(context)').length - 1;

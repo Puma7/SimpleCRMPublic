@@ -22,16 +22,17 @@ import type { EnqueueJobInput } from './types';
  * `workflow.schedule.tick`-Job ein, und dessen Handler (hier) fragt fuer jeden
  * aktiven Zeitplan-Workflow: welcher faellige Zeitpunkt lag zuletzt vor jetzt?
  *
- * - Genau einmal je Zeitpunkt: Ausgeloest wird nur, wer den Zeitpunkt per
- *   bedingtem UPDATE in `schedule_last_slot_at` schreibt (Muster
- *   runMailSyncSchedule). Laufen zwei Ticks gleichzeitig (mehrere
- *   Server-Prozesse, ein verspaeteter Job), bekommt nur einer die Zeile
- *   zurueck. Der Job-Key des Laufs (Workflow + Zeitpunkt) faengt zusaetzlich
- *   doppelte Einreihungen ab, solange der Lauf noch wartet. Laeuft derselbe
- *   Zeitpunkt trotzdem zweimal an (Einreihung gespeichert, Bestaetigung
- *   verloren, Anspruch zurueckgenommen), fuehrt ihn der Lauf selbst nur
- *   einmal aus: `scheduleSlot` im Job, Anspruch `workflow_schedule_run:<id>`
- *   in derselben Transaktion wie der Lauf (workflow-execution).
+ * - Kein Zeitpunkt geht verloren, keiner laeuft doppelt: ERST einreihen, DANN
+ *   den Zeitpunkt per bedingtem UPDATE in `schedule_last_slot_at` als
+ *   erledigt vormerken. Stirbt der Prozess dazwischen (OOM, Neustart,
+ *   Deploy), ist der Zeitpunkt noch offen und der naechste Takt reiht ihn
+ *   erneut ein — ein doppelter Job statt eines verlorenen Laufs. Doppelte
+ *   Jobs (auch von gleichzeitigen Ticks mehrerer Server-Prozesse) faengt der
+ *   Job-Key (Workflow + Zeitpunkt) ab, solange der Lauf noch wartet; sonst
+ *   fuehrt der Lauf selbst den Zeitpunkt nur einmal aus: `scheduleSlot` im
+ *   Job, Anspruch `workflow_schedule_run:<id>` in derselben Transaktion wie
+ *   der Lauf (workflow-execution). `enqueued` zaehlt nur den Tick, dessen
+ *   Vormerkung griff.
  * - Keine Nachholung alter Zeitpunkte: nur ein Zeitpunkt, der hoechstens
  *   WORKFLOW_SCHEDULE_CATCH_UP_MINUTES zurueckliegt, wird ausgeloest — war der
  *   Server laenger aus, verfallen die verpassten.
@@ -73,11 +74,15 @@ export type WorkflowScheduleTickQueue = Readonly<{
 }>;
 
 export type WorkflowScheduleTickResult = Readonly<{
-  /** Laeufe, die in diesem Takt eingereiht wurden. */
+  /** Zeitpunkte, die dieser Takt eingereiht und als erledigt vorgemerkt hat. */
   enqueued: number;
   /** Aktive Zeitplan-Workflows mit ungueltigem Ausdruck (uebersprungen). */
   skippedInvalid: number;
-  /** Einreihung fehlgeschlagen; der Anspruch wurde zurueckgenommen. */
+  /**
+   * Einreihung oder Vormerkung fehlgeschlagen. Der Zeitpunkt bleibt offen;
+   * der naechste Takt versucht es erneut (ein vorhandener Job wird dabei
+   * nicht doppelt ausgefuehrt).
+   */
   failed: readonly { workflowId: number; error: unknown }[];
 }>;
 
@@ -85,6 +90,7 @@ type ScheduleWorkflowRow = Readonly<{
   id: number | string;
   cron_expr: string | null;
   schedule_last_slot_at: Date | string | null;
+  schedule_account_id: number | string | null;
 }>;
 
 /**
@@ -177,7 +183,7 @@ export async function runWorkflowScheduleTick(input: {
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => await trx
       .selectFrom('email_workflows')
-      .select(['id', 'cron_expr', 'schedule_last_slot_at'])
+      .select(['id', 'cron_expr', 'schedule_last_slot_at', 'schedule_account_id'])
       .where('workspace_id', '=', input.workspaceId)
       .where('trigger_name', '=', 'schedule')
       .where('enabled', '=', true)
@@ -234,30 +240,10 @@ export async function runWorkflowScheduleTick(input: {
       if (workflow.schedule_last_slot_at === null) continue;
       const lastSlot = new Date(workflow.schedule_last_slot_at);
       if (slot.getTime() <= lastSlot.getTime()) continue;
+      const scheduleAccountId = workflow.schedule_account_id === null ? null : Number(workflow.schedule_account_id);
 
-      // ERST beanspruchen, DANN einreihen. Das bedingte UPDATE ist der Anspruch;
-      // enabled/trigger/cron stehen mit drin, damit ein zwischenzeitlich
-      // deaktivierter oder umgestellter Workflow nicht noch mit dem alten Stand
-      // ausloest.
-      const claimed = await withWorkspaceTransaction(
-        input.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => trx
-          .updateTable('email_workflows')
-          .set({ schedule_last_slot_at: slot })
-          .where('workspace_id', '=', input.workspaceId)
-          .where('id', '=', workflowId)
-          .where('enabled', '=', true)
-          .where('trigger_name', '=', 'schedule')
-          .where('cron_expr', '=', cronExpr)
-          // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
-          .where('schedule_last_slot_at', '<', slot)
-          .returning(['id', 'schedule_account_id'])
-          .executeTakeFirst(),
-        session,
-      );
-      if (!claimed) continue;
-
+      // ERST einreihen, DANN vormerken (siehe oben): ein Absturz dazwischen
+      // fuehrt zu einem zweiten Job fuer denselben Zeitpunkt, nie zu keinem.
       try {
         await input.queue.enqueue({
           workspaceId: input.workspaceId,
@@ -270,41 +256,52 @@ export async function runWorkflowScheduleTick(input: {
             triggerName: 'schedule',
             // Traegt den Job-Key (Workflow + Zeitpunkt), siehe graphileJobKeyForJob.
             scheduleSlot: slot.toISOString(),
-            context: buildScheduleWorkflowContext({
-              firedAt: now,
-              slot,
-              scheduleAccountId: claimed.schedule_account_id === null
-                ? null
-                : Number(claimed.schedule_account_id),
-            }),
+            context: buildScheduleWorkflowContext({ firedAt: now, slot, scheduleAccountId }),
           }),
           maxAttempts: 3,
         });
       } catch (error) {
-        // Anspruch zuruecknehmen, sonst galte der Zeitpunkt als ausgeloest,
-        // obwohl nie ein Lauf entstand; der naechste Takt versucht es erneut,
-        // solange der Zeitpunkt im Nachholfenster liegt. War die Einreihung
-        // doch gespeichert (nur die Bestaetigung ging verloren), laeuft der
-        // Zeitpunkt trotzdem nur einmal — der Lauf beansprucht ihn selbst
-        // (scheduleSlot, workflow-execution). Bedingt auf den eigenen
-        // Stempel: hat inzwischen jemand anders beansprucht (oder der Workflow
-        // wurde neu gespeichert), gehoert die Zeile ihm.
-        await withWorkspaceTransaction(
+        // Nichts vorgemerkt: der naechste Takt versucht es erneut, solange der
+        // Zeitpunkt im Nachholfenster liegt. War die Einreihung doch
+        // gespeichert, laeuft der Zeitpunkt trotzdem nur einmal (Job-Key,
+        // Anspruch im Lauf).
+        failed.push({ workflowId, error });
+        continue;
+      }
+
+      // Das bedingte UPDATE ist die Vormerkung; enabled/trigger/cron stehen mit
+      // drin, damit ein zwischenzeitlich deaktivierter oder umgestellter
+      // Workflow nicht als erledigt gilt (sein Lauf ueberspringt sich selbst).
+      // Ebenso das Konto: der Job traegt das beim Lesen gueltige Konto. Wurde es
+      // seitdem umgestellt, bleibt der Zeitpunkt offen und der naechste Takt
+      // reiht ihn mit dem neuen Konto unter demselben Job-Key erneut ein.
+      let claimed: { id: number | string } | undefined;
+      try {
+        claimed = await withWorkspaceTransaction(
           input.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => trx
             .updateTable('email_workflows')
-            .set({ schedule_last_slot_at: lastSlot })
+            .set({ schedule_last_slot_at: slot })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', workflowId)
-            .where('schedule_last_slot_at', '=', slot)
-            .execute(),
+            .where('enabled', '=', true)
+            .where('trigger_name', '=', 'schedule')
+            .where('cron_expr', '=', cronExpr)
+            .where('schedule_account_id', 'is not distinct from', scheduleAccountId)
+            // Nur scharfe Zeilen: NULL < slot ist in SQL nicht wahr.
+            .where('schedule_last_slot_at', '<', slot)
+            .returning(['id'])
+            .executeTakeFirst(),
           session,
-        ).catch(() => undefined);
+        );
+      } catch (error) {
+        // Der Job existiert; der naechste Takt reiht denselben Schluessel erneut
+        // ein und der Lauf beansprucht den Zeitpunkt selbst.
         failed.push({ workflowId, error });
         continue;
       }
-      enqueued += 1;
+      if (claimed) enqueued += 1;
     }
     if (workflows.length < MAX_SCHEDULE_WORKFLOWS_PER_TICK) break;
     afterId = Number(workflows[workflows.length - 1]!.id);

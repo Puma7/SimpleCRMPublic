@@ -199,6 +199,8 @@ describe('Learnings-Routen (TA-P5)', () => {
       type: 'learnings.digest',
       workspaceId: WS,
       payload: { workspaceId: WS, period: 'week', minCandidates: 1, trigger: 'manual', actorUserId: 'u-admin' },
+      // Plan 035: ein fehlgeschlagener Lauf kostet schon einen KI-Aufruf.
+      maxAttempts: 1,
     });
     expect(await call({ method: 'POST', path: '/api/v1/ai-learnings/digests', principal: manager, body: { period: 'year' } }, ports))
       .toMatchObject({ status: 400 });
@@ -209,6 +211,20 @@ describe('Learnings-Routen (TA-P5)', () => {
     expect(await call({ method: 'POST', path: '/api/v1/ai-learnings/digests', principal: manager, body: {} }, pending.ports))
       .toMatchObject({ status: 200, body: { data: { status: 'skipped_pending', digestId: 11 } } });
     expect(pending.jobQueue.enqueue).not.toHaveBeenCalled();
+
+    // Plan 035: zu große Wissensbasis ⇒ Meldung ohne Job (und ohne KI-Aufruf).
+    const tooLarge = makePorts({
+      prepareDigestRequest: jest.fn(async () => ({
+        status: 'failed' as const,
+        code: 'knowledge_base_too_large' as const,
+        error: 'Die Wissensbasis ist zu groß für eine Auswertung (100001 von höchstens 100000 Zeichen).',
+        knowledgeBaseId: 3,
+        candidateCount: 0,
+      })),
+    });
+    expect(await call({ method: 'POST', path: '/api/v1/ai-learnings/digests', principal: manager, body: {} }, tooLarge.ports))
+      .toMatchObject({ status: 200, body: { data: { status: 'failed', digestId: null, error: expect.stringContaining('zu groß') } } });
+    expect(tooLarge.jobQueue.enqueue).not.toHaveBeenCalled();
   });
 
   test('Übernehmen: Konflikt 409 mit aktuellem Stand; Erfolg mit Audit und Wissensbasis-Ereignissen', async () => {

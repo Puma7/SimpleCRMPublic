@@ -249,7 +249,8 @@ describe('email-ai-profiles', () => {
     expect(await aiProfileMoveNeedsNewApiKey(4, { provider: 'OPENAI', baseUrl: 'https://api.openai.com/v2/' })).toBe(false);
     expect(await aiProfileMoveNeedsNewApiKey(99, { baseUrl: 'https://collector.example/v1' })).toBe(false);
 
-    (keytar.getPassword as jest.Mock).mockResolvedValue(null);
+    // Plan 044: Der Key liegt jetzt im Zugangsdaten-Speicher; „kein Key“ heißt gelöscht.
+    await clearAiProfileApiKey('k4');
     expect(await aiProfileMoveNeedsNewApiKey(4, { baseUrl: 'https://collector.example/v1' })).toBe(false);
   });
 });

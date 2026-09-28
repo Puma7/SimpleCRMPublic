@@ -22,6 +22,77 @@ METADATA_FILE="backup-$STAMP.meta"
 
 mkdir -p "$BACKUP_DIR"
 
+# Nur ein Lauf gleichzeitig: Scheduler, Update und `simplecrm backup` teilen das
+# Backup-Volume. Die Aufraeumung eines Laufs darf keine Anhang-Objekte entfernen,
+# die ein anderer gerade wiederverwendet. mkdir ist atomar, auch ueber
+# Container hinweg; PIDs anderer Container sind hier nicht pruefbar, daher gilt
+# eine Sperre nach BACKUP_LOCK_STALE_SECONDS als verwaist.
+BACKUP_LOCK_DIR="$BACKUP_DIR/.backup.lock"
+BACKUP_LOCK_WAIT_SECONDS="${BACKUP_LOCK_WAIT_SECONDS:-3600}"
+BACKUP_LOCK_STALE_SECONDS="${BACKUP_LOCK_STALE_SECONDS:-43200}"
+
+for _lock_setting in "BACKUP_LOCK_WAIT_SECONDS=$BACKUP_LOCK_WAIT_SECONDS" "BACKUP_LOCK_STALE_SECONDS=$BACKUP_LOCK_STALE_SECONDS"; do
+  case "${_lock_setting#*=}" in
+    ''|*[!0-9]*)
+      echo "${_lock_setting%%=*} must be a non-negative integer" >&2
+      exit 2
+      ;;
+  esac
+done
+
+backup_lock_owner() {
+  cat "$BACKUP_LOCK_DIR/owner" 2>/dev/null || true
+}
+
+# Besitzerzeile „<host> <pid> <epoch>“. Ohne gueltige Zeile (Lauf zwischen mkdir
+# und Schreiben der Zeile beendet) gilt die Sperre nach 60 s als verwaist.
+backup_lock_is_stale() {
+  # shellcheck disable=SC2046
+  set -- $(backup_lock_owner)
+  case "${3:-}" in
+    ''|*[!0-9]*)
+      _lock_mtime="$(stat -c %Y "$BACKUP_LOCK_DIR" 2>/dev/null || echo 0)"
+      [ $(( $(date +%s) - _lock_mtime )) -gt 60 ]
+      return
+      ;;
+  esac
+  [ "$#" -eq 3 ] || return 0
+  if [ "$1" = "$(uname -n)" ] && ! kill -0 "$2" 2>/dev/null; then
+    return 0
+  fi
+  [ $(( $(date +%s) - $3 )) -gt "$BACKUP_LOCK_STALE_SECONDS" ]
+}
+
+acquire_backup_lock() {
+  _waited=0
+  until mkdir "$BACKUP_LOCK_DIR" 2>/dev/null; do
+    if backup_lock_is_stale; then
+      echo "backup: removing stale lock ($(backup_lock_owner))" >&2
+      rm -rf "$BACKUP_LOCK_DIR"
+      continue
+    fi
+    if [ "$_waited" -ge "$BACKUP_LOCK_WAIT_SECONDS" ]; then
+      echo "backup: another backup is running ($(backup_lock_owner)); gave up after ${_waited}s" >&2
+      exit 75
+    fi
+    sleep 5
+    _waited=$((_waited + 5))
+  done
+  printf '%s %s %s\n' "$(uname -n)" "$$" "$(date +%s)" > "$BACKUP_LOCK_DIR/owner"
+}
+
+# Nur die eigene Sperre entfernen, nie die eines anderen Laufs.
+release_backup_lock() {
+  case "$(backup_lock_owner)" in
+    "$(uname -n) $$ "*) rm -rf "$BACKUP_LOCK_DIR" ;;
+  esac
+}
+
+trap release_backup_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+acquire_backup_lock
+
 # Vor allem anderen: darf diese Rolle alle Zeilen sehen? Sonst waere der Dump
 # still gefiltert (Begruendung in backup-metadata.sh).
 assert_backup_role_reads_all_rows "$DATABASE_URL"
@@ -56,6 +127,7 @@ discard_unfinished_backup() {
     "$BACKUP_DIR/$ATTACHMENTS_LIST.partial" \
     "$BACKUP_DIR/$AUDIT_ARCHIVE.partial"
   remove_backup_set "$BACKUP_DIR" "$STAMP"
+  release_backup_lock
 }
 trap discard_unfinished_backup EXIT
 trap 'exit 130' INT
@@ -100,6 +172,9 @@ done
     sha256sum "$AUDIT_ARCHIVE" >> "$CHECKSUM_MANIFEST"
   fi
 )
-trap - EXIT INT TERM
+# Die Sperre gilt auch fuer die Aufraeumung (sie entfernt Anhang-Objekte).
+trap release_backup_lock EXIT
 
 prune_backup_retention "$BACKUP_DIR"
+release_backup_lock
+trap - EXIT INT TERM

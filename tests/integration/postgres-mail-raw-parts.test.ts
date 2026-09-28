@@ -179,4 +179,23 @@ describe('server takes attachment parts out of stored originals', () => {
     }
     expect(readdirSync(partsDir)).toHaveLength(1);
   });
+  test('a damaged original is skipped and reported; later mail is still processed', async () => {
+    const first = await rowOf(1);
+    const second = await rowOf(2);
+    await postgres.admin.query(`UPDATE email_messages SET raw_rfc822_z = '\\x00010203'::bytea, raw_rfc822_codec = 'br',
+      raw_rfc822_part_sha256s = NULL, has_attachments = true WHERE id = $1`, [first.id]);
+    await postgres.admin.query(`UPDATE email_messages SET raw_rfc822_part_sha256s = NULL, has_attachments = true WHERE id = $1`, [second.id]);
+    const failures: Array<{ messageId: number; error: string }> = [];
+    for (let afterId = 0; ;) {
+      const batch = await runRawPartDedupBatch({ db, attachmentsRoot }, afterId);
+      if (batch.seen === 0) break;
+      afterId = batch.lastId;
+      failures.push(...batch.failures);
+    }
+    expect(failures).toEqual([{ messageId: Number(first.id), error: expect.stringContaining('cannot be decompressed') }]);
+    expect((await rowOf(2)).raw_rfc822_part_sha256s).toEqual([]);
+    // Mit Überspringen-Liste wird die Zeile gar nicht erst gelesen.
+    const skipped = await runRawPartDedupBatch({ db, attachmentsRoot }, 0, 20, new Set([Number(first.id)]));
+    expect(skipped.failures).toEqual([]);
+  });
 });

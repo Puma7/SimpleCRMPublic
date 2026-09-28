@@ -2,6 +2,7 @@ import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
   interpolateWorkflowPlaceholders,
+  joinKnowledgeWithinBudget,
   messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
@@ -34,7 +35,7 @@ import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read
 import { persistOutboundBlockOnDraft } from './mail-outbound-hold';
 import { markDraftOrigin, workflowIdFromAiJob } from './mail-sent-provenance';
 import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
-import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
+import { searchKnowledgeForWorkflow, searchKnowledgeSections } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
 import type { MailSqlScope } from './mail-access/types';
 import {
@@ -214,7 +215,9 @@ export type PostgresAiClassificationPortOptions = Readonly<{
 type EmailMessageRow = Selectable<EmailMessagesTable>;
 type AiProfileRow = Selectable<EmailAiProfilesTable>;
 type AiPromptRow = Selectable<EmailAiPromptsTable>;
-type WorkflowKnowledgeChunkRow = Pick<Selectable<WorkflowKnowledgeChunksTable>, 'id' | 'title' | 'content'>;
+type WorkflowKnowledgeChunkRow = Pick<Selectable<WorkflowKnowledgeChunksTable>, 'id' | 'title' | 'content'> & {
+  knowledgeBaseId?: number;
+};
 
 const classificationMessageColumns = [
   'id',
@@ -1449,6 +1452,7 @@ async function selectAiTransformCustomer(
     .executeTakeFirst() ?? null;
 }
 
+/** Plan 048: Abschnittssuche der gewählten Wissensbasis (wie searchKnowledgeForWorkflow). */
 async function selectAgentKnowledgeChunks(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -1456,33 +1460,13 @@ async function selectAgentKnowledgeChunks(
   query: string,
   limit: number,
 ): Promise<WorkflowKnowledgeChunkRow[]> {
-  const rows = await trx
-    .selectFrom('workflow_knowledge_chunks')
-    .select(['id', 'title', 'content'])
-    .where('workspace_id', '=', workspaceId)
-    .where('knowledge_base_id', '=', knowledgeBaseId)
-    .orderBy('id', 'desc')
-    .limit(200)
-    .execute();
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((term) => term.length > 2)
-    .slice(0, 12);
-  if (terms.length === 0) return rows.slice(0, limit);
-  return rows
-    .map((row) => {
-      const haystack = `${row.title ?? ''}\n${row.content ?? ''}`.toLowerCase();
-      let score = 0;
-      for (const term of terms) {
-        if (haystack.includes(term)) score += 1;
-      }
-      return { row, score };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit)
-    .map((entry) => entry.row);
+  const matches = await searchKnowledgeSections(trx, workspaceId, [knowledgeBaseId], query, limit);
+  return matches.map((match) => ({
+    id: match.id,
+    title: match.title,
+    content: match.content,
+    knowledgeBaseId: match.knowledgeBaseId,
+  }));
 }
 
 function classificationPrompt(
@@ -1533,18 +1517,21 @@ function fullMessageText(message: ClassificationMessageRow): string {
   ].join('\n');
 }
 
-function buildAgentUserPrompt(
+export function buildAgentUserPrompt(
   strings: Record<string, string>,
   chunks: readonly WorkflowKnowledgeChunkRow[],
   variables: JobPayload,
 ): string {
-  const knowledge = chunks
-    .map((chunk) => [
-      chunk.title ? `Titel: ${chunk.title}` : '',
-      String(chunk.content ?? ''),
-    ].filter(Boolean).join('\n'))
-    .join('\n---\n')
-    .slice(0, AGENT_KNOWLEDGE_MAX);
+  const knowledge = joinKnowledgeWithinBudget(
+    chunks.map((chunk) => ({
+      group: chunk.knowledgeBaseId ?? 0,
+      text: [
+        chunk.title ? `Titel: ${chunk.title}` : '',
+        String(chunk.content ?? ''),
+      ].filter(Boolean).join('\n'),
+    })),
+    { maxChars: AGENT_KNOWLEDGE_MAX, separator: '\n---\n' },
+  );
   return interpolateWorkflowTemplate([
     'Nachricht:',
     '{{combined_text}}',

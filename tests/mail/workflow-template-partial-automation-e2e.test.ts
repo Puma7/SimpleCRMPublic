@@ -94,6 +94,7 @@ jest.mock('../../electron/email/email-ai-profiles', () => ({
 jest.mock('../../electron/workflow/knowledge-base', () => ({
   searchKnowledgeChunks: jest.fn(async () => []),
   searchKnowledgeForWorkflow: jest.fn(async () => []),
+  storeDraftAiSources: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-draft-approval', () => ({
@@ -319,7 +320,8 @@ describe('b) Eingehend: Mensch oder KI? → KI-Antwort mit Gegenprüfung', () =>
     expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(42, 'Kulanz-Zusage gehört vor einen Menschen');
     expect(mockPrepareDraftForWorkflowSend).not.toHaveBeenCalled();
     expect(tags()).toEqual(['ki-freigabe']);
-    const taskArgs = mockDbRun.mock.calls.find((c) => String(c[0]).includes('INSERT INTO'));
+    // Seit Plan 050 schreibt ai.decide vorher ein Ereignis (ai_decision_events); gesucht ist die Aufgabe.
+    const taskArgs = mockDbRun.mock.calls.find((c) => String(c[0]).includes('INSERT INTO tasks'));
     expect(taskArgs?.[2]).toBe('KI-Entwurf prüfen: Frage zu Bestellung 1234');
   });
 

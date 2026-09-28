@@ -21,8 +21,12 @@ jest.mock('@/components/auth/auth-context', () => ({
 }));
 
 jest.mock('sonner', () => ({ toast: { error: jest.fn(), success: jest.fn(), warning: jest.fn() } }));
+const mockDialogProps: Array<{ runId: number | null; open: boolean }> = [];
 jest.mock('@/components/email/workflow/workflow-run-detail-dialog', () => ({
-  WorkflowRunDetailDialog: () => null,
+  WorkflowRunDetailDialog: (props: { runId: number | null; open: boolean }) => {
+    mockDialogProps.push(props);
+    return null;
+  },
 }));
 
 let mockOpenMenu: (() => void) | null = null;
@@ -72,6 +76,7 @@ const message = {
 
 beforeEach(() => {
   mockOpenMenu = null;
+  mockDialogProps.length = 0;
   mockInvoke.mockReset();
   mockInvoke.mockImplementation(async (channel: string) => {
     if (channel === IPCChannels.Email.ListWorkflows) {
@@ -118,4 +123,23 @@ describe('ApplyWorkflowMenu im Desktop-Modus nach Rolle (G1)', () => {
       { workflowId: 44, messageId: 99, dryRun: false },
     ));
   });
+});
+
+// Plan 047: ein gespeicherter Testlauf öffnet die Schritt-Ansicht statt eines Toasts.
+test('Testlauf mit runId öffnet den Lauf-Dialog', async () => {
+  const { toast } = jest.requireMock('sonner') as { toast: { success: jest.Mock } };
+  toast.success.mockReset();
+  mockRole = 'agent';
+  const base = mockInvoke.getMockImplementation()!;
+  mockInvoke.mockImplementation(async (channel: string, ...rest: unknown[]) => (
+    channel === IPCChannels.Email.TestWorkflowOnMessage
+      ? { success: true, runId: 812, log: ['dry'] }
+      : base(channel, ...rest)
+  ));
+  render(<ApplyWorkflowMenu message={message} />);
+  fireEvent.click(screen.getAllByRole('button')[0]!);
+  expect(await screen.findByText('Eingang sortieren')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /Dry-Run/ }));
+  await waitFor(() => expect(mockDialogProps[mockDialogProps.length - 1]).toEqual(expect.objectContaining({ runId: 812, open: true })));
+  expect(toast.success).not.toHaveBeenCalled();
 });

@@ -38,6 +38,7 @@ import { useMailWorkspace } from "./workspace-context"
 import { MessageEvidencePanel } from "./message-evidence-panel"
 import { NoteMarkdown } from "./note-markdown"
 import { useExternalLinkConfirm } from "./external-link-confirm-dialog"
+import { MessageAutomationHistory } from "./message-automation-history"
 
 type Props = {
   teamMembers: TeamMember[]
@@ -51,6 +52,8 @@ type Props = {
   onOpenMessage?: (message: EmailMessage) => void | Promise<void>
   /** Fills resizable column (Postfach); default fixed w-72 for inline viewer split. */
   fillWidth?: boolean
+  /** „Automatik“ (alle Workflow-Läufe der Mail) nur mit Leserecht auf Workflows. */
+  canViewAutomation?: boolean
 }
 
 type MessageSecurityState = {
@@ -136,6 +139,7 @@ export function MessageMetadataPanel({
   refreshCurrentMessage,
   onOpenMessage,
   fillWidth = false,
+  canViewAutomation = false,
 }: Props) {
   const {
     selectedMessage,
@@ -875,6 +879,17 @@ export function MessageMetadataPanel({
                 </div>
               </AccordionContent>
             </AccordionItem>
+            {canViewAutomation ? (
+              <AccordionItem value="automation">
+                <AccordionTrigger className="py-2 text-xs font-medium hover:no-underline">
+                  Automatik
+                </AccordionTrigger>
+                <AccordionContent className="pb-3">
+                  {/* Inhalt erst beim Aufklappen: vorher keine Anfrage. */}
+                  <MessageAutomationHistory messageId={selectedMessage.id} />
+                </AccordionContent>
+              </AccordionItem>
+            ) : null}
             <AccordionItem value="tech" className="border-b-0">
               <AccordionTrigger className="py-2 text-xs font-medium hover:no-underline">
                 Technische Details

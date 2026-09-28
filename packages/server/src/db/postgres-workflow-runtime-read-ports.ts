@@ -1,3 +1,4 @@
+import { deriveKnowledgeSections } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 import { ilikeContainsPattern } from './sql-ilike';
 
@@ -109,6 +110,7 @@ const workflowRunSummaryColumns = [
   'message_id',
   'direction',
   'status',
+  'dry_run',
   'started_at',
   'finished_at',
   'updated_at',
@@ -785,6 +787,112 @@ export function mergeWorkflowKnowledgeChunks(
     .join('\n\n---\n\n');
 }
 
+/**
+ * Plan 048: Sperre je Wissensbasis bis zum Ende der Transaktion. Ohne sie
+ * scheitert ein zweiter, gleichzeitiger Neuaufbau an der Eindeutigkeit der
+ * Position (er sieht die noch nicht bestätigten Abschnitte des ersten nicht).
+ */
+function knowledgeSectionsLockKey(knowledgeBaseId: number): RawBuilder<unknown> {
+  return kyselySql`hashtextextended(${`workflow_knowledge_sections:${knowledgeBaseId}`}, 0)`;
+}
+
+async function tryLockWorkflowKnowledgeSections(trx: WorkspaceTransaction, knowledgeBaseId: number): Promise<boolean> {
+  const result = await kyselySql<{ locked: boolean }>`
+    SELECT pg_try_advisory_xact_lock(${knowledgeSectionsLockKey(knowledgeBaseId)}) AS locked
+  `.execute(trx);
+  return result.rows[0]?.locked === true;
+}
+
+/**
+ * Plan 048: Abschnitte einer Wissensbasis aus dem Dokument neu ableiten
+ * (löschen und neu anlegen, in der Transaktion des Aufrufers). Eine leere
+ * Wissensbasis (nur Vorlage) hat keine Abschnitte. Gibt die Anzahl zurück.
+ * Wartet, bis ein gleichzeitiger Neuaufbau derselben Wissensbasis bestätigt ist.
+ */
+export async function rebuildWorkflowKnowledgeSections(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  knowledgeBaseId: number,
+  now: Date,
+): Promise<number> {
+  await kyselySql`SELECT pg_advisory_xact_lock(${knowledgeSectionsLockKey(knowledgeBaseId)})`.execute(trx);
+  await trx
+    .deleteFrom('workflow_knowledge_sections')
+    .where('workspace_id', '=', workspaceId)
+    .where('knowledge_base_id', '=', knowledgeBaseId)
+    .execute();
+  const document = await loadWorkflowKnowledgeDocument(trx, workspaceId, knowledgeBaseId);
+  if (!document) return 0;
+  if (document.content === mergeWorkflowKnowledgeChunks(document.knowledgeBase.name, [])) return 0;
+  const sections = deriveKnowledgeSections(document.content, document.knowledgeBase.name);
+  if (sections.length === 0) return 0;
+  await trx
+    .insertInto('workflow_knowledge_sections')
+    .values(sections.map((section) => ({
+      workspace_id: workspaceId,
+      knowledge_base_id: knowledgeBaseId,
+      position: section.position,
+      title: section.title,
+      content: section.content,
+      built_at: now,
+    })))
+    .execute();
+  return sections.length;
+}
+
+async function staleWorkflowKnowledgeSectionIds(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  ids: readonly number[],
+): Promise<number[]> {
+  const states = await trx
+    .selectFrom('workflow_knowledge_bases as kb')
+    .select([
+      'kb.id as id',
+      kyselySql<number | string>`(select count(*) from workflow_knowledge_sections s
+        where s.workspace_id = kb.workspace_id and s.knowledge_base_id = kb.id)`.as('sections'),
+      kyselySql<Date | null>`(select min(s.built_at) from workflow_knowledge_sections s
+        where s.workspace_id = kb.workspace_id and s.knowledge_base_id = kb.id)`.as('built'),
+      kyselySql<Date | null>`(select max(c.updated_at) from workflow_knowledge_chunks c
+        where c.workspace_id = kb.workspace_id and c.knowledge_base_id = kb.id)`.as('changed'),
+    ])
+    .where('kb.workspace_id', '=', workspaceId)
+    .where('kb.id', 'in', ids)
+    .execute();
+  return states
+    .filter((state) => (Number(state.sections) === 0
+      ? state.changed !== null
+      : state.built !== null && state.changed !== null && new Date(state.changed).getTime() > new Date(state.built).getTime()))
+    .map((state) => Number(state.id));
+}
+
+/**
+ * Plan 048: baut fehlende oder veraltete Abschnitte nach (Bestand, SQLite-Import,
+ * ältere Bearbeitungen): keine Abschnitte, oder ein Chunk wurde nach dem
+ * letzten Aufbau geändert. Gibt die Ids zurück, die neu gebaut wurden.
+ * Baut gerade eine andere Transaktion dieselbe Wissensbasis, wird nicht
+ * gewartet: die Suche nimmt den bestätigten Stand (ein Lauf hält seine
+ * Transaktion bis zur KI-Antwort offen).
+ */
+export async function ensureWorkflowKnowledgeSections(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  knowledgeBaseIds: readonly number[],
+  now: Date,
+): Promise<number[]> {
+  const ids = [...new Set(knowledgeBaseIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+  if (ids.length === 0) return [];
+  const rebuilt: number[] = [];
+  for (const id of await staleWorkflowKnowledgeSectionIds(trx, workspaceId, ids)) {
+    if (!await tryLockWorkflowKnowledgeSections(trx, id)) continue;
+    // Nach der Sperre erneut prüfen: ein anderer Lauf kann inzwischen fertig sein.
+    if ((await staleWorkflowKnowledgeSectionIds(trx, workspaceId, [id])).length === 0) continue;
+    await rebuildWorkflowKnowledgeSections(trx, workspaceId, id, now);
+    rebuilt.push(id);
+  }
+  return rebuilt;
+}
+
 /** Aktuelles Dokument einer Wissensbasis (TA-P5: Vorschlagsbasis und Konfliktprüfung). */
 export async function loadWorkflowKnowledgeDocument(
   trx: WorkspaceTransaction,
@@ -894,6 +1002,7 @@ export async function saveWorkflowKnowledgeDocument(
     .where('id', '=', knowledgeBaseId)
     .returning(workflowKnowledgeBaseSelectColumns)
     .executeTakeFirstOrThrow();
+  await rebuildWorkflowKnowledgeSections(trx, workspaceId, knowledgeBaseId, now);
   return {
     knowledgeBase: mapWorkflowKnowledgeBaseRow(updatedBase),
     chunk: mapWorkflowKnowledgeChunkRow(chunkRow, false),
@@ -1022,6 +1131,7 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
             })
             .returning(workflowKnowledgeChunkDetailColumns)
             .executeTakeFirstOrThrow();
+          await rebuildWorkflowKnowledgeSections(trx, input.workspaceId, knowledgeBase.id, now);
           return { ok: true, chunk: mapWorkflowKnowledgeChunkRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1043,7 +1153,7 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
         async (trx) => {
           const current = await trx
             .selectFrom('workflow_knowledge_chunks')
-            .select(['id'])
+            .select(['id', 'knowledge_base_id'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .executeTakeFirst();
@@ -1066,6 +1176,12 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
             .where('id', '=', input.id)
             .returning(workflowKnowledgeChunkDetailColumns)
             .executeTakeFirstOrThrow();
+          // Abschnitte der alten und ggf. der neuen Wissensbasis neu ableiten.
+          for (const knowledgeBaseId of new Set([current.knowledge_base_id, row.knowledge_base_id])) {
+            if (knowledgeBaseId !== null) {
+              await rebuildWorkflowKnowledgeSections(trx, input.workspaceId, Number(knowledgeBaseId), new Date());
+            }
+          }
           return { ok: true, chunk: mapWorkflowKnowledgeChunkRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1086,6 +1202,9 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
             .where('id', '=', input.id)
             .returning(workflowKnowledgeChunkSummaryColumns)
             .executeTakeFirst();
+          if (row?.knowledge_base_id !== null && row?.knowledge_base_id !== undefined) {
+            await rebuildWorkflowKnowledgeSections(trx, input.workspaceId, Number(row.knowledge_base_id), new Date());
+          }
           return row ? mapWorkflowKnowledgeChunkRow(row, false) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -1840,6 +1959,7 @@ function mapWorkflowRunRow(row: WorkflowRunApiRow, includeLog: boolean): Workflo
     messageId: nullableNumber(row.message_id),
     direction: row.direction,
     status: row.status,
+    dryRun: row.dry_run === true,
     ...(includeLog ? { log: row.log_json } : {}),
     startedAt: timestampToIsoOrNull(row.started_at),
     finishedAt: timestampToIsoOrNull(row.finished_at),

@@ -37,6 +37,7 @@ import {
   saveServerAuthSession,
 } from '@/services/transport';
 import { hasHttpInvocation } from '@/services/transport/channel-http-registry';
+import { HTTP_TRANSPORT_UNSUPPORTED_CHANNELS } from '../setup/http-transport-unsupported-channels';
 
 describe('renderer transport', () => {
   const ipcInvoke = jest.fn();
@@ -3952,7 +3953,18 @@ describe('renderer transport', () => {
           withAttachments: 6,
         },
         perAccount: [{ accountId: 7, messages: 12, unread: 3, archived: 2 }],
-        workflowRuns24h: [{ workflowId: 9, count: 5, errors: 1 }],
+        workflowRuns24h: [{ workflowId: 9, workflowName: 'Spamfilter', count: 5, errors: 1 }],
+        automation: {
+          sentByKindWeekly: [
+            { weekStart: '2026-09-21', human: 4, aiAuto: 2, aiApproved: 1, workflow: 'x', relay: null, unknown: 0 },
+          ],
+          pendingApproval: 2,
+          outboundBlocked: 1,
+          aiDecideByWorkflow30d: [
+            { workflowId: -9, workflowName: 'Spamfilter', ja: 3, nein: 1, unsicher: 0, error: 0, total: 4 },
+          ],
+          aiCost30d: { costMicroUsd: 4200, events: 4 },
+        },
       },
     }));
     const transport = createHttpRendererTransport({
@@ -3978,7 +3990,27 @@ describe('renderer transport', () => {
           withAttachments: 6,
         },
         perAccount: [{ accountId: 7, messages: 12, unread: 3, archived: 2 }],
-        workflowRuns24h: [{ workflow_id: 9, count: 5, errors: 1 }],
+        workflowRuns24h: [{ workflow_id: 9, workflow_name: 'Spamfilter', count: 5, errors: 1 }],
+        automation: {
+          sentByKindWeekly: [
+            { weekStart: '2026-09-21', human: 4, aiAuto: 2, aiApproved: 1, workflow: 0, relay: 0, unknown: 0 },
+          ],
+          pendingApproval: 2,
+          outboundBlocked: 1,
+          aiDecideByWorkflow30d: [
+            { workflowId: -9, workflowName: 'Spamfilter', ja: 3, nein: 1, unsicher: 0, error: 0, total: 4 },
+          ],
+          aiCost30d: { costMicroUsd: 4200, events: 4 },
+        },
+      },
+    });
+
+    // Ältere Server ohne Cockpit: leerer Schnappschuss statt Absturz.
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { accounts: [], perAccount: [], workflowRuns24h: [{ workflowId: -3, count: 1, errors: 0 }] } }));
+    await expect(transport.invoke(IPCChannels.Email.EmailReporting, null)).resolves.toMatchObject({
+      data: {
+        workflowRuns24h: [{ workflow_id: -3, workflow_name: null, count: 1, errors: 0 }],
+        automation: { sentByKindWeekly: [], pendingApproval: 0, outboundBlocked: 0, aiDecideByWorkflow30d: [], aiCost30d: null },
       },
     });
 
@@ -6506,7 +6538,22 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/workflows/by-source/-23/execute',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ messageId: 11, dryRun: true }),
+        // Plan 047: der Testlauf wird auf dem Server gespeichert (dry_run).
+        body: JSON.stringify({ messageId: 11, dryRun: true, testRun: true }),
+      }),
+    );
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { success: true, dryRun: true } }));
+    await transport.invoke(IPCChannels.Email.TestWorkflowOnMessage, {
+      workflowId: -23,
+      messageId: 11,
+      dryRun: true,
+      realAi: true,
+    });
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      'https://crm.example.com/api/v1/workflows/by-source/-23/execute',
+      expect.objectContaining({
+        body: JSON.stringify({ messageId: 11, dryRun: true, testRun: true, realAi: true }),
       }),
     );
   });
@@ -6938,6 +6985,7 @@ describe('renderer transport', () => {
               messageId: 505,
               direction: 'inbound',
               status: 'succeeded',
+              dryRun: true,
               startedAt: '2026-06-03T11:00:00.000Z',
               finishedAt: '2026-06-03T11:00:01.000Z',
               updatedAt: '2026-06-03T11:00:01.000Z',
@@ -6980,6 +7028,7 @@ describe('renderer transport', () => {
         message_id: 55,
         direction: 'inbound',
         status: 'succeeded',
+        dry_run: 1,
         started_at: '2026-06-03T11:00:00.000Z',
         finished_at: '2026-06-03T11:00:01.000Z',
       }),
@@ -7102,6 +7151,81 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/email/messages/55/workflow-runs?limit=100&cursor=401',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  // Plan 046: Details → Automatik – alle Läufe einer Mail mit Zusammenfassung.
+  test('maps workflow runs for message with steps, workflow names and continuations', async () => {
+    const runs = [
+      { id: 401, sourceSqliteId: -91, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', startedAt: '2026-06-03T11:00:00.000Z', finishedAt: '2026-06-03T11:00:02.000Z' },
+      { id: 402, sourceSqliteId: -92, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, direction: 'inbound', status: 'completed', dryRun: true, startedAt: '2026-06-03T11:01:00.000Z', finishedAt: null },
+    ];
+    const stepRecord = (runSource: number, extra: Record<string, unknown>) => ({
+      id: 1, sourceSqliteId: 1, runSourceSqliteId: runSource, nodeId: 'n', status: 'ok', durationMs: 1,
+      createdAt: '2026-06-03T11:00:00.000Z', updatedAt: '2026-06-03T11:00:00.000Z', message: null, port: null, ...extra,
+    });
+    const fetchImpl = jest.fn(async (url: string) => {
+      if (url.endsWith('/api/v1/email/messages/55/workflow-runs?limit=100')) {
+        return jsonResponse({ data: { items: runs, nextCursor: null } });
+      }
+      if (url.includes('/api/v1/workflow-runs/by-source/-91/steps')) {
+        return jsonResponse({ data: { items: [stepRecord(-91, {
+          nodeType: 'ai.decide', port: 'yes', message: null,
+          detail: { v: 1, output: { port: 'yes', result: { answer: 'yes', probability: 88, summary: 'Rückgabe' } } },
+        })], nextCursor: null } });
+      }
+      if (url.includes('/api/v1/workflow-runs/by-source/-92/steps')) {
+        return jsonResponse({ data: { items: [stepRecord(-92, {
+          nodeType: 'email.tag', port: 'default', detail: { v: 1, continuedFrom: { runId: 401, nodeId: 'd', port: 'yes' } },
+        })], nextCursor: null } });
+      }
+      if (url.endsWith('/api/v1/workflows/by-source/-23')) return jsonResponse({ data: { id: 23, sourceSqliteId: -23, name: 'Rückgaben' } });
+      throw new Error(`unexpected ${url}`);
+    });
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const result = await transport.invoke(IPCChannels.Email.ListWorkflowRunsForMessage, { messageId: 55 });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        id: -92, server_id: 402, workflow_id: -23, workflow_name: 'Rückgaben', continued_from_run_id: 401,
+        last_step: { node_type: 'email.tag', status: 'ok', port: 'default' }, decision: null, dry_run: true,
+      }),
+      expect.objectContaining({
+        id: -91, server_id: 401, workflow_name: 'Rückgaben', continued_from_run_id: null, dry_run: false,
+        decision: { answer: 'yes', probability: 88, summary: 'Rückgabe' },
+      }),
+    ]);
+    // Liste, zwei Schritt-Listen, ein Workflow-Name.
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
+  test('lists the truly newest workflow runs for a message with more than 500 runs', async () => {
+    // Der Server paginiert aufsteigend nach id (cursor = letzte id der Seite).
+    const totalRuns = 650;
+    const fetchImpl = jest.fn(async (url: string) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/api/v1/email/messages/55/workflow-runs') {
+        const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
+        const limit = Number(parsed.searchParams.get('limit'));
+        const last = Math.min(cursor + limit, totalRuns);
+        const items = [];
+        for (let id = cursor + 1; id <= last; id += 1) {
+          items.push({ id, sourceSqliteId: -id, workflowSourceSqliteId: -23, messageSourceSqliteId: 55, status: 'completed' });
+        }
+        return jsonResponse({ data: { items, nextCursor: last < totalRuns ? last : null } });
+      }
+      if (parsed.pathname.endsWith('/steps')) return jsonResponse({ data: { items: [], nextCursor: null } });
+      if (parsed.pathname === '/api/v1/workflows/by-source/-23') return jsonResponse({ data: { id: 23, sourceSqliteId: -23, name: 'Rückgaben' } });
+      throw new Error(`unexpected ${url}`);
+    });
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    const result = await transport.invoke(IPCChannels.Email.ListWorkflowRunsForMessage, { messageId: 55 }) as Array<{ server_id: number }>;
+
+    // Die zwölf neuesten (650 … 639), nicht die neuesten der ersten 500.
+    expect(result.map((run) => run.server_id)).toEqual(Array.from({ length: 12 }, (_, index) => totalRuns - index));
+    // Schritte nur für die angezeigten Läufe.
+    expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes('/steps'))).toHaveLength(12);
   });
 
   test('maps PGP keyring channels to server HTTP compatibility routes', async () => {
@@ -8923,48 +9047,7 @@ describe('renderer transport', () => {
   });
 
   test('keeps HTTP transport registry coverage explicit for every invoke channel', () => {
-    const intentionallyUnsupported = new Set<string>([
-      // Native window/update/setup affordances are handled outside server HTTP invoke transport.
-      IPCChannels.Window.GetState,
-      IPCChannels.Update.CheckForUpdates,
-      IPCChannels.Update.InstallUpdate,
-      IPCChannels.Update.GetStatus,
-      IPCChannels.Update.OpenExternalUrl,
-      IPCChannels.Setup.GetDeployConfig,
-      IPCChannels.Setup.SaveDeployConfig,
-      IPCChannels.Setup.ResetDeployConfig,
-
-      // Server-client auth uses server-auth-client/AuthProvider instead of legacy invoke mapping.
-      IPCChannels.Auth.Login,
-      IPCChannels.Auth.Logout,
-      IPCChannels.Auth.GetSession,
-      IPCChannels.Auth.GetSetupState,
-      IPCChannels.Auth.GetOneTimeSetupPassword,
-      IPCChannels.Auth.SetInitialPassword,
-
-      // Local automation listener settings remain standalone/Electron-only.
-      IPCChannels.Automation.SetSettings,
-
-      // Mail backup, file-picker, attachment save/open dialogs remain local desktop actions.
-      IPCChannels.Email.ExportLocalMailBackup,
-      IPCChannels.Email.VerifyLocalMailBackup,
-      IPCChannels.Email.PickLocalMailBackupZip,
-      IPCChannels.Email.PreviewRestoreLocalMailBackup,
-      IPCChannels.Email.RestoreLocalMailBackup,
-      IPCChannels.Email.PickComposeAttachments,
-      IPCChannels.Email.RegisterDroppedComposeAttachments,
-      IPCChannels.Email.OpenAttachmentPath,
-      IPCChannels.Email.SaveAttachmentToDisk,
-
-      // Desktop-only trust action for peer keys; the server has PATCH /pgp/peer-keys/:id but no UI mapping yet.
-      IPCChannels.Pgp.SetPeerKeyTrust,
-
-      // Native workflow/knowledge file-dialog variants remain local; browser mode uses upload/download helpers.
-      IPCChannels.Email.ExportWorkflowBundleToFile,
-      IPCChannels.Email.ImportWorkflowBundleFromFile,
-      IPCChannels.Email.ExportKnowledgeBaseDocument,
-      IPCChannels.Email.ImportKnowledgeFile,
-    ]);
+    const intentionallyUnsupported = HTTP_TRANSPORT_UNSUPPORTED_CHANNELS;
     const missing = AllowedInvokeChannels
       .filter((channel) => !hasHttpInvocation(channel))
       .filter((channel) => !intentionallyUnsupported.has(channel));

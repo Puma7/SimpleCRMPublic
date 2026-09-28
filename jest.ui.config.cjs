@@ -1,4 +1,5 @@
 /**
+ * CI nutzt jest.ci.config.cjs (ein Lauf für beide Scopes); diese Config bleibt für lokale Einzelmessungen und …:update-baseline.
  * Standalone Jest config: email-UI coverage over src/components/email.
  * Baseline + ratchet only (no hard threshold) — the floor is enforced by
  * scripts/check-ui-coverage-ratchet.mjs against ui-coverage-baseline.json.

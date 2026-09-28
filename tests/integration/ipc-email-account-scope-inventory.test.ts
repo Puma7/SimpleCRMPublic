@@ -197,6 +197,7 @@ const READ_ONLY_CHANNELS = new Set<string>([
   IPCChannels.Email.ExportMessageEml,
   IPCChannels.Email.GetAccountMailSettings,
   IPCChannels.Email.GetLatestWorkflowRunForMessage,
+  IPCChannels.Email.ListWorkflowRunsForMessage,
   IPCChannels.Email.GetMessageCategory,
   IPCChannels.Email.ListMessageCategories,
   IPCChannels.Email.CategoryCounts,

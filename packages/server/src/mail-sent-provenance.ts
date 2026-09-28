@@ -1,10 +1,13 @@
 import {
   determineSentProvenance,
   outboundReviewSkippedKey,
+  overrideForHumanReply,
+  overrideForReviewSkip,
   type DraftOriginKind,
   type SentProvenance,
 } from '@simplecrm/core';
 
+import { linkAiDecisionOverrideSafe } from './ai-decision-events';
 import type { WorkspaceTransaction } from './db/workspace-context';
 import { outboundReviewApprovedKey } from './mail-outbound-approval-store';
 import { terminalInboundChildContext } from './workflow-inbound-chain-advance';
@@ -71,7 +74,7 @@ export async function recordSentProvenance(
 ): Promise<SentProvenance | null> {
   const row = await trx
     .selectFrom('email_messages')
-    .select(['draft_origin_kind', 'draft_origin_workflow_id', 'draft_origin_edited'])
+    .select(['draft_origin_kind', 'draft_origin_workflow_id', 'draft_origin_edited', 'reply_parent_message_id'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .executeTakeFirst();
@@ -132,10 +135,53 @@ export async function recordSentProvenance(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .execute();
+  await linkSentDecisionOverrides(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
+    provenance,
+    now: input.now,
+  });
   await trx
     .deleteFrom('sync_info')
     .where('workspace_id', '=', input.workspaceId)
     .where('key', '=', outboundReviewSkippedKey(input.messageId))
     .execute();
   return provenance;
+}
+
+/**
+ * Plan 050: Korrekturen der KI-Entscheidung aus dem Versand (Fehler abgefangen,
+ * der Versand scheitert nie daran). Ein Mensch beantwortet die Mail selbst →
+ * Rückmeldung „human_needed“ an der Ursprungsmail; „Ohne Ausgangsprüfung
+ * senden“ → Rückmeldung „send_ok“ am Entwurf.
+ */
+async function linkSentDecisionOverrides(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    replyParentMessageId: number | null;
+    provenance: SentProvenance;
+    now: Date;
+  },
+): Promise<void> {
+  if (input.provenance.kind === 'human' && input.replyParentMessageId !== null) {
+    await linkAiDecisionOverrideSafe(trx, {
+      workspaceId: input.workspaceId,
+      messageId: input.replyParentMessageId,
+      signal: 'human_needed',
+      resolve: (answer) => overrideForHumanReply({ answer }),
+      now: input.now,
+    });
+  }
+  if (input.provenance.outboundReviewSkipped) {
+    await linkAiDecisionOverrideSafe(trx, {
+      workspaceId: input.workspaceId,
+      messageId: input.messageId,
+      signal: 'send_ok',
+      resolve: (answer) => overrideForReviewSkip({ answer }),
+      now: input.now,
+    });
+  }
 }

@@ -15,7 +15,7 @@ import {
   extractTicketFromSubject,
   generateOutboundMessageId,
   generateTicketCode,
-  outboundDraftFingerprint,
+  outboundApprovalFingerprint,
   parseOutboundApprovalMarker,
   replaceTags,
   resolveConfiguredSmtpHost,
@@ -885,21 +885,22 @@ export function createPostgresComposeOutboundReviewPort(options: {
 }): ComposeOutboundReviewPort {
   return {
     async review(input) {
-      return withWorkspaceTransaction(
+      const now = options.now?.() ?? new Date();
+      // Tx A: Freigabe-Marker, Ausgangs-Workflows und Entwurf lesen.
+      const prepared = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const now = options.now?.() ?? new Date();
-
           // Approval-Bypass: if email.release_outbound (autoSend=true) recently
           // approved this draft for the EXACT content present now, skip the
-          // review entirely. The marker stores a content fingerprint
-          // (subject+body+to/cc/bcc+attachments). On read we recompute the
-          // fingerprint from the current send-input and compare:
+          // review entirely. The marker stores a fingerprint of the content
+          // (subject+body+to/cc/bcc+attachments) AND the sender account
+          // (outboundApprovalFingerprint). On read we recompute it from the
+          // current send-input and the draft row's account and compare:
           //  - hash matches + < 24h: bypass review (covers SMTP retries).
-          //  - hash differs: user edited the draft between approval and send;
-          //    deny bypass so the change goes through review again.
-          //  - no hash (older marker): backward compat — accept fresh markers.
+          //  - hash differs: the draft was edited or moved to another sender
+          //    account after the approval; deny bypass so it is reviewed again.
+          //  - no hash (legacy marker): invalid, reviewed again.
           // The marker is otherwise NOT consumed on read so SMTP retries inside
           // scheduled-send can all bypass; markDraftAsSent clears it on success.
           const approvalKey = outboundReviewApprovedKey(input.draftMessageId);
@@ -913,7 +914,13 @@ export function createPostgresComposeOutboundReviewPort(options: {
             const parsed = parseOutboundApprovalMarker(approval.value);
             const fresh = parsed.approvedAt !== null
               && now.getTime() - parsed.approvedAt.getTime() < OUTBOUND_REVIEW_APPROVED_TTL_MS;
-            const currentFingerprint = outboundDraftFingerprint({
+            const draftAccount = await trx
+              .selectFrom('email_messages')
+              .select('account_id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.draftMessageId)
+              .executeTakeFirst();
+            const currentFingerprint = outboundApprovalFingerprint({
               subject: input.subject,
               bodyText: input.bodyText,
               bodyHtml: input.bodyHtml,
@@ -921,8 +928,9 @@ export function createPostgresComposeOutboundReviewPort(options: {
               cc: input.cc ?? null,
               bcc: input.bcc ?? null,
               attachmentPaths: input.attachmentPaths ?? null,
+              accountId: draftAccount?.account_id ?? null,
             });
-            const contentMatches = parsed.fingerprint === null || parsed.fingerprint === currentFingerprint;
+            const contentMatches = parsed.fingerprint !== null && parsed.fingerprint === currentFingerprint;
             if (fresh && contentMatches) {
               await trx
                 .updateTable('email_messages')
@@ -930,7 +938,7 @@ export function createPostgresComposeOutboundReviewPort(options: {
                 .where('workspace_id', '=', input.workspaceId)
                 .where('id', '=', input.draftMessageId)
                 .execute();
-              return { allowed: true };
+              return { done: { allowed: true } as ComposeOutboundReviewResult, workflows: [] };
             }
             if (!fresh || !contentMatches) {
               // Stale OR invalidated by an edit: clear so future reviews start fresh.
@@ -964,52 +972,64 @@ export function createPostgresComposeOutboundReviewPort(options: {
               .where('workspace_id', '=', input.workspaceId)
               .where('id', '=', input.draftMessageId)
               .execute();
-            return { allowed: true };
+            return { done: { allowed: true } as ComposeOutboundReviewResult, workflows: [] };
           }
 
-          const draft = await trx
-            .selectFrom('email_messages')
-            .select(['id', 'source_sqlite_id', 'body_text', 'body_html'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.draftMessageId)
-            .where('uid', '<', 0)
-            .where('folder_kind', '=', 'draft')
-            .executeTakeFirst();
-          if (!draft) return { allowed: false, error: 'Entwurf nicht gefunden' };
+          const draft = await selectOutboundReviewDraft(trx, input);
+          if (!draft) {
+            return { done: { allowed: false, error: 'Entwurf nicht gefunden' } as ComposeOutboundReviewResult, workflows: [] };
+          }
+          return { done: null, workflows };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (prepared.done) return prepared.done;
+      const { workflows } = prepared;
 
-          if (options.workflowDryRun) {
-            const dryRun = await evaluateComposeOutboundDryRun({
-              workflowDryRun: options.workflowDryRun,
+      // Die Vorschau fragt ggf. ein KI-Modell (bis 90 s je Knoten): keine
+      // Transaktion offen halten. Wirft sie, scheitert review() wie bisher.
+      const dryRun = options.workflowDryRun
+        ? await evaluateComposeOutboundDryRun({
+            workflowDryRun: options.workflowDryRun,
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            trustedService: input.trustedService === true,
+            draftMessageId: input.draftMessageId,
+            subject: input.subject,
+            bodyText: input.bodyText,
+            bodyHtml: input.bodyHtml,
+            to: input.to,
+            cc: input.cc,
+            bcc: input.bcc,
+            inReplyToMessageId: input.inReplyToMessageId,
+            attachmentCount: input.attachmentCount,
+            attachmentPaths: input.attachmentPaths,
+            workflows,
+          })
+        : { allowed: true as const };
+
+      // Tx B: Ergebnis schreiben (Sperre oder Prüfung einreihen).
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx): Promise<ComposeOutboundReviewResult> => {
+          if (!dryRun.allowed) {
+            // Synchroner Block (auch ai.decide, das hier die KI fragt) oder
+            // Workflow-Fehler: der Entwurf bleibt wie auf dem Desktop endgültig
+            // angehalten — Hinweis mit Grund im Posteingang, Planung gelöscht —,
+            // gleich ob ein Mensch sendet oder der geplante Versand. Die
+            // Antwort bleibt ein Fehler mit Grund.
+            const reason = await persistOutboundBlockOnDraft(trx, {
               workspaceId: input.workspaceId,
-              actorUserId: input.actorUserId,
-              trustedService: input.trustedService === true,
-              draftMessageId: input.draftMessageId,
-              subject: input.subject,
-              bodyText: input.bodyText,
-              bodyHtml: input.bodyHtml,
-              to: input.to,
-              cc: input.cc,
-              bcc: input.bcc,
-              inReplyToMessageId: input.inReplyToMessageId,
-              attachmentCount: input.attachmentCount,
-              attachmentPaths: input.attachmentPaths,
-              workflows,
+              messageId: input.draftMessageId,
+              reason: dryRun.reason,
+              now,
             });
-            if (!dryRun.allowed) {
-              // Synchroner Block (auch ai.decide, das hier die KI fragt) oder
-              // Workflow-Fehler: der Entwurf bleibt wie auf dem Desktop endgültig
-              // angehalten — Hinweis mit Grund im Posteingang, Planung gelöscht —,
-              // gleich ob ein Mensch sendet oder der geplante Versand. Die
-              // Antwort bleibt ein Fehler mit Grund.
-              const reason = await persistOutboundBlockOnDraft(trx, {
-                workspaceId: input.workspaceId,
-                messageId: input.draftMessageId,
-                reason: dryRun.reason,
-                now,
-              });
-              return { allowed: false, error: reason, held: true };
-            }
+            return { allowed: false, error: reason, held: true };
           }
+
+          const draft = await selectOutboundReviewDraft(trx, input);
+          if (!draft) return { allowed: false, error: 'Entwurf nicht gefunden' };
 
           const { plain, html } = extractDraftBodyForOutboundBlock(
             {
@@ -1102,6 +1122,17 @@ export function createPostgresComposeOutboundReviewPort(options: {
       );
     },
   };
+}
+
+function selectOutboundReviewDraft(trx: WorkspaceTransaction, input: ComposeOutboundReviewInput) {
+  return trx
+    .selectFrom('email_messages')
+    .select(['id', 'source_sqlite_id', 'body_text', 'body_html'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.draftMessageId)
+    .where('uid', '<', 0)
+    .where('folder_kind', '=', 'draft')
+    .executeTakeFirst();
 }
 
 function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions): ComposeSenderStore {

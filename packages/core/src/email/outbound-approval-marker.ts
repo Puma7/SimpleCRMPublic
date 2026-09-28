@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { hasSimpleEmailShape, trailingAngleBracketContent } from './email-address-shape';
 import { normalizeOutboundHoldContent, type OutboundHoldContentInput } from './outbound-review-skip';
 
 /** Stable content fingerprint for outbound drafts, used by the approval marker
@@ -12,7 +13,7 @@ import { normalizeOutboundHoldContent, type OutboundHoldContentInput } from './o
  *  see. Metadata bookkeeping (updated_at, scheduled_send_at, internal flags)
  *  is excluded so an unrelated touch (e.g. another node flipping outbound_hold)
  *  does NOT invalidate the marker. */
-export function outboundDraftFingerprint(input: {
+export type OutboundDraftFingerprintInput = {
   subject?: string | null;
   bodyText?: string | null;
   bodyHtml?: string | null;
@@ -20,7 +21,9 @@ export function outboundDraftFingerprint(input: {
   cc?: string | null;
   bcc?: string | null;
   attachmentPaths?: readonly string[] | null;
-}): string {
+};
+
+export function outboundDraftFingerprint(input: OutboundDraftFingerprintInput): string {
   const canonical = JSON.stringify({
     subject: (input.subject ?? '').trim(),
     bodyText: input.bodyText ?? '',
@@ -31,6 +34,24 @@ export function outboundDraftFingerprint(input: {
     attachmentPaths: [...(input.attachmentPaths ?? [])].sort(),
   });
   return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+}
+
+/** Freigabe-Marker: Inhalt plus Absenderkonto. Nach einem Kontowechsel ginge
+ *  derselbe Text über eine Absender-Identität raus, die die Prüfung nie sah. */
+export function outboundApprovalFingerprint(
+  input: OutboundDraftFingerprintInput & { accountId: unknown },
+): string {
+  const { accountId, ...content } = input;
+  return createHash('sha256')
+    .update(`approval|${outboundDraftFingerprint(content)}|account:${approvalAccountKey(accountId)}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function approvalAccountKey(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const text = String(value).trim();
+  return /^\d+$/.test(text) ? String(Number(text)) : text;
 }
 
 function normalizeRecipientList(value: string | null | undefined): string[] {
@@ -44,16 +65,19 @@ function normalizeRecipientList(value: string | null | undefined): string[] {
 
 function extractRecipientEmail(part: string): string {
   if (!part) return '';
-  const angle = part.match(/^(.+)<([^>]+)>$/);
-  const candidate = (angle ? angle[2] : part).trim().toLowerCase();
-  if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(candidate)) return candidate;
+  // Linear statt `/^(.+)<([^>]+)>$/` und `/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/`
+  // (CodeQL: polynomial bei präparierten Empfängern); gleiches Ergebnis, damit
+  // gespeicherte Fingerprints gültig bleiben.
+  const angle = trailingAngleBracketContent(part);
+  const candidate = (angle ?? part).trim().toLowerCase();
+  if (hasSimpleEmailShape(candidate, '<>')) return candidate;
   return part.trim().toLowerCase();
 }
 
 /** Encodes timestamp + fingerprint into the approval-marker `sync_info.value`.
- *  Backwards-compatible reader: a value without the `|<hash>` suffix is still
- *  treated as a valid marker (fingerprint check skipped) so old markers from
- *  before this change keep working. */
+ *  The fingerprint comes from `outboundApprovalFingerprint` (content and sender
+ *  account). A value without the `|<hash>` suffix is invalid: readers treat it
+ *  as "no approval" and the draft goes through the review again. */
 export function encodeOutboundApprovalMarker(now: Date, fingerprint: string): string {
   return `${now.toISOString()}|${fingerprint}`;
 }
@@ -81,7 +105,7 @@ export function parseOutboundApprovalMarker(raw: string | null | undefined): Out
 export function outboundHoldFingerprint(input: OutboundHoldContentInput): string {
   const normalized = normalizeOutboundHoldContent(input);
   // Das Absenderkonto gehört dazu (Kontowechsel = neuer Stand); der Freigabe-
-  // Marker (outboundDraftFingerprint) bleibt unverändert.
+  // Marker bindet es über outboundApprovalFingerprint.
   return createHash('sha256')
     .update(`${outboundDraftFingerprint(normalized)}|account:${normalized.accountId}`)
     .digest('hex')

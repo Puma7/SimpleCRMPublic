@@ -506,6 +506,21 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
           'Ein Entscheidungsmodell (Profil-Typ „OpenRouter Entscheidungsmodell (Decisions API)“) oder ein normales ' +
           'Chat-Modell. Chat-Modelle liefern zusätzlich eine kurze Begründung. Leer = Standard-Profil.',
       },
+      {
+        key: 'feedbackSignal',
+        type: 'select',
+        label: 'Rückmeldung für die Treffsicherheit',
+        help:
+          'Worauf sich „Ja“ bezieht. Dann zählen Korrekturen von Menschen (z. B. eine als Spam eingestufte Mail ' +
+          'zurück in den Posteingang) als Rückmeldung, und die Einstellungen zeigen Treffsicherheit und einen ' +
+          'Vorschlag für die Mindest-Sicherheit. Es werden nur Antwort, Wahrscheinlichkeit und Schwelle gespeichert, kein Mailtext.',
+        options: [
+          { value: 'none', label: 'Keine Rückmeldung' },
+          { value: 'spam', label: 'Ja = Spam' },
+          { value: 'human_needed', label: 'Ja = Mensch nötig' },
+          { value: 'send_ok', label: 'Ja = versandfähig' },
+        ],
+      },
     ],
     ports: [
       {

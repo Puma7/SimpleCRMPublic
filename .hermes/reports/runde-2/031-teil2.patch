@@ -1,0 +1,115 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 9ed627c5..285198ee 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -18,8 +18,9 @@ concurrency:
+ jobs:
+   build-and-test:
+     runs-on: ubuntu-latest
+-    # Lint, the full Jest run and three coverage passes (mail, server, UI) now take
+-    # about 22 minutes; 35 leaves headroom while still catching a hung job.
++    # Lint, one Jest run with coverage (unit + integration, server and UI scopes),
++    # the mail run and the build take about 16 minutes; 35 leaves headroom while
++    # still catching a hung job.
+     timeout-minutes: 35
+ 
+     steps:
+@@ -68,19 +69,17 @@ jobs:
+       - name: Lint
+         run: pnpm run lint
+ 
+-      - name: Run tests
+-        run: pnpm test
++      - name: Run tests (unit + integration, once, with coverage)
++        run: pnpm run test:ci:coverage
+ 
+       - name: Mail module tests (coverage ratchet)
+         run: pnpm run test:mail:coverage:check
+ 
+-      - name: Server module coverage (ratchet)
+-        run: |
+-          pnpm run test:server:coverage
+-          node scripts/check-server-coverage-ratchet.mjs
++      - name: Server coverage ratchet
++        run: node scripts/check-server-coverage-ratchet.mjs
+ 
+       - name: Email UI coverage ratchet
+-        run: pnpm run test:ui:coverage:check
++        run: node scripts/check-ui-coverage-ratchet.mjs
+ 
+       - name: Upload coverage summaries
+         if: ${{ always() }}
+@@ -88,6 +87,7 @@ jobs:
+         with:
+           name: coverage-summaries-${{ github.run_id }}-${{ github.run_attempt }}
+           path: |
++            coverage/ci/coverage-summary.json
+             coverage/mail/coverage-summary.json
+             coverage/server/coverage-summary.json
+             coverage/ui/coverage-summary.json
+diff --git a/docs/LEARNINGS.md b/docs/LEARNINGS.md
+index a7662cd7..d4919d6e 100644
+--- a/docs/LEARNINGS.md
++++ b/docs/LEARNINGS.md
+@@ -39,7 +39,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
+ 18. **Desktop IPC scope** — every IPC payload with an object id must resolve to its mail account in `electron/ipc/ipc-account-scope.ts` or be listed as global with a reason; `unresolved` is owner/admin only, and every account channel declares its level (`ro`/`rw`). Inventory and classification tests fail when a new channel is missing.
+ 19. **Event streams mirror REST** — WebSocket/replay delivery of non-mail events uses `NON_MAIL_EVENT_READ_POLICY` (same right as the REST read route; unknown families admin-only). Add new event families there, or the inventory test fails.
+ 20. **Worktree type checks** — in a git worktree whose `packages/server/node_modules` is a symlink to the main checkout, `tsc -b packages/server` checks against the main checkout's `packages/core/dist`; rebuild core in the main checkout (or use a `paths` override) before trusting the result.
+-21. **Timing assertions under coverage** — CI runs the unit tests again under the server and UI coverage configs; instrumented code is several times slower, so a "stays fast" test only catches real super-linear behaviour. Parsers of model output must bound their work (step budget), not just the input length.
++21. **Timing assertions under coverage** — CI runs the unit and integration tests under coverage (`jest.ci.config.cjs`); instrumented code is several times slower, so a "stays fast" test only catches real super-linear behaviour. Parsers of model output must bound their work (step budget), not just the input length.
+ 22. **Outbound hold helper** — every final outbound block on the server goes through `persistOutboundBlockOnDraft` (`packages/server/src/mail-outbound-hold.ts`): it sets the real reason, rewrites the draft banner and clears the schedule so the draft shows up in the inbox. Writing `outbound_hold` directly leaves automatic replies invisibly scheduled.
+ 23. **One clock per comparison** — Postgres `now()` has microseconds, a JS `Date` only milliseconds. A test that seeds `created_at` with `now()` and then filters `created_at <= new Date()` loses the row whenever both fall into the same millisecond (measured: most of the time right after a query). Seed timestamps from the same clock the code under test uses.
+ 24. **Updates** — server: `sh docker/simplecrm update --version latest` (release tag, backup, health wait, two image generations `gen-*`, build cache budget, `simplecrm rollback` without rebuild, protected pre-update backup, `simplecrm disk`); `VERSION` stays the compose image tag, the release goes in `RELEASE`. Docker build cache was the real disk hog (17.5 GB on a 38 GB server); desktop: the packaged app snapshots `database.sqlite` to `backups/pre-update/` before the first start of a new version (`electron/maintenance/pre-update-backup.ts`). User guide: README „Aktualisieren“.
+diff --git a/jest.server.config.cjs b/jest.server.config.cjs
+index a5fe8325..3d92e061 100644
+--- a/jest.server.config.cjs
++++ b/jest.server.config.cjs
+@@ -1,4 +1,5 @@
+ /**
++ * CI nutzt jest.ci.config.cjs (ein Lauf für beide Scopes); diese Config bleibt für lokale Einzelmessungen und …:update-baseline.
+  * Standalone Jest config: server-edition coverage over packages/server/src.
+  * Baseline + ratchet only (no hard threshold) — the floor is enforced by
+  * scripts/check-server-coverage-ratchet.mjs against server-coverage-baseline.json.
+diff --git a/jest.ui.config.cjs b/jest.ui.config.cjs
+index dc45f971..089d1ea3 100644
+--- a/jest.ui.config.cjs
++++ b/jest.ui.config.cjs
+@@ -1,4 +1,5 @@
+ /**
++ * CI nutzt jest.ci.config.cjs (ein Lauf für beide Scopes); diese Config bleibt für lokale Einzelmessungen und …:update-baseline.
+  * Standalone Jest config: email-UI coverage over src/components/email.
+  * Baseline + ratchet only (no hard threshold) — the floor is enforced by
+  * scripts/check-ui-coverage-ratchet.mjs against ui-coverage-baseline.json.
+diff --git a/package.json b/package.json
+index f8562067..0a077b88 100644
+--- a/package.json
++++ b/package.json
+@@ -70,6 +70,7 @@
+     "test:coverage": "jest --coverage --selectProjects unit integration",
+     "test:mail": "jest --config=jest.mail.config.cjs --coverageThreshold={}",
+     "test:mail:coverage": "jest --config jest.mail.config.cjs",
++    "test:ci:coverage": "jest --config jest.ci.config.cjs && node scripts/split-coverage-summary.mjs",
+     "test:mail:coverage:check": "pnpm run test:mail && node scripts/check-mail-coverage-ratchet.mjs",
+     "test:mail:coverage:update-baseline": "npm run test:mail:coverage && node scripts/check-mail-coverage-ratchet.mjs --update-baseline",
+     "test:server:coverage": "jest --config jest.server.config.cjs",
+diff --git a/tests/integration/ci-coverage-gates.test.ts b/tests/integration/ci-coverage-gates.test.ts
+index 86578e96..89e741f4 100644
+--- a/tests/integration/ci-coverage-gates.test.ts
++++ b/tests/integration/ci-coverage-gates.test.ts
+@@ -11,6 +11,16 @@ describe('CI coverage gates', () => {
+     expect(workflow.includes('check-ui-coverage-ratchet.mjs') || workflow.includes('test:ui:coverage:check')).toBe(true);
+   });
+ 
++  test('Jest runs once with coverage; the duplicate runs do not come back', () => {
++    const workflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
++    expect(workflow).toContain('pnpm run test:ci:coverage');
++    expect(workflow).toContain('node scripts/check-server-coverage-ratchet.mjs');
++    expect(workflow).toContain('node scripts/check-ui-coverage-ratchet.mjs');
++    expect(workflow).not.toContain('pnpm run test:server:coverage');
++    expect(workflow).not.toContain('test:ui:coverage');
++    expect(workflow).not.toMatch(/run: pnpm test\s*$/m);
++  });
++
+   test('test:mail:coverage:check ends with the mail ratchet', () => {
+     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+     expect(pkg.scripts['test:mail:coverage:check']).toMatch(/node scripts\/check-mail-coverage-ratchet\.mjs$/);

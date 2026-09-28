@@ -506,6 +506,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
       contextMode: 'full',
       threshold: 80,
       profileId: null,
+      feedbackSignal: 'none',
     },
   },
   {

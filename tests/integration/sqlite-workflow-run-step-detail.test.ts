@@ -27,6 +27,7 @@ import { executeWorkflowForTrigger } from '../../electron/workflow/workflow-exec
 import {
   getLatestWorkflowRunForMessage,
   listWorkflowRunSteps,
+  listWorkflowRunsForMessage,
   pruneWorkflowRunStepDetails,
 } from '../../electron/workflow/run-steps';
 
@@ -112,6 +113,25 @@ describe('Desktop: Eingang/Ausgang je Lauf-Schritt', () => {
       variables: { 'ai.decide.answer': 'nein', 'ai.decide.probability': 10 },
       note: 'Ausgang „Nein“ ist mit keinem Knoten verbunden – der Lauf endet hier, es passiert nichts weiter.',
     });
+  });
+
+  // Plan 046: Details → Automatik im Lesefenster.
+  test('Läufe einer Mail: Workflow-Name, Status und KI-Entscheidung', async () => {
+    mockDecide.mockResolvedValue({ source: 'decisions', probability: 10, modelAnswer: null, reason: '', model: 'typesafe/jev-1.13' });
+    await runSpamfilter();
+    const runs = listWorkflowRunsForMessage(501);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      server_id: runs[0]!.id,
+      workflow_id: WORKFLOW_ID,
+      workflow_name: 'Spamfilter',
+      direction: 'inbound',
+      last_step: { node_type: 'ai.decide', port: 'nein' },
+      decision: { answer: 'nein', probability: 10 },
+      continued_from_run_id: null,
+      dry_run: false,
+    });
+    expect(listWorkflowRunsForMessage(99_999)).toEqual([]);
   });
 
   test('„Ja“ mit Kante: kein Hinweis; die Mail steht nur im ersten Schritt', async () => {

@@ -63,6 +63,9 @@ import {
     createEmailWorkflowRunStepsTable,
     createWorkflowKnowledgeBasesTable,
     createWorkflowKnowledgeChunksTable,
+    createWorkflowKnowledgeSectionsTable,
+    WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS,
+    WORKFLOW_KNOWLEDGE_SECTIONS_TABLE,
     createWorkflowDelayedJobsTable,
     createEmailWorkflowVersionsTable,
     createEmailSpamListEntriesTable,
@@ -74,6 +77,9 @@ import {
     AI_LEARNINGS_INDEXES,
     AI_LEARNING_DIGESTS_TABLE,
     AI_LEARNING_CANDIDATES_TABLE,
+    AI_DECISION_EVENTS_TABLE,
+    createAiDecisionEventsTable,
+    AI_DECISION_EVENTS_INDEXES,
     EMAIL_WORKFLOW_VERSIONS_TABLE,
     EMAIL_WORKFLOW_RUN_STEPS_TABLE,
     WORKFLOW_KNOWLEDGE_BASES_TABLE,
@@ -202,8 +208,10 @@ export function bootstrapFreshDatabaseSchema(
         connection.exec(createEmailSpamDecisionsTable);
         connection.exec(createAiLearningDigestsTable);
         connection.exec(createAiLearningCandidatesTable);
+        connection.exec(createAiDecisionEventsTable);
         indexes.forEach((index) => connection.exec(index));
         AI_LEARNINGS_INDEXES.forEach((index) => connection.exec(index));
+        AI_DECISION_EVENTS_INDEXES.forEach((index) => connection.exec(index));
         runMigrations();
         setupEmailFtsIndex();
         migrateEmailFtsSearchV2();
@@ -912,6 +920,8 @@ function runMigrations() {
                 // (bewusst getrennt vom fail-closed outbound_hold) + RFC-3834-Marker.
                 { name: 'approval_state', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_state TEXT` },
                 { name: 'approval_reason', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN approval_reason TEXT` },
+                // Plan 048: genutztes Wissen am KI-Entwurf (Freigabe-Hinweis).
+                { name: 'ai_sources', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN ai_sources TEXT` },
                 { name: 'auto_submitted', sql: `ALTER TABLE ${EMAIL_MESSAGES_TABLE} ADD COLUMN auto_submitted INTEGER NOT NULL DEFAULT 0` },
             ];
             for (const col of emailMsgCols) {
@@ -1149,10 +1159,16 @@ function runMigrations() {
         ensureMigrationTable(EMAIL_WORKFLOW_RUN_STEPS_TABLE, createEmailWorkflowRunStepsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_run_steps_run ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(run_id);`,
         ]);
+        // Automatik-Cockpit (Plan 049): KI-Entscheidungen der letzten 30 Tage.
+        // Bedingungslos: ensureMigrationTable legt Indizes nur für neue Tabellen an.
+        conn.exec(`CREATE INDEX IF NOT EXISTS idx_wf_run_steps_type_created ON ${EMAIL_WORKFLOW_RUN_STEPS_TABLE}(node_type, created_at);`);
         ensureMigrationTable(WORKFLOW_KNOWLEDGE_BASES_TABLE, createWorkflowKnowledgeBasesTable, []);
         ensureMigrationTable(WORKFLOW_KNOWLEDGE_CHUNKS_TABLE, createWorkflowKnowledgeChunksTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_kb_chunks_kb ON ${WORKFLOW_KNOWLEDGE_CHUNKS_TABLE}(knowledge_base_id);`,
         ]);
+        // Plan 048: Abschnitte als Suchindex (abgeleitet, Volltext per FTS5).
+        ensureMigrationTable(WORKFLOW_KNOWLEDGE_SECTIONS_TABLE, createWorkflowKnowledgeSectionsTable, []);
+        for (const statement of WORKFLOW_KNOWLEDGE_SECTIONS_FTS_STATEMENTS) conn.exec(statement);
         ensureMigrationTable(WORKFLOW_DELAYED_JOBS_TABLE, createWorkflowDelayedJobsTable, [
             `CREATE INDEX IF NOT EXISTS idx_wf_delayed_execute ON ${WORKFLOW_DELAYED_JOBS_TABLE}(status, execute_at);`,
         ]);
@@ -1173,6 +1189,14 @@ function runMigrations() {
         // TA-P5 Learnings: Tabellen und der KI-Schnappschuss am Entwurf (Server seit 0018).
         ensureMigrationTable(AI_LEARNING_DIGESTS_TABLE, createAiLearningDigestsTable, [...AI_LEARNINGS_INDEXES]);
         ensureMigrationTable(AI_LEARNING_CANDIDATES_TABLE, createAiLearningCandidatesTable, [...AI_LEARNINGS_INDEXES]);
+        // Plan 050: Treffsicherheit der KI-Entscheidung (Server seit 0066).
+        ensureMigrationTable(AI_DECISION_EVENTS_TABLE, createAiDecisionEventsTable, [...AI_DECISION_EVENTS_INDEXES]);
+        // Übernommene Fassung getrennt vom KI-Vorschlag (Server seit 0061).
+        const digestCols = conn.prepare(`PRAGMA table_info(${AI_LEARNING_DIGESTS_TABLE})`).all() as { name: string }[];
+        if (!digestCols.some((c) => c.name === 'accepted_content')) {
+            console.log('Adding accepted_content to ai_learning_digests...');
+            conn.exec(`ALTER TABLE ${AI_LEARNING_DIGESTS_TABLE} ADD COLUMN accepted_content TEXT`);
+        }
         if (msgTableExists) {
             const snapshotCols = conn.prepare(`PRAGMA table_info(${EMAIL_MESSAGES_TABLE})`).all() as { name: string }[];
             if (!snapshotCols.some((c) => c.name === 'ai_suggestion_snapshot')) {

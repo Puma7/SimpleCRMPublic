@@ -515,6 +515,7 @@ export async function evaluateOutboundWorkflows(
       cc: payload.cc ?? null,
       bcc: payload.bcc ?? null,
       attachmentPaths: payload.attachmentPaths ?? parseDraftAttachmentPathsJson(row.draft_attachment_paths_json),
+      accountId: row.account_id,
     })
   ) {
     if (draftSideEffects) setOutboundHold(payload.messageId, false, null);

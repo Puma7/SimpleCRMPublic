@@ -37,6 +37,9 @@ const accountMailViewSchema = z.enum([
   'inbox',
   'sent',
   'sent_ai',
+  // Plan 049: Warteschlangen der Teilautomatisierung (nur Anzeige, kein Ablageziel).
+  'approval_pending',
+  'outbound_blocked',
   'archived',
   'drafts',
   'scheduled_send',
@@ -458,6 +461,29 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         finished_at: z.string().nullable(),
       })
       .nullable(),
+  });
+  set(IPCChannels.Email.ListWorkflowRunsForMessage, {
+    payload: z.object({ messageId: positiveInt }),
+    result: z.array(
+      z.object({
+        // Server: Id aus sourceSqliteId (bei Worker-Läufen negativ).
+        id: z.number().int(),
+        server_id: z.number().int(),
+        workflow_id: z.number().int().nullable(),
+        workflow_name: z.string(),
+        direction: z.string(),
+        status: z.string(),
+        started_at: z.string().nullable(),
+        finished_at: z.string().nullable(),
+        last_step: z
+          .object({ node_type: z.string(), status: z.string(), port: z.string().nullable() })
+          .nullable(),
+        decision: z
+          .object({ answer: z.string().nullable(), probability: z.number().nullable(), summary: z.string().nullable() })
+          .nullable(),
+        continued_from_run_id: z.number().int().nullable(),
+      }),
+    ),
   });
   set(IPCChannels.Email.GetMailDiagnostics, {
     payload: voidPayload,
@@ -1612,8 +1638,11 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       workflowId: positiveInt,
       messageId: positiveInt,
       dryRun: z.boolean().optional(),
+      /** Testlauf: KI-Entscheidung wirklich fragen (Plan 047 Phase B). */
+      realAi: z.boolean().optional(),
     }),
-    result: z.object({}).passthrough(),
+    // runId: gespeicherter Testlauf (Plan 047), am Server negative Quell-ID.
+    result: z.object({ runId: z.number().int().optional() }).passthrough(),
   });
   set(IPCChannels.Email.ExecuteWorkflowNow, {
     payload: z.object({
@@ -1640,6 +1669,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.GetWorkflowRunLog, { payload: positiveInt, result: z.array(z.string()) });
   set(IPCChannels.Email.ListWorkflowRunSteps, { payload: positiveInt, result: recordArray });
+  set(IPCChannels.Email.GetAiDecisionStats, {
+    payload: z.object({
+      workflowId: positiveInt,
+      nodeId: z.string().trim().min(1).max(200),
+      days: z.number().int().min(1).max(365).optional(),
+    }),
+    result: z.object({
+      total: z.number(),
+      byAnswer: z.record(z.string(), z.number()),
+      histogram: z.array(z.number()),
+      closed: z.number(),
+      agreed: z.number(),
+      overridden: z.number(),
+      agreementRate: z.number().nullable(),
+      labelled: z.number(),
+      minSamples: z.number(),
+      suggestedThreshold: z.number().nullable(),
+    }).passthrough(),
+  });
   set(IPCChannels.Email.ListWorkflowTemplates, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.ImportWorkflowBundle, {
     payload: z.object({ json: nonEmptyString }),

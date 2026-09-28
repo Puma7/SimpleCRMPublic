@@ -272,6 +272,8 @@ const EmailChannels = literal({
   ListImapAuthNotices: 'email:list-imap-auth-notices',
   DismissImapAuthNotice: 'email:dismiss-imap-auth-notice',
   GetLatestWorkflowRunForMessage: 'email:get-latest-workflow-run-for-message',
+  /** Alle Automatik-Läufe einer Mail für das Lesefenster (Details → Automatik). */
+  ListWorkflowRunsForMessage: 'email:list-workflow-runs-for-message',
   GetMailDiagnostics: 'email:get-mail-diagnostics',
   RetryMessagePostProcess: 'email:retry-message-post-process',
   ExportLocalMailBackup: 'email:export-local-mail-backup',
@@ -384,6 +386,8 @@ const EmailChannels = literal({
   CancelWorkflowDelayedJob: 'workflow:cancel-delayed-job',
   GetWorkflowRunLog: 'workflow:get-run-log',
   ListWorkflowRunSteps: 'workflow:list-run-steps',
+  /** Plan 050: Treffsicherheit eines ai.decide-Knotens (nur Kennzahlen). */
+  GetAiDecisionStats: 'workflow:ai-decision-stats',
   ListWorkflowTemplates: 'workflow:list-templates',
   ImportWorkflowBundle: 'workflow:import-bundle',
   ExportWorkflowBundle: 'workflow:export-bundle',

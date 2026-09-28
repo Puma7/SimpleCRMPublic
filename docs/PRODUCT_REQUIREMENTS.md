@@ -62,7 +62,7 @@ Legende: **Muss** = Release-kritisch · **Soll** = geplant/nächste Iteration ·
 | AI-2 | Prompt-Bibliothek mit Profil-Zuordnung | Muss | ✅ |
 | AI-3 | Workflow-Knoten: Spam-Score, Klassifizierung, Agent, Outbound-Review | Muss | ✅ |
 | AI-4 | **KI-Profil-Dropdown** im Workflow-Knoten-Editor | Muss | ✅ |
-| AI-5 | Embeddings / Vektor-RAG | Soll | ✅ (Keyword + Cosine in `knowledge-base.ts`; `runEmbedding` wenn Embedding-Modell konfiguriert) |
+| AI-5 | Embeddings / Vektor-RAG | Soll | ✅ Abschnitts-Suche: jede Wissensbasis wird beim Speichern in `##`-Abschnitte zerlegt (`workflow_knowledge_sections`, Kern `knowledge-chunking.ts`); gesucht wird per Volltext (Server Postgres `german`, Desktop SQLite FTS5) bzw. Cosine, wenn ein Embedding-Modell konfiguriert ist. Kleine Wissensbasen (≤ 6 000 Zeichen) gehen ganz mit. Der KI-Entwurf speichert „Wissensbasis › Abschnitt“ (`ai_sources`) für den Freigabe-Hinweis. |
 
 ---
 

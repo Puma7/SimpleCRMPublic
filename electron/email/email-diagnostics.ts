@@ -117,17 +117,17 @@ export function collectMailDiagnostics(): MailDiagnosticsReport {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const runs24 = db
     .prepare(
-      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ?`,
+      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ? AND dry_run = 0`,
     )
     .get(since) as { c: number };
   const blocked24 = db
     .prepare(
-      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ? AND status = 'blocked'`,
+      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ? AND dry_run = 0 AND status = 'blocked'`,
     )
     .get(since) as { c: number };
   const error24 = db
     .prepare(
-      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ? AND status = 'error'`,
+      `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE} WHERE started_at >= ? AND dry_run = 0 AND status = 'error'`,
     )
     .get(since) as { c: number };
 

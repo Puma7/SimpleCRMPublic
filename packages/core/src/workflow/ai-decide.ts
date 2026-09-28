@@ -343,10 +343,32 @@ const PROBABILITY_NO_KEYS = new Set(['no', 'nein', 'wahrscheinlichkeitnein', 'pr
 const ANSWER_KEYS = new Set(['antwort', 'answer', 'entscheidung', 'decision', 'ergebnis', 'result', 'verdict']);
 const REASON_KEYS = new Set(['begruendung', 'reason', 'reasoning', 'grund', 'erklaerung', 'explanation']);
 
-/** Chat-Wahrscheinlichkeit: „85“, „85 %“, „0.85“ (Anteil), „85,5“. */
+/** Zahl aus JSON mit ihrem Rohtext („1.0“ bleibt „1.0“ statt 1). */
+class JsonNumberToken {
+  constructor(readonly value: number, readonly source: string | null) {}
+}
+
+function keepJsonNumberSource(_key: string, value: unknown, context?: { source?: unknown }): unknown {
+  if (typeof value !== 'number') return value;
+  return new JsonNumberToken(value, typeof context?.source === 'string' ? context.source : null);
+}
+
+/**
+ * Chat-Wahrscheinlichkeit: „85“, „85 %“, „0.85“/„1.0“ (Anteil), „85,5“.
+ * Ganze Zahl ⇒ Prozent (1 = 1 %); mit Dezimaltrenner und ≤ 1 ⇒ Anteil
+ * (1.0 = 100 %). JSON-Zahlen zählen mit ihrem Rohtext.
+ */
 function chatProbabilityPercent(value: unknown): number | null {
   let text: string;
-  if (typeof value === 'number') {
+  if (value instanceof JsonNumberToken) {
+    if (!Number.isFinite(value.value)) return null;
+    if (value.source === null) {
+      if (value.value === 1) return null; // ohne Rohtext mehrdeutig: fail-closed
+      text = String(value.value);
+    } else {
+      text = value.source.trim();
+    }
+  } else if (typeof value === 'number') {
     if (!Number.isFinite(value)) return null;
     text = String(value);
   } else if (typeof value === 'string') {
@@ -354,12 +376,12 @@ function chatProbabilityPercent(value: unknown): number | null {
   } else {
     return null;
   }
-  const match = /^(-?\d+(?:[.,]\d+)?)\s*(%|prozent)?$/i.exec(text);
+  const match = /^(-?\d+)(?:[.,](\d+))?\s*(%|prozent)?$/i.exec(text);
   if (!match) return null;
-  const n = Number(match[1]!.replace(',', '.'));
+  const n = Number(match[2] === undefined ? match[1] : `${match[1]}.${match[2]}`);
   if (!Number.isFinite(n) || n < 0 || n > 100) return null;
-  const percent = !match[2] && n > 0 && n < 1 ? n * 100 : n;
-  return clampAiDecideProbability(percent);
+  const fraction = !match[3] && match[2] !== undefined && n <= 1;
+  return clampAiDecideProbability(fraction ? n * 100 : n);
 }
 
 function chatAnswer(value: unknown): 'ja' | 'nein' | null {
@@ -430,14 +452,36 @@ function jsonObjectCandidates(text: string): string[] {
   return out;
 }
 
+// Zeilenweise statt eines mehrzeiligen Regex: die überlappenden \s-Gruppen
+// liefen bei Leerzeilen-Ausgaben superlinear (Event-Loop blockiert).
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+const LINE_KEY = /^[A-Za-zÄÖÜäöüß_ \-]{2,40}$/;
+const isKeyLead = (ch: string) => /\s/.test(ch) || ch === '*' || ch === '_' || ch === '-' || ch === '"' || ch === "'";
+const isKeyTail = (ch: string) => /\s/.test(ch) || ch === '*' || ch === '_' || ch === '"' || ch === "'";
+
+function keyValueFromLine(line: string): { key: string; value: string } | null {
+  const sep = line.search(/[:=]/);
+  if (sep < 0) return null;
+  let start = 0;
+  while (start < sep && isKeyLead(line[start]!)) start += 1;
+  let end = sep;
+  while (end > start && isKeyTail(line[end - 1]!)) end -= 1;
+  const key = line.slice(start, end);
+  if (!LINE_KEY.test(key)) return null;
+  let value = line.slice(sep + 1).trim();
+  if (value.length > 1 && value.endsWith(',')) value = value.slice(0, -1).trimEnd();
+  return value ? { key, value } : null;
+}
+
 function fieldsFromLines(text: string): ChatFields[] {
   const probs: number[] = [];
   const answers: ('ja' | 'nein')[] = [];
   let reason = '';
-  const re = /^[\s*_\-"']*([A-Za-zÄÖÜäöüß_ \-]{2,40}?)[\s*_"']*[:=]\s*(.+?)\s*,?\s*$/gm;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
-    const key = normalizeKey(m[1]!);
-    const value = m[2]!.replace(/^["'„“]|["'“”]$/g, '').trim();
+  for (const line of text.split(LINE_BREAK)) {
+    const pair = keyValueFromLine(line);
+    if (!pair) continue;
+    const key = normalizeKey(pair.key);
+    const value = pair.value.replace(/^["'„“]|["'“”]$/g, '').trim();
     if (PROBABILITY_YES_KEYS.has(key)) {
       const p = chatProbabilityPercent(value);
       if (p !== null) probs.push(p);
@@ -481,7 +525,7 @@ export function parseAiDecideChatResponse(raw: string): AiDecideChatParseResult 
   for (const candidate of jsonObjectCandidates(text)) {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(candidate) as unknown;
+      parsed = JSON.parse(candidate, keepJsonNumberSource) as unknown;
     } catch {
       continue;
     }
