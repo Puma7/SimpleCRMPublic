@@ -145,6 +145,19 @@ describe('Zugangsdaten-Speicher (safeStorage)', () => {
     expect(unavailable.table.rows.size).toBe(0);
   });
 
+  test('Ablehnung nennt den Befund des Speichers (ohne Geheimnis) und protokolliert ihn', async () => {
+    const insecure = { ...fakeCipher({ prefix: 'v10' }), describe: async () => 'Speicher basic_text, Chiffrat v10' };
+    const { store, logger } = setup({ cipher: insecure });
+    await expect(store.setSecret(SERVICE, 'acc-1', 'geheim-pw'))
+      .rejects.toThrow(`${INSECURE_CREDENTIAL_STORE_MESSAGE} (Speicher basic_text, Chiffrat v10)`);
+    expect(JSON.stringify(logger.warn.mock.calls)).toContain('Chiffrat v10');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('geheim-pw');
+
+    const failingDescribe = { ...fakeCipher({ isAvailable: async () => false }), describe: async () => { throw new Error('x'); } };
+    await expect(setup({ cipher: failingDescribe }).store.setSecret(SERVICE, 'acc-1', 'pw'))
+      .rejects.toThrow(INSECURE_CREDENTIAL_STORE_MESSAGE);
+  });
+
   test('Linux ohne sicheren Speicher: Lesen aus keytar geht weiter, aber kein Umzug in v10', async () => {
     const insecure = fakeCipher({ prefix: 'v10' });
     const { store, table } = setup({ cipher: insecure, keytar: { [`${SERVICE}|acc-1`]: 'alt-pw' } });

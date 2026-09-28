@@ -31,6 +31,8 @@ export type CredentialCipher = Readonly<{
   decrypt(ciphertext: Buffer): Promise<{ result: string; shouldReEncrypt: boolean }>;
   /** Linux: nur ein Chiffrat mit Präfix `v11` ist wirklich verschlüsselt. */
   isSecureCiphertext(ciphertext: Buffer): boolean;
+  /** Kurzer Befund ohne Geheimnisse (Backend, Verfügbarkeit, Präfix) für Meldung und Log. */
+  describe?(): Promise<string>;
 }>;
 
 export type CredentialRow = Readonly<{ ciphertext: Buffer | null }>;
@@ -154,9 +156,19 @@ export function createCredentialStore(deps: CredentialStoreDeps): CredentialStor
 
     async setSecret(service, account, value) {
       await deps.whenReady();
-      if (!(await deps.cipher.isAvailable())) throw new Error(INSECURE_CREDENTIAL_STORE_MESSAGE);
+      const insecure = async (): Promise<Error> => {
+        let detail = '';
+        try {
+          detail = (await deps.cipher.describe?.()) ?? '';
+        } catch {
+          detail = '';
+        }
+        logger.warn(`[credentials] ${INSECURE_CREDENTIAL_STORE_MESSAGE}${detail ? ` (${detail})` : ''}`);
+        return new Error(detail ? `${INSECURE_CREDENTIAL_STORE_MESSAGE} (${detail})` : INSECURE_CREDENTIAL_STORE_MESSAGE);
+      };
+      if (!(await deps.cipher.isAvailable())) throw await insecure();
       const sealed = await deps.cipher.encrypt(value);
-      if (!deps.cipher.isSecureCiphertext(sealed)) throw new Error(INSECURE_CREDENTIAL_STORE_MESSAGE);
+      if (!deps.cipher.isSecureCiphertext(sealed)) throw await insecure();
       const check = await deps.cipher.decrypt(sealed);
       if (check.result !== value) throw new Error(CREDENTIAL_WRITE_FAILED_MESSAGE);
       deps.table.put(service, account, sealed, now());

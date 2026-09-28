@@ -78,6 +78,20 @@ describe('Zugangsdaten-Speicher: Laufzeit', () => {
     await expect(createSafeStorageCipher(throwing, 'linux').isAvailable()).resolves.toBe(false);
   });
 
+  test('Befund für Meldung und Log: Speicher, Verfügbarkeit, Präfix – nie der Klartext', async () => {
+    const storage = {
+      ...fakeSafeStorage('v10'),
+      getSelectedStorageBackend: () => 'basic_text' as const,
+      isEncryptionAvailable: () => false,
+    };
+    const text = await createSafeStorageCipher(storage, 'linux').describe!();
+    expect(text).toBe('Speicher basic_text, asynchron verfügbar, synchron nicht verfügbar, Chiffrat v10');
+    expect(await createSafeStorageCipher(undefined, 'linux').describe!())
+      .toBe('Speicher unbekannt, asynchron nicht verfügbar, synchron nicht verfügbar');
+    expect(await createSafeStorageCipher({ ...fakeSafeStorage('v11'), isEncryptionAvailable: () => true }, 'win32').describe!())
+      .toBe('asynchron verfügbar, synchron verfügbar, Chiffrat v11');
+  });
+
   test('Ende zu Ende mit Datei: Umzug aus keytar, v10 verweigert das Speichern', async () => {
     const table = createSqliteCredentialTable(path.join(mockUserData, 'e2e.sqlite'));
     const legacy = {
